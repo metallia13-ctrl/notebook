@@ -33,7 +33,7 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'Richiesta non leggibile' });
   }
-  if (SECRET === 'merlino') {
+  if (SECRET === 'FRASE SEGRETA') {
     return json_({ ok: false, error: 'Nello script manca la frase segreta: cambiala e crea una nuova versione della distribuzione' });
   }
   if (!req || req.secret !== SECRET) return json_({ ok: false, error: 'Frase segreta errata' });
