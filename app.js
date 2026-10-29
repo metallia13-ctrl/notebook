@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '1.0';
+const APP_VERSION = '2.0';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -81,7 +81,7 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('notebooks')) db.createObjectStore('notebooks', { keyPath: 'id' });
@@ -89,8 +89,19 @@ const DB = {
           const s = db.createObjectStore('sections', { keyPath: 'id' });
           s.createIndex('notebookId', 'notebookId');
         }
+        if (!db.objectStoreNames.contains('cards')) {
+          const c = db.createObjectStore('cards', { keyPath: 'id' });
+          c.createIndex('notebookId', 'notebookId');
+          c.createIndex('sectionId', 'sectionId');
+        }
+        if (!db.objectStoreNames.contains('deleted')) db.createObjectStore('deleted', { keyPath: 'id' });
       };
-      req.onsuccess = () => { this.db = req.result; resolve(); };
+      req.onsuccess = () => {
+        this.db = req.result;
+        // Se un’altra scheda aggiorna il database, questa si ricarica con la versione nuova
+        this.db.onversionchange = () => { this.db.close(); location.reload(); };
+        resolve();
+      };
       req.onerror = () => reject(req.error);
       req.onblocked = () => reject(new Error('Database bloccato: chiudi le altre schede dell’app.'));
     });
@@ -110,12 +121,10 @@ const DB = {
   put(store, obj) { return this.run(store, 'readwrite', tx => tx.objectStore(store).put(obj)); },
   del(store, id) { return this.run(store, 'readwrite', tx => tx.objectStore(store).delete(id)); },
   bulkPut(store, arr) { return this.run(store, 'readwrite', tx => { const st = tx.objectStore(store); arr.forEach(o => st.put(o)); }); },
-  deleteNotebook(nbId, secIds) {
-    return this.run(['notebooks', 'sections'], 'readwrite', tx => {
-      tx.objectStore('notebooks').delete(nbId);
-      const st = tx.objectStore('sections');
-      secIds.forEach(id => st.delete(id));
-    });
+  removeMany(pairs) {
+    const stores = [...new Set(pairs.map(p => p[0]))];
+    if (!stores.length) return Promise.resolve();
+    return this.run(stores, 'readwrite', tx => { pairs.forEach(([st, id]) => tx.objectStore(st).delete(id)); });
   }
 };
 
@@ -134,7 +143,10 @@ const Settings = {
     theme: 'dark',
     aiFormat: true,
     aiCloze: true,
-    aiQuestions: true
+    aiQuestions: true,
+    syncUrl: '',
+    syncSecret: '',
+    newPerDay: 20
   },
   data: null,
   load() {
@@ -151,7 +163,7 @@ const S = () => Settings.data;
 /* ---------------------------------------------------------------------
    Stato e dati
    --------------------------------------------------------------------- */
-const state = { notebooks: [], sections: [], fromReview: false };
+const state = { notebooks: [], sections: [], cards: [], fromReview: false, cardReturn: '' };
 const drafts = {};              // richiami "pagina bianca" non ancora valutati
 let orderSeq = 0;
 let importJob = null;
@@ -161,7 +173,7 @@ let cleanups = [];
 const nbById = id => state.notebooks.find(n => n.id === id);
 const secById = id => state.sections.find(s => s.id === id);
 const secsOf = nbId => state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.order - b.order);
-const isDue = s => !!(s.srs && s.srs.due && s.srs.due <= todayStr());
+const isDue = s => !s.studyhub && !!(s.srs && s.srs.due && s.srs.due <= todayStr());
 const sortDue = (a, b) => a.srs.due.localeCompare(b.srs.due) || a.order - b.order;
 
 function newSrs() { return { ef: 2.5, interval: 0, reps: 0, due: null, history: [] }; }
@@ -189,17 +201,20 @@ async function saveSection(sec) {
   const i = state.sections.findIndex(s => s.id === sec.id);
   if (i < 0) state.sections.push(sec); else state.sections[i] = sec;
   updateBadge();
+  scheduleSync();
 }
 async function saveNotebook(nb) {
+  nb.updated = Date.now();
   await DB.put('notebooks', nb);
   const i = state.notebooks.findIndex(n => n.id === nb.id);
   if (i < 0) state.notebooks.push(nb); else state.notebooks[i] = nb;
+  scheduleSync();
 }
 async function deleteSection(id) {
-  await DB.del('sections', id);
-  state.sections = state.sections.filter(s => s.id !== id);
+  const sec = secById(id);
+  if (!sec) return;
+  await removeRecords([{ store: 'sections', rec: sec }, ...cardsOfSection(id).map(c => ({ store: 'cards', rec: c }))]);
   delete drafts[id];
-  updateBadge();
 }
 
 /* ---------------------------------------------------------------------
@@ -666,10 +681,18 @@ function modal({ title, text = '', input = false, value = '', placeholder = '', 
 
 function updateBadge() {
   const b = $('#dueBadge');
-  if (!b) return;
-  const n = state.sections.filter(isDue).length;
-  b.textContent = n;
-  b.hidden = n === 0;
+  if (b) {
+    const n = state.sections.filter(isDue).length;
+    b.textContent = n;
+    b.hidden = n === 0;
+  }
+  const cb = $('#cardBadge');
+  if (cb) {
+    const c = cardCounts(state.cards);
+    const n = c.l + c.r;
+    cb.textContent = n;
+    cb.hidden = n === 0;
+  }
 }
 
 function applyTheme() {
@@ -733,7 +756,8 @@ function route() {
   if (p0 !== 'sec') state.fromReview = false;
   // Un’importazione finita non blocca il modulo quando ci torni
   if (p0 !== 'import' && importJob && !importJob.running) importJob = null;
-  const navKey = p0 === 'nb' || p0 === 'sec' ? (state.fromReview ? 'review' : 'notebooks') : p0;
+  const navKey = p0 === 'nb' || p0 === 'sec' ? (state.fromReview ? 'review' : 'notebooks')
+    : ['deck', 'card', 'study'].includes(p0) ? 'cards' : p0;
   $$('.nav a').forEach(a => {
     const onIt = a.dataset.nav === navKey;
     a.classList.toggle('on', onIt);
@@ -746,6 +770,10 @@ function route() {
     case 'import': return viewImport(p1);
     case 'review': return viewReview();
     case 'settings': return viewSettings();
+    case 'cards': return viewCardsHome();
+    case 'deck': return viewDeck(p1);
+    case 'card': return viewCardEditor(p1);
+    case 'study': return viewStudy(p1);
     default: return viewNotebooks();
   }
 }
@@ -800,15 +828,17 @@ function viewNotebook(id) {
   if (!nb) return notFound('Questo notebook');
   const secs = secsOf(id);
   const due = secs.filter(isDue).length;
+  const nbCards = cardsOf(id);
   setView(`
     <a class="back" href="#/notebooks">Tutti i notebook</a>
     <header class="page-head">
       <div>
         <h1>${esc(nb.name)}</h1>
-        <p class="lede">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}${due ? `, ${due} da ripassare oggi` : ''}</p>
+        <p class="lede">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}${due ? `, ${due} da ripassare oggi` : ''}${nbCards.length ? `, ${nbCards.length} flashcard` : ''}</p>
       </div>
       <div class="actions">
         <a class="btn primary" href="#/import/${nb.id}">Importa</a>
+        ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
         <button class="btn" data-act="new-sec">Scrivi una sezione</button>
         <button class="btn ghost" data-act="rename">Rinomina</button>
         <button class="btn ghost danger" data-act="delete">Elimina</button>
@@ -838,14 +868,15 @@ function viewNotebook(id) {
   on('[data-act="delete"]', 'click', async () => {
     const ok = await modal({
       title: 'Eliminare il notebook?',
-      text: `Verranno eliminate anche le sue ${secs.length} sezioni. L’operazione non si può annullare.`,
+      text: `Verranno eliminate anche le sue ${secs.length} sezioni e ${nbCards.length} flashcard. L’operazione non si può annullare.`,
       confirm: 'Elimina', danger: true
     });
     if (!ok) return;
-    await DB.deleteNotebook(id, secs.map(s => s.id));
-    state.notebooks = state.notebooks.filter(n => n.id !== id);
-    state.sections = state.sections.filter(s => s.notebookId !== id);
-    updateBadge();
+    await removeRecords([
+      { store: 'notebooks', rec: nb },
+      ...secs.map(s => ({ store: 'sections', rec: s })),
+      ...nbCards.map(c => ({ store: 'cards', rec: c }))
+    ]);
     toast('Notebook eliminato');
     go('#/notebooks');
   });
@@ -868,9 +899,10 @@ function viewNotebook(id) {
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['read', 'Leggi'], ['cloze', 'Cloze'], ['blank', 'Pagina bianca'], ['quiz', 'Domande'], ['edit', 'Modifica']];
+const MODES = [['read', 'Leggi'], ['cloze', 'Cloze'], ['blank', 'Pagina bianca'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
+  if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
   if (!s.srs || !s.srs.due) return 'Nuova, non ancora pianificata';
   const reps = s.srs.history?.length || 0;
   const tail = reps ? `, ripassata ${reps} ${reps === 1 ? 'volta' : 'volte'}` : '';
@@ -901,7 +933,7 @@ function viewSection(id, mode) {
   // Cambiare scheda non riempie la cronologia: il tasto Indietro torna al notebook.
   on('.tabs a', 'click', e => { e.preventDefault(); location.replace(e.currentTarget.getAttribute('href')); });
   const body = $('#modeBody');
-  ({ read: modeRead, cloze: modeCloze, blank: modeBlank, quiz: modeQuiz, edit: modeEdit }[mode])(sec, body);
+  ({ read: modeRead, cloze: modeCloze, blank: modeBlank, quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -924,7 +956,17 @@ function gradeBar(sec, slot, { mode, suggested } = {}) {
     sec.srs = nextSrs(sec.srs, q, mode);
     await saveSection(sec);
     delete drafts[sec.id];
-    toast(`Prossimo ripasso ${fmtDue(sec.srs.due)}`);
+    if (sec.studyhub) {
+      const g = GRADES.find(x => x.q === q);
+      Bridge.send({
+        type: 'topic-review', sectionId: sec.id, notebookId: sec.notebookId,
+        subject: nbById(sec.notebookId)?.name || '', topic: sec.title,
+        grade: g ? g.key : '', q, mode, reviewedOn: todayStr(), url: deepLink(sec)
+      });
+      toast('Valutazione inviata a StudyHub');
+    } else {
+      toast(`Prossimo ripasso ${fmtDue(sec.srs.due)}`);
+    }
     afterGrade(sec);
   };
   $$('.gbtn', slot).forEach(b => b.addEventListener('click', () => grade(+b.dataset.q)));
@@ -959,17 +1001,34 @@ function modeRead(sec, body) {
       </div>` : ''}
     ${sec.md.trim() ? `<article class="notes">${renderMd(sec.md)}</article>` : `
       <div class="empty"><p>Sezione vuota.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`}
-    ${!sec.srs?.due && sec.md.trim() ? `
+    ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona una parte del testo per trasformarla in flashcard.</p>' : ''}
+    ${sec.studyhub ? `
       <div class="callout end">
-        <p>Quando hai finito di studiarla, pianifica il primo ripasso per domani.</p>
-        <button class="btn primary" data-act="plan">Pianifica il primo ripasso</button>
+        <p>${esc(studyhubStatusText(sec))}</p>
+        <button class="btn ghost sm" data-act="unlink">Riporta i ripassi nel Notebook</button>
+      </div>` : !sec.srs?.due && sec.md.trim() ? `
+      <div class="callout end">
+        <p>Quando hai finito di studiarla, segnala a StudyHub che pianificherà i ripassi, oppure ripassala qui.</p>
+        <div class="inline">
+          <button class="btn primary" data-act="studied">Segna come studiata in StudyHub</button>
+          <button class="btn ghost" data-act="plan">Ripassa nel Notebook</button>
+        </div>
       </div>` : ''}
     ${sec.source ? `<p class="source">Fonte: ${esc(sec.source)}</p>` : ''}
   `;
+  const notesEl = $('.notes', body);
+  if (notesEl) setupSelectionBar(notesEl, sec);
+  on('[data-act="studied"]', 'click', async () => { await markStudiedInStudyHub(sec); route(); }, body);
+  on('[data-act="unlink"]', 'click', async () => {
+    const ok = await modal({ title: 'Riportare i ripassi nel Notebook?', text: 'StudyHub riceverà la richiesta di togliere l’argomento e il Notebook lo pianificherà per domani.', confirm: 'Riporta' });
+    if (!ok) return;
+    await unlinkFromStudyHub(sec);
+    route();
+  }, body);
   on('[data-act="plan"]', 'click', async () => {
     sec.srs = { ...(sec.srs || newSrs()), due: addDays(todayStr(), 1), interval: 1 };
     await saveSection(sec);
-    toast('Primo ripasso domani');
+    toast('Primo ripasso nel Notebook domani');
     route();
   }, body);
   on('[data-act="fmt"]', 'click', async e => {
@@ -1313,12 +1372,16 @@ function modeEdit(sec, body) {
     const target = $('#mvNb', body).value;
     sec.notebookId = target;
     await saveSection(sec);
+    const cards = cardsOfSection(sec.id);
+    cards.forEach(c => { c.notebookId = target; });
+    if (cards.length) await saveCards(cards);
     toast(`Spostata in ${nbById(target)?.name || 'altro notebook'}`);
     go(`#/sec/${sec.id}/read`);
   }, body);
 
   on('[data-act="del"]', 'click', async () => {
-    const ok = await modal({ title: 'Eliminare la sezione?', text: 'L’operazione non si può annullare.', confirm: 'Elimina', danger: true });
+    const nCards = cardsOfSection(sec.id).length;
+    const ok = await modal({ title: 'Eliminare la sezione?', text: `${nCards ? `Verranno eliminate anche le sue ${nCards} flashcard. ` : ''}L’operazione non si può annullare.`, confirm: 'Elimina', danger: true });
     if (!ok) return;
     const nbId = sec.notebookId;
     await deleteSection(sec.id);
@@ -1334,7 +1397,10 @@ function viewReview() {
   const t = todayStr();
   const due = state.sections.filter(isDue).sort(sortDue);
   const upcoming = state.sections.filter(s => s.srs?.due && s.srs.due > t).sort(sortDue).slice(0, 12);
-  const fresh = state.sections.filter(s => !s.srs?.due && s.md.trim()).sort((a, b) => a.order - b.order);
+  const fresh = state.sections.filter(s => !s.studyhub && !s.srs?.due && s.md.trim()).sort((a, b) => a.order - b.order);
+  const linked = state.sections.filter(s => s.studyhub).length;
+  const cc = cardCounts(state.cards);
+  const cardsNow = cc.n + cc.l + cc.r;
   setView(`
     <header class="page-head">
       <div>
@@ -1343,7 +1409,13 @@ function viewReview() {
       </div>
       ${due.length ? '<button class="btn primary" data-act="start">Inizia il ripasso</button>' : ''}
     </header>
+    ${cardsNow ? `
+      <div class="callout">
+        <p>Hai anche ${cardsNow} flashcard da studiare.</p>
+        <a class="btn sm" href="#/study/all">Studia le flashcard</a>
+      </div>` : ''}
     ${due.length ? `<ul class="list">${due.map(s => sectionRow(s, { showNb: true, review: true })).join('')}</ul>` : ''}
+    ${linked ? `<p class="hint">${linked} ${linked === 1 ? 'sezione è pianificata' : 'sezioni sono pianificate'} da StudyHub e non compaiono qui.</p>` : ''}
     ${upcoming.length ? `<h2 class="sub">In arrivo</h2><ul class="list">${upcoming.map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : ''}
     ${fresh.length ? `
       <details class="fresh">
@@ -1691,6 +1763,33 @@ function viewSettings() {
     </section>
 
     <section class="block">
+      <h2>Sincronizzazione con Google Drive</h2>
+      <p class="hint">Serve lo script “sync-notebook.gs”: crealo su script.google.com, distribuiscilo come app web e incolla qui il suo indirizzo e la frase segreta che hai scritto nello script.</p>
+      <label class="field"><span>Indirizzo dell’app web, finisce con /exec</span>
+        <input class="input" id="syUrl" value="${esc(st.syncUrl)}" placeholder="https://script.google.com/macros/s/…/exec" spellcheck="false" autocomplete="off"></label>
+      <div class="field"><label class="lbl" for="sySecret">Frase segreta</label>
+        <div class="inline">
+          <input class="input" type="password" id="sySecret" value="${esc(st.syncSecret)}" autocomplete="off" spellcheck="false">
+          <button class="btn sm" type="button" data-toggle="sySecret">Mostra</button>
+        </div></div>
+      <div class="inline"><button class="btn" data-act="sync-now">Sincronizza ora</button></div>
+      <p class="hint" id="syStatus" aria-live="polite">${esc(syncStatusText())}</p>
+      <p class="hint">La sincronizzazione parte da sola all’apertura, quando torni sull’app e qualche secondo dopo ogni modifica.</p>
+    </section>
+
+    <section class="block">
+      <h2>Flashcard</h2>
+      <label class="field narrow"><span>Nuove flashcard al giorno per notebook</span>
+        <input class="input" type="number" id="stNew" min="0" max="500" value="${st.newPerDay}" inputmode="numeric"></label>
+      <p class="hint">Passi di apprendimento come Anki: 1 e 10 minuti, poi 1 giorno; con “Facile” 4 giorni.</p>
+    </section>
+
+    <section class="block">
+      <h2>StudyHub</h2>
+      <p class="hint" id="bridgeInfo">${Bridge.pending() ? `${Bridge.pending()} ${Bridge.pending() === 1 ? 'aggiornamento attende' : 'aggiornamenti attendono'} che StudyHub li legga su questo dispositivo.` : 'Nessun aggiornamento in attesa per StudyHub.'}</p>
+    </section>
+
+    <section class="block">
       <h2>Importazione</h2>
       <label class="field narrow"><span>Pagine per sezione, valore iniziale</span>
         <input class="input" type="number" id="stPer" min="1" max="30" value="${st.pagesPerSection}" inputmode="numeric"></label>
@@ -1708,7 +1807,7 @@ function viewSettings() {
 
     <section class="block">
       <h2>Backup</h2>
-      <p class="hint">I notebook sono salvati in questo browser. Esporta un backup per spostarli su un altro dispositivo o per sicurezza.</p>
+      <p class="hint">Un file con tutti i notebook, le sezioni e le flashcard: utile come copia di sicurezza, anche se usi la sincronizzazione.</p>
       <div class="inline">
         <button class="btn" data-act="export">Esporta backup</button>
         <label class="btn">Importa backup<input type="file" id="bkFile" accept="application/json,.json" hidden></label>
@@ -1720,6 +1819,26 @@ function viewSettings() {
   `);
 
   $('#stProv').addEventListener('change', e => { st.provider = e.target.value; Settings.save(); toast(`Uso ${AI.name()}`); });
+  $('#syUrl').addEventListener('change', e => {
+    st.syncUrl = e.target.value.trim();
+    Settings.save();
+    setSyncStatus();
+    if (Sync.configured()) Sync.run();
+  });
+  $('#sySecret').addEventListener('change', e => {
+    st.syncSecret = e.target.value.trim();
+    Settings.save();
+    setSyncStatus();
+    if (Sync.configured()) Sync.run();
+  });
+  on('[data-act="sync-now"]', 'click', () => Sync.run());
+  $('#stNew').addEventListener('change', e => {
+    const v = Math.min(500, Math.max(0, parseInt(e.target.value, 10) || 0));
+    e.target.value = v;
+    st.newPerDay = v;
+    Settings.save();
+    updateBadge();
+  });
   ['gemini', 'claude'].forEach(p => {
     $(`#${p}Key`).addEventListener('change', e => { st[p + 'Key'] = e.target.value.trim(); Settings.save(); toast('Chiave salvata'); });
     $(`#${p}Model`).addEventListener('change', e => {
@@ -1769,7 +1888,7 @@ function viewSettings() {
   $('#stTheme').addEventListener('change', e => { st.theme = e.target.value; Settings.save(); applyTheme(); });
 
   on('[data-act="export"]', 'click', () => {
-    const data = { app: 'studyhub-notebook', version: 1, exported: new Date().toISOString(), notebooks: state.notebooks, sections: state.sections };
+    const data = { app: 'studyhub-notebook', version: 2, exported: new Date().toISOString(), notebooks: state.notebooks, sections: state.sections, cards: state.cards };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1788,17 +1907,22 @@ function viewSettings() {
       if (data.app !== 'studyhub-notebook' || !Array.isArray(data.notebooks) || !Array.isArray(data.sections)) throw new Error('Questo file non è un backup del Notebook.');
       const ok = await modal({
         title: 'Importare il backup?',
-        text: `${data.notebooks.length} notebook e ${data.sections.length} sezioni. Gli elementi con lo stesso identificativo vengono sostituiti, gli altri restano.`,
+        text: `${data.notebooks.length} notebook, ${data.sections.length} sezioni e ${(data.cards || []).length} flashcard. Gli elementi con lo stesso identificativo vengono sostituiti, gli altri restano.`,
         confirm: 'Importa'
       });
       if (!ok) return;
-      const secs = data.sections.filter(s => s && s.id && s.notebookId).map(s => ({ ...newSection(s.notebookId), ...s, srs: { ...newSrs(), ...(s.srs || {}) } }));
-      const nbs = data.notebooks.filter(n => n && n.id);
+      const now = Date.now();
+      const secs = data.sections.filter(s => s && s.id && s.notebookId).map(s => ({ ...normalizeRecord('sections', s), updated: now }));
+      const nbs = data.notebooks.filter(n => n && n.id).map(n => ({ ...n, updated: now }));
+      const cards = (Array.isArray(data.cards) ? data.cards : []).filter(c => c && c.id && c.notebookId).map(c => ({ ...normalizeRecord('cards', c), updated: now }));
       await DB.bulkPut('notebooks', nbs);
       await DB.bulkPut('sections', secs);
+      await DB.bulkPut('cards', cards);
       state.notebooks = await DB.all('notebooks');
       state.sections = await DB.all('sections');
+      state.cards = await DB.all('cards');
       updateBadge();
+      scheduleSync();
       toast('Backup importato');
     } catch (err) {
       toast(err.message.startsWith('Unexpected') ? 'File non valido' : err.message, 'err');
@@ -1813,6 +1937,1023 @@ function viewSettings() {
 }
 
 /* ---------------------------------------------------------------------
+   Flashcard: algoritmo di Anki (passi di apprendimento + SM-2 modificato)
+   --------------------------------------------------------------------- */
+const ANKI = {
+  learnSteps: [1, 10],     // minuti
+  relearnSteps: [10],      // minuti
+  gradIvl: 1,              // giorni, dopo l'ultimo passo con "Bene"
+  easyIvl: 4,              // giorni, con "Facile" su una carta nuova
+  startEase: 2.5,
+  easyBonus: 1.3,
+  hardMult: 1.2,
+  lapseMult: 0,            // nuovo intervallo dopo un errore: 0% → 1 giorno
+  minEase: 1.3,
+  maxIvl: 36500
+};
+const LEARN_AHEAD = 20 * 60000;
+const CARD_GRADES = [
+  { key: 'again', label: 'Di nuovo' },
+  { key: 'hard', label: 'Difficile' },
+  { key: 'good', label: 'Bene' },
+  { key: 'easy', label: 'Facile' }
+];
+
+function newCardSrs() {
+  return { state: 'new', step: 0, due: 0, interval: 0, ease: ANKI.startEase, reps: 0, lapses: 0, introduced: '', history: [] };
+}
+function newCard(nbId, { front = '', back = '', sectionId = null } = {}) {
+  const now = Date.now();
+  return {
+    id: uid(), notebookId: nbId, sectionId: sectionId || null,
+    front, back, suspended: false,
+    order: now * 1000 + (orderSeq++ % 1000),
+    created: now, updated: now,
+    srs: newCardSrs()
+  };
+}
+function dayStartMs(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d).getTime();
+}
+function fuzzIvl(ivl) {
+  if (ivl < 3) return ivl;
+  const f = Math.max(1, Math.round(ivl * 0.05));
+  return ivl + Math.round((Math.random() * 2 - 1) * f);
+}
+
+// Restituisce il nuovo stato della carta dopo la risposta (preview = senza casualità e senza storico)
+function scheduleCard(prev, grade, now = Date.now(), preview = false) {
+  const s = { ...newCardSrs(), ...(prev || {}), history: [...((prev && prev.history) || [])] };
+  const inMin = m => now + m * 60000;
+  const toReview = ivl => {
+    s.state = 'review';
+    s.step = 0;
+    s.interval = Math.min(ANKI.maxIvl, Math.max(1, Math.round(ivl)));
+    s.due = dayStartMs(addDays(localDateStr(new Date(now)), s.interval));
+  };
+  if (s.state === 'new') { s.state = 'learning'; s.step = 0; s.introduced = localDateStr(new Date(now)); }
+  if (s.state === 'learning' || s.state === 'relearning') {
+    const relearn = s.state === 'relearning';
+    const steps = relearn ? ANKI.relearnSteps : ANKI.learnSteps;
+    if (grade === 'again') { s.step = 0; s.due = inMin(steps[0]); }
+    else if (grade === 'hard') {
+      const cur = steps[Math.min(s.step, steps.length - 1)];
+      s.due = inMin(s.step === 0 && steps.length > 1 ? (steps[0] + steps[1]) / 2 : cur);
+    } else if (grade === 'good') {
+      s.step += 1;
+      if (s.step >= steps.length) toReview(relearn ? s.interval : ANKI.gradIvl);
+      else s.due = inMin(steps[s.step]);
+    } else toReview(relearn ? s.interval + 1 : ANKI.easyIvl);
+  } else {
+    const delay = Math.max(0, dayDiff(localDateStr(new Date(s.due)), localDateStr(new Date(now))));
+    const ivl = Math.max(1, s.interval);
+    const fz = v => (preview ? v : fuzzIvl(v));
+    if (grade === 'again') {
+      s.lapses += 1;
+      s.ease = Math.max(ANKI.minEase, s.ease - 0.2);
+      s.interval = Math.max(1, Math.round(ivl * ANKI.lapseMult));
+      s.state = 'relearning';
+      s.step = 0;
+      s.due = inMin(ANKI.relearnSteps[0]);
+    } else {
+      const hardIvl = Math.max(ivl + 1, ivl * ANKI.hardMult);
+      const goodIvl = Math.max(hardIvl + 1, (ivl + delay / 2) * s.ease);
+      const easyIvl = Math.max(goodIvl + 1, (ivl + delay) * s.ease * ANKI.easyBonus);
+      if (grade === 'hard') { s.ease = Math.max(ANKI.minEase, s.ease - 0.15); toReview(fz(hardIvl)); }
+      else if (grade === 'good') toReview(fz(goodIvl));
+      else { s.ease += 0.15; toReview(fz(easyIvl)); }
+    }
+  }
+  s.ease = Math.round(s.ease * 100) / 100;
+  s.reps += 1;
+  if (!preview) {
+    s.history.push({ at: now, g: grade });
+    if (s.history.length > 100) s.history = s.history.slice(-100);
+  }
+  return s;
+}
+
+function fmtCardNext(srs, now = Date.now()) {
+  if (srs.state === 'review') return fmtInterval(srs.interval);
+  const m = Math.round((srs.due - now) / 60000);
+  return m < 1 ? '<1 min' : `${m} min`;
+}
+
+const cardById = id => state.cards.find(c => c.id === id);
+const cardsOf = nbId => state.cards.filter(c => c.notebookId === nbId).sort((a, b) => a.order - b.order);
+const cardsOfSection = secId => state.cards.filter(c => c.sectionId === secId).sort((a, b) => a.order - b.order);
+
+function newLeftToday(nbId) {
+  const t = todayStr();
+  const used = state.cards.filter(c => c.notebookId === nbId && c.srs.introduced === t).length;
+  return Math.max(0, (+S().newPerDay || 0) - used);
+}
+function cardCounts(list, { limitNew = true } = {}) {
+  const now = Date.now();
+  let n = 0, l = 0, r = 0;
+  const newBy = {};
+  for (const c of list) {
+    if (c.suspended) continue;
+    const s = c.srs;
+    if (s.state === 'new') { newBy[c.notebookId] = (newBy[c.notebookId] || 0) + 1; }
+    else if (s.state === 'review') { if (s.due <= now) r++; }
+    else if (s.due <= now + LEARN_AHEAD) l++;
+  }
+  for (const nb in newBy) n += limitNew ? Math.min(newBy[nb], newLeftToday(nb)) : newBy[nb];
+  return { n, l, r };
+}
+function countsHtml({ n, l, r }) {
+  return `<span class="counts" aria-label="${n} nuove, ${l} in apprendimento, ${r} da ripassare">
+    <span class="c-new" title="Nuove">${n}</span><span class="c-lrn" title="In apprendimento">${l}</span><span class="c-rev" title="Da ripassare">${r}</span></span>`;
+}
+const COUNTS_LEGEND = '<p class="legend"><span class="c-new">Nuove</span><span class="c-lrn">In apprendimento</span><span class="c-rev">Da ripassare</span></p>';
+
+function cardStatusText(c) {
+  if (c.suspended) return 'sospesa';
+  const s = c.srs;
+  if (s.state === 'new') return 'nuova';
+  if (s.state !== 'review') return 'in apprendimento';
+  return s.due <= Date.now() ? 'da ripassare oggi' : `prossimo ripasso ${fmtDue(localDateStr(new Date(s.due)))}`;
+}
+function cardPill(c) {
+  if (c.suspended) return '<span class="pill">Sospesa</span>';
+  const s = c.srs;
+  if (s.state === 'new') return '<span class="pill">Nuova</span>';
+  if (s.state !== 'review') return '<span class="pill lrn">Apprendimento</span>';
+  if (s.due <= Date.now()) return '<span class="pill due">Oggi</span>';
+  return `<span class="pill soft">${esc(fmtDue(localDateStr(new Date(s.due))))}</span>`;
+}
+const plainText = (md, max = 140) => {
+  const t = stripCloze(md || '').replace(/^\*([^*\n]+)\*\n\n/, '$1: ').replace(/[#*_`>|]/g, ' ').replace(/\s+/g, ' ').trim();
+  return t.length > max ? t.slice(0, max - 1) + '…' : t;
+};
+function cardRow(c) {
+  return `
+    <li data-id="${c.id}">
+      <a class="row" href="#/card/${c.id}">
+        <span class="row-main">
+          <span class="row-title">${esc(plainText(c.front)) || '<em>Fronte vuoto</em>'}</span>
+          <span class="row-sub">${esc(plainText(c.back, 100))}</span>
+        </span>
+        ${cardPill(c)}
+      </a>
+    </li>`;
+}
+
+async function saveCard(card) {
+  card.updated = Date.now();
+  await DB.put('cards', card);
+  const i = state.cards.findIndex(c => c.id === card.id);
+  if (i < 0) state.cards.push(card); else state.cards[i] = card;
+  updateBadge();
+  scheduleSync();
+}
+async function saveCards(cards) {
+  const now = Date.now();
+  cards.forEach(c => { c.updated = now; });
+  await DB.bulkPut('cards', cards);
+  cards.forEach(card => {
+    const i = state.cards.findIndex(c => c.id === card.id);
+    if (i < 0) state.cards.push(card); else state.cards[i] = card;
+  });
+  updateBadge();
+  scheduleSync();
+}
+
+function sectionLearned(secId) {
+  const cards = cardsOfSection(secId).filter(c => !c.suspended);
+  return cards.length > 0 && cards.every(c => c.srs.state === 'review');
+}
+
+// Flashcard dai termini ==cloze==: una carta per termine, con la riga (o la riga di tabella) come contesto
+function clozeCardsFromMd(md) {
+  const lines = (md || '').split('\n');
+  const out = [];
+  const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(x => x.trim());
+  const isSep = l => /^[\s|:-]+$/.test(l) && /-{2,}/.test(l);
+  let heading = '';
+  let header = null;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^#{1,6}\s/.test(l)) { heading = stripCloze(l.replace(/^#+\s+/, '')).trim(); header = null; continue; }
+    const isRow = /^\s*\|/.test(l);
+    if (!isRow) header = null;
+    if (isRow && i + 1 < lines.length && isSep(lines[i + 1])) { header = cells(l).map(stripCloze); continue; }
+    if (isRow && isSep(l)) continue;
+    let text;
+    if (isRow) {
+      const cs = cells(l);
+      text = cs.map((v, k) => (header && header[k] ? `${header[k]}: ${v}` : v)).filter(v => v.trim()).join('; ');
+    } else {
+      text = l.replace(/^\s*([-*+]|\d+\.)\s+/, '').trim();
+    }
+    if (!text) continue;
+    const re = clozeRe();
+    const found = [];
+    let m;
+    while ((m = re.exec(text))) found.push({ start: m.index, end: m.index + m[0].length, term: m[1] });
+    for (const f of found) {
+      const front = stripCloze(text.slice(0, f.start) + '**[…]**' + text.slice(f.end));
+      out.push({ front: heading ? `*${heading}*\n\n${front}` : front, back: f.term });
+    }
+  }
+  return out;
+}
+
+const CARDS_SYSTEM = [
+  'Sei un tutor per studenti di medicina. Dagli appunti ricevuti crea flashcard per la memorizzazione.',
+  'Ogni flashcard ha una domanda breve e precisa e una risposta breve (una parola, un valore, un elenco corto).',
+  'Copri i concetti, i valori numerici, le classificazioni e i confronti più importanti. Da 8 a 25 flashcard.',
+  'Scrivi nella lingua degli appunti. Formato, senza altro testo:',
+  'D: <domanda>',
+  'R: <risposta>'
+].join('\n');
+const FRONT_SYSTEM = 'Scrivi una sola domanda breve e precisa per una flashcard la cui risposta è il testo indicato. Usa la lingua del testo. Rispondi solo con la domanda, senza virgolette.';
+
+/* ---------------------------------------------------------------------
+   Collegamento con StudyHub (stesso dominio: localStorage condiviso)
+   Il Notebook scrive gli eventi in "shb-notebook-out"; StudyHub li legge,
+   li applica e scrive gli id elaborati in "shb-studyhub-ack".
+   --------------------------------------------------------------------- */
+const Bridge = {
+  OUT: 'shb-notebook-out',
+  ACK: 'shb-studyhub-ack',
+  read(key) { try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } },
+  send(ev) {
+    const out = this.read(this.OUT);
+    out.push({ id: uid(), at: new Date().toISOString(), source: 'notebook', version: 1, ...ev });
+    try { localStorage.setItem(this.OUT, JSON.stringify(out)); }
+    catch { toast('Impossibile salvare l’evento per StudyHub', 'err'); }
+  },
+  pending() { return this.read(this.OUT).length; },
+  async prune() {
+    const acks = new Set(this.read(this.ACK));
+    if (!acks.size) return;
+    const out = this.read(this.OUT);
+    const done = out.filter(e => acks.has(e.id));
+    if (!done.length) return;
+    localStorage.setItem(this.OUT, JSON.stringify(out.filter(e => !acks.has(e.id))));
+    for (const ev of done) {
+      if (ev.type !== 'topic-studied') continue;
+      const sec = secById(ev.sectionId);
+      if (sec && sec.studyhub && sec.studyhub.status !== 'received') {
+        sec.studyhub = { ...sec.studyhub, status: 'received', receivedOn: todayStr() };
+        await saveSection(sec);
+      }
+    }
+  }
+};
+
+function deepLink(sec, mode = defaultMode(sec)) {
+  return `${location.origin}${location.pathname}#/sec/${sec.id}/${mode}`;
+}
+async function markStudiedInStudyHub(sec) {
+  const nb = nbById(sec.notebookId);
+  Bridge.send({
+    type: 'topic-studied',
+    sectionId: sec.id,
+    notebookId: sec.notebookId,
+    subject: nb ? nb.name : '',
+    topic: sec.title,
+    studiedOn: todayStr(),
+    url: deepLink(sec)
+  });
+  sec.studyhub = { status: 'pending', since: todayStr() };
+  await saveSection(sec);
+  toast('Segnata come studiata: StudyHub pianificherà i ripassi');
+}
+async function unlinkFromStudyHub(sec) {
+  Bridge.send({ type: 'topic-unlinked', sectionId: sec.id, notebookId: sec.notebookId, subject: nbById(sec.notebookId)?.name || '', topic: sec.title });
+  delete sec.studyhub;
+  sec.srs = { ...(sec.srs || newSrs()), due: addDays(todayStr(), 1), interval: Math.max(1, sec.srs?.interval || 1) };
+  await saveSection(sec);
+  toast('I ripassi tornano nel Notebook');
+}
+function studyhubStatusText(sec) {
+  if (!sec.studyhub) return '';
+  return sec.studyhub.status === 'received'
+    ? 'StudyHub ha ricevuto l’argomento e ne pianifica i ripassi.'
+    : 'In attesa che StudyHub la riceva: apri StudyHub su questo dispositivo.';
+}
+
+/* ---------------------------------------------------------------------
+   Sincronizzazione con Google Drive (tramite il tuo script Apps Script)
+   --------------------------------------------------------------------- */
+const SYNC_STORES = ['notebooks', 'sections', 'cards'];
+
+const Sync = {
+  META: 'nb-sync-meta',
+  busy: false,
+  again: false,
+  timer: null,
+  errShown: false,
+  meta() { try { return JSON.parse(localStorage.getItem(this.META) || '{}'); } catch { return {}; } },
+  saveMeta(m) { try { localStorage.setItem(this.META, JSON.stringify(m)); } catch { /* spazio pieno */ } },
+  configured() { return !!((S().syncUrl || '').trim() && (S().syncSecret || '').trim()); },
+  schedule(ms = 8000) {
+    if (!this.configured()) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => { this.timer = null; this.run({ silent: true }); }, ms);
+  },
+  async post(body) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 150000);
+    let res;
+    try {
+      res = await fetch(S().syncUrl.trim(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+        redirect: 'follow'
+      });
+    } catch (e) {
+      throw new Error(e.name === 'AbortError' ? 'Drive non risponde: riprova più tardi.' : 'Connessione a Drive non riuscita. Controlla internet.');
+    } finally { clearTimeout(t); }
+    const txt = await res.text();
+    let data;
+    try { data = JSON.parse(txt); }
+    catch { throw new Error('Risposta non valida: controlla l’indirizzo e che l’app web sia distribuita con accesso “Chiunque”.'); }
+    if (!data.ok) throw new Error(data.error || 'Errore di sincronizzazione');
+    return data;
+  },
+  async run({ silent = false } = {}) {
+    if (!this.configured()) { if (!silent) toast('Configura prima la sincronizzazione in Impostazioni', 'err'); return false; }
+    if (this.busy) { this.again = true; return false; }
+    this.busy = true;
+    clearTimeout(this.timer);
+    this.timer = null;
+    setSyncStatus('Sincronizzazione in corso…');
+    const m = this.meta();
+    const url = S().syncUrl.trim();
+    if (m.url !== url) { m.url = url; m.rev = 0; m.lastPush = 0; }
+    const startedAt = Date.now();
+    try {
+      const changes = await collectChanges(m.lastPush || 0);
+      const batches = chunkRecords(changes, 2500000);
+      let pulled = [];
+      let rev = m.rev || 0;
+      for (let i = 0; i < batches.length; i++) {
+        const last = i === batches.length - 1;
+        if (batches.length > 1) setSyncStatus(`Invio dei dati ${i + 1} di ${batches.length}…`);
+        const r = await this.post({ secret: S().syncSecret.trim(), action: 'sync', since: m.rev || 0, records: batches[i], pull: last });
+        rev = r.rev;
+        if (last) pulled = r.records || [];
+      }
+      const changed = await applyRemote(pulled);
+      m.rev = rev;
+      m.lastPush = startedAt;
+      m.lastSync = Date.now();
+      m.error = '';
+      this.saveMeta(m);
+      this.errShown = false;
+      setSyncStatus();
+      if (changed) refreshAfterSync();
+      if (!silent) toast(changed ? `Sincronizzato: ${changed} ${changed === 1 ? 'elemento aggiornato' : 'elementi aggiornati'}` : 'Sincronizzato');
+      return true;
+    } catch (e) {
+      m.error = e.message;
+      this.saveMeta(m);
+      setSyncStatus();
+      if (!silent || !this.errShown) { toast(e.message, 'err'); this.errShown = true; }
+      return false;
+    } finally {
+      this.busy = false;
+      if (this.again) { this.again = false; this.schedule(1500); }
+    }
+  }
+};
+function scheduleSync() { Sync.schedule(); }
+
+async function collectChanges(since) {
+  const out = [];
+  for (const store of SYNC_STORES) {
+    for (const r of state[store]) {
+      if (since === 0 || (r.updated || 0) > since) {
+        out.push({ store, id: r.id, updated: r.updated || r.created || 1, notebookId: store === 'notebooks' ? r.id : r.notebookId, data: r });
+      }
+    }
+  }
+  const dels = await DB.all('deleted');
+  for (const t of dels) {
+    if (since === 0 || t.updated > since) out.push({ store: t.store, id: t.recId, updated: t.updated, notebookId: t.notebookId, deleted: true });
+  }
+  return out;
+}
+function chunkRecords(records, maxChars) {
+  const out = [];
+  let cur = [];
+  let size = 0;
+  for (const r of records) {
+    const len = JSON.stringify(r).length;
+    if (cur.length && size + len > maxChars) { out.push(cur); cur = []; size = 0; }
+    cur.push(r);
+    size += len;
+  }
+  out.push(cur);
+  return out;
+}
+function normalizeRecord(store, d) {
+  if (store === 'sections') return { ...newSection(d.notebookId), ...d, srs: { ...newSrs(), ...(d.srs || {}) } };
+  if (store === 'cards') return { ...newCard(d.notebookId), ...d, srs: { ...newCardSrs(), ...(d.srs || {}) } };
+  return { ...d };
+}
+async function applyRemote(records) {
+  if (!records.length) return 0;
+  const tombs = new Map((await DB.all('deleted')).map(t => [t.id, t]));
+  const puts = { notebooks: [], sections: [], cards: [] };
+  const dels = [];
+  let changed = 0;
+  for (const r of records) {
+    if (!SYNC_STORES.includes(r.store) || !r.id) continue;
+    const arr = state[r.store];
+    const i = arr.findIndex(x => x.id === r.id);
+    const local = i >= 0 ? arr[i] : null;
+    if (r.deleted) {
+      if (local && (local.updated || 0) <= r.updated) { arr.splice(i, 1); dels.push([r.store, r.id]); changed++; }
+      continue;
+    }
+    if (!r.data) continue;
+    const tomb = tombs.get(`${r.store}:${r.id}`);
+    if (tomb && tomb.updated >= (r.updated || 0)) continue;
+    if (!local || (r.updated || 0) > (local.updated || 0)) {
+      const rec = normalizeRecord(r.store, r.data);
+      rec.updated = r.updated;
+      if (i >= 0) arr[i] = rec; else arr.push(rec);
+      puts[r.store].push(rec);
+      changed++;
+    }
+  }
+  for (const st of SYNC_STORES) if (puts[st].length) await DB.bulkPut(st, puts[st]);
+  if (dels.length) await DB.removeMany(dels);
+  updateBadge();
+  return changed;
+}
+function refreshAfterSync() {
+  const h = location.hash || '#/notebooks';
+  if (/^#\/(notebooks|nb\/|review|cards|deck\/)/.test(h) || h === '#/' || h === '') route();
+  else toast('Dati aggiornati da un altro dispositivo');
+}
+function syncStatusText() {
+  if (!Sync.configured()) return 'Non configurata: i dati restano solo su questo dispositivo.';
+  const m = Sync.meta();
+  if (m.error) return `Ultimo tentativo non riuscito: ${m.error}`;
+  if (!m.lastSync) return 'Configurata, mai sincronizzata.';
+  const d = new Date(m.lastSync);
+  return `Ultima sincronizzazione: ${d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })} alle ${d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.`;
+}
+function setSyncStatus(text) {
+  const el = $('#syStatus');
+  if (el) el.textContent = text || syncStatusText();
+}
+
+/* ---------------------------------------------------------------------
+   Creazione di flashcard (anche dal testo selezionato)
+   --------------------------------------------------------------------- */
+function openCardSheet({ front = '', back = '', sectionId = null, notebookId, heading = 'Nuova flashcard' }) {
+  return new Promise(resolve => {
+    const root = $('#modalRoot');
+    const prevFocus = document.activeElement;
+    const sec = sectionId ? secById(sectionId) : null;
+    root.innerHTML = `
+      <div class="overlay">
+        <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="csTitle">
+          <h2 id="csTitle">${esc(heading)}</h2>
+          ${sec ? `<p class="sheet-sub">Dalla sezione ${esc(sec.title)}</p>` : ''}
+          <label class="field"><span>Fronte, la domanda</span>
+            <textarea class="input card-ta" id="csFront" rows="3">${esc(front)}</textarea></label>
+          ${AI.ready() ? `<button class="btn sm" data-cs="ai" type="button">Proponi la domanda con ${AI.name()}</button>` : ''}
+          <label class="field"><span>Retro, la risposta</span>
+            <textarea class="input card-ta" id="csBack" rows="5">${esc(back)}</textarea></label>
+          <div class="modal-actions">
+            <button class="btn ghost" data-cs="no" type="button">Annulla</button>
+            <button class="btn primary" data-cs="yes" type="button">Crea la flashcard</button>
+          </div>
+        </div>
+      </div>`;
+    const fEl = $('#csFront', root);
+    const bEl = $('#csBack', root);
+    const close = v => {
+      root.innerHTML = '';
+      document.removeEventListener('keydown', onKey, true);
+      if (prevFocus && prevFocus.focus) prevFocus.focus({ preventScroll: true });
+      resolve(v);
+    };
+    const save = async () => {
+      if (!fEl.value.trim()) { toast('Scrivi la domanda sul fronte'); fEl.focus(); return; }
+      if (!bEl.value.trim()) { toast('Scrivi la risposta sul retro'); bEl.focus(); return; }
+      const card = newCard(notebookId, { front: fEl.value.trim(), back: bEl.value.trim(), sectionId });
+      await saveCard(card);
+      toast('Flashcard creata');
+      close(card);
+    };
+    const onKey = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+      else e.stopPropagation(); // nessuna scorciatoia della pagina mentre scrivi
+    };
+    $('[data-cs="no"]', root).onclick = () => close(null);
+    $('[data-cs="yes"]', root).onclick = save;
+    const aiBtn = $('[data-cs="ai"]', root);
+    if (aiBtn) aiBtn.onclick = async () => {
+      if (!bEl.value.trim()) { toast('Scrivi prima la risposta'); return; }
+      aiBtn.disabled = true;
+      aiBtn.textContent = 'Scrivo la domanda…';
+      try {
+        const ctx = sec ? `ARGOMENTO: ${sec.title}\n\nCONTESTO:\n${stripCloze(sec.md).slice(0, 5000)}\n\n` : '';
+        const r = await AI.generate({ system: FRONT_SYSTEM, text: `${ctx}RISPOSTA DELLA FLASHCARD:\n${bEl.value.trim()}`, maxTokens: 3000 });
+        fEl.value = r.text.trim().split('\n').find(l => l.trim())?.replace(/^(D|Domanda)\s*:\s*/i, '').trim() || fEl.value;
+      } catch (err) { toast(err.message, 'err'); }
+      aiBtn.disabled = false;
+      aiBtn.textContent = `Proponi la domanda con ${AI.name()}`;
+    };
+    document.addEventListener('keydown', onKey, true);
+    setTimeout(() => (front ? bEl : fEl).focus(), 40);
+  });
+}
+
+// Barra "Crea flashcard" quando selezioni del testo negli appunti
+function setupSelectionBar(container, sec) {
+  const bar = document.createElement('div');
+  bar.className = 'sel-bar';
+  bar.hidden = true;
+  bar.innerHTML = '<button class="btn primary" type="button">Crea flashcard dalla selezione</button>';
+  document.body.appendChild(bar);
+  const btn = $('button', bar);
+  let lastText = '';
+  let hideTimer = null;
+  const onSel = () => {
+    const sel = document.getSelection();
+    const txt = sel && !sel.isCollapsed ? sel.toString().trim() : '';
+    const inside = txt && sel.anchorNode && container.contains(sel.anchorNode) && container.contains(sel.focusNode);
+    if (inside) {
+      clearTimeout(hideTimer);
+      lastText = txt;
+      bar.hidden = false;
+    } else if (!bar.hidden) {
+      // ritardo: su Android toccare il pulsante può annullare la selezione prima del clic
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => { bar.hidden = true; }, 700);
+    }
+  };
+  document.addEventListener('selectionchange', onSel);
+  btn.addEventListener('pointerdown', e => e.preventDefault());
+  btn.addEventListener('click', () => {
+    clearTimeout(hideTimer);
+    bar.hidden = true;
+    const text = lastText;
+    document.getSelection()?.removeAllRanges();
+    if (text) openCardSheet({ back: text, sectionId: sec.id, notebookId: sec.notebookId });
+  });
+  addCleanup(() => {
+    clearTimeout(hideTimer);
+    document.removeEventListener('selectionchange', onSel);
+    bar.remove();
+  });
+}
+
+/* Scheda "Flashcard" di una sezione */
+function modeCards(sec, body) {
+  const cards = cardsOfSection(sec.id);
+  const czCount = clozeCardsFromMd(sec.md).length;
+  const qs = sec.questions || [];
+  body.innerHTML = `
+    <div class="row-actions">
+      ${cards.length ? `<a class="btn primary" href="#/study/sec-${sec.id}">Studia queste flashcard</a>` : ''}
+      <button class="btn" data-act="new-card">Nuova flashcard</button>
+    </div>
+    <p class="hint">Puoi anche selezionare del testo in Leggi e toccare “Crea flashcard dalla selezione”.</p>
+    ${czCount || qs.length || AI.ready() ? `
+      <h2 class="sub">Crea in blocco</h2>
+      <div class="row-actions">
+        ${czCount ? `<button class="btn sm" data-gen="cloze">Dai termini cloze (${czCount})</button>` : ''}
+        ${qs.length ? `<button class="btn sm" data-gen="qs">Dalle domande (${qs.length})</button>` : ''}
+        ${AI.ready() ? `<button class="btn sm" data-gen="ai">Genera con ${AI.name()}</button>` : ''}
+      </div>
+      <div id="genOut"></div>` : ''}
+    ${cards.length ? `
+      <h2 class="sub">${cards.length} ${cards.length === 1 ? 'flashcard' : 'flashcard'} in questa sezione</h2>
+      <ul class="list">${cards.map(cardRow).join('')}</ul>` : ''}
+  `;
+  on('[data-act="new-card"]', 'click', async () => {
+    const c = await openCardSheet({ sectionId: sec.id, notebookId: sec.notebookId });
+    if (c) route();
+  }, body);
+
+  const showCandidates = list => {
+    const existing = new Set(cardsOfSection(sec.id).map(c => c.front.trim().toLowerCase()));
+    const out = $('#genOut', body);
+    if (!list.length) { out.innerHTML = '<p class="hint">Nessuna flashcard trovata.</p>'; return; }
+    out.innerHTML = `
+      <ul class="cand">
+        ${list.map((c, i) => {
+          const dup = existing.has(c.front.trim().toLowerCase());
+          return `<li><label class="check">
+            <input type="checkbox" data-i="${i}" ${dup ? '' : 'checked'}>
+            <span><span class="cand-f">${esc(plainText(c.front, 220))}</span><span class="cand-b">${esc(plainText(c.back, 160))}</span>${dup ? '<small class="cand-dup">Già presente</small>' : ''}</span>
+          </label></li>`;
+        }).join('')}
+      </ul>
+      <div class="row-actions"><button class="btn primary" data-act="save-cand">Crea le flashcard selezionate</button></div>`;
+    $('[data-act="save-cand"]', out).addEventListener('click', async () => {
+      const picked = $$('input[data-i]:checked', out).map(x => list[+x.dataset.i]);
+      if (!picked.length) { toast('Seleziona almeno una flashcard'); return; }
+      await saveCards(picked.map(c => newCard(sec.notebookId, { front: c.front, back: c.back, sectionId: sec.id })));
+      toast(`${picked.length} flashcard create`);
+      route();
+    });
+  };
+  on('[data-gen]', 'click', async e => {
+    const kind = e.currentTarget.dataset.gen;
+    if (kind === 'cloze') return showCandidates(clozeCardsFromMd(sec.md));
+    if (kind === 'qs') return showCandidates(qs.map(q => ({ front: q.q, back: q.a || '' })).filter(c => c.back));
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Genero le flashcard…';
+    try {
+      const r = await AI.generate({ system: CARDS_SYSTEM, text: stripCloze(sec.md), maxTokens: 8000 });
+      showCandidates(parseQuestions(r.text).map(q => ({ front: q.q, back: q.a })).filter(c => c.back));
+    } catch (err) { toast(err.message, 'err'); }
+    btn.disabled = false;
+    btn.textContent = `Genera con ${AI.name()}`;
+  }, body);
+}
+
+/* ---------------------------------------------------------------------
+   Viste delle flashcard
+   --------------------------------------------------------------------- */
+function viewCardsHome() {
+  const nbs = [...state.notebooks].sort((a, b) => a.created - b.created);
+  const all = cardCounts(state.cards);
+  const total = all.n + all.l + all.r;
+  setView(`
+    <header class="page-head">
+      <div>
+        <h1>Flashcard</h1>
+        <p class="lede">${state.cards.length ? (total ? `${total} da studiare adesso.` : 'Niente da studiare adesso.') : 'Nessuna flashcard ancora.'}</p>
+      </div>
+      ${total ? '<a class="btn primary" href="#/study/all">Studia tutto</a>' : ''}
+    </header>
+    ${nbs.length ? `
+      <ul class="list">
+        ${nbs.map(nb => {
+          const cs = cardsOf(nb.id);
+          return `<li><a class="row" href="#/deck/${nb.id}">
+            <span class="row-main"><span class="row-title">${esc(nb.name)}</span>
+            <span class="row-sub">${cs.length ? `${cs.length} flashcard` : 'Nessuna flashcard'}</span></span>
+            ${cs.length ? countsHtml(cardCounts(cs)) : ''}
+          </a></li>`;
+        }).join('')}
+      </ul>
+      ${state.cards.length ? COUNTS_LEGEND : ''}
+      ${!state.cards.length ? '<p class="hint">Crea le flashcard da una sezione: seleziona del testo in Leggi, oppure apri la scheda Flashcard della sezione.</p>' : ''}` : `
+      <div class="empty"><p>Crea prima un notebook e importa del materiale.</p><a class="btn primary" href="#/notebooks">Vai ai notebook</a></div>`}
+  `);
+}
+
+function viewDeck(nbId) {
+  const nb = nbById(nbId);
+  if (!nb) return notFound('Questo notebook');
+  const cards = cardsOf(nbId);
+  const cnt = cardCounts(cards);
+  const LIMIT = 300;
+  setView(`
+    <a class="back" href="#/cards">Flashcard</a>
+    <header class="page-head">
+      <div>
+        <h1>${esc(nb.name)}</h1>
+        <p class="lede">${cards.length} flashcard</p>
+      </div>
+      <div class="actions">
+        ${cnt.n + cnt.l + cnt.r ? `<a class="btn primary" href="#/study/${nb.id}">Studia</a>` : ''}
+        <button class="btn" data-act="new-card">Nuova flashcard</button>
+        <a class="btn ghost" href="#/nb/${nb.id}">Apri il notebook</a>
+      </div>
+    </header>
+    ${cards.length ? `
+      <div class="deck-counts">${countsHtml(cnt)}</div>
+      ${COUNTS_LEGEND}
+      ${cards.length > 5 ? '<input type="search" class="input search" id="cardSearch" placeholder="Cerca tra le flashcard" aria-label="Cerca tra le flashcard">' : ''}
+      <ul class="list" id="cardList">${cards.slice(0, LIMIT).map(cardRow).join('')}</ul>
+      ${cards.length > LIMIT ? `<p class="hint" id="moreHint">Mostro le prime ${LIMIT}: usa la ricerca per trovare le altre.</p>` : ''}` : `
+      <div class="empty"><p>Nessuna flashcard in questo notebook. Selezionando del testo in una sezione puoi crearne una in un attimo.</p></div>`}
+  `);
+  on('[data-act="new-card"]', 'click', async () => {
+    const c = await openCardSheet({ notebookId: nb.id });
+    if (c) route();
+  });
+  const search = $('#cardSearch');
+  if (search) search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    const list = q ? cards.filter(c => (c.front + '\n' + c.back).toLowerCase().includes(q)) : cards;
+    $('#cardList').innerHTML = list.slice(0, LIMIT).map(cardRow).join('') || '<li class="row muted">Nessuna flashcard contiene questo testo.</li>';
+  });
+}
+
+function viewCardEditor(id) {
+  const c = cardById(id);
+  if (!c) return notFound('Questa flashcard');
+  const back = state.cardReturn && state.cardReturn !== location.hash ? state.cardReturn : `#/deck/${c.notebookId}`;
+  const secs = secsOf(c.notebookId);
+  setView(`
+    <a class="back" href="${esc(back)}">Indietro</a>
+    <header class="page-head">
+      <div>
+        <h1>Flashcard</h1>
+        <p class="lede">${esc(nbById(c.notebookId)?.name || '')}, ${cardStatusText(c)}${c.srs.lapses ? `, sbagliata ${c.srs.lapses} ${c.srs.lapses === 1 ? 'volta' : 'volte'}` : ''}</p>
+      </div>
+    </header>
+    <div class="form">
+      <label class="field"><span>Fronte</span><textarea class="input card-ta" id="ceFront">${esc(c.front)}</textarea></label>
+      <label class="field"><span>Retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>
+      <label class="field"><span>Sezione collegata</span>
+        <select class="input" id="ceSec">
+          <option value="">Nessuna</option>
+          ${secs.map(s => `<option value="${s.id}" ${s.id === c.sectionId ? 'selected' : ''}>${esc(s.title)}</option>`).join('')}
+        </select></label>
+      <details class="preview" id="cePrevBox"><summary>Anteprima</summary>
+        <div class="fcard"><div class="notes" id="cePrevF"></div><hr class="fsep"><div class="notes" id="cePrevB"></div></div></details>
+      <div class="save-bar">
+        <button class="btn primary" data-act="save">Salva</button>
+        <button class="btn ghost" data-act="suspend">${c.suspended ? 'Riattiva' : 'Sospendi'}</button>
+        <button class="btn ghost" data-act="reset">Ricomincia da capo</button>
+        <button class="btn ghost danger push" data-act="del">Elimina</button>
+      </div>
+    </div>
+  `);
+  const fEl = $('#ceFront');
+  const bEl = $('#ceBack');
+  const box = $('#cePrevBox');
+  const prev = () => { if (box.open) { $('#cePrevF').innerHTML = renderMd(fEl.value); $('#cePrevB').innerHTML = renderMd(bEl.value); } };
+  box.addEventListener('toggle', prev);
+  fEl.addEventListener('input', prev);
+  bEl.addEventListener('input', prev);
+  on('[data-act="save"]', 'click', async () => {
+    if (!fEl.value.trim()) { toast('Il fronte non può essere vuoto'); fEl.focus(); return; }
+    c.front = fEl.value.trim();
+    c.back = bEl.value.trim();
+    c.sectionId = $('#ceSec').value || null;
+    await saveCard(c);
+    toast('Flashcard salvata');
+    go(back);
+  });
+  on('[data-act="suspend"]', 'click', async () => {
+    c.suspended = !c.suspended;
+    await saveCard(c);
+    toast(c.suspended ? 'Flashcard sospesa: non comparirà nei ripassi' : 'Flashcard riattivata');
+    if (session && session.current === c.id && c.suspended) session.current = null;
+    route();
+  });
+  on('[data-act="reset"]', 'click', async () => {
+    const ok = await modal({ title: 'Ricominciare da capo?', text: 'La flashcard torna nuova e perde lo storico dei ripassi.', confirm: 'Ricomincia' });
+    if (!ok) return;
+    c.srs = newCardSrs();
+    await saveCard(c);
+    toast('La flashcard è di nuovo nuova');
+    route();
+  });
+  on('[data-act="del"]', 'click', async () => {
+    const ok = await modal({ title: 'Eliminare la flashcard?', text: 'L’operazione non si può annullare.', confirm: 'Elimina', danger: true });
+    if (!ok) return;
+    if (session && session.current === c.id) session.current = null;
+    await removeRecords([{ store: 'cards', rec: c }]);
+    toast('Flashcard eliminata');
+    go(back);
+  });
+}
+
+/* Sessione di studio stile Anki */
+let session = null;
+
+function scopeCards(scope) {
+  if (scope === 'all') return state.cards.filter(c => !c.suspended);
+  if (scope.startsWith('sec-')) { const id = scope.slice(4); return state.cards.filter(c => c.sectionId === id && !c.suspended); }
+  return state.cards.filter(c => c.notebookId === scope && !c.suspended);
+}
+function scopeTitle(scope) {
+  if (scope === 'all') return 'Tutte le flashcard';
+  if (scope.startsWith('sec-')) return secById(scope.slice(4))?.title || 'Sezione';
+  return nbById(scope)?.name || 'Flashcard';
+}
+function scopeBack(scope) {
+  if (scope === 'all') return '#/cards';
+  if (scope.startsWith('sec-')) return `#/sec/${scope.slice(4)}/cards`;
+  return `#/deck/${scope}`;
+}
+function startSession(scope) {
+  const now = Date.now();
+  const cards = scopeCards(scope);
+  const reviews = cards.filter(c => c.srs.state === 'review' && c.srs.due <= now).sort((a, b) => a.srs.due - b.srs.due || a.order - b.order);
+  let news = cards.filter(c => c.srs.state === 'new').sort((a, b) => a.order - b.order);
+  if (!scope.startsWith('sec-')) {
+    // limite giornaliero di nuove per notebook (in una sola sezione studi tutto)
+    const left = {};
+    news = news.filter(c => {
+      if (!(c.notebookId in left)) left[c.notebookId] = newLeftToday(c.notebookId);
+      if (left[c.notebookId] > 0) { left[c.notebookId]--; return true; }
+      return false;
+    });
+  }
+  session = { scope, queue: [...reviews, ...news].map(c => c.id), done: 0, undo: [], learned: [], current: null, revealed: false };
+}
+function pickNext() {
+  const now = Date.now();
+  const learning = scopeCards(session.scope)
+    .filter(c => c.srs.state === 'learning' || c.srs.state === 'relearning')
+    .sort((a, b) => a.srs.due - b.srs.due);
+  if (learning.length && learning[0].srs.due <= now) return learning[0];
+  while (session.queue.length) {
+    const c = cardById(session.queue[0]);
+    if (c && !c.suspended && (c.srs.state === 'new' || (c.srs.state === 'review' && c.srs.due <= now))) return c;
+    session.queue.shift();
+  }
+  if (learning.length && learning[0].srs.due <= now + LEARN_AHEAD) return learning[0];
+  return null;
+}
+function sessionCounts() {
+  const now = Date.now();
+  let n = 0, r = 0;
+  for (const id of session.queue) {
+    const c = cardById(id);
+    if (!c || c.suspended) continue;
+    if (c.srs.state === 'new') n++;
+    else if (c.srs.state === 'review' && c.srs.due <= now) r++;
+  }
+  const l = scopeCards(session.scope).filter(c => (c.srs.state === 'learning' || c.srs.state === 'relearning') && c.srs.due <= now + LEARN_AHEAD).length;
+  return { n, l, r };
+}
+
+function viewStudy(scope) {
+  if (!scope) scope = 'all';
+  if (!session || session.scope !== scope) startSession(scope);
+  renderStudy();
+}
+
+function resetCleanups() {
+  cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
+  cleanups = [];
+}
+
+function renderStudy() {
+  resetCleanups();
+  const sc = session.scope;
+  let card = session.current ? cardById(session.current) : null;
+  if (card && card.suspended) card = null;
+  if (!card) { card = pickNext(); session.current = card ? card.id : null; session.revealed = false; }
+  if (!card) return renderStudyDone();
+  const sec = card.sectionId ? secById(card.sectionId) : null;
+  const now = Date.now();
+  setView(`
+    <a class="back" href="${scopeBack(sc)}">${esc(sc === 'all' ? 'Flashcard' : scopeTitle(sc))}</a>
+    <header class="study-head">
+      <h1>${esc(scopeTitle(sc))}</h1>
+      ${countsHtml(sessionCounts())}
+    </header>
+    <article class="fcard study">
+      <div class="notes face">${renderMd(card.front)}</div>
+      ${session.revealed ? `<hr class="fsep"><div class="notes face">${renderMd(card.back)}</div>` : ''}
+    </article>
+    <div class="study-actions">
+      ${session.revealed ? `
+        <div class="grade-btns">
+          ${CARD_GRADES.map((g, i) => `<button class="gbtn g-${g.key}" data-g="${g.key}" aria-keyshortcuts="${i + 1}">
+            <span>${g.label}</span><small>${fmtCardNext(scheduleCard(card.srs, g.key, now, true), now)}</small></button>`).join('')}
+        </div>` : '<button class="btn primary block big" data-act="reveal" aria-keyshortcuts="Space">Mostra la risposta</button>'}
+    </div>
+    <div class="study-tools">
+      <button class="btn sm ghost" data-act="undo" ${session.undo.length ? '' : 'disabled'}>Annulla l’ultima</button>
+      <a class="btn sm ghost" href="#/card/${card.id}">Modifica</a>
+      <button class="btn sm ghost" data-act="suspend">Sospendi</button>
+    </div>
+    ${sec ? `<p class="source">Dalla sezione <a href="#/sec/${sec.id}/read">${esc(sec.title)}</a></p>` : ''}
+    <p class="hint kbd-hint">Spazio mostra la risposta, 1-4 per valutare, Ctrl+Z annulla.</p>
+  `);
+  on('[data-act="reveal"]', 'click', () => { session.revealed = true; renderStudy(); });
+  on('[data-g]', 'click', e => answerCard(e.currentTarget.dataset.g));
+  on('[data-act="undo"]', 'click', undoAnswer);
+  on('[data-act="suspend"]', 'click', async () => {
+    card.suspended = true;
+    await saveCard(card);
+    session.current = null;
+    toast('Flashcard sospesa');
+    renderStudy();
+  });
+  const onKey = e => {
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || $('#modalRoot').children.length) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoAnswer(); return; }
+    if (!session.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); session.revealed = true; renderStudy(); return; }
+    const i = ['1', '2', '3', '4'].indexOf(e.key);
+    if (session.revealed && i >= 0) { e.preventDefault(); answerCard(CARD_GRADES[i].key); }
+  };
+  document.addEventListener('keydown', onKey);
+  addCleanup(() => document.removeEventListener('keydown', onKey));
+}
+
+let answering = false;
+async function answerCard(grade) {
+  if (answering) return;
+  const c = cardById(session.current);
+  if (!c) return;
+  answering = true;
+  try {
+    const prev = JSON.parse(JSON.stringify(c.srs));
+    const wasLearned = c.sectionId ? sectionLearned(c.sectionId) : true;
+    c.srs = scheduleCard(c.srs, grade);
+    await saveCard(c);
+    session.undo.push({ id: c.id, prev, inQueue: session.queue.includes(c.id) });
+    if (session.undo.length > 30) session.undo.shift();
+    session.queue = session.queue.filter(id => id !== c.id);
+    session.done += 1;
+    if (c.sectionId && !wasLearned && sectionLearned(c.sectionId)) {
+      const sec = secById(c.sectionId);
+      if (sec && !sec.studyhub && !session.learned.includes(sec.id)) session.learned.push(sec.id);
+    }
+    session.current = null;
+    session.revealed = false;
+  } finally { answering = false; }
+  renderStudy();
+}
+async function undoAnswer() {
+  const last = session.undo.pop();
+  if (!last) return;
+  const c = cardById(last.id);
+  if (!c) return;
+  c.srs = last.prev;
+  await saveCard(c);
+  if (last.inQueue && !session.queue.includes(c.id)) session.queue.unshift(c.id);
+  if (c.sectionId && !sectionLearned(c.sectionId)) session.learned = session.learned.filter(id => id !== c.sectionId);
+  session.done = Math.max(0, session.done - 1);
+  session.current = c.id;
+  session.revealed = false;
+  renderStudy();
+}
+
+function renderStudyDone() {
+  resetCleanups();
+  const sc = session.scope;
+  const now = Date.now();
+  const later = scopeCards(sc).filter(c => (c.srs.state === 'learning' || c.srs.state === 'relearning')).sort((a, b) => a.srs.due - b.srs.due);
+  const learned = session.learned.map(secById).filter(s => s && !s.studyhub);
+  const nextMin = later.length ? Math.max(1, Math.round((later[0].srs.due - now) / 60000)) : 0;
+  setView(`
+    <a class="back" href="${scopeBack(sc)}">${esc(sc === 'all' ? 'Flashcard' : scopeTitle(sc))}</a>
+    <header class="page-head">
+      <div>
+        <h1>Hai finito per ora</h1>
+        <p class="lede">${session.done ? `${session.done} ${session.done === 1 ? 'risposta' : 'risposte'} in questa sessione.` : 'Non ci sono flashcard da studiare adesso.'}</p>
+      </div>
+    </header>
+    ${later.length ? `<p>${later.length} ${later.length === 1 ? 'flashcard in apprendimento torna' : 'flashcard in apprendimento tornano'} tra ${nextMin} ${nextMin === 1 ? 'minuto' : 'minuti'}.</p>` : ''}
+    ${learned.map(s => `
+      <div class="callout learned" data-sec="${s.id}">
+        <p>Hai appreso <strong>${esc(s.title)}</strong>. Vuoi segnarla come studiata in StudyHub? StudyHub pianificherà i ripassi successivi.</p>
+        <div class="inline">
+          <button class="btn primary sm" data-sh="${s.id}">Segna come studiata</button>
+          <button class="btn ghost sm" data-skip="${s.id}">Non ora</button>
+        </div>
+      </div>`).join('')}
+    <div class="row-actions">
+      ${later.length ? '<button class="btn" data-act="continue">Continua lo stesso</button>' : ''}
+      <a class="btn ${learned.length ? 'ghost' : 'primary'}" href="${scopeBack(sc)}">Torna indietro</a>
+    </div>
+  `);
+  on('[data-sh]', 'click', async e => {
+    const btn = e.currentTarget;
+    const id = btn.dataset.sh;
+    btn.disabled = true;
+    const s = secById(id);
+    if (s) await markStudiedInStudyHub(s);
+    session.learned = session.learned.filter(x => x !== id);
+    btn.closest('.learned')?.remove();
+  });
+  on('[data-skip]', 'click', e => {
+    session.learned = session.learned.filter(id => id !== e.currentTarget.dataset.skip);
+    e.currentTarget.closest('.learned').remove();
+  });
+  on('[data-act="continue"]', 'click', () => {
+    // studia in anticipo le carte in apprendimento
+    session.current = later[0].id;
+    session.revealed = false;
+    renderStudy();
+  });
+}
+
+/* Eliminazione con traccia per la sincronizzazione */
+async function removeRecords(list) {
+  if (!list.length) return;
+  const now = Date.now();
+  const tombs = list.map(({ store, rec }) => ({
+    id: `${store}:${rec.id}`, store, recId: rec.id,
+    notebookId: store === 'notebooks' ? rec.id : rec.notebookId, updated: now
+  }));
+  await DB.removeMany(list.map(({ store, rec }) => [store, rec.id]));
+  await DB.bulkPut('deleted', tombs);
+  list.forEach(({ store, rec }) => { state[store] = state[store].filter(x => x.id !== rec.id); });
+  updateBadge();
+  scheduleSync();
+}
+
+/* ---------------------------------------------------------------------
    Avvio
    --------------------------------------------------------------------- */
 async function init() {
@@ -1823,15 +2964,38 @@ async function init() {
     await DB.open();
     state.notebooks = await DB.all('notebooks');
     state.sections = await DB.all('sections');
+    state.cards = await DB.all('cards');
   } catch (err) {
     setView(`<div class="empty"><p>Non riesco ad aprire l’archivio del browser: ${esc(err.message || err)}. In navigazione privata potrebbe non essere disponibile.</p></div>`);
     return;
   }
   // Chiede al browser di non cancellare i dati quando lo spazio scarseggia
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
+  // I notebook della v1 non avevano la data di modifica: serve alla sincronizzazione
+  const fix = state.notebooks.filter(n => !n.updated);
+  if (fix.length) { fix.forEach(n => { n.updated = n.created || Date.now(); }); await DB.bulkPut('notebooks', fix); }
+  await Bridge.prune();
   updateBadge();
   window.addEventListener('hashchange', route);
+  // Ricorda da dove apri una flashcard, per tornarci dopo averla modificata
+  $('#view').addEventListener('click', e => {
+    const a = e.target.closest('a[href^="#/card/"]');
+    if (a) state.cardReturn = location.hash;
+  });
+  // StudyHub conferma la ricezione scrivendo nel localStorage condiviso
+  window.addEventListener('storage', e => { if (e.key === Bridge.ACK) Bridge.prune(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      Bridge.prune();
+      updateBadge();
+      if (Sync.configured() && Date.now() - (Sync.meta().lastSync || 0) > 60000) Sync.run({ silent: true });
+    } else if (Sync.timer) {
+      Sync.run({ silent: true }); // modifiche in sospeso: prova a inviarle subito
+    }
+  });
+  window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
   route();
+  if (Sync.configured()) Sync.run({ silent: true });
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') init();

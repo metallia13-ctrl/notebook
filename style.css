@@ -765,3 +765,73 @@ mark.cz {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* =====================================================================
+   v2: flashcard, sessione di studio, selezione, sincronizzazione
+   ===================================================================== */
+
+.nav a span { white-space: nowrap; }
+@media (max-width: 380px) { .nav a { font-size: 0.66rem; } }
+
+/* Contatori stile Anki: nuove, in apprendimento, da ripassare */
+.counts { display: inline-flex; gap: 10px; font-weight: 700; font-variant-numeric: tabular-nums; flex: none; }
+.c-new { color: var(--accent); }
+.c-lrn { color: var(--danger); }
+.c-rev { color: var(--good); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 18px; font-size: 0.82rem; font-weight: 600; }
+.deck-counts { font-size: 1.3rem; margin-bottom: 4px; }
+.pill.lrn { border-color: transparent; background: var(--danger-soft); color: var(--danger); }
+.row.muted { color: var(--muted); }
+
+/* La carta */
+.fcard {
+  padding: 22px 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.fcard .notes { max-width: none; }
+.fcard.study { min-height: 34vh; display: flex; flex-direction: column; justify-content: center; }
+.fcard.study .face:first-child { font-size: 1.15rem; }
+.fsep { border: 0; border-top: 1px dashed var(--line); margin: 18px 0; width: 100%; }
+
+.study-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.study-head h1 { font-size: 1.3rem; overflow-wrap: anywhere; }
+.study-actions { margin-top: 16px; }
+.btn.big { min-height: 54px; font-size: 1rem; }
+.study-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 14px; }
+
+/* Barra che compare quando selezioni testo negli appunti */
+.sel-bar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(78px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 70;
+  box-shadow: var(--shadow);
+  border-radius: 12px;
+  animation: selIn 0.18s ease-out;
+}
+.sel-bar .btn { white-space: nowrap; }
+@keyframes selIn { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@media (min-width: 900px) { .sel-bar { bottom: 28px; left: calc(50% + 110px); } }
+.sel-hint { margin-top: 24px; }
+
+/* Finestra per creare una flashcard */
+.modal.sheet { width: min(100%, 560px); max-height: calc(100vh - 32px); overflow-y: auto; }
+.sheet-sub { margin: -4px 0 14px; font-size: 0.88rem; }
+.sheet .field { margin-bottom: 10px; }
+.sheet [data-cs="ai"] { margin-bottom: 12px; }
+.card-ta { min-height: 96px; }
+
+/* Anteprima delle flashcard da creare in blocco */
+.cand { list-style: none; margin: 12px 0; padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.cand li { padding: 4px 14px; }
+.cand li + li { border-top: 1px solid var(--line); }
+.cand .check > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cand-f { font-weight: 600; overflow-wrap: anywhere; }
+.cand-b { color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+.cand-dup { color: var(--warn); }
+
+.callout.learned { margin: 14px 0; }
+.callout .inline { flex: 1 1 auto; }
