@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '2.0';
+const APP_VERSION = '2.1';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1815,6 +1815,12 @@ function viewSettings() {
       <p class="hint" id="usage"></p>
     </section>
 
+    <section class="block">
+      <h2>App sul telefono</h2>
+      <p class="hint" id="installInfo">${installInfoText()}</p>
+      <button class="btn primary" data-act="install" ${installPrompt ? '' : 'hidden'}>Installa l’app</button>
+    </section>
+
     <p class="version">StudyHub Notebook ${APP_VERSION}</p>
   `);
 
@@ -1832,6 +1838,15 @@ function viewSettings() {
     if (Sync.configured()) Sync.run();
   });
   on('[data-act="sync-now"]', 'click', () => Sync.run());
+  on('[data-act="install"]', 'click', async e => {
+    const btn = e.currentTarget;
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const choice = await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+    btn.hidden = true;
+    if (choice && choice.outcome === 'accepted') toast('App installata');
+  });
   $('#stNew').addEventListener('change', e => {
     const v = Math.min(500, Math.max(0, parseInt(e.target.value, 10) || 0));
     e.target.value = v;
@@ -2954,6 +2969,50 @@ async function removeRecords(list) {
 }
 
 /* ---------------------------------------------------------------------
+   App installabile (PWA) e condivisione verso il Notebook
+   --------------------------------------------------------------------- */
+let installPrompt = null;
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+function installInfoText() {
+  if (isStandalone()) return 'Stai usando l’app installata. Funziona anche offline per leggere e ripassare; AI e sincronizzazione richiedono internet.';
+  if (installPrompt) return 'Installala per aprirla dall’icona come un’app, usarla offline e condividerci testo dalle altre app.';
+  return 'Su Android: apri il menu ⋮ di Chrome e scegli “Installa app” o “Aggiungi a schermata Home”.';
+}
+
+function setupPwa() {
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    navigator.serviceWorker.register('sw.js').catch(() => { /* senza service worker l’app funziona comunque online */ });
+  }
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    installPrompt = e;
+    const btn = $('[data-act="install"]');
+    if (btn) btn.hidden = false;
+    const info = $('#installInfo');
+    if (info) info.textContent = installInfoText();
+  });
+  window.addEventListener('appinstalled', () => { installPrompt = null; toast('App installata'); });
+}
+
+// Testo condiviso da un’altra app (menu Condividi di Android) → modulo Importa
+function takeSharedText() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('text') && !q.has('title') && !q.has('url')) return false;
+  const title = (q.get('title') || '').trim();
+  const text = (q.get('text') || '').trim();
+  const url = (q.get('url') || '').trim();
+  const body = [text, url && !text.includes(url) ? url : ''].filter(Boolean).join('\n\n');
+  history.replaceState(null, '', location.pathname + '#/import');
+  if (!body) return false;
+  importJob = importJob && importJob.running ? importJob : null;
+  importDraft.src = 'text';
+  importDraft.text = importDraft.text ? `${importDraft.text}\n\n${body}` : body;
+  if (title && !importDraft.title) importDraft.title = title;
+  return true;
+}
+
+/* ---------------------------------------------------------------------
    Avvio
    --------------------------------------------------------------------- */
 async function init() {
@@ -2994,7 +3053,10 @@ async function init() {
     }
   });
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
+  setupPwa();
+  const shared = takeSharedText();
   route();
+  if (shared) toast('Testo ricevuto: scegli il notebook e crea le sezioni');
   if (Sync.configured()) Sync.run({ silent: true });
 }
 

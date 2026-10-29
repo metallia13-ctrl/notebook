@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="it" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d131d">
+  <title>Notebook – StudyHub</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;0,7..72,700;1,7..72,400&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <nav class="nav" aria-label="Sezioni principali">
+      <div class="brand">Notebook</div>
+      <a href="#/notebooks" data-nav="notebooks">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>
+        <span>Notebook</span>
+      </a>
+      <a href="#/cards" data-nav="cards">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/></svg>
+        <span>Flashcard</span>
+        <b class="badge" id="cardBadge" hidden></b>
+      </a>
+      <a href="#/review" data-nav="review">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+        <span>Ripasso</span>
+        <b class="badge" id="dueBadge" hidden></b>
+      </a>
+      <a href="#/import" data-nav="import">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>
+        <span>Importa</span>
+      </a>
+      <a href="#/settings" data-nav="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+        <span>Impostazioni</span>
+      </a>
+    </nav>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <div id="modalRoot"></div>
+
+  <!-- Markdown e sicurezza dell'HTML; pdf.js e pdf-lib si caricano solo quando apri un PDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

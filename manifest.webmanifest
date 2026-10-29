@@ -1,0 +1,66 @@
+{
+  "id": "./",
+  "name": "StudyHub Notebook",
+  "short_name": "Notebook",
+  "description": "Appunti di studio, flashcard e active recall collegati a StudyHub.",
+  "lang": "it",
+  "start_url": "./index.html#/review",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0d131d",
+  "theme_color": "#0d131d",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Studia le flashcard",
+      "short_name": "Flashcard",
+      "url": "./index.html#/study/all",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Importa",
+      "short_name": "Importa",
+      "url": "./index.html#/import",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "share_target": {
+    "action": "./index.html",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}
