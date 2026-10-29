@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.3';
+const APP_VERSION = '3.4';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -743,7 +743,7 @@ function applyTheme() {
   html.style.setProperty('--read-size', READ_SIZES[S().readSize] || READ_SIZES.m);
   html.style.setProperty('--read-lh', READ_LH[S().readSpacing] || READ_LH.normal);
   const meta = $('meta[name="theme-color"]');
-  if (meta) meta.content = { dark: '#0d131d', light: '#f6f8fb', sepia: '#f3ead6' }[theme];
+  if (meta) meta.content = { dark: '#0c1020', light: '#f3f5fb', sepia: '#f2e9d5' }[theme];
 }
 
 function statusPill(s) {
@@ -777,6 +777,14 @@ function sectionRow(s, { showNb = false, review = false } = {}) {
         ${statusPill(s)}
       </a>
     </li>`;
+}
+
+// Tessera colorata del notebook: la tinta dipende dall’id, così non cambia se lo rinomini
+function nbTile(nb) {
+  let h = 0;
+  for (const ch of String(nb.id)) h = (h * 31 + ch.codePointAt(0)) % 360;
+  const first = [...(nb.name || '').trim()][0] || '?';
+  return `<span class="nb-tile" style="--h:${h}" aria-hidden="true">${esc(first.toUpperCase())}</span>`;
 }
 
 async function createNotebookFlow() {
@@ -832,11 +840,25 @@ function notFound(what = 'Questa pagina') {
    --------------------------------------------------------------------- */
 function viewNotebooks() {
   const nbs = [...state.notebooks].sort((a, b) => a.created - b.created);
+  const dueSecs = state.sections.filter(isDue).length;
+  const cc = cardCounts(state.cards);
+  const cardsNow = cc.n + cc.l + cc.r;
+  const todayBits = [];
+  if (dueSecs) todayBits.push(`${dueSecs} ${dueSecs === 1 ? 'sezione' : 'sezioni'} da ripassare`);
+  if (cardsNow) todayBits.push(`${cardsNow} flashcard da studiare`);
   setView(`
     <header class="page-head">
       <h1>I tuoi notebook</h1>
       ${nbs.length ? '<button class="btn primary" data-act="new-nb">Nuovo notebook</button>' : ''}
     </header>
+    ${nbs.length && todayBits.length ? `
+      <a class="today" href="${dueSecs ? '#/review' : '#/study/all'}">
+        <span class="today-main">
+          <span class="today-title">Oggi</span>
+          <span class="today-sub">${todayBits.join(', ')}</span>
+        </span>
+        <span class="btn primary sm">${dueSecs ? 'Ripassa' : 'Studia'}</span>
+      </a>` : ''}
     ${nbs.length ? '<input type="search" class="input search" id="globalSearch" placeholder="Cerca in tutti i notebook e le flashcard" aria-label="Cerca in tutti i notebook e le flashcard"><div id="searchOut" hidden></div>' : ''}
     ${nbs.length ? `
       <ul class="list" id="nbList">
@@ -846,6 +868,7 @@ function viewNotebooks() {
           return `
             <li>
               <a class="row" href="#/nb/${nb.id}">
+                ${nbTile(nb)}
                 <span class="row-main">
                   <span class="row-title">${esc(nb.name)}</span>
                   <span class="row-sub">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}</span>
@@ -3033,6 +3056,7 @@ function viewCardsHome() {
         ${nbs.map(nb => {
           const cs = cardsOf(nb.id);
           return `<li><a class="row" href="#/deck/${nb.id}">
+            ${nbTile(nb)}
             <span class="row-main"><span class="row-title">${esc(nb.name)}</span>
             <span class="row-sub">${cs.length ? `${cs.length} flashcard` : 'Nessuna flashcard'}</span></span>
             ${cs.length ? countsHtml(cardCounts(cs)) : ''}
