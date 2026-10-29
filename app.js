@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '2.1';
+const APP_VERSION = '3.0';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -81,7 +81,7 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 2);
+      const req = indexedDB.open(DB_NAME, 3);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('notebooks')) db.createObjectStore('notebooks', { keyPath: 'id' });
@@ -95,6 +95,10 @@ const DB = {
           c.createIndex('sectionId', 'sectionId');
         }
         if (!db.objectStoreNames.contains('deleted')) db.createObjectStore('deleted', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('images')) {
+          const im = db.createObjectStore('images', { keyPath: 'id' });
+          im.createIndex('notebookId', 'notebookId');
+        }
       };
       req.onsuccess = () => {
         this.db = req.result;
@@ -146,7 +150,8 @@ const Settings = {
     aiQuestions: true,
     syncUrl: '',
     syncSecret: '',
-    newPerDay: 20
+    newPerDay: 20,
+    askNote: true
   },
   data: null,
   load() {
@@ -163,7 +168,7 @@ const S = () => Settings.data;
 /* ---------------------------------------------------------------------
    Stato e dati
    --------------------------------------------------------------------- */
-const state = { notebooks: [], sections: [], cards: [], fromReview: false, cardReturn: '' };
+const state = { notebooks: [], sections: [], cards: [], images: [], fromReview: false, cardReturn: '' };
 const drafts = {};              // richiami "pagina bianca" non ancora valutati
 let orderSeq = 0;
 let importJob = null;
@@ -213,8 +218,11 @@ async function saveNotebook(nb) {
 async function deleteSection(id) {
   const sec = secById(id);
   if (!sec) return;
-  await removeRecords([{ store: 'sections', rec: sec }, ...cardsOfSection(id).map(c => ({ store: 'cards', rec: c }))]);
+  const cards = cardsOfSection(id);
+  const refs = [...imageRefs(sec.md), ...cards.flatMap(cardImageRefs)];
+  await removeRecords([{ store: 'sections', rec: sec }, ...cards.map(c => ({ store: 'cards', rec: c }))]);
   delete drafts[id];
+  await removeOrphanImages(refs);
 }
 
 /* ---------------------------------------------------------------------
@@ -259,14 +267,17 @@ const countCloze = md => ((md || '').match(clozeRe()) || []).length;
 const stripCloze = md => (md || '').replace(clozeRe(), '$1');
 
 function renderMd(md) {
-  const src = (md || '').replace(clozeRe(), (m, t) => `<mark class="cz">${t}</mark>`);
+  const src = (md || '')
+    .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`)
+    .replace(clozeRe(), (m, t) => `<mark class="cz">${t}</mark>`);
   let html;
   const mk = window.marked;
   if (mk && (mk.parse || typeof mk === 'function')) {
     html = mk.parse ? mk.parse(src, { gfm: true, breaks: false }) : mk(src);
   } else {
     html = src.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')
-      .replace(/&lt;mark class=&quot;cz&quot;&gt;/g, '<mark class="cz">').replace(/&lt;\/mark&gt;/g, '</mark>');
+      .replace(/&lt;mark class=&quot;cz&quot;&gt;/g, '<mark class="cz">').replace(/&lt;\/mark&gt;/g, '</mark>')
+      .replace(/&lt;img class=&quot;nb-img&quot; data-img=&quot;([a-z0-9]+)&quot;[^&]*?(?:&quot;[^&]*?)*&gt;/g, '<img class="nb-img" data-img="$1" alt="">');
   }
   if (window.DOMPurify) html = window.DOMPurify.sanitize(html);
   return html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
@@ -342,6 +353,7 @@ function parseQuestions(txt) {
   if (cur && cur.q) out.push(cur);
   return out.filter(x => x.q);
 }
+const aiText = md => stripCloze(md || '').replace(IMG_MD_RE, (m, alt) => `[immagine${alt ? `: ${alt}` : ''}]`);
 const serializeQs = qs => (qs || []).map(x => `D: ${x.q}\nR: ${x.a}`).join('\n\n');
 
 function parseAiNotes(raw) {
@@ -510,6 +522,7 @@ function formatSystem({ cloze, questions }) {
     '- Scrivi nella stessa lingua del testo originale.',
     '- Ignora numeri di pagina, intestazioni e piè di pagina ripetuti, didascalie senza contenuto.',
     '- Se ci sono figure o schemi con informazioni utili, descrivine il contenuto in un elenco.',
+    '- Copia senza modifiche, nella stessa posizione, ogni riferimento a immagine nel formato ![testo](img:codice).',
     cloze
       ? '- Racchiudi tra == e == i termini chiave da memorizzare (definizioni, nomi, valori, criteri), es. ==insulina==. Al massimo uno o due per frase o per cella, mai un’intera frase.'
       : '- Non usare la sintassi ==...==.',
@@ -686,12 +699,17 @@ function updateBadge() {
     b.textContent = n;
     b.hidden = n === 0;
   }
+  const cc = cardCounts(state.cards);
   const cb = $('#cardBadge');
   if (cb) {
-    const c = cardCounts(state.cards);
-    const n = c.l + c.r;
+    const n = cc.l + cc.r;
     cb.textContent = n;
     cb.hidden = n === 0;
+  }
+  // Numero sull’icona dell’app installata, dove il sistema lo supporta
+  if (navigator.setAppBadge) {
+    const total = state.sections.filter(isDue).length + cc.l + cc.r;
+    (total ? navigator.setAppBadge(total) : navigator.clearAppBadge()).catch(() => {});
   }
 }
 
@@ -792,8 +810,9 @@ function viewNotebooks() {
       <h1>I tuoi notebook</h1>
       ${nbs.length ? '<button class="btn primary" data-act="new-nb">Nuovo notebook</button>' : ''}
     </header>
+    ${nbs.length ? '<input type="search" class="input search" id="globalSearch" placeholder="Cerca in tutti i notebook e le flashcard" aria-label="Cerca in tutti i notebook e le flashcard"><div id="searchOut" hidden></div>' : ''}
     ${nbs.length ? `
-      <ul class="list">
+      <ul class="list" id="nbList">
         ${nbs.map(nb => {
           const secs = secsOf(nb.id);
           const due = secs.filter(isDue).length;
@@ -818,6 +837,24 @@ function viewNotebooks() {
     const nb = await createNotebookFlow();
     if (nb) go(`#/nb/${nb.id}`);
   });
+  const gs = $('#globalSearch');
+  if (gs) {
+    let t;
+    const run = () => {
+      const q = gs.value.trim().toLowerCase();
+      sessionStorage.setItem('nb-search', gs.value);
+      const out = $('#searchOut');
+      const list = $('#nbList');
+      if (!out || !list) return;
+      if (q.length < 2) { out.hidden = true; list.hidden = false; return; }
+      out.innerHTML = searchResultsHtml(q);
+      out.hidden = false;
+      list.hidden = true;
+    };
+    gs.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 150); });
+    const last = sessionStorage.getItem('nb-search');
+    if (last) { gs.value = last; run(); }
+  }
 }
 
 /* ---------------------------------------------------------------------
@@ -872,11 +909,13 @@ function viewNotebook(id) {
       confirm: 'Elimina', danger: true
     });
     if (!ok) return;
+    const refs = [...secs.flatMap(x => imageRefs(x.md)), ...nbCards.flatMap(cardImageRefs), ...state.images.filter(i => i.notebookId === id).map(i => i.id)];
     await removeRecords([
       { store: 'notebooks', rec: nb },
       ...secs.map(s => ({ store: 'sections', rec: s })),
       ...nbCards.map(c => ({ store: 'cards', rec: c }))
     ]);
+    await removeOrphanImages(refs);
     toast('Notebook eliminato');
     go('#/notebooks');
   });
@@ -1157,7 +1196,7 @@ function modeBlank(sec, body) {
       try {
         const r = await AI.generate({
           system: EVAL_SYSTEM,
-          text: `APPUNTI ORIGINALI:\n${stripCloze(sec.md)}\n\nRICHIAMO DELLO STUDENTE:\n${val}`,
+          text: `APPUNTI ORIGINALI:\n${aiText(sec.md)}\n\nRICHIAMO DELLO STUDENTE:\n${val}`,
           maxTokens: 4000
         });
         $('#evalOut', body).innerHTML = `<article class="notes eval">${renderMd(r.text)}</article>`;
@@ -1193,7 +1232,7 @@ function modeQuiz(sec, body) {
       btn.disabled = true;
       btn.textContent = 'Genero le domande…';
       try {
-        const r = await AI.generate({ system: QUESTIONS_SYSTEM, text: stripCloze(sec.md), maxTokens: 6000 });
+        const r = await AI.generate({ system: QUESTIONS_SYSTEM, text: aiText(sec.md), maxTokens: 6000 });
         const parsed = parseQuestions(r.text);
         if (!parsed.length) throw new Error('Nessuna domanda riconosciuta nella risposta.');
         sec.questions = parsed;
@@ -1263,9 +1302,14 @@ function modeEdit(sec, body) {
       <button class="btn sm" data-wrap="==" title="Nasconde il testo selezionato nella modalità Cloze">Cloze</button>
       <button class="btn sm" data-wrap="**">Grassetto</button>
       <button class="btn sm" data-ins="list">Elenco</button>
+      <button class="btn sm" data-indent="1" title="Sposta la riga a destra (Tab)">Rientra →</button>
+      <button class="btn sm" data-indent="-1" title="Sposta la riga a sinistra (Maiusc+Tab)">← Riduci rientro</button>
       <button class="btn sm" data-ins="table">Tabella</button>
+      <button class="btn sm" data-act="img">Immagine</button>
+      <button class="btn sm" data-act="pdf-fig">Figura da PDF</button>
       ${AI.ready() ? `<button class="btn sm" data-act="ai-format">Riformatta con ${AI.name()}</button>` : ''}
     </div>
+    <p class="hint edit-hint">Negli elenchi, Invio crea una nuova voce e Invio su una voce vuota torna indietro di un livello.</p>
     <label class="sr-only" for="edMd">Testo della sezione in Markdown</label>
     <textarea id="edMd" class="input md-edit" spellcheck="false">${esc(sec.md)}</textarea>
     <details class="preview" id="prevBox"><summary>Anteprima</summary><article class="notes" id="edPrev"></article></details>
@@ -1292,6 +1336,27 @@ function modeEdit(sec, body) {
   const refresh = () => { if (prevBox.open) prev.innerHTML = renderMd(ta.value); };
   prevBox.addEventListener('toggle', refresh);
   ta.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 250); });
+  setupListEditing(ta);
+  on('[data-indent]', 'click', e => { ta.focus(); indentLines(ta, +e.currentTarget.dataset.indent); }, body);
+  on('[data-act="img"]', 'click', async () => {
+    const im = await addImageFromDevice(sec.notebookId);
+    if (im) insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+  }, body);
+  on('[data-act="pdf-fig"]', 'click', async () => {
+    const r = await openPdfCropper(sec.notebookId);
+    if (r) insertAtCursor(ta, `\n\n${imageMd(r.id, r.caption)}\n\n`);
+  }, body);
+  // Immagini incollate (es. uno screenshot su Windows)
+  ta.addEventListener('paste', async e => {
+    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+    if (!item) return;
+    e.preventDefault();
+    try {
+      const im = await saveImage(await compressImage(item.getAsFile()), sec.notebookId);
+      insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+      toast('Immagine incollata');
+    } catch (err) { toast(err.message, 'err'); }
+  });
 
   // Evita che i pulsanti tolgano la selezione dal testo
   $$('.edit-tools button', body).forEach(b => b.addEventListener('pointerdown', e => e.preventDefault()));
@@ -1345,7 +1410,7 @@ function modeEdit(sec, body) {
     btn.disabled = true;
     btn.textContent = 'Genero le domande…';
     try {
-      const r = await AI.generate({ system: QUESTIONS_SYSTEM, text: stripCloze(ta.value), maxTokens: 6000 });
+      const r = await AI.generate({ system: QUESTIONS_SYSTEM, text: aiText(ta.value), maxTokens: 6000 });
       const parsed = parseQuestions(r.text);
       if (!parsed.length) throw new Error('Nessuna domanda riconosciuta nella risposta.');
       const box = $('#edQs', body);
@@ -1359,11 +1424,13 @@ function modeEdit(sec, body) {
   }, body);
 
   on('[data-act="save"]', 'click', async () => {
+    const before = imageRefs(sec.md);
     sec.title = $('#edTitle', body).value.trim() || 'Senza titolo';
     sec.md = ta.value;
     sec.questions = parseQuestions($('#edQs', body).value);
     sec.needsFormat = false;
     await saveSection(sec);
+    await removeOrphanImages(before);
     toast('Sezione salvata');
     go(`#/sec/${sec.id}/read`);
   }, body);
@@ -1781,7 +1848,15 @@ function viewSettings() {
       <h2>Flashcard</h2>
       <label class="field narrow"><span>Nuove flashcard al giorno per notebook</span>
         <input class="input" type="number" id="stNew" min="0" max="500" value="${st.newPerDay}" inputmode="numeric"></label>
+      <label class="check"><input type="checkbox" id="stAskNote" ${st.askNote ? 'checked' : ''}>
+        <span>Quando premi “Di nuovo”, chiedimi una nota sul perché</span></label>
       <p class="hint">Passi di apprendimento come Anki: 1 e 10 minuti, poi 1 giorno; con “Facile” 4 giorni.</p>
+    </section>
+
+    <section class="block">
+      <h2>Immagini</h2>
+      <p class="hint" id="imgInfo"></p>
+      <button class="btn sm" data-act="img-clean" hidden>Elimina le immagini non usate</button>
     </section>
 
     <section class="block">
@@ -1838,6 +1913,26 @@ function viewSettings() {
     if (Sync.configured()) Sync.run();
   });
   on('[data-act="sync-now"]', 'click', () => Sync.run());
+  $('#stAskNote').addEventListener('change', e => { st.askNote = e.target.checked; Settings.save(); });
+  const imgInfo = () => {
+    const used = referencedImages();
+    const unused = state.images.filter(i => !used.has(i.id));
+    const size = state.images.reduce((a, i) => a + (i.size || 0), 0);
+    $('#imgInfo').textContent = state.images.length
+      ? `${state.images.length} ${state.images.length === 1 ? 'immagine' : 'immagini'}, ${fmtMB(size)}.${unused.length ? ` ${unused.length} non ${unused.length === 1 ? 'è usata' : 'sono usate'} in nessuna sezione o flashcard.` : ''}`
+      : 'Nessuna immagine salvata.';
+    $('[data-act="img-clean"]').hidden = !unused.length;
+    return unused;
+  };
+  imgInfo();
+  on('[data-act="img-clean"]', 'click', async () => {
+    const unused = imgInfo();
+    const ok = await modal({ title: 'Eliminare le immagini non usate?', text: `${unused.length} ${unused.length === 1 ? 'immagine' : 'immagini'} non ${unused.length === 1 ? 'compare' : 'compaiono'} in nessuna sezione o flashcard.`, confirm: 'Elimina', danger: true });
+    if (!ok) return;
+    const n = await removeOrphanImages(unused.map(i => i.id));
+    toast(`${n} ${n === 1 ? 'immagine eliminata' : 'immagini eliminate'}`);
+    imgInfo();
+  });
   on('[data-act="install"]', 'click', async e => {
     const btn = e.currentTarget;
     if (!installPrompt) return;
@@ -1902,8 +1997,14 @@ function viewSettings() {
   });
   $('#stTheme').addEventListener('change', e => { st.theme = e.target.value; Settings.save(); applyTheme(); });
 
-  on('[data-act="export"]', 'click', () => {
-    const data = { app: 'studyhub-notebook', version: 2, exported: new Date().toISOString(), notebooks: state.notebooks, sections: state.sections, cards: state.cards };
+  on('[data-act="export"]', 'click', async () => {
+    const images = [];
+    for (const im of state.images) {
+      if (!im.blob) continue;
+      const { blob, ...meta } = im;
+      images.push({ ...meta, data: await blobToBase64(blob) });
+    }
+    const data = { app: 'studyhub-notebook', version: 3, exported: new Date().toISOString(), notebooks: state.notebooks, sections: state.sections, cards: state.cards, images };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -1930,12 +2031,16 @@ function viewSettings() {
       const secs = data.sections.filter(s => s && s.id && s.notebookId).map(s => ({ ...normalizeRecord('sections', s), updated: now }));
       const nbs = data.notebooks.filter(n => n && n.id).map(n => ({ ...n, updated: now }));
       const cards = (Array.isArray(data.cards) ? data.cards : []).filter(c => c && c.id && c.notebookId).map(c => ({ ...normalizeRecord('cards', c), updated: now }));
+      const images = (Array.isArray(data.images) ? data.images : []).filter(i => i && i.id && i.data).map(({ data: b64, ...meta }) => ({ ...meta, blob: base64ToBlob(b64, meta.mime), updated: now }));
+      await DB.bulkPut('images', images);
+      images.forEach(i => forgetImageUrl(i.id));
       await DB.bulkPut('notebooks', nbs);
       await DB.bulkPut('sections', secs);
       await DB.bulkPut('cards', cards);
       state.notebooks = await DB.all('notebooks');
       state.sections = await DB.all('sections');
       state.cards = await DB.all('cards');
+      state.images = await DB.all('images');
       updateBadge();
       scheduleSync();
       toast('Backup importato');
@@ -2100,10 +2205,23 @@ function cardPill(c) {
   return `<span class="pill soft">${esc(fmtDue(localDateStr(new Date(s.due))))}</span>`;
 }
 const plainText = (md, max = 140) => {
-  const t = stripCloze(md || '').replace(/^\*([^*\n]+)\*\n\n/, '$1: ').replace(/[#*_`>|]/g, ' ').replace(/\s+/g, ' ').trim();
+  const t = stripCloze(md || '').replace(IMG_MD_RE, '[immagine]').replace(/^\*([^*\n]+)\*\n\n/, '$1: ').replace(/[#*_`>|]/g, ' ').replace(/\s+/g, ' ').trim();
   return t.length > max ? t.slice(0, max - 1) + '…' : t;
 };
 function cardRow(c) {
+  if (c.type === 'occlusion') {
+    const n = c.io.masks.findIndex(m => m.id === c.io.maskId) + 1;
+    return `
+    <li data-id="${c.id}">
+      <a class="row" href="#/card/${c.id}">
+        <span class="row-main">
+          <span class="row-title">Occlusione, riquadro ${n} di ${c.io.masks.length}</span>
+          <span class="row-sub">${esc(plainText(c.back, 100)) || 'Senza etichetta'}</span>
+        </span>
+        ${cardPill(c)}
+      </a>
+    </li>`;
+  }
   return `
     <li data-id="${c.id}">
       <a class="row" href="#/card/${c.id}">
@@ -2312,11 +2430,23 @@ const Sync = {
       for (let i = 0; i < batches.length; i++) {
         const last = i === batches.length - 1;
         if (batches.length > 1) setSyncStatus(`Invio dei dati ${i + 1} di ${batches.length}…`);
-        const r = await this.post({ secret: S().syncSecret.trim(), action: 'sync', since: m.rev || 0, records: batches[i], pull: last });
+        // le immagini si leggono solo al momento dell’invio, un gruppo alla volta
+        for (const rec of batches[i]) {
+          if (rec.store === 'images' && !rec.deleted && !rec.data) {
+            const im = imageById(rec.id);
+            if (im && im.blob) rec.data = await blobToBase64(im.blob);
+          }
+        }
+        const payload = batches[i].map(({ _est, ...rec }) => rec);
+        const r = await this.post({ secret: S().syncSecret.trim(), action: 'sync', since: m.rev || 0, records: payload, pull: last });
+        batches[i].forEach(rec => { delete rec.data; });
         rev = r.rev;
         if (last) pulled = r.records || [];
       }
-      const changed = await applyRemote(pulled);
+      let changed = await applyRemote(pulled);
+      const imgChanged = await syncImages(pulled.filter(x => x.store === 'images'));
+      if (imgChanged) rehydrateMissing();
+      changed += imgChanged;
       m.rev = rev;
       m.lastPush = startedAt;
       m.lastSync = Date.now();
@@ -2350,6 +2480,15 @@ async function collectChanges(since) {
       }
     }
   }
+  for (const im of state.images) {
+    if (since === 0 || (im.updated || 0) > since) {
+      out.push({
+        store: 'images', id: im.id, updated: im.updated || im.created || 1, notebookId: im.notebookId,
+        meta: { mime: im.mime, w: im.w, h: im.h, size: im.size, created: im.created },
+        _est: Math.ceil((im.size || 0) * 1.4) + 300
+      });
+    }
+  }
   const dels = await DB.all('deleted');
   for (const t of dels) {
     if (since === 0 || t.updated > since) out.push({ store: t.store, id: t.recId, updated: t.updated, notebookId: t.notebookId, deleted: true });
@@ -2361,7 +2500,7 @@ function chunkRecords(records, maxChars) {
   let cur = [];
   let size = 0;
   for (const r of records) {
-    const len = JSON.stringify(r).length;
+    const len = r._est || JSON.stringify(r).length;
     if (cur.length && size + len > maxChars) { out.push(cur); cur = []; size = 0; }
     cur.push(r);
     size += len;
@@ -2405,6 +2544,58 @@ async function applyRemote(records) {
   updateBadge();
   return changed;
 }
+async function syncImages(recs) {
+  if (!recs.length) return 0;
+  const tombs = new Map((await DB.all('deleted')).map(t => [t.id, t]));
+  const need = [];
+  let changed = 0;
+  for (const r of recs) {
+    const local = imageById(r.id);
+    if (r.deleted) {
+      if (local && (local.updated || 0) <= r.updated) {
+        await DB.removeMany([['images', r.id]]);
+        state.images = state.images.filter(i => i.id !== r.id);
+        forgetImageUrl(r.id);
+        changed++;
+      }
+      continue;
+    }
+    const t = tombs.get(`images:${r.id}`);
+    if (t && t.updated >= (r.updated || 0)) continue;
+    if (!local || (r.updated || 0) > (local.updated || 0)) need.push(r);
+  }
+  let queue = need.map(r => r.id);
+  const total = queue.length;
+  while (queue.length) {
+    setSyncStatus(`Scarico le immagini: ${total - queue.length} di ${total}…`);
+    const ids = queue.slice(0, 25);
+    const res = await Sync.post({ secret: S().syncSecret.trim(), action: 'images', ids });
+    const got = res.images || [];
+    const recsIn = got.map(g => {
+      const info = need.find(r => r.id === g.id) || {};
+      const meta = g.meta || info.meta || {};
+      return {
+        id: g.id, notebookId: g.notebookId || info.notebookId, mime: g.mime || meta.mime,
+        w: meta.w, h: meta.h, size: meta.size, created: meta.created || Date.now(),
+        updated: g.updated || info.updated, blob: base64ToBlob(g.data, g.mime || meta.mime)
+      };
+    });
+    if (recsIn.length) {
+      await DB.bulkPut('images', recsIn);
+      recsIn.forEach(rec => {
+        forgetImageUrl(rec.id);
+        const k = state.images.findIndex(x => x.id === rec.id);
+        if (k < 0) state.images.push(rec); else state.images[k] = rec;
+      });
+      changed += recsIn.length;
+    }
+    const done = new Set([...got.map(g => g.id), ...(res.missing || [])]);
+    if (!done.size) break;
+    queue = queue.filter(id => !done.has(id));
+  }
+  return changed;
+}
+
 function refreshAfterSync() {
   const h = location.hash || '#/notebooks';
   if (/^#\/(notebooks|nb\/|review|cards|deck\/)/.test(h) || h === '#/' || h === '') route();
@@ -2441,6 +2632,7 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
           ${AI.ready() ? `<button class="btn sm" data-cs="ai" type="button">Proponi la domanda con ${AI.name()}</button>` : ''}
           <label class="field"><span>Retro, la risposta</span>
             <textarea class="input card-ta" id="csBack" rows="5">${esc(back)}</textarea></label>
+          <button class="btn sm" data-cs="img" type="button">Aggiungi un’immagine</button>
           <div class="modal-actions">
             <button class="btn ghost" data-cs="no" type="button">Annulla</button>
             <button class="btn primary" data-cs="yes" type="button">Crea la flashcard</button>
@@ -2449,6 +2641,14 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
       </div>`;
     const fEl = $('#csFront', root);
     const bEl = $('#csBack', root);
+    let lastField = front ? bEl : fEl;
+    fEl.addEventListener('focus', () => { lastField = fEl; });
+    bEl.addEventListener('focus', () => { lastField = bEl; });
+    $('[data-cs="img"]', root).addEventListener('click', async () => {
+      const field = lastField;
+      const im = await addImageFromDevice(notebookId);
+      if (im) insertAtCursor(field, `\n${imageMd(im.id)}\n`);
+    });
     const close = v => {
       root.innerHTML = '';
       document.removeEventListener('keydown', onKey, true);
@@ -2475,7 +2675,7 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
       aiBtn.disabled = true;
       aiBtn.textContent = 'Scrivo la domanda…';
       try {
-        const ctx = sec ? `ARGOMENTO: ${sec.title}\n\nCONTESTO:\n${stripCloze(sec.md).slice(0, 5000)}\n\n` : '';
+        const ctx = sec ? `ARGOMENTO: ${sec.title}\n\nCONTESTO:\n${aiText(sec.md).slice(0, 5000)}\n\n` : '';
         const r = await AI.generate({ system: FRONT_SYSTEM, text: `${ctx}RISPOSTA DELLA FLASHCARD:\n${bEl.value.trim()}`, maxTokens: 3000 });
         fEl.value = r.text.trim().split('\n').find(l => l.trim())?.replace(/^(D|Domanda)\s*:\s*/i, '').trim() || fEl.value;
       } catch (err) { toast(err.message, 'err'); }
@@ -2546,6 +2746,9 @@ function modeCards(sec, body) {
         ${AI.ready() ? `<button class="btn sm" data-gen="ai">Genera con ${AI.name()}</button>` : ''}
       </div>
       <div id="genOut"></div>` : ''}
+    <h2 class="sub">Image occlusion</h2>
+    <p class="hint">Copri le etichette di uno schema: ogni riquadro diventa una flashcard. Puoi anche toccare un’immagine in Leggi.</p>
+    <div class="row-actions"><button class="btn sm" data-act="io-new">Scegli l’immagine</button></div>
     ${cards.length ? `
       <h2 class="sub">${cards.length} ${cards.length === 1 ? 'flashcard' : 'flashcard'} in questa sezione</h2>
       <ul class="list">${cards.map(cardRow).join('')}</ul>` : ''}
@@ -2553,6 +2756,10 @@ function modeCards(sec, body) {
   on('[data-act="new-card"]', 'click', async () => {
     const c = await openCardSheet({ sectionId: sec.id, notebookId: sec.notebookId });
     if (c) route();
+  }, body);
+  on('[data-act="io-new"]', 'click', async () => {
+    const id = await pickImage(imageRefs(sec.md), sec.notebookId);
+    if (id) openOcclusionEditor({ imageId: id, notebookId: sec.notebookId, sectionId: sec.id });
   }, body);
 
   const showCandidates = list => {
@@ -2586,7 +2793,7 @@ function modeCards(sec, body) {
     btn.disabled = true;
     btn.textContent = 'Genero le flashcard…';
     try {
-      const r = await AI.generate({ system: CARDS_SYSTEM, text: stripCloze(sec.md), maxTokens: 8000 });
+      const r = await AI.generate({ system: CARDS_SYSTEM, text: aiText(sec.md), maxTokens: 8000 });
       showCandidates(parseQuestions(r.text).map(q => ({ front: q.q, back: q.a })).filter(c => c.back));
     } catch (err) { toast(err.message, 'err'); }
     btn.disabled = false;
@@ -2670,24 +2877,32 @@ function viewCardEditor(id) {
   if (!c) return notFound('Questa flashcard');
   const back = state.cardReturn && state.cardReturn !== location.hash ? state.cardReturn : `#/deck/${c.notebookId}`;
   const secs = secsOf(c.notebookId);
+  const isIo = c.type === 'occlusion';
   setView(`
     <a class="back" href="${esc(back)}">Indietro</a>
     <header class="page-head">
       <div>
-        <h1>Flashcard</h1>
+        <h1>${isIo ? 'Flashcard a occlusione' : 'Flashcard'}</h1>
         <p class="lede">${esc(nbById(c.notebookId)?.name || '')}, ${cardStatusText(c)}${c.srs.lapses ? `, sbagliata ${c.srs.lapses} ${c.srs.lapses === 1 ? 'volta' : 'volte'}` : ''}</p>
       </div>
     </header>
     <div class="form">
-      <label class="field"><span>Fronte</span><textarea class="input card-ta" id="ceFront">${esc(c.front)}</textarea></label>
-      <label class="field"><span>Retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>
+      ${isIo ? `
+        <div class="fcard io-preview">${occlusionHtml(c, false)}</div>
+        <div class="row-actions"><button class="btn" data-act="io-edit">Modifica i riquadri</button></div>
+        <label class="field"><span>Etichetta del riquadro, compare sul retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>` : `
+        <label class="field"><span>Fronte</span><textarea class="input card-ta" id="ceFront">${esc(c.front)}</textarea></label>
+        <label class="field"><span>Retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>
+        <div class="row-actions"><button class="btn sm" data-act="img" type="button">Aggiungi un’immagine</button></div>`}
+      <label class="field"><span>Nota sull’errore, compare dopo la risposta</span>
+        <input class="input" id="ceNote" value="${esc(c.note || '')}" placeholder="Es. confondo beta1 e beta2"></label>
       <label class="field"><span>Sezione collegata</span>
         <select class="input" id="ceSec">
           <option value="">Nessuna</option>
           ${secs.map(s => `<option value="${s.id}" ${s.id === c.sectionId ? 'selected' : ''}>${esc(s.title)}</option>`).join('')}
         </select></label>
-      <details class="preview" id="cePrevBox"><summary>Anteprima</summary>
-        <div class="fcard"><div class="notes" id="cePrevF"></div><hr class="fsep"><div class="notes" id="cePrevB"></div></div></details>
+      ${isIo ? '' : `<details class="preview" id="cePrevBox"><summary>Anteprima</summary>
+        <div class="fcard"><div class="notes" id="cePrevF"></div><hr class="fsep"><div class="notes" id="cePrevB"></div></div></details>`}
       <div class="save-bar">
         <button class="btn primary" data-act="save">Salva</button>
         <button class="btn ghost" data-act="suspend">${c.suspended ? 'Riattiva' : 'Sospendi'}</button>
@@ -2698,17 +2913,31 @@ function viewCardEditor(id) {
   `);
   const fEl = $('#ceFront');
   const bEl = $('#ceBack');
+  let lastField = bEl;
+  if (fEl) fEl.addEventListener('focus', () => { lastField = fEl; });
+  bEl.addEventListener('focus', () => { lastField = bEl; });
   const box = $('#cePrevBox');
-  const prev = () => { if (box.open) { $('#cePrevF').innerHTML = renderMd(fEl.value); $('#cePrevB').innerHTML = renderMd(bEl.value); } };
-  box.addEventListener('toggle', prev);
-  fEl.addEventListener('input', prev);
-  bEl.addEventListener('input', prev);
+  if (box) {
+    const prev = () => { if (box.open) { $('#cePrevF').innerHTML = renderMd(fEl.value); $('#cePrevB').innerHTML = renderMd(bEl.value); } };
+    box.addEventListener('toggle', prev);
+    fEl.addEventListener('input', prev);
+    bEl.addEventListener('input', prev);
+  }
+  on('[data-act="img"]', 'click', async () => {
+    const field = lastField;
+    const im = await addImageFromDevice(c.notebookId);
+    if (im) insertAtCursor(field, `\n${imageMd(im.id)}\n`);
+  });
+  on('[data-act="io-edit"]', 'click', () => openOcclusionEditor({ imageId: c.io.imageId, notebookId: c.notebookId, sectionId: c.sectionId, group: c.io.group }));
   on('[data-act="save"]', 'click', async () => {
-    if (!fEl.value.trim()) { toast('Il fronte non può essere vuoto'); fEl.focus(); return; }
-    c.front = fEl.value.trim();
+    if (!isIo && !fEl.value.trim()) { toast('Il fronte non può essere vuoto'); fEl.focus(); return; }
+    const before = cardImageRefs(c);
+    if (!isIo) c.front = fEl.value.trim();
     c.back = bEl.value.trim();
+    c.note = $('#ceNote').value.trim();
     c.sectionId = $('#ceSec').value || null;
     await saveCard(c);
+    await removeOrphanImages(before);
     toast('Flashcard salvata');
     go(back);
   });
@@ -2731,7 +2960,9 @@ function viewCardEditor(id) {
     const ok = await modal({ title: 'Eliminare la flashcard?', text: 'L’operazione non si può annullare.', confirm: 'Elimina', danger: true });
     if (!ok) return;
     if (session && session.current === c.id) session.current = null;
+    const refs = cardImageRefs(c);
     await removeRecords([{ store: 'cards', rec: c }]);
+    await removeOrphanImages(refs);
     toast('Flashcard eliminata');
     go(back);
   });
@@ -2811,6 +3042,7 @@ function resetCleanups() {
 
 function renderStudy() {
   resetCleanups();
+  if (session.notePending) return renderNotePrompt();
   const sc = session.scope;
   let card = session.current ? cardById(session.current) : null;
   if (card && card.suspended) card = null;
@@ -2824,9 +3056,9 @@ function renderStudy() {
       <h1>${esc(scopeTitle(sc))}</h1>
       ${countsHtml(sessionCounts())}
     </header>
-    <article class="fcard study">
-      <div class="notes face">${renderMd(card.front)}</div>
-      ${session.revealed ? `<hr class="fsep"><div class="notes face">${renderMd(card.back)}</div>` : ''}
+    <article class="fcard study ${card.type === 'occlusion' ? 'is-io' : ''}">
+      ${cardFaceHtml(card, session.revealed)}
+      ${session.revealed && card.note ? `<p class="card-note"><strong>La tua nota sull’errore:</strong> ${esc(card.note)}</p>` : ''}
     </article>
     <div class="study-actions">
       ${session.revealed ? `
@@ -2885,10 +3117,46 @@ async function answerCard(grade) {
     }
     session.current = null;
     session.revealed = false;
+    if (grade === 'again' && S().askNote) session.notePending = c.id;
   } finally { answering = false; }
   renderStudy();
 }
+function renderNotePrompt() {
+  const c = cardById(session.notePending);
+  if (!c) { session.notePending = null; return renderStudy(); }
+  setView(`
+    <a class="back" href="${scopeBack(session.scope)}">${esc(session.scope === 'all' ? 'Flashcard' : scopeTitle(session.scope))}</a>
+    <header class="page-head"><div><h1>Perché l’hai sbagliata?</h1>
+      <p class="lede">Una riga basta: la ritroverai dopo la risposta, al prossimo ripasso.</p></div></header>
+    <div class="fcard note-card">${c.type === 'occlusion' ? occlusionHtml(c, true) : `<div class="notes">${renderMd(c.front)}</div>`}</div>
+    <label class="sr-only" for="noteIn">Nota sull’errore</label>
+    <input class="input note-in" id="noteIn" value="${esc(c.note || '')}" placeholder="Es. confondo beta1 e beta2" autocomplete="off">
+    <div class="row-actions">
+      <button class="btn primary" data-act="note-save">Salva la nota</button>
+      <button class="btn ghost" data-act="note-skip">Salta</button>
+    </div>
+    <p class="hint">Puoi disattivare questa domanda in Impostazioni.</p>
+  `);
+  const input = $('#noteIn');
+  const finish = async save => {
+    session.notePending = null;
+    if (save) {
+      const v = input.value.trim();
+      if (v !== (c.note || '')) { c.note = v; await saveCard(c); }
+    }
+    renderStudy();
+  };
+  on('[data-act="note-save"]', 'click', () => finish(true));
+  on('[data-act="note-skip"]', 'click', () => finish(false));
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  setTimeout(() => input.focus({ preventScroll: true }), 50);
+}
+
 async function undoAnswer() {
+  if (session.notePending) session.notePending = null;
   const last = session.undo.pop();
   if (!last) return;
   const c = cardById(last.id);
@@ -2969,6 +3237,607 @@ async function removeRecords(list) {
 }
 
 /* ---------------------------------------------------------------------
+   Immagini: salvate nel database del browser, compresse, sincronizzate a parte
+   Nel testo: ![didascalia](img:ID)
+   --------------------------------------------------------------------- */
+const IMG_MD_RE = /!\[([^\]\n]*)\]\(img:([a-z0-9]+)\)/g;
+const IMG_REF_RE = /\(img:([a-z0-9]+)\)/g;
+const imgUrls = new Map();
+const imageById = id => state.images.find(i => i.id === id);
+const MISSING_IMG = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="120"><rect width="100%" height="100%" rx="10" fill="#1b2535"/><text x="50%" y="54%" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#8b9ab0">Immagine non ancora scaricata</text></svg>');
+
+function imageUrl(id) {
+  if (imgUrls.has(id)) return imgUrls.get(id);
+  const im = imageById(id);
+  if (!im || !im.blob) return null;
+  const u = URL.createObjectURL(im.blob);
+  imgUrls.set(id, u);
+  return u;
+}
+function forgetImageUrl(id) {
+  const u = imgUrls.get(id);
+  if (u) { URL.revokeObjectURL(u); imgUrls.delete(id); }
+}
+function hydrateImages(root) {
+  if (!root || !root.querySelectorAll) return;
+  const list = root.matches && root.matches('img[data-img]') ? [root] : $$('img[data-img]', root);
+  list.forEach(img => {
+    if (img.dataset.state === 'ok') return;
+    const u = imageUrl(img.dataset.img);
+    if (u) { img.src = u; img.dataset.state = 'ok'; }
+    else if (img.dataset.state !== 'missing') { img.src = MISSING_IMG; img.dataset.state = 'missing'; }
+  });
+}
+function rehydrateMissing() {
+  $$('img[data-img][data-state="missing"]').forEach(img => { img.dataset.state = ''; hydrateImages(img); });
+}
+const imageRefs = text => { const out = []; let m; const re = new RegExp(IMG_REF_RE.source, 'g'); while ((m = re.exec(text || ''))) out.push(m[1]); return out; };
+const cardImageRefs = c => [...imageRefs(c.front), ...imageRefs(c.back), ...(c.io ? [c.io.imageId] : [])];
+function referencedImages() {
+  const set = new Set();
+  state.sections.forEach(s => imageRefs(s.md).forEach(id => set.add(id)));
+  state.cards.forEach(c => cardImageRefs(c).forEach(id => set.add(id)));
+  return set;
+}
+async function removeOrphanImages(candidates) {
+  const used = referencedImages();
+  const gone = [...new Set(candidates)].filter(id => !used.has(id)).map(imageById).filter(Boolean);
+  if (!gone.length) return 0;
+  gone.forEach(im => forgetImageUrl(im.id));
+  await removeRecords(gone.map(im => ({ store: 'images', rec: im })));
+  return gone.length;
+}
+
+async function compressImage(blob, { max = 1600, quality = 0.82 } = {}) {
+  let bmp;
+  try { bmp = await createImageBitmap(blob); }
+  catch { throw new Error('Formato di immagine non supportato.'); }
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * k));
+  const h = Math.max(1, Math.round(bmp.height * k));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(bmp, 0, 0, w, h);
+  if (bmp.close) bmp.close();
+  return canvasToImage(c, quality);
+}
+async function canvasToImage(canvas, quality = 0.85) {
+  let out = await new Promise(r => canvas.toBlob(r, 'image/webp', quality));
+  if (!out || out.type !== 'image/webp') out = await new Promise(r => canvas.toBlob(r, 'image/jpeg', quality));
+  if (!out) throw new Error('Non riesco a elaborare l’immagine.');
+  return { blob: out, w: canvas.width, h: canvas.height };
+}
+async function saveImage({ blob, w, h }, notebookId) {
+  const now = Date.now();
+  const im = { id: uid(), notebookId, mime: blob.type, w, h, size: blob.size, blob, created: now, updated: now };
+  await DB.put('images', im);
+  state.images.push(im);
+  scheduleSync();
+  return im;
+}
+function chooseImageFile() {
+  return new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.display = 'none';
+    input.addEventListener('change', () => { resolve(input.files[0] || null); input.remove(); });
+    input.addEventListener('cancel', () => { resolve(null); input.remove(); });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+async function addImageFromDevice(notebookId) {
+  const file = await chooseImageFile();
+  if (!file) return null;
+  try {
+    const im = await saveImage(await compressImage(file), notebookId);
+    toast('Immagine aggiunta');
+    return im;
+  } catch (err) { toast(err.message, 'err'); return null; }
+}
+const imageMd = (id, alt = '') => `![${alt}](img:${id})`;
+
+function insertAtCursor(ta, text) {
+  // se non hai ancora toccato il campo, aggiungo in fondo invece che all’inizio
+  if (!ta.dataset.touched) ta.setSelectionRange(ta.value.length, ta.value.length);
+  const s = ta.selectionStart ?? ta.value.length;
+  const e = ta.selectionEnd ?? s;
+  ta.focus();
+  ta.setRangeText(text, s, e, 'end');
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+function base64ToBlob(b64, mime) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || 'image/webp' });
+}
+const fmtMB = bytes => `${(bytes / 1048576).toFixed(1).replace('.', ',')} MB`;
+
+/* Immagine a schermo intero, con la scorciatoia per l’image occlusion */
+function currentSectionContext() {
+  const m = location.hash.match(/^#\/sec\/([^/]+)/);
+  const sec = m ? secById(m[1]) : null;
+  return sec ? { notebookId: sec.notebookId, sectionId: sec.id } : null;
+}
+function openLightbox(imageId) {
+  if (!imageById(imageId)) return;
+  const ctx = currentSectionContext();
+  const root = $('#modalRoot');
+  root.innerHTML = `
+    <div class="overlay full lightbox" role="dialog" aria-modal="true" aria-label="Immagine">
+      <div class="lb-img"><img class="nb-img" data-img="${imageId}" alt=""></div>
+      <div class="lb-actions">
+        ${ctx ? '<button class="btn" data-lb="io">Crea image occlusion</button>' : ''}
+        <button class="btn primary" data-lb="close">Chiudi</button>
+      </div>
+    </div>`;
+  const close = () => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  $('[data-lb="close"]', root).onclick = close;
+  const io = $('[data-lb="io"]', root);
+  if (io) io.onclick = () => { close(); openOcclusionEditor({ imageId, ...ctx }); };
+}
+
+/* Scelta di un’immagine della sezione o caricamento di una nuova */
+function pickImage(candidates, notebookId) {
+  return new Promise(resolve => {
+    const ids = [...new Set(candidates)].filter(id => imageById(id));
+    if (!ids.length) { addImageFromDevice(notebookId).then(im => resolve(im ? im.id : null)); return; }
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="overlay">
+        <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="pkTitle">
+          <h2 id="pkTitle">Scegli l’immagine</h2>
+          <div class="pick-grid">
+            ${ids.map(id => `<button class="pick" data-pick="${id}" type="button"><img class="nb-img" data-img="${id}" alt="Immagine della sezione"></button>`).join('')}
+          </div>
+          <div class="modal-actions">
+            <button class="btn ghost" data-pk="no" type="button">Annulla</button>
+            <button class="btn" data-pk="new" type="button">Carica un’altra immagine</button>
+          </div>
+        </div>
+      </div>`;
+    const close = v => { root.innerHTML = ''; resolve(v); };
+    $$('[data-pick]', root).forEach(b => b.addEventListener('click', () => close(b.dataset.pick)));
+    $('[data-pk="no"]', root).onclick = () => close(null);
+    $('[data-pk="new"]', root).onclick = async () => { root.innerHTML = ''; const im = await addImageFromDevice(notebookId); resolve(im ? im.id : null); };
+  });
+}
+
+/* Disegno di riquadri con dito o mouse, in coordinate relative (0-1) */
+function rectDrawing(stage, { canDraw, onDraft, onDone }) {
+  let start = null;
+  let pid = null;
+  const rel = e => {
+    const r = stage.getBoundingClientRect();
+    return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+  };
+  const box = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+  stage.addEventListener('pointerdown', e => {
+    if (!canDraw() || e.target.closest('.io-mask')) return;
+    e.preventDefault();
+    start = rel(e);
+    pid = e.pointerId;
+    try { stage.setPointerCapture(pid); } catch { /* ignora */ }
+  });
+  stage.addEventListener('pointermove', e => { if (start && e.pointerId === pid) onDraft(box(start, rel(e))); });
+  stage.addEventListener('pointerup', e => {
+    if (!start || e.pointerId !== pid) return;
+    const b = box(start, rel(e));
+    start = null;
+    onDraft(null);
+    if (b.w > 0.015 && b.h > 0.01) onDone(b);
+  });
+  stage.addEventListener('pointercancel', () => { start = null; onDraft(null); });
+}
+const posStyle = m => `left:${(m.x * 100).toFixed(3)}%;top:${(m.y * 100).toFixed(3)}%;width:${(m.w * 100).toFixed(3)}%;height:${(m.h * 100).toFixed(3)}%`;
+
+/* Image occlusion: ogni riquadro diventa una flashcard ("nascondi tutto, indovina uno") */
+function occlusionHtml(card, revealed) {
+  const io = card.io;
+  const im = imageById(io.imageId);
+  const masks = io.masks.map(m => {
+    const target = m.id === io.maskId;
+    if (target && revealed) return `<div class="io-mask io-open" style="${posStyle(m)}"></div>`;
+    return `<div class="io-mask ${target ? 'io-target' : ''}" style="${posStyle(m)}">${target ? '<span>?</span>' : ''}</div>`;
+  }).join('');
+  return `<div class="io" ${im ? `style="aspect-ratio:${im.w}/${im.h}"` : ''}><img class="nb-img" data-img="${io.imageId}" alt="Immagine con riquadri" draggable="false">${masks}</div>`;
+}
+function cardFaceHtml(card, revealed) {
+  if (card.type === 'occlusion') {
+    return occlusionHtml(card, revealed) + (revealed && card.back.trim() ? `<div class="notes face io-label">${renderMd(card.back)}</div>` : '');
+  }
+  return `<div class="notes face">${renderMd(card.front)}</div>${revealed ? `<hr class="fsep"><div class="notes face">${renderMd(card.back)}</div>` : ''}`;
+}
+
+function openOcclusionEditor({ imageId, notebookId, sectionId = null, group = null }) {
+  return new Promise(resolve => {
+    const im = imageById(imageId);
+    if (!im) { toast('Immagine non disponibile su questo dispositivo', 'err'); resolve(false); return; }
+    const groupCards = group ? state.cards.filter(c => c.io && c.io.group === group) : [];
+    let masks = group && groupCards.length
+      ? groupCards[0].io.masks.map(m => ({ ...m, label: groupCards.find(c => c.io.maskId === m.id)?.back || '' }))
+      : [];
+    let sel = null;
+    let mode = 'draw';
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="overlay full">
+        <div class="io-editor" role="dialog" aria-modal="true" aria-labelledby="ioTitle">
+          <header class="io-head">
+            <h2 id="ioTitle">Image occlusion</h2>
+            <p class="hint">Trascina sull’immagine per coprire ogni etichetta da ricordare: ogni riquadro diventa una flashcard. Tocca un riquadro per selezionarlo.</p>
+            <div class="seg sm" role="tablist" aria-label="Modalità">
+              <button role="tab" data-mode="draw" aria-selected="true">Disegna</button>
+              <button role="tab" data-mode="scroll" aria-selected="false">Scorri</button>
+            </div>
+          </header>
+          <div class="io-body">
+            <div class="io io-stage drawing" id="ioStage" style="aspect-ratio:${im.w}/${im.h}">
+              <img class="nb-img" data-img="${im.id}" alt="" draggable="false">
+              <div id="ioMasks"></div>
+              <div class="io-draft" id="ioDraft" hidden></div>
+            </div>
+          </div>
+          <div class="io-sel" id="ioSel" hidden>
+            <label class="field"><span>Etichetta del riquadro, facoltativa: compare sul retro</span>
+              <input class="input" id="ioLabel" autocomplete="off"></label>
+            <button class="btn sm ghost danger" data-io="del" type="button">Elimina il riquadro</button>
+          </div>
+          <footer class="io-foot">
+            <span class="hint" id="ioCount"></span>
+            <button class="btn ghost" data-io="cancel" type="button">Annulla</button>
+            <button class="btn primary" data-io="save" type="button">${group ? 'Salva' : 'Crea le flashcard'}</button>
+          </footer>
+        </div>
+      </div>`;
+    const stage = $('#ioStage', root);
+    const draft = $('#ioDraft', root);
+    const selBox = $('#ioSel', root);
+    const label = $('#ioLabel', root);
+    const draw = () => {
+      $('#ioMasks', root).innerHTML = masks.map((m, i) =>
+        `<div class="io-mask edit ${sel === m.id ? 'sel' : ''}" data-m="${m.id}" style="${posStyle(m)}"><span>${i + 1}</span></div>`).join('');
+      $('#ioCount', root).textContent = masks.length ? `${masks.length} ${masks.length === 1 ? 'riquadro' : 'riquadri'}` : '';
+      const m = masks.find(x => x.id === sel);
+      selBox.hidden = !m;
+      if (m && document.activeElement !== label) label.value = m.label || '';
+    };
+    stage.addEventListener('pointerdown', e => {
+      const el = e.target.closest('.io-mask');
+      if (!el) { if (sel) { sel = null; draw(); } return; }
+      e.preventDefault();
+      sel = el.dataset.m;
+      draw();
+    });
+    rectDrawing(stage, {
+      canDraw: () => mode === 'draw',
+      onDraft: b => { draft.hidden = !b; if (b) draft.setAttribute('style', posStyle(b)); },
+      onDone: b => { const m = { id: uid(), ...b, label: '' }; masks.push(m); sel = m.id; draw(); }
+    });
+    label.addEventListener('input', () => { const m = masks.find(x => x.id === sel); if (m) m.label = label.value; });
+    $$('[data-mode]', root).forEach(b => b.addEventListener('click', () => {
+      mode = b.dataset.mode;
+      $$('[data-mode]', root).forEach(x => x.setAttribute('aria-selected', x.dataset.mode === mode));
+      stage.classList.toggle('drawing', mode === 'draw');
+    }));
+    const close = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(false); }
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && sel && document.activeElement !== label) {
+        e.preventDefault(); masks = masks.filter(m => m.id !== sel); sel = null; draw();
+      } else e.stopPropagation();
+    };
+    document.addEventListener('keydown', onKey, true);
+    $('[data-io="del"]', root).onclick = () => { masks = masks.filter(m => m.id !== sel); sel = null; draw(); };
+    $('[data-io="cancel"]', root).onclick = () => close(false);
+    $('[data-io="save"]', root).onclick = async () => {
+      if (!masks.length) { toast('Disegna almeno un riquadro'); return; }
+      const geo = masks.map(m => ({ id: m.id, x: +m.x.toFixed(4), y: +m.y.toFixed(4), w: +m.w.toFixed(4), h: +m.h.toFixed(4) }));
+      if (!group || !groupCards.length) {
+        const g = uid();
+        const cards = masks.map(m => {
+          const c = newCard(notebookId, { front: '', back: (m.label || '').trim(), sectionId });
+          c.type = 'occlusion';
+          c.io = { group: g, imageId, masks: geo, maskId: m.id };
+          return c;
+        });
+        await saveCards(cards);
+        toast(`${cards.length} flashcard create`);
+      } else {
+        const keep = [];
+        for (const m of masks) {
+          let c = groupCards.find(x => x.io.maskId === m.id);
+          if (!c) { c = newCard(notebookId, { front: '', back: '', sectionId: groupCards[0].sectionId }); c.type = 'occlusion'; }
+          c.io = { group, imageId, masks: geo, maskId: m.id };
+          c.back = (m.label || '').trim();
+          keep.push(c);
+        }
+        await saveCards(keep);
+        const removed = groupCards.filter(c => !masks.some(m => m.id === c.io.maskId));
+        if (removed.length) await removeRecords(removed.map(c => ({ store: 'cards', rec: c })));
+        toast('Riquadri salvati');
+      }
+      close(true);
+      route();
+    };
+    draw();
+  });
+}
+
+/* Ritaglio di una figura da una pagina di PDF */
+function openPdfCropper(notebookId) {
+  return new Promise(resolve => {
+    const root = $('#modalRoot');
+    let pdf = importDraft.pdf;
+    let pageNo = 1;
+    let rect = null;
+    let task = null;
+    root.innerHTML = `
+      <div class="overlay full">
+        <div class="io-editor" role="dialog" aria-modal="true" aria-labelledby="cpTitle">
+          <header class="io-head">
+            <h2 id="cpTitle">Figura da un PDF</h2>
+            <label class="file-drop slim"><input type="file" id="cpFile" accept="application/pdf,.pdf">
+              <span id="cpFileLabel">${pdf ? `${esc(pdf.name)}, tocca per cambiarlo` : 'Scegli il PDF'}</span></label>
+            <div class="cp-nav" id="cpNav" ${pdf ? '' : 'hidden'}>
+              <button class="btn sm" data-cp="prev" type="button" aria-label="Pagina precedente">‹</button>
+              <label>Pagina <input class="input page-in" type="number" id="cpPage" min="1" value="1" inputmode="numeric"> di <span id="cpTotal">${pdf ? pdf.pages : ''}</span></label>
+              <button class="btn sm" data-cp="next" type="button" aria-label="Pagina successiva">›</button>
+            </div>
+            <p class="hint">Trascina sulla pagina per scegliere la parte da ritagliare.</p>
+          </header>
+          <div class="io-body">
+            <div class="io-stage drawing crop" id="cpStage">
+              <canvas id="cpCanvas"></canvas>
+              <div class="io-draft" id="cpDraft" hidden></div>
+              <div class="crop-rect" id="cpRect" hidden></div>
+            </div>
+          </div>
+          <footer class="io-foot">
+            <span class="hint" id="cpMsg"></span>
+            <button class="btn ghost" data-cp="cancel" type="button">Annulla</button>
+            <button class="btn primary" data-cp="ok" type="button" disabled>Inserisci la figura</button>
+          </footer>
+        </div>
+      </div>`;
+    const canvas = $('#cpCanvas', root);
+    const stage = $('#cpStage', root);
+    const okBtn = $('[data-cp="ok"]', root);
+    const msg = $('#cpMsg', root);
+    const render = async () => {
+      if (!pdf) return;
+      pageNo = Math.min(pdf.pages, Math.max(1, pageNo));
+      $('#cpPage', root).value = pageNo;
+      rect = null;
+      $('#cpRect', root).hidden = true;
+      okBtn.disabled = true;
+      try {
+        if (task) { task.cancel(); task = null; }
+        const page = await pdf.doc.getPage(pageNo);
+        const base = page.getViewport({ scale: 1 });
+        const cssW = Math.max(280, stage.clientWidth || 360);
+        const vp = page.getViewport({ scale: (cssW * (window.devicePixelRatio || 1)) / base.width });
+        canvas.width = Math.round(vp.width);
+        canvas.height = Math.round(vp.height);
+        task = page.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
+        await task.promise;
+        task = null;
+      } catch (err) {
+        if (err && err.name === 'RenderingCancelledException') return;
+        msg.textContent = 'Non riesco a mostrare questa pagina.';
+      }
+    };
+    $('#cpFile', root).addEventListener('change', async e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      $('#cpFileLabel', root).textContent = 'Apro il PDF…';
+      try {
+        pdf = await openPdf(f);
+        importDraft.pdf = pdf;
+        $('#cpFileLabel', root).textContent = `${f.name}, tocca per cambiarlo`;
+        $('#cpTotal', root).textContent = pdf.pages;
+        $('#cpNav', root).hidden = false;
+        pageNo = 1;
+        render();
+      } catch (err) { $('#cpFileLabel', root).textContent = 'Scegli il PDF'; toast(err.message, 'err'); }
+    });
+    $('[data-cp="prev"]', root).onclick = () => { pageNo--; render(); };
+    $('[data-cp="next"]', root).onclick = () => { pageNo++; render(); };
+    $('#cpPage', root).addEventListener('change', e => { pageNo = parseInt(e.target.value, 10) || 1; render(); });
+    rectDrawing(stage, {
+      canDraw: () => !!pdf,
+      onDraft: b => { const d = $('#cpDraft', root); d.hidden = !b; if (b) d.setAttribute('style', posStyle(b)); },
+      onDone: b => { rect = b; const r = $('#cpRect', root); r.hidden = false; r.setAttribute('style', posStyle(b)); okBtn.disabled = false; }
+    });
+    const close = v => { if (task) task.cancel(); root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } else e.stopPropagation(); };
+    document.addEventListener('keydown', onKey, true);
+    $('[data-cp="cancel"]', root).onclick = () => close(null);
+    okBtn.onclick = async () => {
+      if (!pdf || !rect) return;
+      okBtn.disabled = true;
+      msg.textContent = 'Ritaglio…';
+      try {
+        const page = await pdf.doc.getPage(pageNo);
+        const base = page.getViewport({ scale: 1 });
+        const scale = Math.min(4, Math.max(1.5, 1600 / Math.max(1, rect.w * base.width)));
+        const vp = page.getViewport({ scale });
+        const full = document.createElement('canvas');
+        full.width = Math.round(vp.width);
+        full.height = Math.round(vp.height);
+        const fctx = full.getContext('2d');
+        fctx.fillStyle = '#ffffff';
+        fctx.fillRect(0, 0, full.width, full.height);
+        await page.render({ canvasContext: fctx, viewport: vp }).promise;
+        const sx = Math.round(rect.x * full.width), sy = Math.round(rect.y * full.height);
+        const sw = Math.max(1, Math.round(rect.w * full.width)), sh = Math.max(1, Math.round(rect.h * full.height));
+        const out = document.createElement('canvas');
+        const k = Math.min(1, 1600 / Math.max(sw, sh));
+        out.width = Math.round(sw * k);
+        out.height = Math.round(sh * k);
+        out.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, out.width, out.height);
+        const im = await saveImage(await canvasToImage(out, 0.9), notebookId);
+        toast('Figura aggiunta');
+        close({ id: im.id, caption: `${pdf.base}, pagina ${pageNo}` });
+      } catch (err) {
+        msg.textContent = '';
+        okBtn.disabled = false;
+        toast('Ritaglio non riuscito: ' + err.message, 'err');
+      }
+    };
+    if (pdf) requestAnimationFrame(render);
+  });
+}
+
+/* ---------------------------------------------------------------------
+   Elenchi puntati in Modifica: rientro, riduzione, continuazione con Invio
+   --------------------------------------------------------------------- */
+const LIST_RE = /^(\s*)([-*+]|\d+[.)])(\s+)(.*)$/;
+function lineStart(v, pos) { return v.lastIndexOf('\n', pos - 1) + 1; }
+function lineEnd(v, pos) { const e = v.indexOf('\n', pos); return e < 0 ? v.length : e; }
+function indentLines(ta, dir) {
+  const v = ta.value;
+  const s = ta.selectionStart;
+  const e = ta.selectionEnd;
+  const ls = lineStart(v, s);
+  const endPos = e > s && v[e - 1] === '\n' ? e - 1 : e;
+  const le = lineEnd(v, Math.max(endPos, s));
+  const prevLine = ls > 0 ? v.slice(lineStart(v, ls - 1), ls - 1) : '';
+  const prevOrdered = /^\s*\d+[.)]\s/.test(prevLine);
+  const lines = v.slice(ls, le).split('\n');
+  let first = 0;
+  let total = 0;
+  const out = lines.map((l, i) => {
+    const lead = l.match(/^ */)[0].length;
+    if (dir > 0) {
+      if (!l.trim()) return l;
+      const step = i === 0 && prevOrdered ? 3 : 2;
+      if (i === 0) first = step;
+      total += step;
+      return ' '.repeat(step) + l;
+    }
+    const step = lead >= 3 && lead % 3 === 0 && lead % 2 !== 0 ? 3 : 2;
+    const rm = Math.min(lead, step);
+    if (i === 0) first = -rm;
+    total -= rm;
+    return l.slice(rm);
+  });
+  ta.setRangeText(out.join('\n'), ls, le, 'preserve');
+  const ns = Math.max(ls, s + first);
+  ta.setSelectionRange(ns, s === e ? ns : Math.max(ns, e + total));
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function setupListEditing(ta) {
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey) { e.preventDefault(); indentLines(ta, e.shiftKey ? -1 : 1); }
+  });
+  // "beforeinput" funziona anche con la tastiera di Android
+  ta.addEventListener('beforeinput', e => {
+    if (e.inputType !== 'insertLineBreak' && e.inputType !== 'insertParagraph') return;
+    const { selectionStart: s, selectionEnd: en, value: v } = ta;
+    if (s !== en) return;
+    const ls = lineStart(v, s);
+    const le = lineEnd(v, s);
+    const m = v.slice(ls, s).match(LIST_RE);
+    const full = v.slice(ls, le).match(LIST_RE);
+    if (!m || !full) return;
+    e.preventDefault();
+    if (!full[4].trim()) {
+      // voce vuota: un livello indietro, o fuori dall’elenco se è già al primo livello
+      if (full[1].length) indentLines(ta, -1);
+      // riga vuota in più: senza, Markdown attaccherebbe il testo seguente all’ultima voce
+      else { ta.setRangeText('\n', ls, le, 'end'); ta.dispatchEvent(new Event('input', { bubbles: true })); }
+      return;
+    }
+    let marker = m[2];
+    const num = marker.match(/^(\d+)([.)])$/);
+    if (num) marker = `${parseInt(num[1], 10) + 1}${num[2]}`;
+    ta.setRangeText(`\n${m[1]}${marker}${m[3]}`, s, s, 'end');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/* ---------------------------------------------------------------------
+   Ricerca in tutti i notebook
+   --------------------------------------------------------------------- */
+function searchSnippet(text, q) {
+  const t = plainText(text, 1e9);
+  const i = t.toLowerCase().indexOf(q);
+  if (i < 0) return esc(t.slice(0, 120)) + (t.length > 120 ? '…' : '');
+  const a = Math.max(0, i - 60);
+  const b = Math.min(t.length, i + q.length + 80);
+  return `${a > 0 ? '…' : ''}${esc(t.slice(a, i))}<mark class="hit">${esc(t.slice(i, i + q.length))}</mark>${esc(t.slice(i + q.length, b))}${b < t.length ? '…' : ''}`;
+}
+function searchResultsHtml(q) {
+  const secs = state.sections.filter(s => (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q)).slice(0, 60);
+  const cards = state.cards.filter(c => (c.front + '\n' + c.back).toLowerCase().includes(q)).slice(0, 60);
+  if (!secs.length && !cards.length) return '<p class="hint">Nessun risultato.</p>';
+  return `
+    ${secs.length ? `<h2 class="sub">Sezioni</h2><ul class="list">${secs.map(s => `
+      <li><a class="row" href="#/sec/${s.id}/read"><span class="row-main">
+        <span class="row-title">${esc(s.title)}</span>
+        <span class="row-sub">${esc(nbById(s.notebookId)?.name || '')}: ${searchSnippet(s.md, q)}</span>
+      </span></a></li>`).join('')}</ul>` : ''}
+    ${cards.length ? `<h2 class="sub">Flashcard</h2><ul class="list">${cards.map(c => `
+      <li><a class="row" href="#/card/${c.id}"><span class="row-main">
+        <span class="row-title">${c.type === 'occlusion' ? 'Image occlusion' : searchSnippet(c.front, q)}</span>
+        <span class="row-sub">${searchSnippet(c.back, q) || '&nbsp;'}</span>
+      </span></a></li>`).join('')}</ul>` : ''}`;
+}
+
+/* ---------------------------------------------------------------------
+   PDF o testo condivisi da altre app (menu Condividi di Android)
+   --------------------------------------------------------------------- */
+async function takeSharedFile() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('shared') || !('caches' in window)) return false;
+  history.replaceState(null, '', location.pathname + '#/import');
+  try {
+    const cache = await caches.open('nb-share');
+    const scope = new URL('./', location.href).href;
+    const metaRes = await cache.match(scope + '__share/meta');
+    if (!metaRes) return false;
+    const meta = await metaRes.json();
+    const fileRes = meta.file ? await cache.match(scope + '__share/file') : null;
+    await cache.delete(scope + '__share/meta');
+    await cache.delete(scope + '__share/file');
+    importJob = importJob && importJob.running ? importJob : null;
+    if (fileRes) {
+      const blob = await fileRes.blob();
+      const file = new File([blob], meta.file.name || 'condiviso.pdf', { type: meta.file.type || 'application/pdf' });
+      importDraft.src = 'pdf';
+      importDraft.pdf = await openPdf(file);
+      return 'pdf';
+    }
+    const body = [meta.text, meta.url && !String(meta.text || '').includes(meta.url) ? meta.url : ''].filter(Boolean).join('\n\n').trim();
+    if (!body) return false;
+    importDraft.src = 'text';
+    importDraft.text = importDraft.text ? `${importDraft.text}\n\n${body}` : body;
+    if (meta.title && !importDraft.title) importDraft.title = meta.title;
+    return 'text';
+  } catch (err) {
+    toast('Non riesco a leggere il file condiviso: ' + err.message, 'err');
+    return false;
+  }
+}
+
+/* ---------------------------------------------------------------------
    App installabile (PWA) e condivisione verso il Notebook
    --------------------------------------------------------------------- */
 let installPrompt = null;
@@ -3024,6 +3893,7 @@ async function init() {
     state.notebooks = await DB.all('notebooks');
     state.sections = await DB.all('sections');
     state.cards = await DB.all('cards');
+    state.images = await DB.all('images');
   } catch (err) {
     setView(`<div class="empty"><p>Non riesco ad aprire l’archivio del browser: ${esc(err.message || err)}. In navigazione privata potrebbe non essere disponibile.</p></div>`);
     return;
@@ -3040,7 +3910,14 @@ async function init() {
   $('#view').addEventListener('click', e => {
     const a = e.target.closest('a[href^="#/card/"]');
     if (a) state.cardReturn = location.hash;
+    const img = e.target.closest('img.nb-img');
+    if (img && !img.closest('.io') && img.dataset.state === 'ok') openLightbox(img.dataset.img);
   });
+  document.addEventListener('focusin', e => { if (e.target.tagName === 'TEXTAREA') e.target.dataset.touched = '1'; });
+  // Mostra le immagini appena compaiono nella pagina o nelle finestre
+  const obs = new MutationObserver(list => list.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) hydrateImages(n); })));
+  obs.observe($('#view'), { childList: true, subtree: true });
+  obs.observe($('#modalRoot'), { childList: true, subtree: true });
   // StudyHub conferma la ricezione scrivendo nel localStorage condiviso
   window.addEventListener('storage', e => { if (e.key === Bridge.ACK) Bridge.prune(); });
   document.addEventListener('visibilitychange', () => {
@@ -3054,9 +3931,11 @@ async function init() {
   });
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
   setupPwa();
-  const shared = takeSharedText();
+  const sharedFile = await takeSharedFile();
+  const shared = sharedFile || takeSharedText();
   route();
-  if (shared) toast('Testo ricevuto: scegli il notebook e crea le sezioni');
+  if (shared === 'pdf') toast('PDF ricevuto: scegli il notebook e le pagine');
+  else if (shared) toast('Testo ricevuto: scegli il notebook e crea le sezioni');
   if (Sync.configured()) Sync.run({ silent: true });
 }
 

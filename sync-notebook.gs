@@ -15,7 +15,7 @@
  * > Versione: "Nuova versione". Così l'indirizzo resta lo stesso.
  *
  * I dati finiscono nella cartella "StudyHub Notebook (sincronizzazione)" del tuo Drive:
- * un file per ogni notebook più un indice. Non modificarli a mano.
+ * un file per ogni notebook, un indice e la sottocartella "immagini". Non modificarli a mano.
  */
 
 const SECRET = 'CAMBIA-QUESTA-FRASE';
@@ -45,7 +45,9 @@ function doPost(e) {
     const indexFile = indexFile_(folder);
     const index = readJson_(indexFile, { rev: 0, shards: {} });
     if (!index.shards) index.shards = {};
+    if (!index.images) index.images = {};
     if (req.action === 'ping') return json_({ ok: true, rev: index.rev });
+    if (req.action === 'images') return json_(images_(index, req));
     if (req.action !== 'sync') return json_({ ok: false, error: 'Azione sconosciuta' });
     return json_(sync_(folder, indexFile, index, req));
   } catch (err) {
@@ -81,8 +83,13 @@ function sync_(folder, indexFile, index, req) {
   };
 
   const accepted = {};
+  let imagesChanged = false;
   (req.records || []).forEach(function (r) {
     if (!r || !r.id || !r.store) return;
+    if (r.store === 'images') {
+      if (saveImage_(folder, index, r)) { accepted['images:' + r.id] = true; imagesChanged = true; }
+      return;
+    }
     const key = r.store === 'notebooks' ? '_notebooks' : String(r.notebookId || '_altro');
     const sh = getShard(key);
     const k = r.store + ':' + r.id;
@@ -96,7 +103,7 @@ function sync_(folder, indexFile, index, req) {
     }
   });
 
-  let indexChanged = false;
+  let indexChanged = imagesChanged;
   Object.keys(loaded).forEach(function (key) {
     const sh = loaded[key];
     if (!sh.dirty) return;
@@ -123,8 +130,73 @@ function sync_(folder, indexFile, index, req) {
         if ((r.rev || 0) > since && !accepted[k]) out.push(r);
       });
     });
+    // delle immagini si inviano solo i dati descrittivi: il contenuto si chiede con action "images"
+    Object.keys(index.images).forEach(function (id) {
+      const m = index.images[id];
+      if ((m.rev || 0) > since && !accepted['images:' + id]) {
+        out.push({ store: 'images', id: id, updated: m.updated, rev: m.rev, deleted: !!m.deleted, notebookId: m.notebookId, meta: m.meta || {} });
+      }
+    });
   }
   return { ok: true, rev: index.rev, accepted: Object.keys(accepted).length, records: out };
+}
+
+/** Salva un'immagine come file separato nella sottocartella "immagini". */
+function saveImage_(folder, index, r) {
+  const cur = index.images[r.id];
+  if (cur && (Number(r.updated) || 0) <= (Number(cur.updated) || 0)) return false;
+  if (!r.deleted && !r.data) return false;
+  index.rev += 1;
+  if (cur && cur.fileId) {
+    try { DriveApp.getFileById(cur.fileId).setTrashed(true); } catch (err) { /* già rimosso */ }
+  }
+  if (r.deleted) {
+    index.images[r.id] = { rev: index.rev, updated: r.updated, deleted: true, notebookId: r.notebookId };
+    return true;
+  }
+  const meta = r.meta || {};
+  const mime = meta.mime || 'image/webp';
+  const ext = mime.indexOf('png') >= 0 ? '.png' : mime.indexOf('jpeg') >= 0 ? '.jpg' : '.webp';
+  const file = imgFolder_(folder).createFile(Utilities.newBlob(Utilities.base64Decode(r.data), mime, 'img-' + r.id + ext));
+  index.images[r.id] = { fileId: file.getId(), rev: index.rev, updated: r.updated, notebookId: r.notebookId, meta: meta };
+  return true;
+}
+
+/** Restituisce il contenuto delle immagini richieste, fino a circa 6 MB per risposta. */
+function images_(index, req) {
+  const out = [];
+  const missing = [];
+  let size = 0;
+  (req.ids || []).some(function (id) {
+    const m = index.images[id];
+    if (!m || m.deleted || !m.fileId) { missing.push(id); return false; }
+    let data;
+    try {
+      data = Utilities.base64Encode(DriveApp.getFileById(m.fileId).getBlob().getBytes());
+    } catch (err) {
+      missing.push(id);
+      return false;
+    }
+    if (out.length && size + data.length > 6 * 1024 * 1024) return true;
+    out.push({ id: id, mime: (m.meta && m.meta.mime) || 'image/webp', updated: m.updated, notebookId: m.notebookId, meta: m.meta || {}, data: data });
+    size += data.length;
+    return false;
+  });
+  return { ok: true, images: out, missing: missing };
+}
+
+function imgFolder_(folder) {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('IMG_FOLDER_ID');
+  if (id) {
+    try {
+      const f = DriveApp.getFolderById(id);
+      if (!f.isTrashed()) return f;
+    } catch (err) { /* cartella sparita: la ricreo */ }
+  }
+  const f = folder.createFolder('immagini');
+  props.setProperty('IMG_FOLDER_ID', f.getId());
+  return f;
 }
 
 function folder_() {

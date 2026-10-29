@@ -2,9 +2,10 @@
    - file dell'app: prima la rete (così vedi subito gli aggiornamenti), poi la copia salvata se sei offline
    - librerie e font dai CDN: prima la copia salvata (hanno versioni fisse)
    - chiamate all'AI e a Drive: mai toccate */
-const VERSION = 'nb-2.1';
+const VERSION = 'nb-3.0';
 const APP_CACHE = `${VERSION}-app`;
 const CDN_CACHE = 'nb-cdn-1';
+const SHARE_CACHE = 'nb-share';
 const APP_FILES = ['./', './index.html', './app.js', './style.css', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 const CDN_FILES = [
   'https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js',
@@ -25,7 +26,7 @@ self.addEventListener('install', event => {
 
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
-    const keep = [APP_CACHE, CDN_CACHE];
+    const keep = [APP_CACHE, CDN_CACHE, SHARE_CACHE];
     const names = await caches.keys();
     await Promise.all(names.filter(n => n.startsWith('nb-') && !keep.includes(n)).map(n => caches.delete(n)));
     await self.clients.claim();
@@ -34,14 +35,35 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('fetch', event => {
   const req = event.request;
-  if (req.method !== 'GET') return;
   const url = new URL(req.url);
+  // PDF o testo condivisi da un’altra app (menu Condividi di Android)
+  if (req.method === 'POST' && url.origin === self.location.origin && url.pathname.endsWith('/share-target')) {
+    event.respondWith(receiveShare(req));
+    return;
+  }
+  if (req.method !== 'GET') return;
   if (url.origin === self.location.origin && url.pathname.startsWith(new URL(self.registration.scope).pathname)) {
     event.respondWith(networkFirst(req));
   } else if (CDN_HOSTS.includes(url.hostname)) {
     event.respondWith(cacheFirst(req));
   }
 });
+
+async function receiveShare(req) {
+  const scope = self.registration.scope;
+  try {
+    const form = await req.formData();
+    const cache = await caches.open(SHARE_CACHE);
+    const meta = { title: form.get('title') || '', text: form.get('text') || '', url: form.get('url') || '', file: null };
+    const file = form.getAll('files').find(f => f && typeof f === 'object' && f.size > 0);
+    if (file) {
+      meta.file = { name: file.name || 'condiviso.pdf', type: file.type || 'application/pdf' };
+      await cache.put(scope + '__share/file', new Response(file, { headers: { 'Content-Type': meta.file.type } }));
+    }
+    await cache.put(scope + '__share/meta', new Response(JSON.stringify(meta), { headers: { 'Content-Type': 'application/json' } }));
+  } catch (err) { /* l’app mostrerà il modulo vuoto */ }
+  return Response.redirect(scope + 'index.html?shared=1', 303);
+}
 
 async function networkFirst(req) {
   const cache = await caches.open(APP_CACHE);
