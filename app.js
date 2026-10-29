@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.0';
+const APP_VERSION = '3.1';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -151,7 +151,11 @@ const Settings = {
     syncUrl: '',
     syncSecret: '',
     newPerDay: 20,
-    askNote: true
+    askNote: true,
+    readFont: 'literata',
+    readSize: 'm',
+    readSpacing: 'normal',
+    boardOpen: false
   },
   data: null,
   load() {
@@ -268,15 +272,16 @@ const stripCloze = md => (md || '').replace(clozeRe(), '$1');
 
 function renderMd(md) {
   const src = (md || '')
-    .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`)
-    .replace(clozeRe(), (m, t) => `<mark class="cz">${t}</mark>`);
+    .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`);
+  const src2 = renderMarks(src).replace(clozeRe(), (m, t) => `<mark class="cz">${t}</mark>`);
   let html;
   const mk = window.marked;
   if (mk && (mk.parse || typeof mk === 'function')) {
-    html = mk.parse ? mk.parse(src, { gfm: true, breaks: false }) : mk(src);
+    html = mk.parse ? mk.parse(src2, { gfm: true, breaks: false }) : mk(src2);
   } else {
-    html = src.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')
-      .replace(/&lt;mark class=&quot;cz&quot;&gt;/g, '<mark class="cz">').replace(/&lt;\/mark&gt;/g, '</mark>')
+    html = src2.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')
+      .replace(/&lt;mark class=&quot;(cz|hl hl-[ygbpo])&quot;&gt;/g, '<mark class="$1">').replace(/&lt;\/mark&gt;/g, '</mark>')
+      .replace(/&lt;u class=&quot;ul&quot;&gt;/g, '<u class="ul">').replace(/&lt;\/u&gt;/g, '</u>')
       .replace(/&lt;img class=&quot;nb-img&quot; data-img=&quot;([a-z0-9]+)&quot;[^&]*?(?:&quot;[^&]*?)*&gt;/g, '<img class="nb-img" data-img="$1" alt="">');
   }
   if (window.DOMPurify) html = window.DOMPurify.sanitize(html);
@@ -353,7 +358,7 @@ function parseQuestions(txt) {
   if (cur && cur.q) out.push(cur);
   return out.filter(x => x.q);
 }
-const aiText = md => stripCloze(md || '').replace(IMG_MD_RE, (m, alt) => `[immagine${alt ? `: ${alt}` : ''}]`);
+const aiText = md => stripMarks(stripCloze(md || '')).replace(IMG_MD_RE, (m, alt) => `[immagine${alt ? `: ${alt}` : ''}]`);
 const serializeQs = qs => (qs || []).map(x => `D: ${x.q}\nR: ${x.a}`).join('\n\n');
 
 function parseAiNotes(raw) {
@@ -523,6 +528,7 @@ function formatSystem({ cloze, questions }) {
     '- Ignora numeri di pagina, intestazioni e piè di pagina ripetuti, didascalie senza contenuto.',
     '- Se ci sono figure o schemi con informazioni utili, descrivine il contenuto in un elenco.',
     '- Copia senza modifiche, nella stessa posizione, ogni riferimento a immagine nel formato ![testo](img:codice).',
+    '- Mantieni le evidenziature e sottolineature nel formato {{lettera|testo}}, es. {{y|frase importante}}.',
     cloze
       ? '- Racchiudi tra == e == i termini chiave da memorizzare (definizioni, nomi, valori, criteri), es. ==insulina==. Al massimo uno o due per frase o per cella, mai un’intera frase.'
       : '- Non usare la sintassi ==...==.',
@@ -641,14 +647,25 @@ function on(sel, ev, fn, root = $('#view')) { $$(sel, root).forEach(el => el.add
 function addCleanup(fn) { cleanups.push(fn); }
 function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
 
-function toast(msg, kind = '') {
+function toast(msg, kind = '', action = null) {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
   el.textContent = msg;
+  if (action) {
+    // un solo “Annulla” alla volta: vale per l’ultima modifica
+    $$('#toasts .toast.has-act').forEach(t => t.remove());
+    el.classList.add('has-act');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'toast-act';
+    b.textContent = action.label;
+    b.addEventListener('click', () => { el.remove(); action.fn(); });
+    el.appendChild(b);
+  }
   const box = $('#toasts');
   while (box.children.length >= 2) box.firstElementChild.remove();
   box.appendChild(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, 3400);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, action ? 6000 : 3400);
 }
 
 function modal({ title, text = '', input = false, value = '', placeholder = '', confirm = 'Conferma', cancel = 'Annulla', danger = false }) {
@@ -715,10 +732,14 @@ function updateBadge() {
 
 function applyTheme() {
   const t = S().theme;
-  const dark = t === 'auto' ? matchMedia('(prefers-color-scheme: dark)').matches : t !== 'light';
-  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  const theme = t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : (['light', 'sepia'].includes(t) ? t : 'dark');
+  const html = document.documentElement;
+  html.dataset.theme = theme;
+  html.style.setProperty('--read-font', READ_FONTS[S().readFont] || READ_FONTS.literata);
+  html.style.setProperty('--read-size', READ_SIZES[S().readSize] || READ_SIZES.m);
+  html.style.setProperty('--read-lh', READ_LH[S().readSpacing] || READ_LH.normal);
   const meta = $('meta[name="theme-color"]');
-  if (meta) meta.content = dark ? '#0d131d' : '#f6f8fb';
+  if (meta) meta.content = { dark: '#0d131d', light: '#f6f8fb', sepia: '#f3ead6' }[theme];
 }
 
 function statusPill(s) {
@@ -1040,7 +1061,7 @@ function modeRead(sec, body) {
       </div>` : ''}
     ${sec.md.trim() ? `<article class="notes">${renderMd(sec.md)}</article>` : `
       <div class="empty"><p>Sezione vuota.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`}
-    ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona una parte del testo per trasformarla in flashcard.</p>' : ''}
+    ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona del testo per evidenziarlo, sottolinearlo, farne un cloze o una flashcard. Sul PC puoi anche usare il tasto destro.</p>' : ''}
     ${sec.studyhub ? `
       <div class="callout end">
         <p>${esc(studyhubStatusText(sec))}</p>
@@ -1056,7 +1077,7 @@ function modeRead(sec, body) {
     ${sec.source ? `<p class="source">Fonte: ${esc(sec.source)}</p>` : ''}
   `;
   const notesEl = $('.notes', body);
-  if (notesEl) setupSelectionBar(notesEl, sec);
+  if (notesEl) setupReadingTools(notesEl, sec);
   on('[data-act="studied"]', 'click', async () => { await markStudiedInStudyHub(sec); route(); }, body);
   on('[data-act="unlink"]', 'click', async () => {
     const ok = await modal({ title: 'Riportare i ripassi nel Notebook?', text: 'StudyHub riceverà la richiesta di togliere l’argomento e il Notebook lo pianificherà per domani.', confirm: 'Riporta' });
@@ -1301,12 +1322,15 @@ function modeEdit(sec, body) {
     <div class="edit-tools" role="toolbar" aria-label="Formattazione">
       <button class="btn sm" data-wrap="==" title="Nasconde il testo selezionato nella modalità Cloze">Cloze</button>
       <button class="btn sm" data-wrap="**">Grassetto</button>
+      <button class="btn sm" data-mark="u">Sottolinea</button>
+      <span class="hl-pick" role="group" aria-label="Evidenzia">${HL_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}</span>
       <button class="btn sm" data-ins="list">Elenco</button>
       <button class="btn sm" data-indent="1" title="Sposta la riga a destra (Tab)">Rientra →</button>
       <button class="btn sm" data-indent="-1" title="Sposta la riga a sinistra (Maiusc+Tab)">← Riduci rientro</button>
       <button class="btn sm" data-ins="table">Tabella</button>
       <button class="btn sm" data-act="img">Immagine</button>
       <button class="btn sm" data-act="pdf-fig">Figura da PDF</button>
+      <button class="btn sm" data-act="hw">Scrivi a mano</button>
       ${AI.ready() ? `<button class="btn sm" data-act="ai-format">Riformatta con ${AI.name()}</button>` : ''}
     </div>
     <p class="hint edit-hint">Negli elenchi, Invio crea una nuova voce e Invio su una voce vuota torna indietro di un livello.</p>
@@ -1338,6 +1362,11 @@ function modeEdit(sec, body) {
   ta.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 250); });
   setupListEditing(ta);
   on('[data-indent]', 'click', e => { ta.focus(); indentLines(ta, +e.currentTarget.dataset.indent); }, body);
+  on('[data-mark]', 'click', e => { if (wrapSelectionInTextarea(ta, `{{${e.currentTarget.dataset.mark}|`, '}}')) refresh(); }, body);
+  on('[data-act="hw"]', 'click', async () => {
+    const im = await openHandwritingPad(sec.notebookId);
+    if (im) insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+  }, body);
   on('[data-act="img"]', 'click', async () => {
     const im = await addImageFromDevice(sec.notebookId);
     if (im) insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
@@ -1871,13 +1900,36 @@ function viewSettings() {
     </section>
 
     <section class="block">
-      <h2>Aspetto</h2>
-      <label class="field narrow"><span>Tema</span>
-        <select class="input" id="stTheme">
-          <option value="dark" ${st.theme === 'dark' ? 'selected' : ''}>Scuro</option>
-          <option value="light" ${st.theme === 'light' ? 'selected' : ''}>Chiaro</option>
-          <option value="auto" ${st.theme === 'auto' ? 'selected' : ''}>Come il dispositivo</option>
-        </select></label>
+      <h2>Lettura e aspetto</h2>
+      <div class="grid2">
+        <label class="field"><span>Tema</span>
+          <select class="input" id="stTheme">
+            <option value="dark" ${st.theme === 'dark' ? 'selected' : ''}>Scuro</option>
+            <option value="sepia" ${st.theme === 'sepia' ? 'selected' : ''}>Carta, toni caldi</option>
+            <option value="light" ${st.theme === 'light' ? 'selected' : ''}>Chiaro</option>
+            <option value="auto" ${st.theme === 'auto' ? 'selected' : ''}>Come il dispositivo</option>
+          </select></label>
+        <label class="field"><span>Carattere degli appunti</span>
+          <select class="input" id="stFont">
+            <option value="literata" ${st.readFont === 'literata' ? 'selected' : ''}>Literata, con grazie</option>
+            <option value="atkinson" ${st.readFont === 'atkinson' ? 'selected' : ''}>Atkinson Hyperlegible, alta leggibilità</option>
+            <option value="system" ${st.readFont === 'system' ? 'selected' : ''}>Carattere del sistema</option>
+          </select></label>
+        <label class="field"><span>Dimensione</span>
+          <select class="input" id="stSize">
+            <option value="s" ${st.readSize === 's' ? 'selected' : ''}>Piccola</option>
+            <option value="m" ${st.readSize === 'm' ? 'selected' : ''}>Media</option>
+            <option value="l" ${st.readSize === 'l' ? 'selected' : ''}>Grande</option>
+            <option value="xl" ${st.readSize === 'xl' ? 'selected' : ''}>Molto grande</option>
+          </select></label>
+        <label class="field"><span>Interlinea</span>
+          <select class="input" id="stSpacing">
+            <option value="normal" ${st.readSpacing === 'normal' ? 'selected' : ''}>Normale</option>
+            <option value="wide" ${st.readSpacing === 'wide' ? 'selected' : ''}>Ampia</option>
+          </select></label>
+      </div>
+      <article class="notes read-sample"><p>Il <strong>ventricolo sinistro</strong> pompa il sangue nell’aorta. {{y|La gittata}} dipende da precarico, postcarico e contrattilità.</p></article>
+      <p class="hint">Il tema “Carta” e l’interlinea ampia affaticano meno la vista nelle sessioni lunghe.</p>
     </section>
 
     <section class="block">
@@ -1996,6 +2048,11 @@ function viewSettings() {
     Settings.save();
   });
   $('#stTheme').addEventListener('change', e => { st.theme = e.target.value; Settings.save(); applyTheme(); });
+  [['#stFont', 'readFont'], ['#stSize', 'readSize'], ['#stSpacing', 'readSpacing']].forEach(([sel, key]) => {
+    $(sel).addEventListener('change', e => { st[key] = e.target.value; Settings.save(); applyTheme(); });
+  });
+  const sample = $('.read-sample p');
+  if (sample) sample.innerHTML = renderMarks(sample.innerHTML);
 
   on('[data-act="export"]', 'click', async () => {
     const images = [];
@@ -2205,7 +2262,7 @@ function cardPill(c) {
   return `<span class="pill soft">${esc(fmtDue(localDateStr(new Date(s.due))))}</span>`;
 }
 const plainText = (md, max = 140) => {
-  const t = stripCloze(md || '').replace(IMG_MD_RE, '[immagine]').replace(/^\*([^*\n]+)\*\n\n/, '$1: ').replace(/[#*_`>|]/g, ' ').replace(/\s+/g, ' ').trim();
+  const t = stripMarks(stripCloze(md || '')).replace(IMG_MD_RE, '[immagine]').replace(/^\*([^*\n]+)\*\n\n/, '$1: ').replace(/[#*_`>|]/g, ' ').replace(/\s+/g, ' ').trim();
   return t.length > max ? t.slice(0, max - 1) + '…' : t;
 };
 function cardRow(c) {
@@ -2281,6 +2338,7 @@ function clozeCardsFromMd(md) {
     } else {
       text = l.replace(/^\s*([-*+]|\d+\.)\s+/, '').trim();
     }
+    text = stripMarks(text);
     if (!text) continue;
     const re = clozeRe();
     const found = [];
@@ -2627,12 +2685,12 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
         <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="csTitle">
           <h2 id="csTitle">${esc(heading)}</h2>
           ${sec ? `<p class="sheet-sub">Dalla sezione ${esc(sec.title)}</p>` : ''}
+          ${cardFieldToolsHtml()}
           <label class="field"><span>Fronte, la domanda</span>
             <textarea class="input card-ta" id="csFront" rows="3">${esc(front)}</textarea></label>
           ${AI.ready() ? `<button class="btn sm" data-cs="ai" type="button">Proponi la domanda con ${AI.name()}</button>` : ''}
           <label class="field"><span>Retro, la risposta</span>
             <textarea class="input card-ta" id="csBack" rows="5">${esc(back)}</textarea></label>
-          <button class="btn sm" data-cs="img" type="button">Aggiungi un’immagine</button>
           <div class="modal-actions">
             <button class="btn ghost" data-cs="no" type="button">Annulla</button>
             <button class="btn primary" data-cs="yes" type="button">Crea la flashcard</button>
@@ -2641,14 +2699,7 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
       </div>`;
     const fEl = $('#csFront', root);
     const bEl = $('#csBack', root);
-    let lastField = front ? bEl : fEl;
-    fEl.addEventListener('focus', () => { lastField = fEl; });
-    bEl.addEventListener('focus', () => { lastField = bEl; });
-    $('[data-cs="img"]', root).addEventListener('click', async () => {
-      const field = lastField;
-      const im = await addImageFromDevice(notebookId);
-      if (im) insertAtCursor(field, `\n${imageMd(im.id)}\n`);
-    });
+    bindCardFieldTools(root, front ? [fEl, bEl] : [bEl, fEl], notebookId);
     const close = v => {
       root.innerHTML = '';
       document.removeEventListener('keydown', onKey, true);
@@ -2664,8 +2715,8 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
       close(card);
     };
     const onKey = e => {
+      if (!fEl.isConnected) return; // è aperta la scrittura a mano
       if (e.key === 'Escape') { e.stopPropagation(); close(null); }
-      else e.stopPropagation(); // nessuna scorciatoia della pagina mentre scrivi
     };
     $('[data-cs="no"]', root).onclick = () => close(null);
     $('[data-cs="yes"]', root).onclick = save;
@@ -2684,46 +2735,6 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
     };
     document.addEventListener('keydown', onKey, true);
     setTimeout(() => (front ? bEl : fEl).focus(), 40);
-  });
-}
-
-// Barra "Crea flashcard" quando selezioni del testo negli appunti
-function setupSelectionBar(container, sec) {
-  const bar = document.createElement('div');
-  bar.className = 'sel-bar';
-  bar.hidden = true;
-  bar.innerHTML = '<button class="btn primary" type="button">Crea flashcard dalla selezione</button>';
-  document.body.appendChild(bar);
-  const btn = $('button', bar);
-  let lastText = '';
-  let hideTimer = null;
-  const onSel = () => {
-    const sel = document.getSelection();
-    const txt = sel && !sel.isCollapsed ? sel.toString().trim() : '';
-    const inside = txt && sel.anchorNode && container.contains(sel.anchorNode) && container.contains(sel.focusNode);
-    if (inside) {
-      clearTimeout(hideTimer);
-      lastText = txt;
-      bar.hidden = false;
-    } else if (!bar.hidden) {
-      // ritardo: su Android toccare il pulsante può annullare la selezione prima del clic
-      clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => { bar.hidden = true; }, 700);
-    }
-  };
-  document.addEventListener('selectionchange', onSel);
-  btn.addEventListener('pointerdown', e => e.preventDefault());
-  btn.addEventListener('click', () => {
-    clearTimeout(hideTimer);
-    bar.hidden = true;
-    const text = lastText;
-    document.getSelection()?.removeAllRanges();
-    if (text) openCardSheet({ back: text, sectionId: sec.id, notebookId: sec.notebookId });
-  });
-  addCleanup(() => {
-    clearTimeout(hideTimer);
-    document.removeEventListener('selectionchange', onSel);
-    bar.remove();
   });
 }
 
@@ -2891,9 +2902,9 @@ function viewCardEditor(id) {
         <div class="fcard io-preview">${occlusionHtml(c, false)}</div>
         <div class="row-actions"><button class="btn" data-act="io-edit">Modifica i riquadri</button></div>
         <label class="field"><span>Etichetta del riquadro, compare sul retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>` : `
+        ${cardFieldToolsHtml()}
         <label class="field"><span>Fronte</span><textarea class="input card-ta" id="ceFront">${esc(c.front)}</textarea></label>
-        <label class="field"><span>Retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>
-        <div class="row-actions"><button class="btn sm" data-act="img" type="button">Aggiungi un’immagine</button></div>`}
+        <label class="field"><span>Retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>`}
       <label class="field"><span>Nota sull’errore, compare dopo la risposta</span>
         <input class="input" id="ceNote" value="${esc(c.note || '')}" placeholder="Es. confondo beta1 e beta2"></label>
       <label class="field"><span>Sezione collegata</span>
@@ -2913,9 +2924,7 @@ function viewCardEditor(id) {
   `);
   const fEl = $('#ceFront');
   const bEl = $('#ceBack');
-  let lastField = bEl;
-  if (fEl) fEl.addEventListener('focus', () => { lastField = fEl; });
-  bEl.addEventListener('focus', () => { lastField = bEl; });
+  if (fEl) bindCardFieldTools($('#view'), [fEl, bEl], c.notebookId);
   const box = $('#cePrevBox');
   if (box) {
     const prev = () => { if (box.open) { $('#cePrevF').innerHTML = renderMd(fEl.value); $('#cePrevB').innerHTML = renderMd(bEl.value); } };
@@ -2923,11 +2932,6 @@ function viewCardEditor(id) {
     fEl.addEventListener('input', prev);
     bEl.addEventListener('input', prev);
   }
-  on('[data-act="img"]', 'click', async () => {
-    const field = lastField;
-    const im = await addImageFromDevice(c.notebookId);
-    if (im) insertAtCursor(field, `\n${imageMd(im.id)}\n`);
-  });
   on('[data-act="io-edit"]', 'click', () => openOcclusionEditor({ imageId: c.io.imageId, notebookId: c.notebookId, sectionId: c.sectionId, group: c.io.group }));
   on('[data-act="save"]', 'click', async () => {
     if (!isIo && !fEl.value.trim()) { toast('Il fronte non può essere vuoto'); fEl.focus(); return; }
@@ -3060,6 +3064,10 @@ function renderStudy() {
       ${cardFaceHtml(card, session.revealed)}
       ${session.revealed && card.note ? `<p class="card-note"><strong>La tua nota sull’errore:</strong> ${esc(card.note)}</p>` : ''}
     </article>
+    <div class="board">
+      <button class="btn sm ghost board-toggle" data-act="board" aria-expanded="${S().boardOpen}">${S().boardOpen ? 'Chiudi la lavagna' : 'Lavagna: scrivi la risposta a mano'}</button>
+      ${S().boardOpen ? `<div class="board-wrap">${penToolsHtml({ colors: false })}<canvas class="board-canvas" id="boardCanvas" aria-label="Lavagna per scrivere la risposta"></canvas></div>` : ''}
+    </div>
     <div class="study-actions">
       ${session.revealed ? `
         <div class="grade-btns">
@@ -3076,6 +3084,15 @@ function renderStudy() {
     <p class="hint kbd-hint">Spazio mostra la risposta, 1-4 per valutare, Ctrl+Z annulla.</p>
   `);
   on('[data-act="reveal"]', 'click', () => { session.revealed = true; renderStudy(); });
+  on('[data-act="board"]', 'click', () => { S().boardOpen = !S().boardOpen; Settings.save(); renderStudy(); });
+  const boardCanvas = $('#boardCanvas');
+  if (boardCanvas) {
+    if (session.boardCard !== card.id) { session.boardCard = card.id; session.board = []; }
+    const ink = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#e7edf5';
+    const pad = createPad(boardCanvas, { strokes: session.board, color: ink, size: 2.4, onChange: st => { session.board = st; } });
+    bindPenTools($('.board-wrap'), pad);
+    addCleanup(() => pad.destroy());
+  }
   on('[data-g]', 'click', e => answerCard(e.currentTarget.dataset.g));
   on('[data-act="undo"]', 'click', undoAnswer);
   on('[data-act="suspend"]', 'click', async () => {
@@ -3235,6 +3252,503 @@ async function removeRecords(list) {
   updateBadge();
   scheduleSync();
 }
+
+/* ---------------------------------------------------------------------
+   Evidenziatore a colori e sottolineatura
+   Nel testo: {{y|testo}} giallo, {{g|…}} verde, {{b|…}} azzurro,
+   {{p|…}} rosa, {{o|…}} arancio, {{u|…}} sottolineato
+   --------------------------------------------------------------------- */
+const HL_COLORS = [
+  { key: 'y', name: 'Giallo' },
+  { key: 'g', name: 'Verde' },
+  { key: 'b', name: 'Azzurro' },
+  { key: 'p', name: 'Rosa' },
+  { key: 'o', name: 'Arancio' }
+];
+const MARK_RE = /\{\{([uygbpo])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
+function renderMarks(src) {
+  let out = src;
+  // due passaggi: gestisce anche un sottolineato dentro un’evidenziatura
+  for (let i = 0; i < 2; i++) {
+    out = out.replace(MARK_RE, (m, k, t) => k === 'u' ? `<u class="ul">${t}</u>` : `<mark class="hl hl-${k}">${t}</mark>`);
+  }
+  return out;
+}
+const stripMarks = md => {
+  let out = md || '';
+  for (let i = 0; i < 2; i++) out = out.replace(MARK_RE, '$2');
+  return out;
+};
+
+/* Dal testo selezionato nella pagina al punto corrispondente del Markdown */
+const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpo]\\||\\}\\}|<[^>\\n]{1,40}>)*';
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function countOccurrences(hay, needle) {
+  if (!needle) return 0;
+  let n = 0;
+  let i = hay.indexOf(needle);
+  while (i >= 0) { n++; i = hay.indexOf(needle, i + needle.length); }
+  return n;
+}
+function findSourceRange(md, selText, occurrence) {
+  const t = selText.replace(/\s+/g, ' ').trim();
+  if (!t || t.length > 3000) return null;
+  const parts = [...t].map(ch => (ch === ' ' ? '\\s+' : escRe(ch)));
+  let re;
+  try { re = new RegExp(parts.join(MARKUP_GAP), 'g'); } catch { return null; }
+  const found = [];
+  let m;
+  while ((m = re.exec(md))) {
+    found.push({ start: m.index, end: m.index + m[0].length });
+    if (!m[0].length) re.lastIndex++;
+  }
+  if (!found.length) return null;
+  const r = { ...found[Math.min(occurrence, found.length - 1)] };
+  // non spezzare grassetti, cloze o evidenziature a metà
+  const slice = () => md.slice(r.start, r.end);
+  if ((slice().match(/\*\*/g) || []).length % 2) {
+    if (md.slice(r.end, r.end + 2) === '**') r.end += 2; else if (md.slice(r.start - 2, r.start) === '**') r.start -= 2;
+  }
+  if ((slice().match(/==/g) || []).length % 2) {
+    if (md.slice(r.end, r.end + 2) === '==') r.end += 2; else if (md.slice(r.start - 2, r.start) === '==') r.start -= 2;
+  }
+  const opens = (slice().match(/\{\{[uygbpo]\|/g) || []).length;
+  const closes = (slice().match(/\}\}/g) || []).length;
+  if (opens > closes && md.slice(r.end, r.end + 2) === '}}') r.end += 2;
+  if (closes > opens && /\{\{[uygbpo]\|$/.test(md.slice(r.start - 4, r.start))) r.start -= 4;
+  return r;
+}
+
+// Applica (o toglie) cloze, colore o sottolineatura a un intervallo del Markdown
+function applyMarkToMd(md, r, kind) {
+  const inner = md.slice(r.start, r.end);
+  const before = md.slice(0, r.start);
+  const after = md.slice(r.end);
+  if (kind === 'cloze') {
+    if (before.endsWith('==') && after.startsWith('==')) return before.slice(0, -2) + inner + after.slice(2);
+    return `${before}==${inner}==${after}`;
+  }
+  const wrap = before.match(/\{\{([uygbpo])\|$/);
+  if (wrap && after.startsWith('}}')) {
+    // stesso tipo: toglie; colore diverso: cambia colore
+    if (wrap[1] === kind || kind === 'none') return before.slice(0, -4) + inner + after.slice(2);
+    if (kind !== 'u' && wrap[1] !== 'u') return `${before.slice(0, -4)}{{${kind}|${inner}}}${after.slice(2)}`;
+  }
+  if (kind === 'none') return stripMarksInRange(md, r);
+  return `${before}{{${kind}|${inner}}}${after}`;
+}
+function stripMarksInRange(md, r) {
+  return md.slice(0, r.start) + stripMarks(md.slice(r.start, r.end)) + md.slice(r.end);
+}
+function wrapSelectionInTextarea(ta, open, close) {
+  const { selectionStart: s, selectionEnd: en, value: v } = ta;
+  if (s === en) { toast('Seleziona prima il testo'); ta.focus(); return false; }
+  const sel = v.slice(s, en);
+  const lead = sel.match(/^\s*/)[0];
+  const trail = sel.match(/\s*$/)[0];
+  const core = sel.trim();
+  let next;
+  const already = core.match(/^\{\{([uygbpo])\|([\s\S]*)\}\}$/);
+  if (open.startsWith('{{') && already) {
+    const k = open.slice(2, 3);
+    next = already[1] === k ? already[2] : `${open}${already[2]}${close}`;
+  } else if (core.startsWith(open) && core.endsWith(close) && core.length > open.length + close.length) {
+    next = core.slice(open.length, -close.length);
+  } else next = open + core + close;
+  ta.focus();
+  ta.setRangeText(lead + next + trail, s, en, 'select');
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}
+
+/* ---------------------------------------------------------------------
+   Strumenti sul testo selezionato in Leggi: barra (telefono) e menu del tasto destro (PC)
+   --------------------------------------------------------------------- */
+function readingToolsHtml() {
+  return `
+    <button type="button" class="rt-btn" data-rt="cloze" title="Nascondi nel Cloze">Cloze</button>
+    <span class="rt-colors" role="group" aria-label="Evidenzia">
+      ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key}" data-rt="${c.key}" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}
+    </span>
+    <button type="button" class="rt-btn rt-u" data-rt="u" title="Sottolinea" aria-label="Sottolinea">S</button>
+    <button type="button" class="rt-btn" data-rt="none" title="Togli evidenziatura e sottolineatura" aria-label="Togli evidenziatura e sottolineatura">✕</button>
+    <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>`;
+}
+
+function setupReadingTools(container, sec) {
+  const bar = document.createElement('div');
+  bar.className = 'sel-bar rt-bar';
+  bar.hidden = true;
+  bar.setAttribute('role', 'toolbar');
+  bar.setAttribute('aria-label', 'Strumenti per il testo selezionato');
+  bar.innerHTML = readingToolsHtml();
+  document.body.appendChild(bar);
+  const menu = document.createElement('div');
+  menu.className = 'rt-menu';
+  menu.hidden = true;
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = readingToolsHtml();
+  document.body.appendChild(menu);
+
+  let last = null; // { text, occurrence, listText }
+  let hideTimer = null;
+  const capture = () => {
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) return null;
+    const text = sel.toString();
+    if (!text.trim()) return null;
+    const pre = document.createRange();
+    pre.setStart(container, 0);
+    pre.setEnd(range.startContainer, range.startOffset);
+    const norm = s => s.replace(/\s+/g, ' ');
+    const occurrence = countOccurrences(norm(pre.toString()), norm(text).trim());
+    // elenco puntato se la selezione prende più voci
+    const lis = $$('li', container).filter(li => range.intersectsNode(li) && !li.querySelector('li'));
+    const listText = lis.length > 1 ? lis.map(li => '- ' + li.textContent.trim()).join('\n') : '';
+    return { text: text.trim(), occurrence, listText };
+  };
+  const onSel = () => {
+    const c = capture();
+    if (c) { clearTimeout(hideTimer); last = c; bar.hidden = false; }
+    else if (!bar.hidden) { clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 700); }
+  };
+  const closeMenu = () => { menu.hidden = true; };
+  const act = async kind => {
+    clearTimeout(hideTimer);
+    bar.hidden = true;
+    closeMenu();
+    const c = last;
+    if (!c) return;
+    document.getSelection()?.removeAllRanges();
+    if (kind === 'card') {
+      const back = c.listText || c.text;
+      const card = await openCardSheet({ back, sectionId: sec.id, notebookId: sec.notebookId });
+      if (card) route();
+      return;
+    }
+    const r = findSourceRange(sec.md, c.text, c.occurrence);
+    if (!r) { toast('Non riesco a trovare questo testo negli appunti: selezionalo dentro una sola riga o cella', 'err'); return; }
+    if (kind === 'cloze' && /\n\s*\n/.test(sec.md.slice(r.start, r.end))) { toast('Per il cloze seleziona testo di un solo paragrafo', 'err'); return; }
+    const prevMd = sec.md;
+    const next = applyMarkToMd(sec.md, r, kind);
+    if (next === prevMd) return;
+    sec.md = next;
+    await saveSection(sec);
+    const y = window.scrollY;
+    route();
+    window.scrollTo(0, y);
+    toast(kind === 'cloze' ? 'Cloze aggiornato' : kind === 'none' ? 'Formattazione tolta' : 'Fatto', '', {
+      label: 'Annulla',
+      fn: async () => {
+        if (sec.md !== next) { toast('Non posso annullare: gli appunti sono cambiati nel frattempo', 'err'); return; }
+        sec.md = prevMd;
+        await saveSection(sec);
+        const yy = window.scrollY;
+        route();
+        window.scrollTo(0, yy);
+      }
+    });
+  };
+  [bar, menu].forEach(el => {
+    el.addEventListener('pointerdown', e => e.preventDefault()); // la selezione resta
+    el.addEventListener('click', e => { const b = e.target.closest('[data-rt]'); if (b) act(b.dataset.rt); });
+  });
+  const onContext = e => {
+    const c = capture();
+    if (!c) return; // nessuna selezione: menu normale del browser
+    e.preventDefault();
+    last = c;
+    bar.hidden = true;
+    menu.hidden = false;
+    const w = menu.offsetWidth || 280;
+    const h = menu.offsetHeight || 60;
+    menu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - w - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - h - 8))}px`;
+  };
+  const onDocDown = e => { if (!menu.hidden && !menu.contains(e.target)) closeMenu(); };
+  const onKey = e => { if (e.key === 'Escape') closeMenu(); };
+  document.addEventListener('selectionchange', onSel);
+  container.addEventListener('contextmenu', onContext);
+  document.addEventListener('pointerdown', onDocDown, true);
+  document.addEventListener('keydown', onKey);
+  window.addEventListener('scroll', closeMenu, { passive: true });
+  addCleanup(() => {
+    clearTimeout(hideTimer);
+    document.removeEventListener('selectionchange', onSel);
+    document.removeEventListener('pointerdown', onDocDown, true);
+    document.removeEventListener('keydown', onKey);
+    window.removeEventListener('scroll', closeMenu);
+    bar.remove();
+    menu.remove();
+  });
+}
+
+/* ---------------------------------------------------------------------
+   Scrittura a mano: dito, mouse o pennino (con pressione e scarto del palmo)
+   --------------------------------------------------------------------- */
+function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChange = () => {} } = {}) {
+  const ctx = canvas.getContext('2d');
+  const state2 = { strokes, color, size, tool: 'pen', penSeen: false };
+  let cur = null;
+  let pid = null;
+  const dpr = () => window.devicePixelRatio || 1;
+  const widthAt = (s, p) => {
+    const base = s.erase ? s.size * 5 : s.size;
+    return p.t === 'pen' ? base * (0.35 + (p.p || 0.5) * 1.3) : base;
+  };
+  const drawSeg = (s, a, b) => {
+    ctx.globalCompositeOperation = s.erase ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = s.color;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = (widthAt(s, a) + widthAt(s, b)) / 2;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  };
+  const drawStroke = s => {
+    const pts = s.points;
+    if (pts.length === 1) drawSeg(s, pts[0], { ...pts[0], x: pts[0].x + 0.01 });
+    for (let i = 1; i < pts.length; i++) drawSeg(s, pts[i - 1], pts[i]);
+  };
+  const redraw = () => {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr(), 0, 0, dpr(), 0, 0);
+    state2.strokes.forEach(drawStroke);
+    ctx.globalCompositeOperation = 'source-over';
+  };
+  const resize = () => {
+    const r = canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    canvas.width = Math.round(r.width * dpr());
+    canvas.height = Math.round(r.height * dpr());
+    redraw();
+  };
+  const pt = e => {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top, p: e.pressure, t: e.pointerType };
+  };
+  canvas.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'pen') state2.penSeen = true;
+    if (state2.penSeen && e.pointerType === 'touch') return; // il palmo appoggiato non disegna
+    if (cur) return;
+    e.preventDefault();
+    pid = e.pointerId;
+    try { canvas.setPointerCapture(pid); } catch { /* ignora */ }
+    const eraser = state2.tool === 'eraser' || (e.buttons & 32) === 32;
+    cur = { color: state2.color, size: state2.size, erase: eraser, points: [pt(e)] };
+    drawStroke(cur);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!cur || e.pointerId !== pid) return;
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of (evs.length ? evs : [e])) {
+      const p = pt(ev);
+      const prev = cur.points[cur.points.length - 1];
+      if (Math.abs(p.x - prev.x) + Math.abs(p.y - prev.y) < 0.6) continue;
+      cur.points.push(p);
+      drawSeg(cur, prev, p);
+    }
+  });
+  const end = e => {
+    if (!cur || e.pointerId !== pid) return;
+    state2.strokes.push(cur);
+    cur = null;
+    pid = null;
+    ctx.globalCompositeOperation = 'source-over';
+    onChange(state2.strokes);
+  };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  const ro = new ResizeObserver(resize);
+  ro.observe(canvas);
+  resize();
+  return {
+    setTool(t) { state2.tool = t; },
+    setColor(c) { state2.color = c; },
+    setSize(s) { state2.size = s; },
+    undo() { state2.strokes.pop(); redraw(); onChange(state2.strokes); },
+    clear() { state2.strokes.length = 0; redraw(); onChange(state2.strokes); },
+    isEmpty() { return !state2.strokes.some(s => !s.erase); },
+    redraw,
+    destroy() { ro.disconnect(); },
+    // immagine ritagliata intorno al disegno, su fondo bianco
+    toCanvas(scale = 2) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      state2.strokes.filter(s => !s.erase).forEach(s => s.points.forEach(p => {
+        x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y);
+      }));
+      if (!isFinite(x0)) return null;
+      const pad = 16;
+      x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+      const out = document.createElement('canvas');
+      out.width = Math.max(1, Math.round((x1 - x0) * scale));
+      out.height = Math.max(1, Math.round((y1 - y0) * scale));
+      const o = out.getContext('2d');
+      const layer = document.createElement('canvas');
+      layer.width = out.width; layer.height = out.height;
+      const l = layer.getContext('2d');
+      l.setTransform(scale, 0, 0, scale, -x0 * scale, -y0 * scale);
+      const saved = ctx;
+      state2.strokes.forEach(s => {
+        const pts = s.points;
+        l.globalCompositeOperation = s.erase ? 'destination-out' : 'source-over';
+        l.strokeStyle = s.color; l.lineCap = 'round'; l.lineJoin = 'round';
+        for (let i = 0; i < Math.max(1, pts.length - 1); i++) {
+          const a = pts[i], b = pts[i + 1] || { ...a, x: a.x + 0.01 };
+          l.lineWidth = (widthAt(s, a) + widthAt(s, b)) / 2;
+          l.beginPath(); l.moveTo(a.x, a.y); l.lineTo(b.x, b.y); l.stroke();
+        }
+      });
+      void saved;
+      o.fillStyle = '#ffffff';
+      o.fillRect(0, 0, out.width, out.height);
+      o.drawImage(layer, 0, 0);
+      return out;
+    }
+  };
+}
+
+const PEN_COLORS = [['#111111', 'Nero'], ['#1d4ed8', 'Blu'], ['#dc2626', 'Rosso'], ['#15803d', 'Verde']];
+const PEN_SIZES = [[1.8, 'Fine'], [2.8, 'Media'], [4.5, 'Spessa']];
+
+function penToolsHtml({ colors = true } = {}) {
+  return `
+    <div class="pen-tools" role="toolbar" aria-label="Strumenti di scrittura">
+      <span class="seg sm" role="group" aria-label="Strumento">
+        <button type="button" data-tool="pen" aria-pressed="true">Penna</button>
+        <button type="button" data-tool="eraser" aria-pressed="false">Gomma</button>
+      </span>
+      ${colors ? `<span class="pen-colors" role="group" aria-label="Colore">${PEN_COLORS.map(([c, n], i) => `<button type="button" class="pen-dot" data-color="${c}" style="background:${c}" aria-label="${n}" aria-pressed="${i === 0}"></button>`).join('')}</span>` : ''}
+      <select class="input pen-size" aria-label="Spessore">${PEN_SIZES.map(([v, n], i) => `<option value="${v}" ${i === 1 ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      <button type="button" class="btn sm ghost" data-pen="undo">Annulla</button>
+      <button type="button" class="btn sm ghost" data-pen="clear">Cancella tutto</button>
+    </div>`;
+}
+function bindPenTools(root, pad) {
+  $$('[data-tool]', root).forEach(b => b.addEventListener('click', () => {
+    pad.setTool(b.dataset.tool);
+    $$('[data-tool]', root).forEach(x => x.setAttribute('aria-pressed', x === b));
+  }));
+  $$('[data-color]', root).forEach(b => b.addEventListener('click', () => {
+    pad.setColor(b.dataset.color);
+    pad.setTool('pen');
+    $$('[data-tool]', root).forEach(x => x.setAttribute('aria-pressed', x.dataset.tool === 'pen'));
+    $$('[data-color]', root).forEach(x => x.setAttribute('aria-pressed', x === b));
+  }));
+  const size = $('.pen-size', root);
+  if (size) size.addEventListener('change', () => pad.setSize(+size.value));
+  $('[data-pen="undo"]', root).addEventListener('click', () => pad.undo());
+  $('[data-pen="clear"]', root).addEventListener('click', () => pad.clear());
+}
+
+/* Scrivi a mano e inserisci come immagine (sezioni e flashcard) */
+function openHandwritingPad(notebookId) {
+  return new Promise(resolve => {
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="overlay full">
+        <div class="io-editor hw" role="dialog" aria-modal="true" aria-labelledby="hwTitle">
+          <header class="io-head">
+            <h2 id="hwTitle">Scrivi a mano</h2>
+            <p class="hint">Con il pennino il palmo appoggiato viene ignorato. Il tasto gomma del pennino cancella.</p>
+            ${penToolsHtml()}
+          </header>
+          <div class="hw-body"><canvas class="hw-canvas" id="hwCanvas"></canvas></div>
+          <footer class="io-foot">
+            <span class="hint"></span>
+            <button class="btn ghost" data-hw="no" type="button">Annulla</button>
+            <button class="btn primary" data-hw="ok" type="button">Inserisci</button>
+          </footer>
+        </div>
+      </div>`;
+    const pad = createPad($('#hwCanvas', root));
+    bindPenTools(root, pad);
+    const close = v => { pad.destroy(); root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.stopPropagation(); pad.undo(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    $('[data-hw="no"]', root).onclick = () => close(null);
+    $('[data-hw="ok"]', root).onclick = async () => {
+      if (pad.isEmpty()) { toast('Scrivi qualcosa prima di inserire'); return; }
+      try {
+        const c = pad.toCanvas(2);
+        let w = c.width, h = c.height;
+        let src = c;
+        if (Math.max(w, h) > 1600) {
+          const k = 1600 / Math.max(w, h);
+          src = document.createElement('canvas');
+          src.width = Math.round(w * k); src.height = Math.round(h * k);
+          src.getContext('2d').drawImage(c, 0, 0, src.width, src.height);
+        }
+        const im = await saveImage(await canvasToImage(src, 0.9), notebookId);
+        close(im);
+      } catch (err) { toast(err.message, 'err'); }
+    };
+  });
+}
+
+/* Barra per i campi delle flashcard: elenchi, rientri, immagine, scrittura a mano */
+function cardFieldToolsHtml() {
+  return `
+    <div class="edit-tools card-tools" role="toolbar" aria-label="Formattazione della flashcard">
+      <button class="btn sm" type="button" data-ct="list">Elenco</button>
+      <button class="btn sm" type="button" data-ct="in" title="Rientra (Tab)" aria-label="Rientra">→</button>
+      <button class="btn sm" type="button" data-ct="out" title="Riduci rientro (Maiusc+Tab)" aria-label="Riduci rientro">←</button>
+      <button class="btn sm" type="button" data-ct="bold" title="Grassetto" aria-label="Grassetto"><strong>G</strong></button>
+      <button class="btn sm" type="button" data-ct="hl">Evidenzia</button>
+      <button class="btn sm" type="button" data-ct="img">Immagine</button>
+      <button class="btn sm" type="button" data-ct="hw">A mano</button>
+    </div>`;
+}
+function bindCardFieldTools(root, fields, notebookId) {
+  let last = fields[fields.length - 1];
+  fields.forEach(f => { f.addEventListener('focus', () => { last = f; }); setupListEditing(f); });
+  $$('[data-ct]', root).forEach(b => b.addEventListener('pointerdown', e => {
+    if (!['img', 'hw'].includes(b.dataset.ct)) e.preventDefault();
+  }));
+  $$('[data-ct]', root).forEach(b => b.addEventListener('click', async () => {
+    const ta = last;
+    const k = b.dataset.ct;
+    if (k === 'list') {
+      const v = ta.value;
+      const s = ta.selectionStart;
+      const atLineStart = s === 0 || v[s - 1] === '\n';
+      insertAtCursor(ta, atLineStart ? '- ' : '\n- ');
+    } else if (k === 'in' || k === 'out') { ta.focus(); indentLines(ta, k === 'in' ? 1 : -1); }
+    else if (k === 'bold') wrapSelectionInTextarea(ta, '**', '**');
+    else if (k === 'hl') wrapSelectionInTextarea(ta, '{{y|', '}}');
+    else if (k === 'img') { const im = await addImageFromDevice(notebookId); if (im) insertAtCursor(ta, `\n${imageMd(im.id)}\n`); }
+    else if (k === 'hw') { const im = await openHandwritingPadNested(notebookId); if (im) insertAtCursor(ta, `\n${imageMd(im.id)}\n`); }
+  }));
+}
+// La finestra della flashcard usa lo stesso contenitore: la nascondo mentre scrivi a mano
+async function openHandwritingPadNested(notebookId) {
+  const root = $('#modalRoot');
+  const keep = [...root.childNodes];
+  keep.forEach(n => n.remove());
+  const im = await openHandwritingPad(notebookId);
+  root.innerHTML = '';
+  keep.forEach(n => root.appendChild(n));
+  return im;
+}
+
+/* ---------------------------------------------------------------------
+   Lettura: carattere, dimensione, interlinea e tema
+   --------------------------------------------------------------------- */
+const READ_FONTS = {
+  literata: '"Literata", Georgia, serif',
+  atkinson: '"Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif',
+  system: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
+};
+const READ_SIZES = { s: '0.98rem', m: '1.06rem', l: '1.16rem', xl: '1.3rem' };
+const READ_LH = { normal: '1.65', wide: '1.85' };
 
 /* ---------------------------------------------------------------------
    Immagini: salvate nel database del browser, compresse, sincronizzate a parte
@@ -3541,7 +4055,7 @@ function openOcclusionEditor({ imageId, notebookId, sectionId = null, group = nu
       if (e.key === 'Escape') { e.stopPropagation(); close(false); }
       else if ((e.key === 'Delete' || e.key === 'Backspace') && sel && document.activeElement !== label) {
         e.preventDefault(); masks = masks.filter(m => m.id !== sel); sel = null; draw();
-      } else e.stopPropagation();
+      }
     };
     document.addEventListener('keydown', onKey, true);
     $('[data-io="del"]', root).onclick = () => { masks = masks.filter(m => m.id !== sel); sel = null; draw(); };
@@ -3666,7 +4180,7 @@ function openPdfCropper(notebookId) {
       onDone: b => { rect = b; const r = $('#cpRect', root); r.hidden = false; r.setAttribute('style', posStyle(b)); okBtn.disabled = false; }
     });
     const close = v => { if (task) task.cancel(); root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } else e.stopPropagation(); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } };
     document.addEventListener('keydown', onKey, true);
     $('[data-cp="cancel"]', root).onclick = () => close(null);
     okBtn.onclick = async () => {
