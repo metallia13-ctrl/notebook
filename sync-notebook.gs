@@ -18,7 +18,7 @@
  * un file per ogni notebook, un indice e la sottocartella "immagini". Non modificarli a mano.
  */
 
-const SECRET = 'CAMBIA-QUESTA-FRASE';
+const SECRET = 'merlino';
 const FOLDER_NAME = 'StudyHub Notebook (sincronizzazione)';
 const MAX_SET_CONTENT = 7 * 1024 * 1024; // oltre questa misura il file viene ricreato invece che sovrascritto
 
@@ -33,7 +33,7 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'Richiesta non leggibile' });
   }
-  if (SECRET === 'CAMBIA-QUESTA-FRASE') {
+  if (SECRET === 'merlino') {
     return json_({ ok: false, error: 'Nello script manca la frase segreta: cambiala e crea una nuova versione della distribuzione' });
   }
   if (!req || req.secret !== SECRET) return json_({ ok: false, error: 'Frase segreta errata' });
