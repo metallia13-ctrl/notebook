@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.1';
+const APP_VERSION = '3.2';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1868,7 +1868,10 @@ function viewSettings() {
           <input class="input" type="password" id="sySecret" value="${esc(st.syncSecret)}" autocomplete="off" spellcheck="false">
           <button class="btn sm" type="button" data-toggle="sySecret">Mostra</button>
         </div></div>
-      <div class="inline"><button class="btn" data-act="sync-now">Sincronizza ora</button></div>
+      <div class="inline">
+        <button class="btn" data-act="sync-now">Sincronizza ora</button>
+        <button class="btn ghost" data-act="sync-test">Prova il collegamento</button>
+      </div>
       <p class="hint" id="syStatus" aria-live="polite">${esc(syncStatusText())}</p>
       <p class="hint">La sincronizzazione parte da sola all’apertura, quando torni sull’app e qualche secondo dopo ogni modifica.</p>
     </section>
@@ -1965,6 +1968,12 @@ function viewSettings() {
     if (Sync.configured()) Sync.run();
   });
   on('[data-act="sync-now"]', 'click', () => Sync.run());
+  on('[data-act="sync-test"]', 'click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    await testSyncConnection();
+    btn.disabled = false;
+  });
   $('#stAskNote').addEventListener('change', e => { st.askNote = e.target.checked; Settings.save(); });
   const imgInfo = () => {
     const used = referencedImages();
@@ -2460,7 +2469,8 @@ const Sync = {
         redirect: 'follow'
       });
     } catch (e) {
-      throw new Error(e.name === 'AbortError' ? 'Drive non risponde: riprova più tardi.' : 'Connessione a Drive non riuscita. Controlla internet.');
+      if (e.name === 'AbortError') throw new Error('Drive non risponde: riprova più tardi.');
+      throw new Error(await diagnoseSync() || 'Connessione a Drive non riuscita.');
     } finally { clearTimeout(t); }
     const txt = await res.text();
     let data;
@@ -2528,6 +2538,49 @@ const Sync = {
   }
 };
 function scheduleSync() { Sync.schedule(); }
+
+/* Diagnosi dei problemi più comuni con l’app web di Apps Script */
+const SYNC_URL_RE = /^https:\/\/script\.google\.com\/(?:a\/macros\/[^/]+|macros)\/s\/[\w-]+\/exec$/;
+function checkSyncUrl(url) {
+  if (SYNC_URL_RE.test(url)) return '';
+  if (!/^https?:\/\//.test(url)) return 'L’indirizzo deve iniziare con https:// e finire con /exec. Forse hai copiato l’ID della distribuzione invece dell’URL dell’app web.';
+  if (/\/dev$/.test(url)) return 'Hai incollato l’indirizzo di prova, che finisce con /dev: serve quello dell’app web, che finisce con /exec.';
+  if (/script\.google\.com\/(home|d\/)|\/edit/.test(url)) return 'Questo è l’indirizzo dell’editor dello script. Serve l’URL dell’app web: Distribuisci → Gestisci distribuzioni, copia l’URL che finisce con /exec.';
+  return 'L’indirizzo non sembra quello di un’app web di Apps Script: deve finire con /exec.';
+}
+async function diagnoseSync() {
+  const url = (S().syncUrl || '').trim();
+  const bad = checkSyncUrl(url);
+  if (bad) return bad;
+  try {
+    const r = await fetch(url, { method: 'GET', redirect: 'follow' });
+    const d = await r.json().catch(() => null);
+    if (d && d.app === 'studyhub-notebook-sync') return '';
+    if (!d) return 'Google risponde con una pagina invece che con i dati: di solito l’app web non è aperta a “Chiunque” oppure lo script non è autorizzato. In Apps Script apri Distribuisci → Gestisci distribuzioni → matita, imposta “Chi ha accesso: Chiunque” e scegli “Nuova versione”. Poi esegui una volta la funzione “autorizza” dall’editor.';
+    return 'L’indirizzo risponde, ma non è lo script del Notebook: controlla di aver copiato l’URL della distribuzione giusta.';
+  } catch {
+    try {
+      await fetch(url, { mode: 'no-cors' });
+      // Google risponde ma con una pagina di accesso o di autorizzazione, che il browser blocca
+      return 'Google risponde ma blocca la richiesta: l’app web non è aperta a tutti oppure lo script non è autorizzato. In Apps Script apri Distribuisci → Gestisci distribuzioni → matita, e imposta “Chi ha accesso: Chiunque” (non “Chiunque con account Google”). Poi esegui una volta la funzione “autorizza” dall’editor.';
+    } catch {
+      return 'Il dispositivo non raggiunge script.google.com: controlla la connessione, la VPN o eventuali blocchi pubblicità.';
+    }
+  }
+}
+async function testSyncConnection() {
+  setSyncStatus('Controllo…');
+  const problem = await diagnoseSync();
+  if (problem) { setSyncStatus(problem); return false; }
+  try {
+    await Sync.post({ secret: (S().syncSecret || '').trim(), action: 'ping' });
+    setSyncStatus('Collegamento riuscito: lo script risponde e la frase segreta è giusta.');
+    return true;
+  } catch (e) {
+    setSyncStatus(e.message);
+    return false;
+  }
+}
 
 async function collectChanges(since) {
   const out = [];
