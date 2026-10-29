@@ -1100,3 +1100,38 @@ u.ul { text-decoration: underline; text-decoration-color: var(--accent); text-de
 }
 .card-tools { margin: 0 0 10px; gap: 6px; }
 .card-tools .btn.sm { padding: 0 10px; min-height: 34px; }
+
+/* =====================================================================
+   v3.3: guida, link utili, intervalli dei PDF, XMind
+   ===================================================================== */
+.nav a.nav-extra { display: none; }
+@media (min-width: 900px) {
+  .nav a.nav-extra { display: flex; }
+  .nav a.nav-extra:first-of-type { margin-top: 18px; }
+}
+.quick-links { margin-bottom: 26px; }
+.ext { color: var(--muted); font-size: 1.1rem; flex: none; }
+.link-row { display: flex; align-items: center; }
+.link-row .row { flex: 1; min-width: 0; }
+.link-row .btn { margin-right: 8px; flex: none; }
+
+.split-seg { margin: 4px 0 12px; }
+.ranges-ta { min-height: 140px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 0.9rem; }
+.muted-inline { color: var(--muted); font-weight: 400; }
+#srcXmind .cand { margin-top: 0; }
+
+details.guide {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  margin-bottom: 10px;
+}
+details.guide > summary {
+  padding: 14px 16px;
+  color: var(--text);
+  font-weight: 700;
+  list-style-position: inside;
+}
+details.guide[open] > summary { border-bottom: 1px solid var(--line); }
+.guide-body { padding: 4px 18px 12px; max-width: none; font-size: calc(var(--read-size, 1.06rem) * 0.95); }
+.guide-body code { font-size: 0.85em; }

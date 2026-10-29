@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.2';
+const APP_VERSION = '3.3';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -15,7 +15,8 @@ const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
 const LIBS = {
   pdfjs: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
   pdfjsWorker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
-  pdflib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js'
+  pdflib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
+  jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
 };
 
 /* ---------------------------------------------------------------------
@@ -81,7 +82,7 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 3);
+      const req = indexedDB.open(DB_NAME, 4);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('notebooks')) db.createObjectStore('notebooks', { keyPath: 'id' });
@@ -95,6 +96,7 @@ const DB = {
           c.createIndex('sectionId', 'sectionId');
         }
         if (!db.objectStoreNames.contains('deleted')) db.createObjectStore('deleted', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('links')) db.createObjectStore('links', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('images')) {
           const im = db.createObjectStore('images', { keyPath: 'id' });
           im.createIndex('notebookId', 'notebookId');
@@ -155,7 +157,9 @@ const Settings = {
     readFont: 'literata',
     readSize: 'm',
     readSpacing: 'normal',
-    boardOpen: false
+    boardOpen: false,
+    keepPdfImages: false,
+    xmCards: true
   },
   data: null,
   load() {
@@ -172,11 +176,11 @@ const S = () => Settings.data;
 /* ---------------------------------------------------------------------
    Stato e dati
    --------------------------------------------------------------------- */
-const state = { notebooks: [], sections: [], cards: [], images: [], fromReview: false, cardReturn: '' };
+const state = { notebooks: [], sections: [], cards: [], images: [], links: [], fromReview: false, cardReturn: '' };
 const drafts = {};              // richiami "pagina bianca" non ancora valutati
 let orderSeq = 0;
 let importJob = null;
-const importDraft = { nbId: '', src: 'text', text: '', title: '', pdf: null };
+const importDraft = { nbId: '', src: 'text', text: '', title: '', pdf: null, split: 'every', rangesText: '', xmind: null };
 let cleanups = [];
 
 const nbById = id => state.notebooks.find(n => n.id === id);
@@ -635,7 +639,7 @@ async function openPdf(file) {
     bytes,
     doc,
     pages: doc.numPages,
-    scanned: chars / sample < 60
+    scanned: chars / sample < 25
   };
 }
 
@@ -810,6 +814,8 @@ function route() {
     case 'review': return viewReview();
     case 'settings': return viewSettings();
     case 'cards': return viewCardsHome();
+    case 'links': return viewLinks();
+    case 'guide': return viewGuide();
     case 'deck': return viewDeck(p1);
     case 'card': return viewCardEditor(p1);
     case 'study': return viewStudy(p1);
@@ -850,8 +856,9 @@ function viewNotebooks() {
         }).join('')}
       </ul>` : `
       <div class="empty">
-        <p>Crea un notebook per ogni materia, poi importa appunti, capitoli o PDF.</p>
+        <p>Crea un notebook per ogni materia, poi importa appunti, capitoli, PDF o mappe XMind.</p>
         <button class="btn primary" data-act="new-nb">Crea il primo notebook</button>
+        <a class="btn" href="#/guide">Leggi la guida</a>
       </div>`}
   `);
   on('[data-act="new-nb"]', 'click', async () => {
@@ -1558,6 +1565,7 @@ function viewImport(nbParam) {
       <div class="seg" role="tablist" aria-label="Tipo di fonte">
         <button role="tab" data-src="text" aria-selected="${importDraft.src === 'text'}">Testo</button>
         <button role="tab" data-src="pdf" aria-selected="${importDraft.src === 'pdf'}">PDF</button>
+        <button role="tab" data-src="xmind" aria-selected="${importDraft.src === 'xmind'}">XMind</button>
       </div>
 
       <div id="srcText" ${importDraft.src === 'text' ? '' : 'hidden'}>
@@ -1576,7 +1584,15 @@ function viewImport(nbParam) {
         <div id="pdfInfo"></div>
       </div>
 
-      <fieldset class="opts">
+      <div id="srcXmind" ${importDraft.src === 'xmind' ? '' : 'hidden'}>
+        <label class="file-drop">
+          <input type="file" id="xmFile">
+          <span id="xmLabel">${importDraft.xmind ? `${esc(importDraft.xmind.name)}, tocca per cambiarla` : 'Scegli una mappa XMind (.xmind)'}</span>
+        </label>
+        <div id="xmInfo"></div>
+      </div>
+
+      <fieldset class="opts" id="aiOpts" ${importDraft.src === 'xmind' ? 'hidden' : ''}>
         <legend>Elaborazione</legend>
         <label class="check"><input type="checkbox" id="optAi" ${aiOk && st.aiFormat ? 'checked' : ''} ${aiOk ? '' : 'disabled'}>
           <span>Formatta con ${AI.name()} in elenchi puntati e tabelle</span></label>
@@ -1609,6 +1625,8 @@ function viewImport(nbParam) {
     $$('[data-src]').forEach(b => b.setAttribute('aria-selected', b.dataset.src === importDraft.src));
     $('#srcText').hidden = importDraft.src !== 'text';
     $('#srcPdf').hidden = importDraft.src !== 'pdf';
+    $('#srcXmind').hidden = importDraft.src !== 'xmind';
+    $('#aiOpts').hidden = importDraft.src === 'xmind';
     syncOpts();
   });
 
@@ -1636,10 +1654,21 @@ function viewImport(nbParam) {
       <p class="pdf-meta">${p.pages} ${p.pages === 1 ? 'pagina' : 'pagine'}. ${p.scanned
         ? (aiOk ? 'Sembra un PDF scansionato: conviene farlo leggere all’AI.' : 'Sembra un PDF scansionato: senza AI non riesco a leggerne il testo.')
         : 'Il testo è selezionabile.'}</p>
-      <div class="grid3">
-        <label class="field"><span>Da pagina</span><input class="input" type="number" id="pFrom" min="1" max="${p.pages}" value="1" inputmode="numeric"></label>
-        <label class="field"><span>A pagina</span><input class="input" type="number" id="pTo" min="1" max="${p.pages}" value="${p.pages}" inputmode="numeric"></label>
-        <label class="field"><span>Pagine per sezione</span><input class="input" type="number" id="pPer" min="1" max="30" value="${per}" inputmode="numeric"></label>
+      <div class="seg sm split-seg" role="tablist" aria-label="Come dividere il PDF">
+        <button type="button" role="tab" data-split="every" aria-selected="${importDraft.split !== 'ranges'}">Ogni tot pagine</button>
+        <button type="button" role="tab" data-split="ranges" aria-selected="${importDraft.split === 'ranges'}">Intervalli scelti</button>
+      </div>
+      <div id="splitEvery" ${importDraft.split === 'ranges' ? 'hidden' : ''}>
+        <div class="grid3">
+          <label class="field"><span>Da pagina</span><input class="input" type="number" id="pFrom" min="1" max="${p.pages}" value="1" inputmode="numeric"></label>
+          <label class="field"><span>A pagina</span><input class="input" type="number" id="pTo" min="1" max="${p.pages}" value="${p.pages}" inputmode="numeric"></label>
+          <label class="field"><span>Pagine per sezione</span><input class="input" type="number" id="pPer" min="1" max="30" value="${per}" inputmode="numeric"></label>
+        </div>
+      </div>
+      <div id="splitRanges" ${importDraft.split === 'ranges' ? '' : 'hidden'}>
+        <label class="field"><span>Una riga per sezione: pagine e, se vuoi, il titolo</span>
+          <textarea class="input ranges-ta" id="pRanges" spellcheck="false" placeholder="1-12 Introduzione&#10;13-30 Il cuore&#10;31-45">${esc(importDraft.rangesText)}</textarea></label>
+        <button class="btn sm" type="button" data-act="chapters" ${p.chapters && p.chapters.length > 1 ? '' : 'hidden'}>Usa i capitoli del PDF (${p.chapters ? p.chapters.length : 0})</button>
       </div>
       <div class="radio">
         <label class="check"><input type="radio" name="pdfMode" value="text" ${preferAi ? '' : 'checked'}>
@@ -1647,18 +1676,59 @@ function viewImport(nbParam) {
         <label class="check"><input type="radio" name="pdfMode" value="ai" ${preferAi ? 'checked' : ''} ${aiOk ? '' : 'disabled'}>
           <span>Fai leggere le pagine all’AI: funziona anche con scansioni, schemi e tabelle</span></label>
       </div>
+      <label class="check"><input type="checkbox" id="optImgs" ${S().keepPdfImages ? 'checked' : ''}>
+        <span>Mantieni le immagini del PDF nelle sezioni <small class="muted-inline" id="imgHint"></small></span></label>
       <p class="hint" id="pdfEstimate"></p>`;
     const est = () => {
       const r = readRange();
-      $('#pdfEstimate').textContent = r ? `Verranno create ${r.count} ${r.count === 1 ? 'sezione' : 'sezioni'}.` : 'Controlla l’intervallo di pagine.';
+      $('#pdfEstimate').textContent = r && r.error ? r.error : r ? `Verranno create ${r.count} ${r.count === 1 ? 'sezione' : 'sezioni'}.` : (importDraft.split === 'ranges' ? 'Scrivi almeno un intervallo, per esempio 1-12.' : 'Controlla l’intervallo di pagine.');
     };
-    ['#pFrom', '#pTo', '#pPer'].forEach(sel => $(sel).addEventListener('input', est));
+    ['#pFrom', '#pTo', '#pPer', '#pRanges'].forEach(sel => $(sel).addEventListener('input', est));
+    $('#pRanges').addEventListener('input', e => { importDraft.rangesText = e.target.value; });
+    $$('[data-split]').forEach(b => b.addEventListener('click', () => {
+      importDraft.split = b.dataset.split;
+      $$('[data-split]').forEach(x => x.setAttribute('aria-selected', x === b));
+      $('#splitEvery').hidden = importDraft.split === 'ranges';
+      $('#splitRanges').hidden = importDraft.split !== 'ranges';
+      est();
+    }));
+    const chBtn = $('[data-act="chapters"]');
+    chBtn.addEventListener('click', () => {
+      const t = p.chapters.map(c => `${c.from === c.to ? c.from : `${c.from}-${c.to}`} ${c.title}`).join('\n');
+      $('#pRanges').value = t;
+      importDraft.rangesText = t;
+      est();
+    });
+    $('#optImgs').addEventListener('change', e => { S().keepPdfImages = e.target.checked; Settings.save(); });
     $$('input[name="pdfMode"]').forEach(r => r.addEventListener('change', syncOpts));
     est();
     syncOpts();
+    // capitoli e immagini: li cerco in sottofondo, solo una volta per PDF
+    if (!p.chapters) pdfChapters(p.doc).then(ch => {
+      p.chapters = ch;
+      const b = $('[data-act="chapters"]');
+      if (b && importDraft.pdf === p && ch.length > 1) { b.hidden = false; b.textContent = `Usa i capitoli del PDF (${ch.length})`; }
+    });
+    const showImgHint = () => {
+      const h = $('#imgHint');
+      if (h && p.imgSample != null) h.textContent = p.imgSample ? `(trovate nelle prime pagine: ${p.imgSample})` : '(nessuna trovata nelle prime pagine)';
+    };
+    if (p.imgSample == null) {
+      (async () => {
+        let n = 0;
+        for (let i = 1; i <= Math.min(8, p.pages); i++) { try { n += (await findPageImages(p.doc, i)).boxes.length; } catch { /* pagina saltata */ } }
+        p.imgSample = n;
+        if (importDraft.pdf === p) showImgHint();
+      })();
+    } else showImgHint();
   };
   const readRange = () => {
     const p = importDraft.pdf;
+    if (p && importDraft.split === 'ranges') {
+      const { ranges, errors } = parseRanges($('#pRanges')?.value, p.pages);
+      if (errors.length || !ranges.length) return errors.length ? { error: `Non capisco: ${errors.slice(0, 3).join(', ')}. Usa righe come “13-30 Il cuore”, con pagine tra 1 e ${p.pages}.` } : null;
+      return { ranges, count: ranges.length };
+    }
     const from = parseInt($('#pFrom')?.value, 10);
     const to = parseInt($('#pTo')?.value, 10);
     const per = parseInt($('#pPer')?.value, 10);
@@ -1683,12 +1753,50 @@ function viewImport(nbParam) {
   renderPdfInfo();
   syncOpts();
 
+  const renderXmInfo = () => {
+    const x = importDraft.xmind;
+    const box = $('#xmInfo');
+    if (!x) { box.innerHTML = '<p class="hint">Ogni foglio della mappa diventa una sezione con elenchi annidati. Funziona con i file di XMind nuovi e con XMind 8.</p>'; return; }
+    box.innerHTML = `
+      <p class="pdf-meta">${x.sheets.length} ${x.sheets.length === 1 ? 'foglio' : 'fogli'} nella mappa.</p>
+      <ul class="cand">${x.sheets.map((sh, i) => `<li><label class="check"><input type="checkbox" data-sheet="${i}" checked>
+        <span><span class="cand-f">${esc(sh.root.title)}</span><span class="cand-b">${countTopics(sh.root)} nodi${sh.title && sh.title !== sh.root.title ? `, foglio “${esc(sh.title)}”` : ''}</span></span></label></li>`).join('')}</ul>
+      <label class="check"><input type="checkbox" id="optXmCards" ${S().xmCards ? 'checked' : ''}>
+        <span>Crea le flashcard: una per ogni nodo con sottopunti</span></label>`;
+    $('#optXmCards').addEventListener('change', e => { S().xmCards = e.target.checked; Settings.save(); });
+  };
+  $('#xmFile').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    $('#xmLabel').textContent = 'Leggo la mappa…';
+    try {
+      const sheets = await parseXmind(file);
+      if (!sheets.length) throw new Error('La mappa è vuota.');
+      importDraft.xmind = { name: file.name, sheets };
+      $('#xmLabel').textContent = `${file.name}, tocca per cambiarla`;
+    } catch (err) {
+      importDraft.xmind = null;
+      $('#xmLabel').textContent = 'Scegli una mappa XMind (.xmind)';
+      toast(err.message, 'err');
+    }
+    renderXmInfo();
+  });
+  renderXmInfo();
+
   on('[data-act="start"]', 'click', () => {
     const nbId = $('#imNb').value;
     if (!nbId || !nbById(nbId)) { toast('Scegli o crea un notebook'); return; }
     const opts = { ai: $('#optAi').checked && aiOk, cloze: $('#optCloze').checked, questions: $('#optQs').checked };
     const job = { running: true, controller: new AbortController(), nbId, opts, items: [], kind: importDraft.src };
-    if (job.kind === 'text') {
+    if (job.kind === 'xmind') {
+      const x = importDraft.xmind;
+      if (!x) { toast('Scegli prima una mappa XMind'); return; }
+      const picked = $$('[data-sheet]').filter(c => c.checked).map(c => x.sheets[+c.dataset.sheet]);
+      if (!picked.length) { toast('Scegli almeno un foglio'); return; }
+      job.fileName = x.name;
+      job.xmCards = $('#optXmCards')?.checked;
+      job.items = picked.map(sh => ({ label: sh.root.title, sheet: sh, status: 'wait' }));
+    } else if (job.kind === 'text') {
       const text = $('#imText').value.trim();
       if (!text) { toast('Incolla prima del testo'); return; }
       const chunks = splitText(text);
@@ -1700,15 +1808,21 @@ function viewImport(nbParam) {
     } else {
       if (!importDraft.pdf) { toast('Scegli prima un PDF'); return; }
       const r = readRange();
-      if (!r) { toast('Controlla l’intervallo di pagine'); return; }
-      S().pagesPerSection = r.per;
-      Settings.save();
+      if (!r || r.error) { toast(r && r.error ? r.error : 'Controlla l’intervallo di pagine'); return; }
       job.pdf = importDraft.pdf;
       job.pdfMode = document.querySelector('input[name="pdfMode"]:checked')?.value === 'ai' && aiOk ? 'ai' : 'text';
+      job.keepImgs = $('#optImgs').checked;
       if (job.pdfMode === 'ai') job.opts.ai = true;
-      for (let a = r.from; a <= r.to; a += r.per) {
-        const b = Math.min(r.to, a + r.per - 1);
-        job.items.push({ label: a === b ? `Pagina ${a}` : `Pagine ${a}–${b}`, from: a, to: b, status: 'wait' });
+      const pagesLabel = (a, b) => (a === b ? `Pagina ${a}` : `Pagine ${a}–${b}`);
+      if (r.ranges) {
+        r.ranges.forEach(g => job.items.push({ label: g.title ? `${g.title}, ${pagesLabel(g.from, g.to).toLowerCase()}` : pagesLabel(g.from, g.to), pages: pagesLabel(g.from, g.to), title: g.title, from: g.from, to: g.to, status: 'wait' }));
+      } else {
+        S().pagesPerSection = r.per;
+        Settings.save();
+        for (let a = r.from; a <= r.to; a += r.per) {
+          const b = Math.min(r.to, a + r.per - 1);
+          job.items.push({ label: pagesLabel(a, b), pages: pagesLabel(a, b), from: a, to: b, status: 'wait' });
+        }
       }
     }
     importJob = job;
@@ -1760,12 +1874,28 @@ async function runImport(job) {
     if (signal.aborted) { it.status = 'skip'; continue; }
     it.status = 'work';
     renderProgress();
+    if (job.kind === 'xmind') {
+      try {
+        const root = it.sheet.root;
+        const sec = newSection(job.nbId, { title: root.title || it.sheet.title, md: xmindToMarkdown(root), source: `Mappa XMind ${job.fileName}` });
+        await saveSection(sec);
+        it.secId = sec.id;
+        if (job.xmCards) {
+          const cards = xmindCards(root, job.nbId, sec.id);
+          if (cards.length) await saveCards(cards);
+          it.note = `${cards.length} flashcard create`;
+        }
+        it.status = 'done';
+      } catch (err) { it.status = 'error'; it.error = err.message; }
+      renderProgress();
+      continue;
+    }
     let text = it.text || '';
     let baseTitle = '';
     let source = 'Testo incollato';
     if (job.kind === 'pdf') {
-      baseTitle = `${job.pdf.base}, ${it.label.toLowerCase()}`;
-      source = `${job.pdf.name}, ${it.label.toLowerCase()}`;
+      baseTitle = it.title || `${job.pdf.base}, ${it.pages.toLowerCase()}`;
+      source = `${job.pdf.name}, ${it.pages.toLowerCase()}`;
     } else if (job.title) {
       baseTitle = job.items.length > 1 ? `${job.title} (${i + 1})` : job.title;
     }
@@ -1783,12 +1913,23 @@ async function runImport(job) {
           onWait: ms => { it.wait = `Limite raggiunto, riprovo tra ${Math.round(ms / 1000)} secondi`; renderProgress(); }
         });
         it.wait = '';
-        const title = job.kind === 'text' && job.title ? baseTitle : (r.title || baseTitle || firstLineTitle(r.md));
+        const title = (job.kind === 'text' && job.title) || it.title ? baseTitle : (r.title || baseTitle || firstLineTitle(r.md));
         sec = newSection(job.nbId, { title, md: r.md, questions: r.questions, source });
         if (r.truncated) it.note = 'Risposta troncata: controlla la fine della sezione o usa meno pagine.';
       } else {
         if (!text.trim()) throw new Error('Nessun testo trovato in queste pagine: forse è una scansione.');
         sec = newSection(job.nbId, { title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
+      }
+      if (job.kind === 'pdf' && job.keepImgs) {
+        it.wait = 'Ritaglio le immagini…';
+        renderProgress();
+        try {
+          const extra = await pdfImagesMd(job, it.from, it.to, signal);
+          sec.md += extra;
+          const n = (extra.match(/\(img:/g) || []).length;
+          if (n) it.note = [it.note, `${n} ${n === 1 ? 'immagine aggiunta' : 'immagini aggiunte'}`].filter(Boolean).join('. ');
+        } catch { /* le immagini non bloccano la sezione */ }
+        it.wait = '';
       }
       await saveSection(sec);
       it.status = 'done';
@@ -1844,6 +1985,10 @@ function viewSettings() {
     </div>`;
   setView(`
     <header class="page-head"><h1>Impostazioni</h1></header>
+    <ul class="list quick-links">
+      <li><a class="row" href="#/guide"><span class="row-main"><span class="row-title">Guida all’uso</span><span class="row-sub">Come funziona ogni parte dell’app</span></span><span class="ext" aria-hidden="true">›</span></a></li>
+      <li><a class="row" href="#/links"><span class="row-main"><span class="row-title">Link utili</span><span class="row-sub">StudyHub, Gemini, PubMed, Manuale MSD e i tuoi</span></span><span class="ext" aria-hidden="true">›</span></a></li>
+    </ul>
 
     <section class="block">
       <h2>Intelligenza artificiale</h2>
@@ -2070,7 +2215,7 @@ function viewSettings() {
       const { blob, ...meta } = im;
       images.push({ ...meta, data: await blobToBase64(blob) });
     }
-    const data = { app: 'studyhub-notebook', version: 3, exported: new Date().toISOString(), notebooks: state.notebooks, sections: state.sections, cards: state.cards, images };
+    const data = { app: 'studyhub-notebook', version: 4, exported: new Date().toISOString(), notebooks: state.notebooks, sections: state.sections, cards: state.cards, links: state.links, images };
     const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -2100,6 +2245,8 @@ function viewSettings() {
       const images = (Array.isArray(data.images) ? data.images : []).filter(i => i && i.id && i.data).map(({ data: b64, ...meta }) => ({ ...meta, blob: base64ToBlob(b64, meta.mime), updated: now }));
       await DB.bulkPut('images', images);
       images.forEach(i => forgetImageUrl(i.id));
+      const links = (Array.isArray(data.links) ? data.links : []).filter(l => l && l.id && l.url).map(l => ({ ...l, notebookId: '_links', updated: now }));
+      await DB.bulkPut('links', links);
       await DB.bulkPut('notebooks', nbs);
       await DB.bulkPut('sections', secs);
       await DB.bulkPut('cards', cards);
@@ -2107,6 +2254,7 @@ function viewSettings() {
       state.sections = await DB.all('sections');
       state.cards = await DB.all('cards');
       state.images = await DB.all('images');
+      state.links = await DB.all('links');
       updateBadge();
       scheduleSync();
       toast('Backup importato');
@@ -2440,7 +2588,7 @@ function studyhubStatusText(sec) {
 /* ---------------------------------------------------------------------
    Sincronizzazione con Google Drive (tramite il tuo script Apps Script)
    --------------------------------------------------------------------- */
-const SYNC_STORES = ['notebooks', 'sections', 'cards'];
+const SYNC_STORES = ['notebooks', 'sections', 'cards', 'links'];
 
 const Sync = {
   META: 'nb-sync-meta',
@@ -2627,7 +2775,7 @@ function normalizeRecord(store, d) {
 async function applyRemote(records) {
   if (!records.length) return 0;
   const tombs = new Map((await DB.all('deleted')).map(t => [t.id, t]));
-  const puts = { notebooks: [], sections: [], cards: [] };
+  const puts = { notebooks: [], sections: [], cards: [], links: [] };
   const dels = [];
   let changed = 0;
   for (const r of records) {
@@ -3304,6 +3452,414 @@ async function removeRecords(list) {
   list.forEach(({ store, rec }) => { state[store] = state[store].filter(x => x.id !== rec.id); });
   updateBadge();
   scheduleSync();
+}
+
+/* ---------------------------------------------------------------------
+   PDF: intervalli di pagine scelti da te, capitoli del PDF, immagini
+   --------------------------------------------------------------------- */
+// "1-12 Introduzione" su ogni riga; anche "1-12, 13-30" su una riga sola
+function parseRanges(text, pages) {
+  const ranges = [];
+  const errors = [];
+  const tokens = [];
+  (text || '').split(/[\n;]+/).map(l => l.trim()).filter(Boolean).forEach(line => {
+    if (/^[\d\s,–—-]+$/.test(line)) line.split(',').map(x => x.trim()).filter(Boolean).forEach(x => tokens.push(x));
+    else tokens.push(line);
+  });
+  for (const tok of tokens) {
+    const m = tok.match(/^(?:p(?:ag(?:ine|ina)?)?\.?\s*)?(\d+)\s*(?:[-–—]\s*(\d+))?\s*[:.)-]?\s*(.*)$/i);
+    if (!m) { errors.push(tok); continue; }
+    const a = +m[1];
+    const b = m[2] ? +m[2] : a;
+    if (a < 1 || b < a || b > pages) { errors.push(tok); continue; }
+    ranges.push({ from: a, to: b, title: m[3].trim() });
+  }
+  return { ranges, errors };
+}
+
+// Capitoli dai segnalibri del PDF (indice laterale), se ci sono
+async function pdfChapters(doc) {
+  let outline;
+  try { outline = await doc.getOutline(); } catch { return []; }
+  if (!outline || !outline.length) return [];
+  // se c’è una sola voce principale (es. il titolo del libro) uso i suoi capitoli
+  let items = outline;
+  if (items.length === 1 && items[0].items && items[0].items.length > 1) items = items[0].items;
+  const out = [];
+  for (const it of items) {
+    try {
+      let dest = it.dest;
+      if (typeof dest === 'string') dest = await doc.getDestination(dest);
+      if (!Array.isArray(dest) || !dest[0]) continue;
+      const ref = dest[0];
+      const idx = typeof ref === 'number' ? ref : await doc.getPageIndex(ref);
+      out.push({ title: String(it.title || '').replace(/\s+/g, ' ').trim(), page: idx + 1 });
+    } catch { /* voce senza destinazione */ }
+  }
+  out.sort((a, b) => a.page - b.page);
+  const uniq = out.filter((c, i) => i === 0 || c.page !== out[i - 1].page);
+  return uniq.map((c, i) => ({ from: c.page, to: i + 1 < uniq.length ? Math.max(c.page, uniq[i + 1].page - 1) : doc.numPages, title: c.title }));
+}
+
+// Posizione delle immagini in una pagina, lette dalle istruzioni di disegno del PDF
+async function findPageImages(doc, pageNo) {
+  const OPS = window.pdfjsLib.OPS;
+  const page = await doc.getPage(pageNo);
+  const vp = page.getViewport({ scale: 1 });
+  const ops = await page.getOperatorList();
+  const mul = (m, n) => [
+    m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1],
+    m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+    m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5]
+  ];
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  const boxes = [];
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i];
+    const args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+    else if (fn === OPS.transform) ctm = mul(ctm, args);
+    else if (fn === OPS.paintFormXObjectBegin) { stack.push(ctm); if (Array.isArray(args[0]) && args[0].length === 6) ctm = mul(ctm, args[0]); }
+    else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
+    else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject || fn === OPS.paintJpegXObject) {
+      const pts = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([x, y]) => {
+        const px = ctm[0] * x + ctm[2] * y + ctm[4];
+        const py = ctm[1] * x + ctm[3] * y + ctm[5];
+        return vp.convertToViewportPoint(px, py);
+      });
+      const xs = pts.map(p => p[0]);
+      const ys = pts.map(p => p[1]);
+      const x0 = Math.max(0, Math.min(...xs)), x1 = Math.min(vp.width, Math.max(...xs));
+      const y0 = Math.max(0, Math.min(...ys)), y1 = Math.min(vp.height, Math.max(...ys));
+      if (x1 > x0 && y1 > y0) boxes.push({ x: x0 / vp.width, y: y0 / vp.height, w: (x1 - x0) / vp.width, h: (y1 - y0) / vp.height });
+    }
+  }
+  // via icone e loghi minuscoli e le pagine scansionate (un’unica immagine a tutta pagina)
+  const useful = boxes.filter(b => b.w * b.h >= 0.02 && b.w * b.h <= 0.9 && b.w > 0.08 && b.h > 0.05);
+  const merged = [];
+  for (const b of useful.sort((a, c) => c.w * c.h - a.w * a.h)) {
+    const dup = merged.some(m => {
+      const ix = Math.max(0, Math.min(m.x + m.w, b.x + b.w) - Math.max(m.x, b.x));
+      const iy = Math.max(0, Math.min(m.y + m.h, b.y + b.h) - Math.max(m.y, b.y));
+      return ix * iy > 0.6 * b.w * b.h;
+    });
+    if (!dup) merged.push(b);
+  }
+  return { page, boxes: merged.slice(0, 8).sort((a, c) => a.y - c.y || a.x - c.x) };
+}
+
+// Ritaglia le immagini di un intervallo di pagine e le salva; restituisce il Markdown da aggiungere
+async function pdfImagesMd(job, from, to, signal) {
+  const lines = [];
+  for (let p = from; p <= to; p++) {
+    if (signal && signal.aborted) break;
+    let found;
+    try { found = await findPageImages(job.pdf.doc, p); } catch { continue; }
+    if (!found.boxes.length) continue;
+    const base = found.page.getViewport({ scale: 1 });
+    const scale = Math.min(3, 1800 / base.width);
+    const vp = found.page.getViewport({ scale });
+    const full = document.createElement('canvas');
+    full.width = Math.round(vp.width);
+    full.height = Math.round(vp.height);
+    const ctx = full.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, full.width, full.height);
+    try { await found.page.render({ canvasContext: ctx, viewport: vp }).promise; } catch { continue; }
+    let n = 0;
+    for (const b of found.boxes) {
+      const sw = Math.max(1, Math.round(b.w * full.width));
+      const sh = Math.max(1, Math.round(b.h * full.height));
+      const k = Math.min(1, 1600 / Math.max(sw, sh));
+      const out = document.createElement('canvas');
+      out.width = Math.round(sw * k);
+      out.height = Math.round(sh * k);
+      out.getContext('2d').drawImage(full, Math.round(b.x * full.width), Math.round(b.y * full.height), sw, sh, 0, 0, out.width, out.height);
+      try {
+        const im = await saveImage(await canvasToImage(out, 0.86), job.nbId);
+        n++;
+        lines.push(imageMd(im.id, `Pagina ${p}${found.boxes.length > 1 ? `, figura ${n}` : ''}`));
+      } catch { /* immagine saltata */ }
+    }
+    full.width = 0; full.height = 0; // libera memoria sul telefono
+  }
+  return lines.length ? `\n\n### Immagini dal PDF\n\n${lines.join('\n\n')}` : '';
+}
+
+/* ---------------------------------------------------------------------
+   Mappe XMind (.xmind): file nuovi (content.json) e XMind 8 (content.xml)
+   --------------------------------------------------------------------- */
+async function ensureJSZip() { if (!window.JSZip) await loadScript(LIBS.jszip); }
+
+async function parseXmind(file) {
+  await ensureJSZip();
+  let zip;
+  try { zip = await window.JSZip.loadAsync(file); }
+  catch { throw new Error('Il file non è una mappa XMind valida.'); }
+  const json = zip.file('content.json');
+  if (json) {
+    const data = JSON.parse(await json.async('string'));
+    const sheets = Array.isArray(data) ? data : (data.sheets || []);
+    return sheets.filter(s => s && s.rootTopic).map(s => ({ title: s.title || s.rootTopic.title || 'Mappa', root: jsonTopic(s.rootTopic) }));
+  }
+  const xml = zip.file('content.xml');
+  if (xml) {
+    const doc = new DOMParser().parseFromString(await xml.async('string'), 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) throw new Error('Non riesco a leggere questa mappa XMind.');
+    const kids = (el, name) => [...el.children].filter(c => c.localName === name);
+    const sheets = [...doc.getElementsByTagNameNS('*', 'sheet')];
+    return sheets.map(sh => {
+      const topic = kids(sh, 'topic')[0];
+      return topic ? { title: kids(sh, 'title')[0]?.textContent || 'Mappa', root: xmlTopic(topic, kids) } : null;
+    }).filter(Boolean);
+  }
+  throw new Error('Il file non contiene una mappa XMind riconoscibile.');
+}
+function cleanTitle(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+function jsonTopic(t) {
+  const notes = t.notes?.plain?.content || (t.notes?.realHTML?.content || '').replace(/<[^>]+>/g, ' ');
+  return {
+    title: cleanTitle(t.title) || '(senza titolo)',
+    notes: String(notes || '').trim(),
+    children: (t.children?.attached || []).map(jsonTopic),
+    floating: (t.children?.detached || []).map(jsonTopic)
+  };
+}
+function xmlTopic(el, kids) {
+  const children = [];
+  const floating = [];
+  kids(el, 'children').forEach(ch => kids(ch, 'topics').forEach(ts => {
+    const list = kids(ts, 'topic').map(t => xmlTopic(t, kids));
+    if (ts.getAttribute('type') === 'detached') floating.push(...list); else children.push(...list);
+  }));
+  const notesEl = kids(el, 'notes')[0];
+  const plain = notesEl ? kids(notesEl, 'plain')[0] : null;
+  return { title: cleanTitle(kids(el, 'title')[0]?.textContent) || '(senza titolo)', notes: (plain?.textContent || '').trim(), children, floating };
+}
+const mdInline = t => cleanTitle(t).replace(/^(\d+)\.\s/, '$1\\. ').replace(/^([#>*+-])\s/, '\\$1 ');
+function countTopics(t) { return 1 + t.children.reduce((a, c) => a + countTopics(c), 0) + t.floating.reduce((a, c) => a + countTopics(c), 0); }
+function xmindToMarkdown(root) {
+  const out = [];
+  if (root.notes) out.push(...root.notes.split('\n').filter(l => l.trim()).map(l => `*${mdInline(l)}*`), '');
+  const walk = (t, depth) => {
+    const pad = '  '.repeat(depth);
+    out.push(`${pad}- ${mdInline(t.title)}`);
+    if (t.notes) t.notes.split('\n').filter(l => l.trim()).forEach(l => out.push(`${pad}  - *${mdInline(l)}*`));
+    t.children.forEach(c => walk(c, depth + 1));
+  };
+  root.children.forEach(c => walk(c, 0));
+  if (root.floating.length) {
+    out.push('', '### Argomenti liberi', '');
+    root.floating.forEach(c => walk(c, 0));
+  }
+  return out.join('\n');
+}
+// Una flashcard per ogni nodo con sottopunti: “elenca i sottopunti di…”
+function xmindCards(root, nbId, secId) {
+  const cards = [];
+  const walk = (t, path) => {
+    const here = [...path, t.title];
+    if (t.children.length) {
+      const back = t.children.map(c => `- ${mdInline(c.title)}`).join('\n');
+      cards.push(newCard(nbId, { front: `**${here.map(mdInline).join(' › ')}**\n\n*Quali sono i sottopunti?*`, back, sectionId: secId }));
+    }
+    t.children.forEach(c => walk(c, here));
+  };
+  walk(root, []);
+  root.floating.forEach(f => walk(f, [root.title]));
+  return cards;
+}
+
+/* ---------------------------------------------------------------------
+   Link utili (modificabili, sincronizzati)
+   --------------------------------------------------------------------- */
+const DEFAULT_LINKS = [
+  ['def-studyhub', 'Le tue app', 'StudyHub', 'https://metallia13-ctrl.github.io/Study-hub/', 'Il tuo planner di studio'],
+  ['def-gemini', 'Le tue app', 'Gemini', 'https://gemini.google.com/', ''],
+  ['def-notebooklm', 'Le tue app', 'NotebookLM', 'https://notebooklm.google.com/', 'Per riassumere e formattare le fonti'],
+  ['def-drive', 'Le tue app', 'Google Drive', 'https://drive.google.com/', 'Qui c’è la cartella della sincronizzazione'],
+  ['def-pubmed', 'Medicina', 'PubMed', 'https://pubmed.ncbi.nlm.nih.gov/', 'Articoli scientifici'],
+  ['def-msd', 'Medicina', 'Manuale MSD, versione per professionisti', 'https://www.msdmanuals.com/it-it/professionale', 'Clinica in italiano'],
+  ['def-medscape', 'Medicina', 'Medscape Reference', 'https://reference.medscape.com/', 'Malattie e farmaci, in inglese'],
+  ['def-radiopaedia', 'Medicina', 'Radiopaedia', 'https://radiopaedia.org/', 'Casi e immagini radiologiche'],
+  ['def-teachme', 'Medicina', 'TeachMeAnatomy', 'https://teachmeanatomy.info/', 'Anatomia illustrata'],
+  ['def-aifa', 'Medicina', 'Banca dati farmaci AIFA', 'https://medicinali.aifa.gov.it/', 'Schede tecniche e foglietti illustrativi'],
+  ['def-aistudio', 'Impostazioni dell’app', 'Google AI Studio', 'https://aistudio.google.com/', 'Dove si crea la chiave API di Gemini'],
+  ['def-appsscript', 'Impostazioni dell’app', 'Google Apps Script', 'https://script.google.com/', 'Lo script della sincronizzazione']
+];
+async function ensureDefaultLinks() {
+  if (localStorage.getItem('nb-links-seeded')) return;
+  const tombs = new Set((await DB.all('deleted')).map(t => t.id));
+  const recs = DEFAULT_LINKS
+    .filter(([id]) => !state.links.some(l => l.id === id) && !tombs.has(`links:${id}`))
+    .map(([id, group, title, url, note], i) => ({ id, notebookId: '_links', group, title, url, note, order: i, created: 1, updated: 1 }));
+  if (recs.length) { await DB.bulkPut('links', recs); state.links.push(...recs); }
+  localStorage.setItem('nb-links-seeded', '1');
+}
+async function saveLink(l) {
+  l.updated = Date.now();
+  await DB.put('links', l);
+  const i = state.links.findIndex(x => x.id === l.id);
+  if (i < 0) state.links.push(l); else state.links[i] = l;
+  scheduleSync();
+}
+const linkHost = url => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
+
+function viewLinks() {
+  const groups = [];
+  [...state.links].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.created - b.created).forEach(l => {
+    let g = groups.find(x => x.name === (l.group || 'Altri'));
+    if (!g) { g = { name: l.group || 'Altri', items: [] }; groups.push(g); }
+    g.items.push(l);
+  });
+  setView(`
+    <header class="page-head">
+      <div><h1>Link utili</h1><p class="lede">Si aprono in una nuova scheda. Puoi aggiungere, modificare ed eliminare quelli che vuoi.</p></div>
+      <button class="btn primary" data-act="add-link">Aggiungi un link</button>
+    </header>
+    ${groups.length ? groups.map(g => `
+      <h2 class="sub">${esc(g.name)}</h2>
+      <ul class="list">${g.items.map(l => `
+        <li class="link-row">
+          <a class="row" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">
+            <span class="row-main"><span class="row-title">${esc(l.title)}</span>
+            <span class="row-sub">${esc(l.note || linkHost(l.url))}</span></span>
+            <span class="ext" aria-hidden="true">↗</span>
+          </a>
+          <button class="btn sm ghost" data-edit="${l.id}" aria-label="Modifica ${esc(l.title)}">Modifica</button>
+        </li>`).join('')}</ul>`).join('') : '<div class="empty"><p>Nessun link salvato.</p></div>'}
+  `);
+  on('[data-act="add-link"]', 'click', async () => { if (await linkSheet()) route(); });
+  on('[data-edit]', 'click', async e => { if (await linkSheet(state.links.find(l => l.id === e.currentTarget.dataset.edit))) route(); });
+}
+
+function linkSheet(link = null) {
+  return new Promise(resolve => {
+    const root = $('#modalRoot');
+    const groups = [...new Set(state.links.map(l => l.group).filter(Boolean))];
+    root.innerHTML = `
+      <div class="overlay">
+        <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="lkTitle">
+          <h2 id="lkTitle">${link ? 'Modifica il link' : 'Nuovo link'}</h2>
+          <label class="field"><span>Nome</span><input class="input" id="lkName" value="${esc(link?.title || '')}" placeholder="Es. Atlante di istologia"></label>
+          <label class="field"><span>Indirizzo</span><input class="input" id="lkUrl" type="url" inputmode="url" value="${esc(link?.url || '')}" placeholder="https://…" spellcheck="false"></label>
+          <label class="field"><span>Gruppo</span><input class="input" id="lkGroup" list="lkGroups" value="${esc(link?.group || groups[0] || '')}" placeholder="Es. Anatomia">
+            <datalist id="lkGroups">${groups.map(g => `<option value="${esc(g)}">`).join('')}</datalist></label>
+          <label class="field"><span>Nota, facoltativa</span><input class="input" id="lkNote" value="${esc(link?.note || '')}"></label>
+          <div class="modal-actions">
+            ${link ? '<button class="btn ghost danger" data-lk="del" type="button">Elimina</button>' : ''}
+            <button class="btn ghost" data-lk="no" type="button">Annulla</button>
+            <button class="btn primary" data-lk="ok" type="button">Salva</button>
+          </div>
+        </div>
+      </div>`;
+    const close = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(false); } };
+    document.addEventListener('keydown', onKey, true);
+    $('[data-lk="no"]', root).onclick = () => close(false);
+    const del = $('[data-lk="del"]', root);
+    if (del) del.onclick = async () => { await removeRecords([{ store: 'links', rec: link }]); toast('Link eliminato'); close(true); };
+    $('[data-lk="ok"]', root).onclick = async () => {
+      const title = $('#lkName', root).value.trim();
+      let url = $('#lkUrl', root).value.trim();
+      if (!title) { toast('Scrivi un nome'); $('#lkName', root).focus(); return; }
+      if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
+      try { new URL(url); } catch { toast('Indirizzo non valido'); $('#lkUrl', root).focus(); return; }
+      const now = Date.now();
+      const rec = link || { id: uid(), notebookId: '_links', order: state.links.length, created: now };
+      Object.assign(rec, { title, url, group: $('#lkGroup', root).value.trim() || 'Altri', note: $('#lkNote', root).value.trim() });
+      await saveLink(rec);
+      toast('Link salvato');
+      close(true);
+    };
+    setTimeout(() => $('#lkName', root).focus(), 40);
+  });
+}
+
+/* ---------------------------------------------------------------------
+   Guida all’uso
+   --------------------------------------------------------------------- */
+function viewGuide() {
+  const sec = (title, body, open = false) => `<details class="guide" ${open ? 'open' : ''}><summary>${title}</summary><div class="notes guide-body">${body}</div></details>`;
+  setView(`
+    <header class="page-head"><div><h1>Guida all’uso</h1>
+      <p class="lede">Tocca un argomento per aprirlo.</p></div></header>
+    ${sec('Primi passi', `
+      <ol>
+        <li>Crea un <strong>notebook</strong> per ogni materia (Notebook → Nuovo notebook).</li>
+        <li>In <strong>Importa</strong> incolla del testo, carica un PDF o una mappa XMind: l’app crea le sezioni.</li>
+        <li>Apri una sezione e studiala in <strong>Leggi</strong>, poi mettiti alla prova con Cloze, Pagina bianca, Domande o Flashcard.</li>
+        <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
+      </ol>
+      <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Importare testo, PDF e mappe', `
+      <ul>
+        <li><strong>Testo</strong>: incollalo; se è lungo viene diviso in più sezioni.</li>
+        <li><strong>PDF</strong>: dividilo ogni tot pagine oppure negli <strong>intervalli che scegli tu</strong>, una riga per sezione, per esempio <code>1-12 Introduzione</code>. Se il PDF ha l’indice nei segnalibri, “Usa i capitoli del PDF” li compila da solo.</li>
+        <li><strong>Estrai il testo</strong> va bene per i PDF in cui il testo si può selezionare; <strong>fai leggere all’AI</strong> funziona anche con scansioni e schemi.</li>
+        <li><strong>Mantieni le immagini</strong> ritaglia le figure del PDF e le aggiunge in fondo alla sezione. Gli schemi disegnati come linee, non come immagini, non vengono riconosciuti: per quelli usa “Figura da PDF” in Modifica.</li>
+        <li><strong>XMind</strong>: ogni foglio della mappa diventa una sezione con elenchi annidati; se vuoi, ogni nodo con sottopunti diventa una flashcard.</li>
+        <li>Da altre app puoi usare <strong>Condividi → Notebook</strong> per mandare testo o PDF.</li>
+      </ul>`)}
+    ${sec('Leggere ed evidenziare', `
+      <ul>
+        <li>Seleziona del testo: compare una barra con <strong>Cloze</strong>, cinque colori di evidenziatore, <u>sottolineatura</u>, ✕ per togliere la formattazione e <strong>Flashcard</strong>. Sul PC c’è anche il menu del tasto destro.</li>
+        <li>Dopo ogni modifica puoi toccare <strong>Annulla</strong> nell’avviso in basso.</li>
+        <li>Tocca un’immagine per vederla a schermo intero o creare un’image occlusion.</li>
+        <li>In Impostazioni → Lettura e aspetto scegli tema (anche “Carta”, più riposante), carattere, dimensione e interlinea.</li>
+      </ul>`)}
+    ${sec('Modificare gli appunti', `
+      <ul>
+        <li>Gli appunti sono in Markdown: <code>**grassetto**</code>, <code>==cloze==</code>, <code>- elenco</code>, tabelle con <code>|</code>.</li>
+        <li>Negli elenchi, <strong>Invio</strong> crea una nuova voce; Invio su una voce vuota torna indietro di un livello. Usa <strong>Rientra</strong> e <strong>Riduci rientro</strong> (sul PC Tab e Maiusc+Tab).</li>
+        <li>Puoi aggiungere immagini dalla galleria o dalla fotocamera, ritagliare una figura da un PDF o <strong>scrivere a mano</strong>.</li>
+        <li>Sul PC puoi incollare direttamente uno screenshot nel testo.</li>
+      </ul>`)}
+    ${sec('Modalità di studio', `
+      <ul>
+        <li><strong>Cloze</strong>: i termini evidenziati per il cloze sono coperti; toccali per controllare.</li>
+        <li><strong>Pagina bianca</strong>: scrivi tutto quello che ricordi, poi confronta; l’AI può darti un punteggio e dirti cosa manca.</li>
+        <li><strong>Domande</strong>: rispondi a mente, poi segna se la sapevi.</li>
+        <li>Alla fine valuti con <strong>Di nuovo, Difficile, Bene, Facile</strong>: il prossimo ripasso si calcola da qui.</li>
+      </ul>`)}
+    ${sec('Flashcard', `
+      <ul>
+        <li>Si creano dalla selezione in Leggi, dalla scheda Flashcard della sezione (dai cloze, dalle domande o con l’AI) o da Flashcard → notebook → Nuova flashcard.</li>
+        <li>Nel fronte e nel retro puoi usare elenchi puntati, grassetto, evidenziatore, immagini e scrittura a mano.</li>
+        <li>Il ripasso segue l’algoritmo di <strong>Anki</strong>: passi di 1 e 10 minuti, poi i giorni crescono in base alle tue risposte.</li>
+        <li>Con <strong>Lavagna</strong> scrivi la risposta a mano prima di girare la carta.</li>
+        <li>Quando premi “Di nuovo” puoi scrivere perché hai sbagliato: la nota comparirà al ripasso successivo.</li>
+        <li><strong>Image occlusion</strong>: copri le etichette di uno schema, ogni riquadro diventa una carta.</li>
+      </ul>`)}
+    ${sec('Pennino e tablet', `
+      <ul>
+        <li>Lo spessore segue la pressione del pennino.</li>
+        <li>Quando l’app riconosce il pennino ignora il palmo appoggiato sullo schermo.</li>
+        <li>Il tasto gomma del pennino cancella.</li>
+      </ul>`)}
+    ${sec('Sincronizzazione con Drive', `
+      <ol>
+        <li>Su script.google.com crea un nuovo progetto e incolla <code>sync-notebook.gs</code>; cambia la frase segreta.</li>
+        <li>Esegui la funzione <code>autorizza</code> e consenti l’accesso a Drive.</li>
+        <li>Distribuisci come app web con accesso “Chiunque” e copia l’indirizzo che finisce con <code>/exec</code>.</li>
+        <li>Incollalo in Impostazioni con la frase segreta e premi “Prova il collegamento”.</li>
+      </ol>
+      <p>La sincronizzazione parte da sola all’apertura e dopo ogni modifica. Per ogni elemento vince la modifica più recente.</p>`)}
+    ${sec('StudyHub', `
+      <p>Quando hai appreso tutte le flashcard di una sezione, o premi “Segna come studiata in StudyHub”, l’argomento viene passato a StudyHub che ne pianifica i ripassi. Le sezioni gestite da StudyHub non compaiono nel Ripasso del Notebook.</p>`)}
+    ${sec('Scorciatoie da tastiera', `
+      <ul>
+        <li><strong>Spazio</strong>: mostra la risposta, oppure rivela il prossimo cloze.</li>
+        <li><strong>1, 2, 3, 4</strong>: Di nuovo, Difficile, Bene, Facile.</li>
+        <li><strong>Ctrl+Z</strong>: annulla l’ultima risposta o l’ultimo tratto a mano.</li>
+        <li><strong>Tab / Maiusc+Tab</strong>: rientro negli elenchi.</li>
+        <li><strong>Esc</strong>: chiude le finestre.</li>
+      </ul>`)}
+    ${sec('Backup e sicurezza dei dati', `
+      <p>I dati sono salvati nel browser di ogni dispositivo e, se la attivi, su Drive. In Impostazioni → Backup puoi esportare un file con tutto. Le chiavi API restano solo sul dispositivo.</p>`)}
+  `);
 }
 
 /* ---------------------------------------------------------------------
@@ -4461,6 +5017,8 @@ async function init() {
     state.sections = await DB.all('sections');
     state.cards = await DB.all('cards');
     state.images = await DB.all('images');
+    state.links = await DB.all('links');
+    await ensureDefaultLinks();
   } catch (err) {
     setView(`<div class="empty"><p>Non riesco ad aprire l’archivio del browser: ${esc(err.message || err)}. In navigazione privata potrebbe non essere disponibile.</p></div>`);
     return;
