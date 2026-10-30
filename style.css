@@ -2339,3 +2339,7 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 .cz-hint-text[hidden] { display: none; }
 .notes.hint-edit mark.cz { outline: 2px dashed var(--warn); outline-offset: 2px; cursor: copy; }
 [data-act="hints"].on { background: var(--warn); color: var(--bg); }
+
+/* v3.20: dentro un cloze nascosto non si vedono evidenziature o sottolineature */
+.cloze-mode mark.cz.hidden mark,
+.cloze-mode mark.cz.hidden u { background: transparent !important; text-decoration: none !important; box-shadow: none !important; }

@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.19';
+const APP_VERSION = '3.20';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -240,10 +240,21 @@ function newSection(nbId, { title, md, questions, source, groupId } = {}) {
    --------------------------------------------------------------------- */
 function repairClozeLine(line) {
   if (line.indexOf('==') < 0) return line;
+  // "==" finito dentro l’apertura di un’evidenziatura: {{u==|testo → {{u|testo
+  line = line.replace(/\{\{([uygbpovrtl])==\|/g, '{{$1|');
   let out = '';
-  let open = -1;
-  let boldAt = -1;
-  const wraps = [];
+  let open = -1;        // dove si è aperto il cloze (in out)
+  let boldAt = -1;      // dove si è aperto il grassetto
+  const wraps = [];     // evidenziature aperte {{x|
+  let dropWrap = 0;     // chiusure }} già fatte in anticipo, da saltare più avanti
+  let dropBold = false;
+  // chiude il cloze; prima chiude ciò che si era aperto dentro, così niente si accavalla
+  const closeCloze = () => {
+    while (wraps.length && wraps[wraps.length - 1] > open) { wraps.pop(); out += '}}'; dropWrap++; }
+    if (boldAt > open) { out += '**'; boldAt = -1; dropBold = true; }
+    out += '==';
+    open = -1;
+  };
   let i = 0;
   while (i < line.length) {
     const ch = line[i];
@@ -254,29 +265,54 @@ function repairClozeLine(line) {
     if (line.startsWith('==', i) && line[i + 2] !== '=' && line[i - 1] !== '=') {
       const next = line[i + 2];
       const prev = line[i - 1];
-      if (open < 0 && next && !/\s/.test(next)) { open = out.length; out += '=='; i += 2; continue; }
-      if (open >= 0 && prev && !/\s/.test(prev)) { out += '=='; open = -1; i += 2; continue; }
-      out += '=='; i += 2; continue;
+      const nextOk = next && !/\s/.test(next);
+      const prevOk = prev && !/\s/.test(prev);
+      if (open < 0) {
+        if (nextOk) { open = out.length; out += '=='; }
+        else if (!prevOk) out += '=='; // "a == b": è un segno, non un cloze
+        // altrimenti è una chiusura senza apertura: la tolgo
+      } else if (prevOk) {
+        closeCloze();
+      } else if (nextOk) {
+        // " ==parola" dentro un cloze aperto: il precedente non era stato chiuso
+        const ws = (out.match(/\s+$/) || [''])[0];
+        out = out.slice(0, out.length - ws.length);
+        closeCloze();
+        out += ws;
+        open = out.length;
+        out += '==';
+      } else out += '==';
+      i += 2;
+      continue;
     }
     if (line.startsWith('**', i)) {
-      if (boldAt < 0) boldAt = out.length;
-      else {
-        if (open >= 0 && boldAt < open) { out += '=='; open = -1; }
+      if (boldAt < 0) {
+        if (dropBold) { dropBold = false; i += 2; continue; }
+        boldAt = out.length;
+        out += '**';
+      } else {
+        if (open >= 0 && boldAt < open) closeCloze();
         boldAt = -1;
+        out += '**';
       }
-      out += '**'; i += 2; continue;
+      i += 2;
+      continue;
     }
     const w = /^\{\{[uygbpovrtl]\|/.exec(line.slice(i, i + 4));
-    if (w) { wraps.push(out.length); out += w[0]; i += w[0].length; continue; }
-    if (line.startsWith('}}', i) && wraps.length) {
-      const at = wraps.pop();
-      if (open >= 0 && at < open) { out += '=='; open = -1; }
-      out += '}}'; i += 2; continue;
+    if (w) { wraps.push(out.length); out += w[0]; i += 4; continue; }
+    if (line.startsWith('}}', i)) {
+      if (dropWrap > 0) { dropWrap--; i += 2; continue; }
+      if (wraps.length) {
+        const at = wraps.pop();
+        if (open >= 0 && at < open) closeCloze();
+      }
+      out += '}}';
+      i += 2;
+      continue;
     }
     out += ch;
     i++;
   }
-  if (open >= 0) out = out.slice(0, open) + out.slice(open + 2);
   return out;
 }
 function repairClozes(md) {
