@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.12';
+const APP_VERSION = '3.17';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -82,7 +82,7 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 5);
+      const req = indexedDB.open(DB_NAME, 6);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('notebooks')) db.createObjectStore('notebooks', { keyPath: 'id' });
@@ -100,6 +100,8 @@ const DB = {
         // v5: PDF da leggere (metadati e annotazioni) e i loro file, solo su questo dispositivo
         if (!db.objectStoreNames.contains('pdfs')) db.createObjectStore('pdfs', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('pdfblobs')) db.createObjectStore('pdfblobs', { keyPath: 'id' });
+        // v6: testo dei PDF per la ricerca, solo su questo dispositivo
+        if (!db.objectStoreNames.contains('pdftext')) db.createObjectStore('pdftext', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('images')) {
           const im = db.createObjectStore('images', { keyPath: 'id' });
           im.createIndex('notebookId', 'notebookId');
@@ -295,12 +297,14 @@ function nextSrs(srs, q, mode = '') {
    --------------------------------------------------------------------- */
 const clozeRe = () => /==(?![=\s])([^\n]*?[^\s=])==/g;
 const countCloze = md => ((md || '').match(clozeRe()) || []).length;
-const stripCloze = md => (md || '').replace(clozeRe(), '$1');
+// ==termine::suggerimento==: il suggerimento è facoltativo
+const splitHint = t => { const i = t.indexOf('::'); return i > 0 ? [t.slice(0, i), t.slice(i + 2).trim()] : [t, '']; };
+const stripCloze = md => (md || '').replace(clozeRe(), (m, t) => splitHint(t)[0]);
 
 function renderMd(md) {
   const src = renderXrefs(extractHtmlBlocks(md || '')
     .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`));
-  const src2 = renderMarks(src).replace(clozeRe(), (m, t) => `<mark class="cz">${t}</mark>`);
+  const src2 = renderMarks(src).replace(clozeRe(), (m, t) => { const [term, hint] = splitHint(t); return `<mark class="cz"${hint ? ` data-hint="${esc(hint)}"` : ''}>${term}</mark>`; });
   let html;
   const mk = window.marked;
   if (mk && (mk.parse || typeof mk === 'function')) {
@@ -672,7 +676,7 @@ function toast(msg, kind = '', action = null) {
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, action ? 6000 : 3400);
 }
 
-function modal({ title, text = '', input = false, multiline = false, value = '', placeholder = '', confirm = 'Conferma', cancel = 'Annulla', danger = false }) {
+function modal({ title, text = '', input = false, multiline = false, allowEmpty = false, value = '', placeholder = '', confirm = 'Conferma', cancel = 'Annulla', danger = false }) {
   return new Promise(resolve => {
     const root = $('#modalRoot');
     const prevFocus = document.activeElement;
@@ -699,7 +703,7 @@ function modal({ title, text = '', input = false, multiline = false, value = '',
     const ok = () => {
       if (input) {
         const v = $('#mInput').value.trim();
-        if (!v) { $('#mInput').focus(); return; }
+        if (!v && !allowEmpty) { $('#mInput').focus(); return; }
         close(v);
       } else close(true);
     };
@@ -805,7 +809,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -828,12 +832,13 @@ function route() {
     case 'nb': return viewNotebook(p1);
     case 'sec': return p2 === 'pdf' ? go(`#/pdfs/${p1}`) : viewSection(p1, p2);
     case 'import': return viewImport(p1, p2);
-    case 'review': return viewReview();
+    case 'review': return viewReview(p1 === 'exam');
     case 'settings': return viewSettings();
     case 'cards': return viewCardsHome();
     case 'links': return viewLinks();
     case 'guide': return viewGuide();
     case 'more': return viewMore();
+    case 'search': return viewSearch();
     case 'calendar': return viewCalendar();
     case 'clinic': return viewClinic();
     case 'glossary': return viewGlossary();
@@ -876,7 +881,7 @@ function viewNotebooks() {
         </span>
         <span class="btn primary sm">${dueSecs ? 'Ripassa' : 'Studia'}</span>
       </a>` : ''}
-    ${nbs.length ? '<input type="search" class="input search" id="globalSearch" placeholder="Cerca in tutti i notebook e le flashcard" aria-label="Cerca in tutti i notebook e le flashcard"><div id="searchOut" hidden></div>' : ''}
+    ${nbs.length ? '<input type="search" class="input search" id="globalSearch" placeholder="Cerca in appunti, flashcard, PDF, glossario…" aria-label="Cerca in appunti, flashcard, PDF, glossario e note cliniche"><div id="searchOut" hidden></div>' : ''}
     ${nbs.length ? `
       <ul class="list" id="nbList">
         ${nbs.map(nb => {
@@ -906,23 +911,7 @@ function viewNotebooks() {
     if (nb) go(`#/nb/${nb.id}`);
   });
   const gs = $('#globalSearch');
-  if (gs) {
-    let t;
-    const run = () => {
-      const q = gs.value.trim().toLowerCase();
-      sessionStorage.setItem('nb-search', gs.value);
-      const out = $('#searchOut');
-      const list = $('#nbList');
-      if (!out || !list) return;
-      if (q.length < 2) { out.hidden = true; list.hidden = false; return; }
-      out.innerHTML = searchResultsHtml(q);
-      out.hidden = false;
-      list.hidden = true;
-    };
-    gs.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 150); });
-    const last = sessionStorage.getItem('nb-search');
-    if (last) { gs.value = last; run(); }
-  }
+  if (gs && $('#searchOut')) bindUnifiedSearch(gs, $('#searchOut'), $('#nbList'));
 }
 
 /* ---------------------------------------------------------------------
@@ -1486,7 +1475,7 @@ function modeRead(sec, body) {
         <p>Questa sezione è stata salvata senza formattazione AI.</p>
         <button class="btn" data-act="fmt">Formatta con ${AI.name()}</button>
       </div>` : ''}
-    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost ink-btn" data-act="ink" hidden>Scrivi a mano</button><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
+    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost ink-btn" data-act="listen" hidden>Ascolta</button><button class="btn sm ghost ink-btn" data-act="ink" hidden>Scrivi a mano</button><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
       <div class="empty"><p>Sezione vuota.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`}
     ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona del testo per evidenziarlo, sottolinearlo, farne un cloze o una flashcard. Sul PC puoi anche usare il tasto destro.</p>' : ''}
     ${sec.studyhub ? `
@@ -1505,12 +1494,14 @@ function modeRead(sec, body) {
   `;
   const notesEl = $('.notes', body);
   if (notesEl) {
-    bindFoldAll($('[data-act="fold-all"]', body), setupFolds(notesEl, sec.id));
+    const readFolds = setupFolds(notesEl, sec.id);
+    bindFoldAll($('[data-act="fold-all"]', body), readFolds);
     bindImagesToggle($('[data-act="imgs"]', body), prepareImages(notesEl, sec).count);
     markGlossary(notesEl);
     bindGlossaryClicks(notesEl);
     setupReadingTools(notesEl, sec);
     setupNotesInk(notesEl, sec, $('[data-act="ink"]', body));
+    setupListen(notesEl, $('[data-act="listen"]', body), readFolds);
     const bl = backlinksOf(sec);
     if (bl.length) notesEl.insertAdjacentHTML('afterend', `<h2 class="sub backlinks">Pagine che rimandano qui</h2><ul class="list">${bl.map(s => sectionRow(s, { showNb: true })).join('')}</ul>`);
   }
@@ -1564,6 +1555,7 @@ function modeCloze(sec, body) {
       <span id="czCount" aria-live="polite">0 di ${n} rivelati</span>
       <button class="btn sm" data-act="reveal-all">Rivela tutto</button>
       <button class="btn sm ghost" data-act="hide-all">Nascondi di nuovo</button>
+      <button class="btn sm ghost" data-act="hints" aria-pressed="false" title="Tocca un termine per scrivere il suo suggerimento">Suggerimenti</button>
       <button class="btn sm ghost" data-act="fold-all" hidden></button>
       <button class="btn sm ghost" data-act="imgs" hidden></button>
     </div>
@@ -1605,9 +1597,53 @@ function modeCloze(sec, body) {
     if (r === marks.length && !slot.innerHTML) gradeBar(sec, slot, { mode: 'cloze' });
   };
   marks.forEach(hide);
+  // suggerimenti: un “?” accanto ai termini che ne hanno uno
+  const article = $('.notes', body);
+  $$('mark.cz[data-hint]', article).forEach(m => {
+    const w = document.createElement('span');
+    w.className = 'cz-hint-wrap';
+    w.innerHTML = `<button type="button" class="cz-hint" aria-expanded="false" aria-label="Mostra il suggerimento">?</button><span class="cz-hint-text" hidden></span>`;
+    $('.cz-hint-text', w).textContent = m.dataset.hint;
+    m.after(w);
+  });
+  article.addEventListener('click', e => {
+    const b = e.target.closest('.cz-hint');
+    if (!b) return;
+    const t = b.nextElementSibling;
+    t.hidden = !t.hidden;
+    b.setAttribute('aria-expanded', !t.hidden);
+    b.classList.toggle('open', !t.hidden);
+  });
+  let hintEdit = false;
+  const hintBtn = $('[data-act="hints"]', body);
+  hintBtn.addEventListener('click', () => {
+    hintEdit = !hintEdit;
+    hintBtn.setAttribute('aria-pressed', hintEdit);
+    hintBtn.classList.toggle('on', hintEdit);
+    hintBtn.textContent = hintEdit ? 'Fine suggerimenti' : 'Suggerimenti';
+    article.classList.toggle('hint-edit', hintEdit);
+    if (hintEdit) toast('Tocca un termine per scrivere o cambiare il suo suggerimento');
+  });
+  const editHint = async m => {
+    const textMarks = $$('mark.cz', article);
+    const idx = textMarks.indexOf(m);
+    const r = clozeMatchFor(sec.md, idx, m.textContent);
+    if (!r) { toast('Non trovo questo termine negli appunti: aggiungi il suggerimento da Modifica', 'err'); return; }
+    const [term, old] = splitHint(r.inner);
+    const v = await modal({ title: 'Suggerimento', text: `Per “${term}”. Compare come “?” accanto al termine nascosto, e al posto dei puntini nelle flashcard. Lascia vuoto per toglierlo.`, input: true, value: old, placeholder: 'Es. ormone che abbassa la glicemia', confirm: 'Salva', allowEmpty: true });
+    if (v === null) return;
+    const clean = v.trim().replace(/==/g, '=').replace(/\n/g, ' ');
+    sec.md = sec.md.slice(0, r.start) + `==${term}${clean ? `::${clean}` : ''}==` + sec.md.slice(r.end);
+    await saveSection(sec);
+    const y = window.scrollY;
+    route();
+    window.scrollTo(0, y);
+    toast(clean ? 'Suggerimento salvato' : 'Suggerimento tolto');
+  };
   body.addEventListener('click', e => {
     const m = e.target.closest('mark.cz, .cz-io');
     if (!m || !marks.includes(m)) return;
+    if (hintEdit && m.matches('mark.cz')) { editHint(m); return; }
     if (m.classList.contains('hidden')) reveal(m);
     else { hide(m); update(); }
   });
@@ -1931,6 +1967,7 @@ function modeEdit(sec, body) {
     ${tagFieldHtml('edTags', tagsOf(sec))}
     <div class="edit-tools" role="toolbar" aria-label="Formattazione">
       <button class="btn sm" data-wrap="==" title="Nasconde il testo selezionato nella modalità Cloze">Cloze</button>
+      <button class="btn sm" data-act="hint" title="Aggiunge un suggerimento al cloze dove si trova il cursore">Suggerimento</button>
       <button class="btn sm" data-wrap="**">Grassetto</button>
       <button class="btn sm" data-mark="u">Sottolinea</button>
       <span class="hl-pick" role="group" aria-label="Evidenzia">${HL_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}</span>
@@ -1974,6 +2011,24 @@ function modeEdit(sec, body) {
     setTimeout(() => jumpInTextarea($('#edMd', body), jmp), 60);
   }
   bindTagField(body, 'edTags');
+  on('[data-act="hint"]', 'click', async () => {
+    const { selectionStart: s0, selectionEnd: s1 } = ta;
+    let r = clozeAround(ta.value, s0);
+    let term = '';
+    let old = '';
+    if (r) [term, old] = splitHint(r.inner);
+    else {
+      term = ta.value.slice(s0, s1).trim();
+      if (!term || /\n/.test(term)) { toast('Metti il cursore dentro un cloze (==termine==) o seleziona il testo da nascondere'); return; }
+      r = { start: s0, end: s1 };
+    }
+    const v = await modal({ title: 'Suggerimento', text: `Per “${term}”: una domanda o un indizio che compare come “?” accanto al termine nascosto. Lascia vuoto per toglierlo.`, input: true, value: old, placeholder: 'Es. ormone che abbassa la glicemia', confirm: 'Salva', allowEmpty: true });
+    if (v === null) return;
+    const clean = v.trim().replace(/==/g, '=').replace(/\n/g, ' ');
+    ta.focus();
+    ta.setRangeText(`==${term}${clean ? `::${clean}` : ''}==`, r.start, r.end, 'end');
+    refresh();
+  }, body);
   on('[data-act="html"]', 'click', async () => {
     const { selectionStart: s0, selectionEnd: s1 } = ta;
     const code = await modal({ title: 'Blocco HTML', text: 'Incolla il codice HTML, anche una pagina intera con il suo stile. Si vede in un riquadro dentro gli appunti, separato dal resto dell’app.', input: true, multiline: true, placeholder: '<div>…</div>', confirm: 'Inserisci' });
@@ -2138,22 +2193,29 @@ function modeEdit(sec, body) {
 /* ---------------------------------------------------------------------
    Vista: ripasso
    --------------------------------------------------------------------- */
-function viewReview() {
+function viewReview(onlyExam = false) {
   const t = todayStr();
-  const due = state.sections.filter(isDue).sort(sortDue);
-  const upcoming = state.sections.filter(s => s.srs?.due && s.srs.due > t).sort(sortDue).slice(0, 12);
-  const fresh = state.sections.filter(s => !s.studyhub && !s.srs?.due && s.md.trim()).sort((a, b) => a.order - b.order);
+  const ex = examRec();
+  if (onlyExam && !ex) onlyExam = false;
+  const pool = onlyExam ? state.sections.filter(s => inExam(s, ex)) : state.sections;
+  const due = pool.filter(isDue).sort(sortDue);
+  const upcoming = pool.filter(s => s.srs?.due && s.srs.due > t).sort(sortDue).slice(0, 12);
+  const fresh = pool.filter(s => !s.studyhub && !s.srs?.due && s.md.trim()).sort((a, b) => a.order - b.order);
   const linked = state.sections.filter(s => s.studyhub).length;
   const cc = cardCounts(state.cards);
   const cardsNow = cc.n + cc.l + cc.r;
   setView(`
     <header class="page-head">
       <div>
-        <h1>Ripasso</h1>
-        <p class="lede">${due.length ? `${due.length} ${due.length === 1 ? 'sezione' : 'sezioni'} da ripassare oggi.` : 'Niente da ripassare oggi.'}</p>
+        <h1>${onlyExam ? `Ripasso: ${esc(ex.name)}` : 'Ripasso'}</h1>
+        <p class="lede">${due.length ? `${due.length} ${due.length === 1 ? 'sezione' : 'sezioni'} da ripassare oggi.` : 'Niente da ripassare oggi.'}${onlyExam ? ' <a href="#/review">Mostra tutto</a>' : ''}</p>
       </div>
-      ${due.length ? '<button class="btn primary" data-act="start">Inizia il ripasso</button>' : ''}
+      <div class="actions">
+        ${due.length ? '<button class="btn primary" data-act="start">Inizia il ripasso</button>' : ''}
+        ${ex ? '' : '<button class="btn ghost" data-act="exam-new">Modalità esame</button>'}
+      </div>
     </header>
+    ${examBannerHtml(onlyExam ? 'review-exam' : 'review')}
     ${cardsNow ? `
       <div class="callout">
         <p>Hai anche ${cardsNow} flashcard da studiare.</p>
@@ -2174,6 +2236,7 @@ function viewReview() {
         <a class="btn primary" href="#/import">Importa</a>
       </div>` : ''}
   `);
+  bindExamBanner();
   on('[data-review]', 'click', () => { state.fromReview = true; });
   on('[data-act="start"]', 'click', () => {
     state.fromReview = true;
@@ -2739,11 +2802,13 @@ function viewSettings() {
 
     <section class="block">
       <h2>Backup</h2>
-      <p class="hint">Un file con tutti i notebook, le sezioni e le flashcard: utile come copia di sicurezza, anche se usi la sincronizzazione.</p>
+      <p class="hint">Un file unico con notebook, sezioni, flashcard, immagini, PDF con annotazioni e segnalibri, glossario, note cliniche, prompt, statistiche e preferenze di lettura. Le chiavi dell’AI e la frase segreta di Drive restano fuori. Tienilo da parte prima di cambiare telefono.</p>
       <div class="inline">
-        <button class="btn" data-act="export">Esporta backup</button>
-        <label class="btn">Importa backup<input type="file" id="bkFile" accept="application/json,.json" hidden></label>
+        <button class="btn primary" data-act="export-full">Backup completo</button>
+        <button class="btn" data-act="export-light">Backup senza i file PDF</button>
+        <label class="btn">Importa un backup<input type="file" id="bkFile" accept=".nbbackup,application/octet-stream,application/json,.json" hidden></label>
       </div>
+      <p class="hint" id="bkSize"></p>
       <p class="hint" id="usage"></p>
     </section>
 
@@ -2866,58 +2931,53 @@ function viewSettings() {
   const sample = $('.read-sample p');
   if (sample) sample.innerHTML = renderMarks(sample.innerHTML);
 
-  on('[data-act="export"]', 'click', async () => {
-    const images = [];
-    for (const im of state.images) {
-      if (!im.blob) continue;
-      const { blob, ...meta } = im;
-      images.push({ ...meta, data: await blobToBase64(blob) });
+  const pdfBytes = state.pdfs.filter(p => localPdfIds.has(p.id)).reduce((a, p) => a + (p.size || 0), 0);
+  const imgBytes = state.images.reduce((a, i) => a + (i.size || (i.blob && i.blob.size) || 0), 0);
+  $('#bkSize').textContent = `Backup completo: circa ${fmtSize(pdfBytes + imgBytes + 200000)}. Senza i file PDF: circa ${fmtSize(imgBytes + 200000)}.`;
+  const runExport = async (withPdf, btn) => {
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Preparo il file…';
+    try {
+      const { blob, name } = await buildBackup(withPdf);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      toast(`Backup pronto (${fmtSize(blob.size)})`);
+    } catch (err) {
+      toast(err.message || 'Backup non riuscito', 'err');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
     }
-    const data = { app: 'studyhub-notebook', version: 4, exported: new Date().toISOString(), notebooks: state.notebooks, sections: state.sections, cards: state.cards, links: state.links, images };
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `notebook-backup-${todayStr()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  });
+  };
+  on('[data-act="export-full"]', 'click', e => runExport(true, e.currentTarget));
+  on('[data-act="export-light"]', 'click', e => runExport(false, e.currentTarget));
   $('#bkFile').addEventListener('change', async e => {
     const file = e.target.files[0];
     e.target.value = '';
     if (!file) return;
     try {
-      const data = JSON.parse(await file.text());
-      if (data.app !== 'studyhub-notebook' || !Array.isArray(data.notebooks) || !Array.isArray(data.sections)) throw new Error('Questo file non è un backup del Notebook.');
+      const bk = await readBackup(file);
+      const d = bk.data;
+      const nPdf = (d.pdfs || []).length;
+      const nPdfFiles = bk.files.filter(f => f.kind === 'pdf').length;
       const ok = await modal({
         title: 'Importare il backup?',
-        text: `${data.notebooks.length} notebook, ${data.sections.length} sezioni e ${(data.cards || []).length} flashcard. Gli elementi con lo stesso identificativo vengono sostituiti, gli altri restano.`,
+        text: `${d.notebooks.length} notebook, ${d.sections.length} sezioni, ${(d.cards || []).length} flashcard${nPdf ? `, ${nPdf} PDF${nPdfFiles < nPdf ? ` (${nPdfFiles} con il file)` : ''}` : ''}. Gli elementi con lo stesso identificativo vengono sostituiti, gli altri restano.`,
         confirm: 'Importa'
       });
       if (!ok) return;
-      const now = Date.now();
-      const secs = data.sections.filter(s => s && s.id && s.notebookId).map(s => ({ ...normalizeRecord('sections', s), updated: now }));
-      const nbs = data.notebooks.filter(n => n && n.id).map(n => ({ ...n, updated: now }));
-      const cards = (Array.isArray(data.cards) ? data.cards : []).filter(c => c && c.id && c.notebookId).map(c => ({ ...normalizeRecord('cards', c), updated: now }));
-      const images = (Array.isArray(data.images) ? data.images : []).filter(i => i && i.id && i.data).map(({ data: b64, ...meta }) => ({ ...meta, blob: base64ToBlob(b64, meta.mime), updated: now }));
-      await DB.bulkPut('images', images);
-      images.forEach(i => forgetImageUrl(i.id));
-      const links = (Array.isArray(data.links) ? data.links : []).filter(l => l && l.id && l.url).map(l => ({ ...l, notebookId: '_links', updated: now }));
-      await DB.bulkPut('links', links);
-      await DB.bulkPut('notebooks', nbs);
-      await DB.bulkPut('sections', secs);
-      await DB.bulkPut('cards', cards);
-      state.notebooks = await DB.all('notebooks');
-      state.sections = await DB.all('sections');
-      state.cards = await DB.all('cards');
-      state.images = await DB.all('images');
-      state.links = await DB.all('links');
-      updateBadge();
-      scheduleSync();
+      toast('Importo il backup…');
+      await restoreBackup(bk);
       toast('Backup importato');
+      route();
     } catch (err) {
-      toast(err.message.startsWith('Unexpected') ? 'File non valido' : err.message, 'err');
+      toast(err.message && !err.message.startsWith('Unexpected') ? err.message : 'File non valido', 'err');
     }
   });
   if (navigator.storage?.estimate) {
@@ -3039,7 +3099,9 @@ const cardsOfSection = secId => state.cards.filter(c => c.sectionId === secId).s
 function newLeftToday(nbId) {
   const t = todayStr();
   const used = state.cards.filter(c => c.notebookId === nbId && c.srs.introduced === t).length;
-  return Math.max(0, (+S().newPerDay || 0) - used);
+  const ex = examRec();
+  const limit = ex && examNbIds(ex).has(nbId) ? +ex.newPerDay || 0 : +S().newPerDay || 0;
+  return Math.max(0, limit - used);
 }
 function cardCounts(list, { limitNew = true } = {}) {
   const now = Date.now();
@@ -3159,10 +3221,10 @@ function clozeCardsFromMd(md) {
     const re = clozeRe();
     const found = [];
     let m;
-    while ((m = re.exec(text))) found.push({ start: m.index, end: m.index + m[0].length, term: m[1] });
+    while ((m = re.exec(text))) { const [term, hint] = splitHint(m[1]); found.push({ start: m.index, end: m.index + m[0].length, term, hint }); }
     for (const f of found) {
       const masked = s => s.replace(clozeRe(), '___');
-      const front = masked(text.slice(0, f.start)) + '**[…]**' + masked(text.slice(f.end));
+      const front = masked(text.slice(0, f.start)) + (f.hint ? `**[${f.hint}]**` : '**[…]**') + masked(text.slice(f.end));
       out.push({ front: heading ? `*${heading}*\n\n${front}` : front, back: f.term });
     }
   }
@@ -3688,8 +3750,12 @@ function viewCardsHome() {
         <h1>Flashcard</h1>
         <p class="lede">${state.cards.length ? (total ? `${total} da studiare adesso.` : 'Niente da studiare adesso.') : 'Nessuna flashcard ancora.'}</p>
       </div>
-      ${total ? '<a class="btn primary" href="#/study/all">Studia tutto</a>' : ''}
+      <div class="actions">
+        ${total ? '<a class="btn primary" href="#/study/all">Studia tutto</a>' : ''}
+        ${examRec() ? '' : '<button class="btn ghost" data-act="exam-new">Modalità esame</button>'}
+      </div>
     </header>
+    ${examBannerHtml('cards')}
     ${nbs.length ? `
       <ul class="list">
         ${nbs.map(nb => {
@@ -3706,6 +3772,7 @@ function viewCardsHome() {
       ${!state.cards.length ? '<p class="hint">Crea le flashcard da una sezione: seleziona del testo in Leggi, oppure apri la scheda Flashcard della sezione.</p>' : ''}` : `
       <div class="empty"><p>Crea prima un notebook e importa del materiale.</p><a class="btn primary" href="#/notebooks">Vai ai notebook</a></div>`}
   `);
+  bindExamBanner();
 }
 
 function viewDeck(nbId) {
@@ -3846,18 +3913,21 @@ function scopeCards(scope) {
   if (scope === 'all') return state.cards.filter(c => !c.suspended);
   if (scope.startsWith('sec-')) { const id = scope.slice(4); return state.cards.filter(c => c.sectionId === id && !c.suspended); }
   if (scope.startsWith('tag-')) { const t = scope.slice(4); return state.cards.filter(c => tagsOf(c).includes(t) && !c.suspended); }
+  if (scope === 'exam') { const ex = examRec(); return ex ? state.cards.filter(c => !c.suspended && inExam(c, ex)) : []; }
   return state.cards.filter(c => c.notebookId === scope && !c.suspended);
 }
 function scopeTitle(scope) {
   if (scope === 'all') return 'Tutte le flashcard';
   if (scope.startsWith('sec-')) return secById(scope.slice(4))?.title || 'Sezione';
   if (scope.startsWith('tag-')) return `#${scope.slice(4)}`;
+  if (scope === 'exam') return `Esame: ${examRec()?.name || ''}`;
   return nbById(scope)?.name || 'Flashcard';
 }
 function scopeBack(scope) {
   if (scope === 'all') return '#/cards';
   if (scope.startsWith('sec-')) return `#/sec/${scope.slice(4)}/cards`;
   if (scope.startsWith('tag-')) return `#/tag/${encodeURIComponent(scope.slice(4))}`;
+  if (scope === 'exam') return '#/cards';
   return `#/deck/${scope}`;
 }
 function startSession(scope) {
@@ -4002,8 +4072,11 @@ async function answerCard(grade) {
     const prev = JSON.parse(JSON.stringify(c.srs));
     const wasLearned = c.sectionId ? sectionLearned(c.sectionId) : true;
     c.srs = scheduleCard(c.srs, grade);
+    const newLeech = c.srs.lapses >= LEECH && !tagsOf(c).includes(LEECH_TAG);
+    if (newLeech) c.tags = [...tagsOf(c), LEECH_TAG];
     await saveCard(c);
     Stats.addReview();
+    if (newLeech) toast(`Questa flashcard l’hai sbagliata ${c.srs.lapses} volte: prova a riscriverla più semplice o a spezzarla in due`, '', { label: 'Modifica', fn: () => go(`#/card/${c.id}`) });
     session.undo.push({ id: c.id, prev, inQueue: session.queue.includes(c.id) });
     if (session.undo.length > 30) session.undo.shift();
     session.queue = session.queue.filter(id => id !== c.id);
@@ -4505,6 +4578,7 @@ function viewGuide() {
       </ul>`)}
     ${sec('Novità: calendario, tag, glossario, note cliniche', `
       <ul>
+        <li><strong>Backup completo</strong> (Impostazioni → Backup): un file .nbbackup con tutto, compresi i PDF con annotazioni e segnalibri, statistiche e preferenze di lettura. “Backup senza i file PDF” è più leggero e tiene comunque le annotazioni. Per ripristinare usa “Importa un backup”; funzionano anche i vecchi backup .json.</li>
         <li><strong>Calendario</strong> (su telefono in Altro): ripassi in programma giorno per giorno, tempo di studio, giorni di fila e <strong>punti deboli</strong>, cioè le sezioni e le flashcard che sbagli più spesso. Il tempo si conta su questo dispositivo.</li>
         <li><strong>Tag</strong>: aggiungili in Modifica e nelle flashcard, separati da virgole. Toccane uno per vedere tutto ciò che lo usa e studiare solo quelle flashcard. Nella ricerca scrivi <code>#</code> per cercare tra i tag.</li>
         <li><strong>Collegamenti tra pagine</strong>: in Modifica tocca “Link a pagina”, oppure scrivi <code>[[Titolo della sezione]]</code>. Con del testo selezionato il link usa quel testo. In fondo a Leggi trovi le pagine che rimandano a quella aperta. Se rinomini una sezione, i collegamenti si aggiornano.</li>
@@ -4513,6 +4587,21 @@ function viewGuide() {
         <li><strong>Immagini</strong>: in Leggi e Cloze “Nascondi le immagini” le riduce a un riquadro da toccare. In Cloze, gli schemi con image occlusion hanno i riquadri coperti come i termini: toccali per scoprirli.</li>
         <li><strong>Link utili</strong> sono icone: “Modifica” per cambiarli.</li>
       </ul>`)}
+    ${sec('Suggerimenti nei cloze', `
+      <p>Un cloze può avere un suggerimento: una domanda o un indizio che compare come <strong>?</strong> accanto al termine nascosto; toccandolo lo leggi. In Cloze tocca <strong>Suggerimenti</strong> e poi un termine per scriverlo; in Modifica metti il cursore dentro il cloze e tocca <strong>Suggerimento</strong> (nel testo diventa <code>==termine::suggerimento==</code>). Nelle flashcard create dai cloze il suggerimento compare al posto dei puntini.</p>`)}
+    ${sec('Modalità esame, zoom e modalità notte', `
+      <ul>
+        <li><strong>Modalità esame</strong> (Flashcard o Ripasso): scegli i notebook dell’esame (o un tag come #esame-fisiologia), la data e quante flashcard nuove al giorno. In cima a Flashcard e Ripasso compare l’esame con il conto alla rovescia, “Studia l’esame” (solo le sue flashcard, con il limite alzato) e “Sezioni dell’esame”. Vale su tutti i dispositivi; “Termina” la spegne.</li>
+        <li><strong>PDF</strong>: zoom con due dita sul telefono e sul tablet, Ctrl + rotellina o pizzico sul touchpad del PC. <strong>Notte</strong> scurisce le pagine per leggere la sera; annotazioni e penna restano visibili.</li>
+      </ul>`)}
+    ${sec('Ascolto, previsione e sanguisughe', `
+      <ul>
+        <li><strong>Ascolta</strong> (in Leggi): il telefono legge la sezione paragrafo per paragrafo, evidenziando quello in corso. Puoi mettere in pausa, andare avanti o indietro, cambiare velocità e toccare un paragrafo per ripartire da lì. Lo schermo resta acceso mentre ascolti.</li>
+        <li><strong>Prossimi 30 giorni</strong> (Calendario): quanti ripassi hai in programma ogni giorno e qual è il giorno più carico.</li>
+        <li><strong>Sanguisughe</strong>: una flashcard sbagliata ${LEECH} volte prende il tag #${LEECH_TAG} e compare nei punti deboli, con il consiglio di riscriverla o spezzarla.</li>
+      </ul>`)}
+    ${sec('Ricerca unica', `
+      <p>La ricerca nella pagina iniziale (e “Cerca ovunque” in Altro) trova insieme appunti, flashcard, il testo delle pagine dei PDF, le tue note ed evidenziazioni nei PDF, il glossario e le note cliniche. Toccando un risultato di un PDF si apre alla pagina giusta, con la parola evidenziata. Il testo di ogni PDF si legge una volta sola e resta sul dispositivo; i PDF scansionati o scritti a mano non hanno testo da cercare.</p>`)}
     ${sec('Simulazione d’esame e punti deboli del Cloze', `
       <ul>
         <li><strong>Simulazione d’esame</strong>: dal notebook (pulsante in alto) o da Opzioni di un macro-argomento. Scegli quante domande, se metterci un tempo limite e da dove pescare (domande, frasi con cloze, flashcard). Le domande arrivano a turno da tutte le sezioni; alla fine vedi il punteggio sezione per sezione e puoi mettere da ripassare oggi quelle andate peggio. Non cambia i ripassi programmati.</li>
@@ -4678,6 +4767,8 @@ function applyMarkToMd(md, r, kind) {
   const after = md.slice(r.end);
   if (kind === 'cloze') {
     if (before.endsWith('==') && after.startsWith('==')) return before.slice(0, -2) + inner + after.slice(2);
+    const hm = after.match(/^::[^\n=]*==/);
+    if (before.endsWith('==') && hm) return before.slice(0, -2) + inner + after.slice(hm[0].length);
     return `${before}==${inner}==${after}`;
   }
   const wrap = before.match(/\{\{([uygbpovrtl])\|$/);
@@ -5797,7 +5888,8 @@ const ICONS = {
   tag: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4h8l9 9-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/></svg>',
   links: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/></svg>',
   guide: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4"/><path d="M12 16.8v.2"/></svg>',
-  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>'
+  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
+  search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>'
 };
 const hueOf = str => { let h = 0; for (const ch of String(str)) h = (h * 31 + ch.codePointAt(0)) % 360; return h; };
 const foldAccents = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -5830,6 +5922,7 @@ function openSheet(inner, { label = '', onClose = () => {} } = {}) {
 
 /* ---------- Pagina "Altro" ---------- */
 const MORE_ITEMS = [
+  ['search', 'Cerca ovunque', 'Appunti, flashcard, testo dei PDF, glossario, note cliniche'],
   ['calendar', 'Calendario', 'Ripassi in programma, tempo di studio, punti deboli'],
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
   ['glossary', 'Glossario', 'Parole particolari e il loro significato'],
@@ -5955,7 +6048,7 @@ function weakSections() {
 }
 function weakCards() {
   return state.cards
-    .filter(c => !c.suspended && c.srs && (c.srs.lapses >= 2 || (c.srs.state === 'review' && c.srs.ease < 2)))
+    .filter(c => !c.suspended && c.srs && !isLeech(c) && (c.srs.lapses >= 2 || (c.srs.state === 'review' && c.srs.ease < 2)))
     .sort((a, b) => (b.srs.lapses || 0) - (a.srs.lapses || 0) || a.srs.ease - b.srs.ease)
     .slice(0, 10);
 }
@@ -6022,6 +6115,7 @@ function viewCalendar() {
   const nbMax = nbList.length ? nbList[0][1] : 1;
   const ws = weakSections();
   const wc = weakCards();
+  const leeches = state.cards.filter(c => !c.suspended && isLeech(c)).sort((a, b) => (b.srs?.lapses || 0) - (a.srs?.lapses || 0));
   const czAll = state.sections.flatMap(s => czWeakOf(s).map(w => ({ s, w }))).sort((a, b) => b.w.bad - a.w.bad);
   const exams = (Stats.load().exams || []).slice(-5).reverse();
 
@@ -6042,6 +6136,8 @@ function viewCalendar() {
     </section>
     <h2 class="sub cal-day-title">${esc(dayLabel.charAt(0).toUpperCase() + dayLabel.slice(1))}</h2>
     ${dayHtml}
+
+    ${forecastHtml(idx)}
 
     <h2 class="sub">Tempo di studio</h2>
     <div class="stat-row">
@@ -6067,8 +6163,11 @@ function viewCalendar() {
           <span class="row-sub">${esc(nbById(s.notebookId)?.name || '')}: ${again ? `${again} volte “Di nuovo”` : ''}${again && hard ? ', ' : ''}${hard ? `${hard} volte “Difficile”` : ''} negli ultimi ripassi</span></span>
         </a></li>`).join('')}</ul>` : ''}
       ${wc.length ? `<h3 class="sub3">Flashcard sbagliate più spesso</h3><ul class="list">${wc.map(cardRow).join('')}</ul>` : ''}` : ''}
+    ${leeches.length ? `<h3 class="sub3">Flashcard sanguisuga (sbagliate ${LEECH} volte o più)</h3>
+      <p class="hint">Ti fanno perdere tempo a ogni ripasso. Riscrivile più semplici, spezzale in due, aggiungi un’immagine o una nota sull’errore; se non servono più, sospendile. Hanno il tag <a href="#/tag/${LEECH_TAG}">#${LEECH_TAG}</a>.</p>
+      <ul class="list">${leeches.slice(0, 20).map(cardRow).join('')}</ul>` : ''}
     ${czAll.length ? `<h3 class="sub3">Parti rimaste in rosso o arancio nel Cloze</h3><ul class="czw-list" id="czwAll">${czAll.slice(0, 20).map(({ s, w }) => czWeakItemHtml(s, w, { showSec: true })).join('')}</ul>` : ''}
-    ${!ws.length && !wc.length && !czAll.length ? '<p class="hint">Ancora nessuno: compariranno le sezioni, le flashcard e le parti del Cloze che sbagli più spesso.</p>' : ''}
+    ${!ws.length && !wc.length && !czAll.length && !leeches.length ? '<p class="hint">Ancora nessuno: compariranno le sezioni, le flashcard e le parti del Cloze che sbagli più spesso.</p>' : ''}
     ${exams.length ? `<h2 class="sub">Simulazioni d’esame</h2><ul class="list">${exams.map(x => `<li class="row"><span class="row-main"><span class="row-title">${esc(x.name)}: ${x.score}%</span><span class="row-sub">${esc(new Date(x.d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' }))}, ${x.n} domande</span></span></li>`).join('')}</ul>` : ''}
   `);
   on('[data-cal]', 'click', e => {
@@ -6076,6 +6175,12 @@ function viewCalendar() {
     if (!v) { calMonth = today.slice(0, 7); calDay = today; }
     else { const d = new Date(y, m - 1 + v, 1); calMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
     viewCalendar();
+  });
+  on('[data-fc]', 'click', e => {
+    calDay = e.currentTarget.dataset.fc;
+    calMonth = calDay.slice(0, 7);
+    viewCalendar();
+    $('.cal-day-title')?.scrollIntoView({ block: 'start' });
   });
   const czBox = $('#czwAll');
   if (czBox) bindCzWeak(czBox);
@@ -6538,6 +6643,7 @@ async function deletePdf(id) {
   if (meta) await removeRecords([{ store: 'pdfs', rec: meta }]);
   await DB.removeMany([['pdfblobs', id]]);
   localPdfIds.delete(id);
+  await dropPdfText([id]);
 }
 function choosePdfFile() {
   return new Promise(resolve => {
@@ -6568,6 +6674,7 @@ async function storePdfFile(file, sec) {
   localPdfIds.add(meta.id);
   await savePdfMeta(meta);
   setTimeout(() => PdfCloud.uploadPending(), 300);
+  setTimeout(() => PdfIndex.run(), 1500);
   return meta;
 }
 const fmtSize = b => (b > 1048576 ? `${(b / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} kB`);
@@ -6655,6 +6762,7 @@ function viewPdf(id, pageParam) {
           <button type="button" class="btn sm ghost" data-pdf="zoom-fit" id="pdfZoom" title="Adatta alla larghezza">100%</button>
           <button type="button" class="btn sm ghost" data-pdf="zoom+" aria-label="Ingrandisci">+</button>
         </span>
+        <button type="button" class="btn sm ghost pdf-night-btn" data-pdf="night" aria-pressed="false" title="Pagine scure per leggere la sera">Notte</button>
         <button type="button" class="btn sm occ-quiz-btn" data-pdf="occ-quiz" aria-pressed="false" hidden>Ripassa le occlusioni</button>
         <button type="button" class="btn sm ghost" data-pdf="undo" title="Annulla l’ultima annotazione (Ctrl+Z)">Annulla</button>
       </div>
@@ -7612,6 +7720,61 @@ function viewPdf(id, pageParam) {
     });
   }
   scroller.addEventListener('scroll', onScroll, { passive: true });
+  const setNight = v => {
+    app.classList.toggle('pdf-night', v);
+    const b = $('[data-pdf="night"]', app);
+    b.setAttribute('aria-pressed', v);
+    b.classList.toggle('on', v);
+    S().pdfNight = v;
+    Settings.save();
+  };
+  // zoom con due dita (telefono e tablet) e con Ctrl + rotellina o pizzico sul touchpad (PC)
+  let pinch = null;
+  const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  scroller.addEventListener('touchstart', e => {
+    if (e.touches.length !== 2 || !R.doc || (R.tool !== 'select' && !R.penSeen)) return;
+    const [a, b] = e.touches;
+    const r = scroller.getBoundingClientRect();
+    pinch = { d0: tdist(a, b), mx: (a.clientX + b.clientX) / 2 - r.left, my: (a.clientY + b.clientY) / 2 - r.top, z0: R.zoom, sl: scroller.scrollLeft, st: scroller.scrollTop, k: 1 };
+    if (ink) { ink.path?.remove(); ink.occ?.remove(); ink = null; }
+  }, { passive: true });
+  scroller.addEventListener('touchmove', e => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const [a, b] = e.touches;
+    pinch.k = Math.max(0.5 / pinch.z0, Math.min(3 / pinch.z0, tdist(a, b) / pinch.d0));
+    pagesEl.style.transformOrigin = `${pinch.sl + pinch.mx}px ${pinch.st + pinch.my}px`;
+    pagesEl.style.transform = `scale(${pinch.k})`;
+  }, { passive: false });
+  const endPinch = e => {
+    if (!pinch || e.touches.length >= 2) return;
+    const p = pinch;
+    pinch = null;
+    pagesEl.style.transform = '';
+    pagesEl.style.transformOrigin = '';
+    if (Math.abs(p.k - 1) < 0.03) return;
+    zoomTo(p.z0 * p.k);
+    const k2 = R.zoom / p.z0;
+    scroller.scrollLeft = (p.sl + p.mx) * k2 - p.mx;
+    scroller.scrollTop = (p.st + p.my) * k2 - p.my;
+    renderAround();
+  };
+  scroller.addEventListener('touchend', endPinch);
+  scroller.addEventListener('touchcancel', endPinch);
+  scroller.addEventListener('wheel', e => {
+    if (!e.ctrlKey || !R.doc) return;
+    e.preventDefault();
+    const r = scroller.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    const my = e.clientY - r.top;
+    const cx = scroller.scrollLeft + mx;
+    const cy = scroller.scrollTop + my;
+    const z0 = R.zoom;
+    zoomTo(z0 * Math.exp(-e.deltaY * 0.01));
+    const k2 = R.zoom / z0;
+    scroller.scrollLeft = cx * k2 - mx;
+    scroller.scrollTop = cy * k2 - my;
+  }, { passive: false });
   const zoomTo = z => {
     const keep = R.cur;
     const el = pageEl(keep);
@@ -7639,6 +7802,7 @@ function viewPdf(id, pageParam) {
     else if (act === 'zoom-fit') zoomTo(1);
     else if (act === 'undo') undo();
     else if (act === 'occ-quiz') setOccQuiz(!R.occQuiz);
+    else if (act === 'night') setNight(!app.classList.contains('pdf-night'));
   });
   panel.addEventListener('click', e => { const b = e.target.closest('[data-ptab]'); if (b) openPanel(b.dataset.ptab); });
   $('.pdf-pen-size', app).value = String(R.inkW);
@@ -7681,6 +7845,7 @@ function viewPdf(id, pageParam) {
     try { R.doc?.destroy(); } catch { /* già chiuso */ }
   });
   setTool('select');
+  if (S().pdfNight) setNight(true);
   if (R.tab) openPanel(R.tab);
 
   // ---------- apertura del file
@@ -7707,6 +7872,7 @@ function viewPdf(id, pageParam) {
       new Set(meta.annots.map(a => a.page)).forEach(drawAnnots);
       refreshBm();
       const start = +pageParam || meta.lastPage || 1;
+      if (pdfPendingHit && pdfPendingHit.id === meta.id) { R.hit = { n: pdfPendingHit.n, q: pdfPendingHit.q }; pdfPendingHit = null; }
       R.cur = 0;
       goTo(start);
       renderAround();
@@ -7735,6 +7901,7 @@ async function prunePdfBlobs() {
   if (!gone.length) return;
   await DB.removeMany(gone.map(id => ['pdfblobs', id]));
   gone.forEach(id => localPdfIds.delete(id));
+  await dropPdfText(gone);
 }
 const PdfCloud = {
   busy: false,
@@ -7792,6 +7959,7 @@ const PdfCloud = {
     const blob = new Blob(parts, { type: 'application/pdf' });
     await DB.put('pdfblobs', { id: meta.id, blob });
     localPdfIds.add(meta.id);
+    setTimeout(() => PdfIndex.run(), 2000);
     return blob;
   },
   paint(id) {
@@ -8585,6 +8753,489 @@ function examResults(sc) {
     for (const id of ids) { const s = secById(id); if (s && await boostSection(s)) k++; }
     toast(`${k} ${k === 1 ? 'sezione da ripassare' : 'sezioni da ripassare'} oggi`);
   });
+}
+
+/* =====================================================================
+   v3.13: ricerca unica (appunti, flashcard, PDF, glossario, note cliniche)
+   Il testo dei PDF si estrae una volta e resta su questo dispositivo.
+   ===================================================================== */
+const pdfText = new Map();
+let pdfTextLoaded = false;
+async function loadPdfText() {
+  if (pdfTextLoaded) return;
+  pdfTextLoaded = true;
+  try { (await DB.all('pdftext')).forEach(r => pdfText.set(r.id, r.pages || [])); } catch { /* archivio non ancora creato */ }
+}
+const PdfIndex = {
+  busy: false,
+  waiting: [],
+  pending() { return state.pdfs.filter(p => localPdfIds.has(p.id) && !pdfText.has(p.id)); },
+  async run(onEach) {
+    if (onEach) this.waiting.push(onEach);
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      await loadPdfText();
+      for (const meta of this.pending()) {
+        try {
+          await ensurePdfJs();
+          const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+          if (!rec || !rec.blob) continue;
+          const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await rec.blob.arrayBuffer()) }).promise;
+          const pages = [];
+          for (let n = 1; n <= doc.numPages; n++) {
+            const tc = await (await doc.getPage(n)).getTextContent();
+            pages.push(tc.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join('').replace(/[ \t]+/g, ' ').slice(0, 20000));
+          }
+          doc.destroy();
+          await DB.put('pdftext', { id: meta.id, pages });
+          pdfText.set(meta.id, pages);
+        } catch { pdfText.set(meta.id, []); }
+        this.waiting.forEach(fn => fn());
+      }
+    } finally {
+      this.busy = false;
+      this.waiting = [];
+    }
+  }
+};
+async function dropPdfText(ids) {
+  ids.forEach(id => pdfText.delete(id));
+  try { await DB.removeMany(ids.map(id => ['pdftext', id])); } catch { /* già rimosso */ }
+}
+let pdfPendingHit = null;
+function foldSnippet(text, f, len = 70) {
+  const t = String(text || '').replace(/\s+/g, ' ');
+  const i = foldAccents(t).indexOf(f);
+  if (i < 0) return esc(t.slice(0, 120));
+  const a = Math.max(0, i - len);
+  const b = Math.min(t.length, i + f.length + len);
+  return `${a ? '…' : ''}${esc(t.slice(a, i))}<mark class="hit">${esc(t.slice(i, i + f.length))}</mark>${esc(t.slice(i + f.length, b))}${b < t.length ? '…' : ''}`;
+}
+function moreSearchHtml(q) {
+  const f = foldAccents(q);
+  if (f.length < 2) return '';
+  const out = [];
+  // PDF: nome, testo delle pagine, note ed evidenziazioni
+  const pdfRows = [];
+  for (const p of state.pdfs) {
+    const s = secById(p.sectionId);
+    const where = esc([s ? nbById(s.notebookId)?.name : '', s ? s.title : ''].filter(Boolean).join(' › '));
+    if (foldAccents(p.name).includes(f)) pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}"><span class="pdf-ic sm" aria-hidden="true">PDF</span><span class="row-main"><span class="row-title">${foldSnippet(p.name, f)}</span><span class="row-sub">${where}</span></span></a></li>`);
+    let k = 0;
+    (pdfText.get(p.id) || []).forEach((t, i) => {
+      if (k >= 3 || !foldAccents(t).includes(f)) return;
+      k++;
+      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${i + 1}" data-hitq="${esc(q)}" data-hitpdf="${p.id}" data-hitp="${i + 1}"><span class="pdf-ic sm" aria-hidden="true">${i + 1}</span><span class="row-main"><span class="row-title">${esc(p.name)}, pagina ${i + 1}</span><span class="row-sub">${foldSnippet(t, f)}</span></span></a></li>`);
+    });
+    (p.annots || []).filter(a => foldAccents(`${a.text || ''} ${a.note || ''}`).includes(f)).slice(0, 3).forEach(a => {
+      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${a.page}"><span class="pdf-ic sm note" aria-hidden="true">✎</span><span class="row-main"><span class="row-title">${esc(p.name)}, pagina ${a.page}: ${a.note ? 'nota' : 'evidenziazione'}</span><span class="row-sub">${foldSnippet(`${a.note || ''} ${a.text || ''}`, f)}</span></span></a></li>`);
+    });
+    if (pdfRows.length >= 40) break;
+  }
+  if (pdfRows.length) out.push(`<h2 class="sub">PDF</h2><ul class="list">${pdfRows.join('')}</ul>`);
+  const gl = glossary().filter(g => foldAccents(`${g.term} ${g.def}`).includes(f)).slice(0, 20);
+  if (gl.length) out.push(`<h2 class="sub">Glossario</h2><ul class="list">${gl.map(g => `<li><button type="button" class="row" data-sgl="${g.id}"><span class="row-main"><span class="row-title">${foldSnippet(g.term, f)}</span><span class="row-sub">${foldSnippet(plainText(g.def, 1e9), f, 50)}</span></span></button></li>`).join('')}</ul>`);
+  const cn = clinicalNotes().filter(n => foldAccents(`${n.title} ${(n.symptoms || []).join(' ')} ${n.body || ''}`).includes(f)).slice(0, 20);
+  if (cn.length) out.push(`<h2 class="sub">Note cliniche</h2><ul class="list">${cn.map(n => `<li><button type="button" class="row" data-scn="${n.id}"><span class="row-main"><span class="row-title">${foldSnippet(n.title, f)}</span>${(n.symptoms || []).length ? `<span class="tags">${n.symptoms.map(s => `<span class="tag sym ${foldAccents(s).includes(f) ? 'on' : ''}">${esc(s)}</span>`).join('')}</span>` : ''}</span></button></li>`).join('')}</ul>`);
+  const todo = PdfIndex.pending().length;
+  if (todo) out.push(`<p class="hint">Sto leggendo il testo di ${todo} PDF per poterlo cercare…</p>`);
+  return out.join('');
+}
+// collega un campo di ricerca ai risultati (pagina iniziale e pagina Cerca)
+function bindUnifiedSearch(input, out, toHide) {
+  let t;
+  const run = () => {
+    const q = input.value.trim().toLowerCase();
+    sessionStorage.setItem('nb-search', input.value);
+    if (q.length < 2) { out.hidden = true; if (toHide) toHide.hidden = false; return; }
+    const base = searchResultsHtml(q);
+    const more = q.startsWith('#') ? '' : moreSearchHtml(q);
+    out.innerHTML = more && base.includes('Nessun risultato') ? more : base + more;
+    out.hidden = false;
+    if (toHide) toHide.hidden = true;
+    if (!q.startsWith('#') && PdfIndex.pending().length) PdfIndex.run(() => { if (input.isConnected && input.value.trim().toLowerCase() === q) run(); });
+  };
+  input.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 180); });
+  out.addEventListener('click', e => {
+    const g = e.target.closest('[data-sgl]');
+    if (g) { showGlossaryEntry(g.dataset.sgl); return; }
+    const c = e.target.closest('[data-scn]');
+    if (c) { showClinicNote(c.dataset.scn); return; }
+    const h = e.target.closest('[data-hitq]');
+    if (h) pdfPendingHit = { id: h.dataset.hitpdf, n: +h.dataset.hitp, q: h.dataset.hitq };
+  });
+  loadPdfText().then(() => { const last = sessionStorage.getItem('nb-search'); if (last && !input.value) input.value = last; if (input.value) run(); });
+}
+function viewSearch() {
+  setView(`
+    <header class="page-head"><div><h1>Cerca</h1><p class="lede">In appunti, flashcard, testo dei PDF, glossario e note cliniche. Con <code>#</code> cerchi tra i tag.</p></div></header>
+    <input type="search" class="input search" id="allSearch" placeholder="Cosa cerchi?" aria-label="Cerca ovunque" autofocus>
+    <div id="allOut" hidden></div>`);
+  bindUnifiedSearch($('#allSearch'), $('#allOut'), null);
+  setTimeout(() => $('#allSearch')?.focus(), 50);
+}
+
+/* =====================================================================
+   v3.14: backup completo
+   Formato .nbbackup: "NBBK1\n" + lunghezza dell’intestazione (12 cifre) +
+   "\n" + intestazione JSON + i file (immagini e PDF) uno dopo l’altro,
+   così anche PDF grandi si salvano e si ripristinano senza convertirli.
+   Si importano ancora i vecchi backup .json.
+   ===================================================================== */
+const BK_MAGIC = 'NBBK1\n';
+async function buildBackup(withPdf) {
+  const files = [];
+  const parts = [];
+  let off = 0;
+  const addFile = (kind, id, blob) => {
+    files.push({ kind, id, mime: blob.type || (kind === 'pdf' ? 'application/pdf' : 'image/webp'), size: blob.size, off });
+    parts.push(blob);
+    off += blob.size;
+  };
+  const images = [];
+  for (const im of state.images) {
+    if (!im.blob) continue;
+    const { blob, ...meta } = im;
+    images.push(meta);
+    addFile('image', im.id, blob);
+  }
+  if (withPdf) {
+    for (const p of state.pdfs) {
+      const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(p.id));
+      if (rec && rec.blob) addFile('pdf', p.id, rec.blob);
+    }
+  }
+  let folds = {};
+  try { folds = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'); } catch { /* niente */ }
+  const st = S();
+  const prefs = {};
+  ['theme', 'readFont', 'readSize', 'readSpacing', 'pagesPerSection', 'newPerDay', 'aiCloze', 'aiQuestions', 'showImages', 'keepPdfImages'].forEach(k => { if (st[k] !== undefined) prefs[k] = st[k]; });
+  const header = {
+    app: 'studyhub-notebook', version: 5, exported: new Date().toISOString(), appVersion: APP_VERSION,
+    notebooks: state.notebooks, sections: state.sections, cards: state.cards, links: state.links,
+    pdfs: state.pdfs, images, stats: Stats.load(), folds, prefs, files
+  };
+  const hb = new TextEncoder().encode(JSON.stringify(header));
+  const blob = new Blob([BK_MAGIC, String(hb.length).padStart(12, '0') + '\n', hb, ...parts], { type: 'application/octet-stream' });
+  return { blob, name: `notebook-${withPdf ? 'completo' : 'senza-pdf'}-${todayStr()}.nbbackup` };
+}
+async function readBackup(file) {
+  const head = await file.slice(0, 19).text();
+  if (head.startsWith(BK_MAGIC)) {
+    const len = parseInt(head.slice(6, 18), 10);
+    if (!(len > 0)) throw new Error('Backup danneggiato');
+    const data = JSON.parse(await file.slice(19, 19 + len).text());
+    if (data.app !== 'studyhub-notebook') throw new Error('Questo file non è un backup del Notebook.');
+    return { data, files: Array.isArray(data.files) ? data.files : [], file, base: 19 + len };
+  }
+  const data = JSON.parse(await file.text());
+  if (data.app !== 'studyhub-notebook' || !Array.isArray(data.notebooks) || !Array.isArray(data.sections)) throw new Error('Questo file non è un backup del Notebook.');
+  return { data, files: [], file: null, base: 0 };
+}
+async function restoreBackup(bk) {
+  const d = bk.data;
+  const now = Date.now();
+  const nbs = (d.notebooks || []).filter(n => n && n.id).map(n => ({ ...n, updated: now }));
+  const secs = (d.sections || []).filter(s => s && s.id && s.notebookId).map(s => ({ ...normalizeRecord('sections', s), updated: now }));
+  const cards = (Array.isArray(d.cards) ? d.cards : []).filter(c => c && c.id && c.notebookId).map(c => ({ ...normalizeRecord('cards', c), updated: now }));
+  // link utili, glossario, note cliniche e prompt stanno tutti nell’archivio dei link
+  const links = (Array.isArray(d.links) ? d.links : []).filter(l => l && l.id && (l.url || l.kind)).map(l => ({ ...l, notebookId: l.notebookId || '_links', updated: now }));
+  const pdfs = (Array.isArray(d.pdfs) ? d.pdfs : []).filter(p => p && p.id).map(p => ({ ...p, updated: now }));
+  // immagini: vecchio formato in base64, nuovo formato come file
+  const fileOf = (kind, id) => bk.files.find(f => f.kind === kind && f.id === id);
+  const slice = f => bk.file.slice(bk.base + f.off, bk.base + f.off + f.size, f.mime);
+  const images = (Array.isArray(d.images) ? d.images : []).filter(i => i && i.id).map(({ data: b64, ...meta }) => {
+    if (b64) return { ...meta, blob: base64ToBlob(b64, meta.mime), updated: now };
+    const f = bk.file && fileOf('image', meta.id);
+    return f ? { ...meta, blob: slice(f), updated: now } : null;
+  }).filter(Boolean);
+  await DB.bulkPut('images', images);
+  images.forEach(i => forgetImageUrl(i.id));
+  await DB.bulkPut('links', links);
+  await DB.bulkPut('notebooks', nbs);
+  await DB.bulkPut('sections', secs);
+  await DB.bulkPut('cards', cards);
+  await DB.bulkPut('pdfs', pdfs);
+  for (const f of bk.files.filter(x => x.kind === 'pdf')) {
+    await DB.put('pdfblobs', { id: f.id, blob: slice(f) });
+    localPdfIds.add(f.id);
+    pdfText.delete(f.id);
+  }
+  // statistiche: per ogni giorno tengo il valore più alto
+  if (d.stats && d.stats.d) {
+    const st = Stats.load();
+    Object.entries(d.stats.d).forEach(([day, v]) => {
+      const cur = st.d[day];
+      if (!cur) { st.d[day] = v; return; }
+      cur.t = Math.max(cur.t || 0, v.t || 0);
+      cur.r = Math.max(cur.r || 0, v.r || 0);
+      Object.entries(v.nb || {}).forEach(([id, t]) => { cur.nb[id] = Math.max(cur.nb[id] || 0, t); });
+    });
+    const seen = new Set((st.exams || []).map(x => `${x.d}|${x.key}|${x.score}|${x.n}`));
+    st.exams = [...(st.exams || []), ...(d.stats.exams || []).filter(x => !seen.has(`${x.d}|${x.key}|${x.score}|${x.n}`))].slice(-60);
+    Stats.save();
+  }
+  if (d.folds && typeof d.folds === 'object') {
+    try { localStorage.setItem(FOLD_KEY, JSON.stringify({ ...JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'), ...d.folds })); } catch { /* niente */ }
+  }
+  if (d.prefs && typeof d.prefs === 'object') { Object.assign(S(), d.prefs); Settings.save(); applyTheme(); }
+  state.notebooks = await DB.all('notebooks');
+  state.sections = await DB.all('sections');
+  state.cards = await DB.all('cards');
+  state.images = await DB.all('images');
+  state.links = await DB.all('links');
+  state.pdfs = await DB.all('pdfs');
+  updateBadge();
+  scheduleSync();
+  setTimeout(() => { PdfCloud.uploadPending(); PdfIndex.run(); }, 1500);
+}
+
+/* =====================================================================
+   v3.15: ascolto delle sezioni, previsione dei ripassi, sanguisughe
+   ===================================================================== */
+const LEECH = 6;
+const LEECH_TAG = 'sanguisuga';
+const isLeech = c => (c.srs && c.srs.lapses >= LEECH) || tagsOf(c).includes(LEECH_TAG);
+
+/* ---------- Ascolto: il telefono legge la sezione ---------- */
+function pickItalianVoice() {
+  const vs = canSpeak ? speechSynthesis.getVoices() : [];
+  return vs.find(v => /^it[-_]IT/i.test(v.lang) && /google/i.test(v.name)) || vs.find(v => /^it/i.test(v.lang)) || null;
+}
+function setupListen(article, btn, folds) {
+  if (!article || !btn || !canSpeak) return;
+  btn.hidden = false;
+  const blocks = () => $$('h1, h2, h3, h4, p, li, tr, blockquote, pre', article).filter(el => {
+    if (el.closest('.html-embed, .img-box, pre code') && el.tagName !== 'PRE') return false;
+    if (el.tagName === 'LI' && el.querySelector('li')) return !!el.firstChild?.textContent?.trim();
+    if (el.tagName === 'P' && el.closest('li, blockquote')) return false;
+    return el.textContent.trim().length > 0;
+  });
+  const textOf = el => {
+    if (el.tagName === 'TR') return [...el.children].map(td => td.textContent.trim()).filter(Boolean).join('; ');
+    if (el.tagName === 'LI') { const c = el.cloneNode(true); c.querySelectorAll('ul, ol').forEach(x => x.remove()); return c.textContent.trim(); }
+    const c = el.cloneNode(true);
+    c.querySelectorAll('button, .czm-btn').forEach(x => x.remove());
+    return c.textContent.replace(/\s+/g, ' ').trim();
+  };
+  let list = [];
+  let i = 0;
+  let playing = false;
+  let wake = null;
+  let token = 0;
+  const bar = document.createElement('div');
+  bar.className = 'ink-bar tts-bar';
+  bar.hidden = true;
+  bar.setAttribute('role', 'toolbar');
+  bar.setAttribute('aria-label', 'Ascolto');
+  bar.innerHTML = `
+    <button type="button" class="btn sm ghost" data-tts="prev" aria-label="Paragrafo precedente">⏮</button>
+    <button type="button" class="btn sm primary tts-play" data-tts="play">Pausa</button>
+    <button type="button" class="btn sm ghost" data-tts="next" aria-label="Paragrafo successivo">⏭</button>
+    <select class="input ink-size" data-tts-rate aria-label="Velocità">${[0.8, 1, 1.2, 1.4, 1.7].map(r => `<option value="${r}">${String(r).replace('.', ',')}×</option>`).join('')}</select>
+    <span class="tts-pos" aria-live="polite"></span>
+    <button type="button" class="btn sm ghost" data-tts="stop">Chiudi</button>`;
+  document.body.append(bar);
+  $('[data-tts-rate]', bar).value = String(S().ttsRate || 1);
+  const mark = () => {
+    $$('.tts-cur', article).forEach(x => x.classList.remove('tts-cur'));
+    const el = list[i];
+    if (!el) return;
+    if (folds) folds.reveal(el);
+    el.classList.add('tts-cur');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    $('.tts-pos', bar).textContent = `${i + 1}/${list.length}`;
+  };
+  const speakCur = () => {
+    const my = ++token;
+    speechSynthesis.cancel();
+    const el = list[i];
+    if (!el) { stop(); toast('Fine della sezione'); return; }
+    mark();
+    const u = new SpeechSynthesisUtterance(textOf(el));
+    u.lang = 'it-IT';
+    const v = pickItalianVoice();
+    if (v) u.voice = v;
+    u.rate = +(S().ttsRate || 1);
+    u.onend = () => { if (my !== token || !playing) return; i++; speakCur(); };
+    u.onerror = e => { if (my === token && e.error !== 'interrupted' && e.error !== 'canceled') { i++; if (playing) speakCur(); } };
+    speechSynthesis.speak(u);
+  };
+  const keepAwake = async on => {
+    try {
+      if (on && !wake && navigator.wakeLock) wake = await navigator.wakeLock.request('screen');
+      if (!on && wake) { await wake.release(); wake = null; }
+    } catch { wake = null; }
+  };
+  const setPlay = v => {
+    playing = v;
+    $('.tts-play', bar).textContent = v ? 'Pausa' : 'Riprendi';
+    keepAwake(v);
+    if (v) speakCur(); else { token++; speechSynthesis.cancel(); }
+  };
+  const start = from => {
+    list = blocks();
+    if (!list.length) { toast('Niente da leggere in questa sezione'); return; }
+    i = Math.max(0, list.indexOf(from));
+    bar.hidden = false;
+    btn.classList.add('on');
+    article.classList.add('tts-on');
+    setPlay(true);
+  };
+  function stop() {
+    playing = false;
+    token++;
+    speechSynthesis.cancel();
+    keepAwake(false);
+    bar.hidden = true;
+    btn.classList.remove('on');
+    article.classList.remove('tts-on');
+    $$('.tts-cur', article).forEach(x => x.classList.remove('tts-cur'));
+  }
+  btn.addEventListener('click', () => (bar.hidden ? start(null) : stop()));
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('[data-tts]');
+    if (!b) return;
+    const a = b.dataset.tts;
+    if (a === 'play') setPlay(!playing);
+    if (a === 'stop') stop();
+    if (a === 'prev' || a === 'next') { i = Math.max(0, Math.min(list.length - 1, i + (a === 'next' ? 1 : -1))); if (playing) speakCur(); else mark(); }
+  });
+  $('[data-tts-rate]', bar).addEventListener('change', e => { S().ttsRate = +e.target.value; Settings.save(); if (playing) speakCur(); });
+  // con l’ascolto aperto, toccando un paragrafo si riparte da lì
+  article.addEventListener('click', e => {
+    if (bar.hidden || e.target.closest('a, button, .gl, img, mark.cz, .notes-ink')) return;
+    const sel = document.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    const el = list.find(x => x.contains(e.target));
+    if (el) { i = list.indexOf(el); if (playing) speakCur(); else mark(); }
+  });
+  const onVis = () => { if (document.visibilityState === 'visible' && playing) keepAwake(true); };
+  document.addEventListener('visibilitychange', onVis);
+  addCleanup(() => { stop(); bar.remove(); document.removeEventListener('visibilitychange', onVis); });
+}
+
+/* ---------- Previsione dei ripassi (30 giorni) ---------- */
+function forecastHtml(idx) {
+  const today = todayStr();
+  const days = Array.from({ length: 30 }, (_, k) => addDays(today, k));
+  const vals = days.map(d => { const x = idx[d]; return x ? x.secs.length + x.cards : 0; });
+  const max = Math.max(1, ...vals);
+  const total = vals.reduce((a, b) => a + b, 0);
+  const peak = vals.indexOf(max);
+  const week = vals.slice(0, 7).reduce((a, b) => a + b, 0);
+  return `
+    <h2 class="sub">Prossimi 30 giorni</h2>
+    <p class="hint fc-sum">${total ? `${total} ripassi in programma, ${week} nei prossimi 7 giorni.${max > 1 ? ` Il giorno più carico è ${peak === 0 ? 'oggi' : new Date(days[peak] + 'T12:00').toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' })} con ${max}.` : ''}` : 'Nessun ripasso in programma nei prossimi 30 giorni.'} Tocca una colonna per vedere il giorno.</p>
+    <div class="bars fc-bars" role="img" aria-label="Ripassi in programma nei prossimi 30 giorni">
+      ${days.map((d, k) => `<button type="button" class="bar fc-bar ${k === 0 ? 'is-today' : ''} ${vals[k] === max && max > 1 ? 'peak' : ''}" data-fc="${d}" style="--v:${(vals[k] / max).toFixed(3)}" title="${esc(d)}: ${vals[k]}" aria-label="${new Date(d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' })}: ${vals[k]} ripassi"><i></i><small>${k % 7 === 0 ? new Date(d + 'T12:00').getDate() : ''}</small></button>`).join('')}
+    </div>`;
+}
+
+/* =====================================================================
+   v3.16: modalità esame
+   Un esame attivo raccoglie alcuni notebook (e/o un tag), alza il limite
+   di flashcard nuove per quei notebook e ha il suo pulsante di studio.
+   Si salva con i link, quindi vale su tutti i dispositivi.
+   ===================================================================== */
+const examRec = () => state.links.find(l => l.kind === 'exam' && l.active);
+const examNbIds = ex => new Set((ex && ex.nbIds) || []);
+function inExam(x, ex = examRec()) {
+  if (!ex) return false;
+  if (examNbIds(ex).has(x.notebookId)) return true;
+  if (ex.tag) {
+    if (tagsOf(x).includes(ex.tag)) return true;
+    const s = x.sectionId ? secById(x.sectionId) : null;
+    if (s && tagsOf(s).includes(ex.tag)) return true;
+  }
+  return false;
+}
+const examDaysLeft = ex => (ex && ex.date ? Math.round((new Date(ex.date + 'T12:00') - new Date(todayStr() + 'T12:00')) / 86400000) : null);
+function examBannerHtml(where) {
+  const ex = examRec();
+  if (!ex) return '';
+  const cc = cardCounts(state.cards.filter(c => inExam(c, ex)));
+  const nCards = cc.n + cc.l + cc.r;
+  const nSecs = state.sections.filter(s => inExam(s, ex) && isDue(s)).length;
+  const left = examDaysLeft(ex);
+  return `
+    <div class="exam-mode">
+      <div class="exam-mode-main">
+        <b>Modalità esame: ${esc(ex.name)}</b>
+        <span>${left === null ? '' : left > 1 ? `tra ${left} giorni, ` : left === 1 ? 'domani, ' : left === 0 ? 'oggi, ' : 'data passata, '}${nCards} flashcard e ${nSecs} ${nSecs === 1 ? 'sezione' : 'sezioni'} da fare</span>
+      </div>
+      <div class="exam-mode-acts">
+        ${nCards ? '<a class="btn sm primary" href="#/study/exam">Studia l’esame</a>' : ''}
+        ${where !== 'review-exam' && nSecs ? '<a class="btn sm" href="#/review/exam">Sezioni dell’esame</a>' : ''}
+        <button class="btn sm ghost" type="button" data-act="exam-edit">Modifica</button>
+      </div>
+    </div>`;
+}
+function bindExamBanner() {
+  on('[data-act="exam-edit"]', 'click', async () => { if (await examModeSheet()) route(); });
+  on('[data-act="exam-new"]', 'click', async () => { if (await examModeSheet()) route(); });
+}
+function examModeSheet() {
+  return new Promise(resolve => {
+    const ex = examRec();
+    const e = ex || {};
+    const nbs = [...state.notebooks].sort((a, b) => a.created - b.created);
+    const sel = examNbIds(e);
+    const sh = openSheet(`
+      <h2>${ex ? 'Modalità esame' : 'Attiva la modalità esame'}</h2>
+      <p class="sheet-sub">Studi solo le materie dell’esame, con più flashcard nuove al giorno.</p>
+      <div class="grid2">
+        <label class="field"><span>Esame</span><input class="input" id="exName" value="${esc(e.name || '')}" placeholder="Es. Fisiologia I"></label>
+        <label class="field"><span>Data (facoltativa)</span><input class="input" type="date" id="exDate" value="${esc(e.date || '')}"></label>
+      </div>
+      <div class="field"><span class="lbl">Notebook dell’esame</span>
+        ${nbs.map(nb => `<label class="check"><input type="checkbox" value="${nb.id}" ${sel.has(nb.id) ? 'checked' : ''}><span>${esc(nb.name)}</span></label>`).join('') || '<p class="hint">Nessun notebook.</p>'}
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Oppure anche un tag</span><input class="input" id="exTag" value="${esc(e.tag ? `#${e.tag}` : '')}" placeholder="#esame-fisiologia" autocapitalize="off"></label>
+        <label class="field"><span>Flashcard nuove al giorno</span><input class="input" type="number" id="exNew" min="0" max="500" inputmode="numeric" value="${e.newPerDay ?? Math.max(50, +S().newPerDay || 20)}"></label>
+      </div>
+      <div class="modal-actions">
+        ${ex ? '<button class="btn ghost danger" type="button" data-ex-act="end">Termina la modalità esame</button>' : ''}
+        <button class="btn ghost" type="button" data-ex-act="no">Annulla</button>
+        <button class="btn primary" type="button" data-ex-act="ok">${ex ? 'Salva' : 'Attiva'}</button>
+      </div>`, { label: 'Modalità esame', onClose: resolve });
+    $('[data-ex-act="no"]', sh.el).onclick = () => sh.close(false);
+    const end = $('[data-ex-act="end"]', sh.el);
+    if (end) end.onclick = async () => { ex.active = false; await saveLink(ex); toast('Modalità esame terminata'); sh.close(true); };
+    $('[data-ex-act="ok"]', sh.el).onclick = async () => {
+      const name = $('#exName', sh.el).value.trim();
+      const nbIds = $$('.check input:checked', sh.el).map(i => i.value);
+      const tag = normTag($('#exTag', sh.el).value);
+      if (!name) { toast('Scrivi il nome dell’esame'); $('#exName', sh.el).focus(); return; }
+      if (!nbIds.length && !tag) { toast('Scegli almeno un notebook o un tag'); return; }
+      const rec = ex || { id: '_exam', kind: 'exam', notebookId: '_exam', created: Date.now() };
+      Object.assign(rec, { name, date: $('#exDate', sh.el).value || '', nbIds, tag, newPerDay: Math.max(0, Math.min(500, Math.round(+$('#exNew', sh.el).value || 0))), active: true });
+      await saveLink(rec);
+      toast(ex ? 'Modalità esame aggiornata' : `Modalità esame attiva: ${name}`);
+      sh.close(true);
+    };
+  });
+}
+
+/* ---------- Suggerimenti dei cloze: trovare il cloze giusto nel testo ---------- */
+function clozeMatches(md) {
+  const fences = [...md.matchAll(/^```html[ \t]*\n[\s\S]*?\n?```[ \t]*$/gim)].map(m => [m.index, m.index + m[0].length]);
+  return [...md.matchAll(clozeRe())]
+    .filter(m => !fences.some(([a, b]) => m.index >= a && m.index < b))
+    .map(m => ({ start: m.index, end: m.index + m[0].length, inner: m[1] }));
+}
+// l’n-esimo cloze degli appunti, controllando che il testo coincida
+function clozeMatchFor(md, idx, shown) {
+  const list = clozeMatches(md);
+  const plain = s => stripMarks(splitHint(s)[0]).replace(/[*_`~]/g, '').trim();
+  const want = String(shown || '').trim();
+  if (list[idx] && plain(list[idx].inner) === want) return list[idx];
+  return list.find(x => plain(x.inner) === want) || null;
+}
+function clozeAround(text, pos) {
+  return clozeMatches(text).find(x => pos >= x.start && pos <= x.end) || null;
 }
 
 async function init() {

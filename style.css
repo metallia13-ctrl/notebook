@@ -2264,3 +2264,78 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 .czw-label a { color: var(--accent); }
 .czw-sub { color: var(--muted); font-size: 0.82rem; }
 .czw-acts { display: flex; gap: 6px; }
+
+/* v3.13: ricerca unica */
+.pdf-ic.sm { width: 34px; height: 40px; font-size: 0.68rem; border-radius: 6px 11px 6px 6px; }
+.pdf-ic.sm.note { background: var(--accent); color: var(--accent-ink); font-size: 0.95rem; }
+#searchOut .tags, #allOut .tags { margin-top: 4px; }
+
+/* v3.15: ascolto e previsione */
+.notes .tts-cur { background: var(--accent-soft); border-radius: 6px; box-shadow: 0 0 0 4px var(--accent-soft); }
+.tts-pos { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; min-width: 3.5em; text-align: center; }
+.tts-bar .tts-play { min-width: 92px; }
+.notes.tts-on p, .notes.tts-on li { cursor: pointer; }
+.fc-bars { grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 3px; height: 110px; }
+.fc-bar { padding: 0; border: 0; background: none; cursor: pointer; font: inherit; color: inherit; }
+.fc-bar i { max-width: 18px; }
+.fc-bar.peak i { background: var(--warn); }
+.fc-bar:hover i { filter: brightness(1.15); }
+.fc-sum { margin-top: -4px; }
+
+/* v3.16: modalità esame, notte e zoom nei PDF */
+.exam-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin: 0 0 18px;
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--warn) 18%, var(--surface)), var(--surface));
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+}
+.exam-mode-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.exam-mode-main b { font-size: 1.02rem; }
+.exam-mode-main span { color: var(--muted); font-size: 0.88rem; }
+.exam-mode-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pdf-scroll { touch-action: pan-x pan-y; }
+.pdf-pages { transform-origin: 0 0; will-change: auto; }
+.pdf-app.pdf-night .pdf-page { filter: invert(0.9) hue-rotate(180deg); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6); }
+.pdf-app.pdf-night .pdf-thumb canvas { filter: invert(0.9) hue-rotate(180deg); }
+.pdf-app.pdf-night .pdf-scroll { background: #05070d; }
+.pdf-tools .btn.pdf-night-btn.on { background: var(--text); border-color: var(--text); color: var(--bg); }
+
+/* v3.17: suggerimenti dei cloze */
+.cz-hint-wrap { display: inline-flex; align-items: center; gap: 4px; margin: 0 2px 0 3px; vertical-align: baseline; }
+.cz-hint {
+  display: inline-grid;
+  place-items: center;
+  width: 1.35em;
+  height: 1.35em;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font: inherit;
+  font-family: var(--ui-font);
+  font-size: 0.8em;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: 0.1em;
+}
+.cz-hint.open { background: var(--warn); color: var(--bg); }
+.cz-hint-text {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--text);
+  font-family: var(--ui-font);
+  font-size: 0.82em;
+  font-style: italic;
+}
+.cz-hint-text[hidden] { display: none; }
+.notes.hint-edit mark.cz { outline: 2px dashed var(--warn); outline-offset: 2px; cursor: copy; }
+[data-act="hints"].on { background: var(--warn); color: var(--bg); }
