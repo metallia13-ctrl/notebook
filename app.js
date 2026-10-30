@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.17';
+const APP_VERSION = '3.18';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -844,7 +844,7 @@ function route() {
     case 'glossary': return viewGlossary();
     case 'tag': return viewTag(p1);
     case 'pdf': return viewPdf(p1, p2);
-    case 'pdfs': return viewPdfLibrary(p1);
+    case 'pdfs': return viewPdfLibrary(p1, p2);
     case 'exam': return viewExam(p1, p2);
     case 'deck': return viewDeck(p1);
     case 'card': return viewCardEditor(p1);
@@ -977,6 +977,7 @@ function viewNotebook(id) {
         ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
         <button class="btn" data-act="new-sec">Scrivi una sezione</button>
         <button class="btn" data-act="new-grp">Nuovo macro-argomento</button>
+        <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
         ${secs.length ? `<a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
         <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
@@ -4566,7 +4567,7 @@ function viewGuide() {
       </ul>`)}
     ${sec('Lettore PDF', `
       <ul>
-        <li>In ogni sezione la scheda <strong>PDF</strong> raccoglie i file che carichi: appunti scritti a mano, slide, capitoli. Con la sincronizzazione attiva il file va su Drive (a pezzi da 3 MB, nella cartella “pdf”) e sugli altri dispositivi si scarica la prima volta che lo apri. Annotazioni, segnalibri e Trascina si sincronizzano come il resto.</li>
+        <li>I <strong>PDF</strong> (voce del menu, pulsante “PDF” nel notebook e nella sezione) possono stare in una sezione oppure valere per <strong>tutto il notebook</strong>, come un manuale della materia: quando carichi un PDF scegli “Tutto il notebook” o una sezione, e da Opzioni puoi spostarlo. Con la sincronizzazione attiva il file va su Drive (a pezzi da 3 MB, nella cartella “pdf”) e sugli altri dispositivi si scarica la prima volta che lo apri. Annotazioni, segnalibri e Trascina si sincronizzano come il resto.</li>
         <li><strong>Segnalibri</strong>: tocca “Segnalibro” in alto, o premi B, per segnare la pagina che stai leggendo. Il nome si prende dalla prima riga della pagina e puoi cambiarlo. Li ritrovi nel pannello, insieme all’indice del PDF se ce l’ha.</li>
         <li><strong>Seleziona</strong> del testo per evidenziarlo in cinque colori, sottolinearlo, aggiungere una nota, crearne una flashcard o mandarlo a <strong>Trascina</strong>. Sul PC funziona anche il tasto destro.</li>
         <li>Tocca un’evidenziazione per cambiarne il colore, trasformarla in sottolineatura, aggiungere una nota o eliminarla.</li>
@@ -4722,7 +4723,12 @@ const stripMarks = md => {
 };
 
 /* Dal testo selezionato nella pagina al punto corrispondente del Markdown */
-const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpovrtl]\\||\\}\\}|<[^>\\n]{1,40}>)*';
+// Tutto ciò che nel Markdown c’è ma nel testo mostrato non si vede: grassetti, cloze (con suggerimento),
+// evidenziature, tag HTML, link [testo](indirizzo), collegamenti [[Titolo|testo]], escape \*, segni di
+// elenco, titoli e citazioni a inizio riga, separatori delle tabelle
+const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpovrtl]\\||\\}\\}|<[^>\\n]{1,80}>|::[^=\\n]*(?===)|\\]\\([^)\\n]*\\)|\\[\\[(?:[^\\]|\\n]*\\|)?|\\]\\]|\\[|\\\\(?=[!-/:-@\\[-`{-~])|(?:^|(?<=\\n))[ \\t]*(?:[-*+]|\\d{1,3}[.)]|#{1,6}|>)[ \\t]+|[ \\t]*\\|[ \\t]*)*';
+// caratteri che nel Markdown possono essere scritti come entità HTML
+const CHAR_ALT = { '&': '(?:&|&amp;)', '<': '(?:<|&lt;)', '>': '(?:>|&gt;)', '"': '(?:"|&quot;)', '\u00a0': '(?:\u00a0|&nbsp;| )', '’': '(?:’|\')', '‘': '(?:‘|\')', '“': '(?:“|")', '”': '(?:”|")' };
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function countOccurrences(hay, needle) {
   if (!needle) return 0;
@@ -4732,9 +4738,9 @@ function countOccurrences(hay, needle) {
   return n;
 }
 function findSourceRange(md, selText, occurrence) {
-  const t = selText.replace(/\s+/g, ' ').trim();
+  const t = selText.replace(/[\s\u00a0]+/g, ' ').trim();
   if (!t || t.length > 3000) return null;
-  const parts = [...t].map(ch => (ch === ' ' ? '\\s+' : escRe(ch)));
+  const parts = [...t].map(ch => (ch === ' ' ? '\\s+' : CHAR_ALT[ch] || escRe(ch)));
   let re;
   try { re = new RegExp(parts.join(MARKUP_GAP), 'g'); } catch { return null; }
   const found = [];
@@ -4751,8 +4757,18 @@ function findSourceRange(md, selText, occurrence) {
     if (md.slice(r.end, r.end + 2) === '**') r.end += 2; else if (md.slice(r.start - 2, r.start) === '**') r.start -= 2;
   }
   if ((slice().match(/==/g) || []).length % 2) {
-    if (md.slice(r.end, r.end + 2) === '==') r.end += 2; else if (md.slice(r.start - 2, r.start) === '==') r.start -= 2;
+    const hm = md.slice(r.end).match(/^::[^=\n]*==/);
+    if (md.slice(r.end, r.end + 2) === '==') r.end += 2;
+    else if (hm) r.end += hm[0].length;
+    else if (md.slice(r.start - 2, r.start) === '==') r.start -= 2;
   }
+  // non spezzare i collegamenti [[Titolo|testo]] e i link [testo](indirizzo)
+  const xo = (slice().match(/\[\[/g) || []).length;
+  const xc = (slice().match(/\]\]/g) || []).length;
+  if (xc > xo) { const i = md.lastIndexOf('[[', r.start); if (i >= 0) r.start = i; }
+  if (xo > xc) { const i = md.indexOf(']]', r.end); if (i >= 0) r.end = i + 2; }
+  const lk = slice().match(/^[^[]*\]\([^)\n]*\)/);
+  if (lk) { const i = md.lastIndexOf('[', r.start); if (i >= 0 && md.slice(i, r.start).indexOf('\n') < 0) r.start = i; }
   const opens = (slice().match(/\{\{[uygbpovrtl]\|/g) || []).length;
   const closes = (slice().match(/\}\}/g) || []).length;
   if (opens > closes && md.slice(r.end, r.end + 2) === '}}') r.end += 2;
@@ -6562,7 +6578,7 @@ function sectionMasks(sec) {
 }
 const ioMaskCount = sec => (S().showImages === false ? 0 : [...sectionMasks(sec).values()].reduce((a, l) => a + l.length, 0));
 function prepareImages(article, sec, { cloze = false } = {}) {
-  const imgs = article ? $$('img.nb-img', article) : [];
+  const imgs = article ? $$('img', article).filter(i => !i.closest('.html-embed, .img-box')) : [];
   if (!imgs.length) return { count: 0, masks: [] };
   const show = S().showImages !== false;
   article.classList.toggle('imgs-off', !show);
@@ -6654,7 +6670,11 @@ function choosePdfFile() {
     inp.click();
   });
 }
-async function storePdfFile(file, sec) {
+// target: una sezione oppure { notebookId, sectionId } (sectionId vuoto = PDF di tutto il notebook)
+async function storePdfFile(file, target) {
+  const sec = target && 'md' in target ? target : null;
+  const notebookId = sec ? sec.notebookId : target.notebookId;
+  const sectionId = sec ? sec.id : (target.sectionId || null);
   await ensurePdfJs();
   let pages;
   try {
@@ -6666,7 +6686,7 @@ async function storePdfFile(file, sec) {
   }
   const now = Date.now();
   const meta = {
-    id: uid(), notebookId: sec.notebookId, sectionId: sec.id,
+    id: uid(), notebookId, sectionId,
     name: (file.name || 'Documento').replace(/\.pdf$/i, ''), size: file.size || 0, pages,
     annots: [], bookmarks: [], drafts: [], lastPage: 1, zoom: 1, uploaded: false, created: now, updated: now
   };
@@ -6734,13 +6754,13 @@ function viewPdf(id, pageParam) {
   meta.bookmarks = meta.bookmarks || [];
   meta.drafts = meta.drafts || [];
   const sec = secById(meta.sectionId);
-  const back = sec ? `#/pdfs/${sec.id}` : '#/pdfs';
+  const back = sec ? `#/pdfs/${sec.id}` : nbById(meta.notebookId) ? `#/pdfs/nb/${meta.notebookId}` : '#/pdfs';
   const panelTabs = [['pages', 'Pagine'], ['marks', 'Segnalibri'], ['notes', 'Note'], ['search', 'Cerca'], ['drag', 'Trascina']];
   setView(`
     <div class="pdf-app" id="pdfApp">
       <header class="pdf-bar">
         <a class="btn ghost sm pdf-back" href="${back}" aria-label="Torna alla sezione">‹</a>
-        <div class="pdf-title"><b>${esc(meta.name)}</b>${sec ? `<small>${esc(sec.title)}</small>` : ''}</div>
+        <div class="pdf-title"><b>${esc(meta.name)}</b><small>${esc(sec ? sec.title : nbById(meta.notebookId)?.name || '')}</small></div>
         <label class="pdf-pageno"><span class="sr-only">Pagina</span><input class="input" id="pdfPage" type="number" inputmode="numeric" min="1" max="${meta.pages}" value="1"><span>/ ${meta.pages}</span></label>
         <button class="btn sm pdf-bm-btn" type="button" data-pdf="bookmark" aria-pressed="false" title="Segnalibro su questa pagina (B)">${ICON_BM}<span>Segnalibro</span></button>
         <button class="btn sm ghost pdf-panel-btn" type="button" data-pdf="panel" aria-expanded="false" title="Pannello laterale">${ICON_PANEL}<span>Pannello</span></button>
@@ -8388,7 +8408,7 @@ function setupClozeMarks(article, sec) {
 function pdfRowHtml(p, { where = false } = {}) {
   const nAnn = (p.annots || []).length;
   const s = secById(p.sectionId);
-  const place = s ? [nbById(s.notebookId)?.name, groupPathText(s), s.title].filter(Boolean).join(' › ') : '';
+  const place = s ? [nbById(s.notebookId)?.name, groupPathText(s), s.title].filter(Boolean).join(' › ') : `${nbById(p.notebookId)?.name || ''}, tutta la materia`;
   return `
     <li class="pdf-row">
       <a class="row" href="#/pdf/${p.id}">
@@ -8408,7 +8428,7 @@ function bindPdfRows(root) {
     const choice = await actionSheet(p.name, [
       { key: 'open', label: 'Apri' },
       { key: 'rename', label: 'Rinomina' },
-      { key: 'move', label: 'Sposta in un’altra sezione' },
+      { key: 'move', label: 'Sposta in un altro notebook o sezione' },
       { key: 'delete', label: 'Elimina il PDF', danger: true }
     ]);
     if (choice === 'open') go(`#/pdf/${p.id}`);
@@ -8417,8 +8437,8 @@ function bindPdfRows(root) {
       if (name) { p.name = name; await savePdfMeta(p); route(); }
     }
     if (choice === 'move') {
-      const s = await sectionPickerSheet('In quale sezione lo sposto?', p.sectionId);
-      if (s) { p.sectionId = s.id; p.notebookId = s.notebookId; await savePdfMeta(p); toast(`Spostato in ${s.title}`); route(); }
+      const t = await pdfTargetSheet('Dove lo sposto?');
+      if (t) { p.sectionId = t.sectionId; p.notebookId = t.notebookId; await savePdfMeta(p); toast(`Spostato in ${t.label}`); route(); }
     }
     if (choice === 'delete') {
       const ok = await modal({ title: 'Eliminare il PDF?', text: 'Si perdono anche evidenziazioni, note e segnalibri, su tutti i dispositivi. Le flashcard già create restano.', confirm: 'Elimina', danger: true });
@@ -8426,39 +8446,76 @@ function bindPdfRows(root) {
     }
   }, root);
 }
-async function uploadPdfInto(sec, btn) {
+async function uploadPdfInto(target, btn) {
   const file = await choosePdfFile();
   if (!file) return;
   if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli un file PDF', 'err'); return; }
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Carico il PDF…'; }
   try {
-    const meta = await storePdfFile(file, sec);
+    const meta = await storePdfFile(file, target);
     go(`#/pdf/${meta.id}`);
   } catch (err) {
     toast(err.message, 'err');
     if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
-function viewPdfLibrary(secId) {
-  const sec = secId ? secById(secId) : null;
-  if (secId && !sec) return notFound('Questa sezione');
-  const list = sec ? pdfsOf(sec.id) : [...state.pdfs].sort((a, b) => (b.updated || 0) - (a.updated || 0));
-  const q = '';
+// Scelta di dove mettere un PDF: un notebook intero o una sua sezione
+function pdfTargetSheet(title = 'Dove metto il PDF?', preset = null) {
+  return new Promise(resolve => {
+    const nbs = [...state.notebooks].sort((a, b) => a.created - b.created);
+    if (!nbs.length) { toast('Crea prima un notebook'); resolve(null); return; }
+    let nbId = preset && nbById(preset) ? preset : nbs[0].id;
+    const sh = openSheet(`
+      <h2>${esc(title)}</h2>
+      <label class="field"><span>Notebook</span><select class="input" id="ptNb">${nbs.map(n => `<option value="${n.id}" ${n.id === nbId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+      <ul class="list pick-list" id="ptList"></ul>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-pt="no">Annulla</button></div>`, { label: title, onClose: resolve });
+    const draw = () => {
+      const nb = nbById(nbId);
+      const secs = secsOf(nbId).sort((a, b) => (groupPathText(a) + a.title).localeCompare(groupPathText(b) + b.title));
+      $('#ptList', sh.el).innerHTML = `
+        <li><button type="button" class="row pt-all" data-pt-sec=""><span class="row-main"><span class="row-title">Tutto il notebook</span><span class="row-sub">Per i PDF che riguardano tutta la materia di ${esc(nb.name)}</span></span></button></li>
+        ${secs.map(s => `<li><button type="button" class="row" data-pt-sec="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span>${groupPathText(s) ? `<span class="row-sub">${esc(groupPathText(s))}</span>` : ''}</span></button></li>`).join('')}`;
+    };
+    draw();
+    $('#ptNb', sh.el).addEventListener('change', e => { nbId = e.target.value; draw(); });
+    $('#ptList', sh.el).addEventListener('click', e => {
+      const b = e.target.closest('[data-pt-sec]');
+      if (!b) return;
+      const s = b.dataset.ptSec ? secById(b.dataset.ptSec) : null;
+      sh.close({ notebookId: nbId, sectionId: s ? s.id : null, label: s ? s.title : nbById(nbId).name });
+    });
+    $('[data-pt="no"]', sh.el).onclick = () => sh.close(null);
+  });
+}
+// #/pdfs (tutti), #/pdfs/<sezione>, #/pdfs/nb/<notebook>
+function viewPdfLibrary(p1, p2) {
+  const nb = p1 === 'nb' ? nbById(p2) : null;
+  const sec = !nb && p1 ? secById(p1) : null;
+  if ((p1 === 'nb' && !nb) || (p1 && p1 !== 'nb' && !sec)) return notFound(p1 === 'nb' ? 'Questo notebook' : 'Questa sezione');
+  const all = [...state.pdfs].sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  const list = sec ? pdfsOf(sec.id) : nb ? all.filter(p => p.notebookId === nb.id).sort((a, b) => (a.sectionId ? 1 : 0) - (b.sectionId ? 1 : 0)) : all;
+  const nbWide = nb ? list.filter(p => !p.sectionId) : [];
+  const inSecs = nb ? list.filter(p => p.sectionId) : [];
   setView(`
-    ${sec ? `<a class="back" href="#/sec/${sec.id}">${esc(sec.title)}</a>` : ''}
+    ${sec ? `<a class="back" href="#/sec/${sec.id}">${esc(sec.title)}</a>` : nb ? `<a class="back" href="#/nb/${nb.id}">${esc(nb.name)}</a>` : ''}
     <header class="page-head">
-      <div><h1>PDF</h1><p class="lede">${sec ? `I PDF di ${esc(sec.title)}.` : 'Tutti i tuoi PDF: appunti scritti a mano, slide, capitoli. Ognuno sta in una sezione.'}</p></div>
+      <div><h1>PDF</h1><p class="lede">${sec ? `I PDF di ${esc(sec.title)}.` : nb ? `I PDF di ${esc(nb.name)}: quelli di tutta la materia e quelli delle sue sezioni.` : 'Tutti i tuoi PDF: appunti scritti a mano, slide, capitoli. Ognuno sta in un notebook o in una sua sezione.'}</p></div>
       <button class="btn primary" type="button" data-act="pdf-add">Carica un PDF</button>
     </header>
-    ${!sec && list.length > 5 ? '<input type="search" class="input search" id="pdfQ" placeholder="Cerca un PDF" aria-label="Cerca un PDF">' : ''}
-    ${list.length ? `<ul class="list pdf-list" id="pdfList">${list.map(p => pdfRowHtml(p, { where: !sec })).join('')}</ul>`
-      : `<div class="empty"><p>${sec ? 'Nessun PDF in questa sezione.' : 'Nessun PDF ancora. Caricane uno e scegli la sezione a cui appartiene.'}</p></div>`}
+    ${!sec && !nb && list.length > 5 ? '<input type="search" class="input search" id="pdfQ" placeholder="Cerca un PDF" aria-label="Cerca un PDF">' : ''}
+    ${nb ? `
+      ${nbWide.length ? `<h2 class="sub">Di tutta la materia</h2><ul class="list pdf-list">${nbWide.map(p => pdfRowHtml(p)).join('')}</ul>` : ''}
+      ${inSecs.length ? `<h2 class="sub">Nelle sezioni</h2><ul class="list pdf-list">${inSecs.map(p => pdfRowHtml(p, { where: true })).join('')}</ul>` : ''}
+      ${!list.length ? '<div class="empty"><p>Nessun PDF in questo notebook.</p></div>' : ''}`
+    : list.length ? `<ul class="list pdf-list" id="pdfList">${list.map(p => pdfRowHtml(p, { where: !sec })).join('')}</ul>`
+      : `<div class="empty"><p>${sec ? 'Nessun PDF in questa sezione.' : 'Nessun PDF ancora. Caricane uno e scegli il notebook o la sezione a cui appartiene.'}</p></div>`}
     ${Sync.configured() ? '<p class="hint">Con la sincronizzazione attiva i PDF vanno anche su Drive e li ritrovi sugli altri dispositivi.</p>' : '<p class="hint">Attiva la sincronizzazione con Drive per ritrovare i PDF sugli altri dispositivi.</p>'}`);
   bindPdfRows($('#view'));
   on('[data-act="pdf-add"]', 'click', async e => {
     const btn = e.currentTarget;
-    const target = sec || await sectionPickerSheet('In quale sezione metto il PDF?');
+    const target = sec ? { notebookId: sec.notebookId, sectionId: sec.id } : await pdfTargetSheet('Dove metto il PDF?', nb ? nb.id : null);
     if (target) uploadPdfInto(target, btn);
   });
   $('#pdfQ')?.addEventListener('input', e => {
@@ -8466,7 +8523,7 @@ function viewPdfLibrary(secId) {
     $$('#pdfList > li').forEach(li => {
       const p = pdfById(li.querySelector('[data-pdf-more]').dataset.pdfMore);
       const s = p && secById(p.sectionId);
-      li.hidden = !!f && !foldAccents(`${p?.name} ${s?.title || ''} ${s ? nbById(s.notebookId)?.name : ''}`).includes(f);
+      li.hidden = !!f && !foldAccents(`${p?.name} ${s?.title || ''} ${nbById(p?.notebookId)?.name || ''}`).includes(f);
     });
   });
 }
