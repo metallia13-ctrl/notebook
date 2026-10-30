@@ -5,25 +5,43 @@
  * 1. Vai su script.google.com, crea un NUOVO progetto (non usare quello di StudyHub)
  *    e incolla tutto questo file al posto del codice di esempio.
  * 2. Cambia SECRET qui sotto con una frase lunga che conosci solo tu.
- * 3. Esegui > Distribuisci > Nuova distribuzione > tipo "App web".
- *    Esegui come: Me.  Chi ha accesso: Chiunque.
- * 4. Autorizza l'accesso a Drive quando Google lo chiede.
- * 5. Copia l'indirizzo che finisce con /exec e incollalo nelle Impostazioni del Notebook,
- *    insieme alla stessa frase segreta.
+ * 3. In alto scegli la funzione "autorizza" e premi Esegui: Google chiede l'accesso a Drive.
+ *    Se compare "App non verificata": Avanzate > Vai al progetto (non sicuro) > Consenti.
+ *    È il tuo script, quindi va bene.
+ * 4. Distribuisci > Nuova distribuzione > tipo "App web".
+ *    Esegui come: Me.  Chi ha accesso: Chiunque (NON "Chiunque con un account Google").
+ * 5. Copia l'URL dell'app web, quello che finisce con /exec, e incollalo nelle Impostazioni
+ *    del Notebook insieme alla stessa frase segreta. Poi premi "Prova il collegamento".
+ * Se usi l'account dell'università, l'amministratore potrebbe vietare "Chiunque":
+ * in quel caso crea lo script con il tuo account Gmail personale.
  *
  * Se modifichi questo codice: Distribuisci > Gestisci distribuzioni > Modifica (matita)
  * > Versione: "Nuova versione". Così l'indirizzo resta lo stesso.
  *
  * I dati finiscono nella cartella "StudyHub Notebook (sincronizzazione)" del tuo Drive:
- * un file per ogni notebook, un indice e la sottocartella "immagini". Non modificarli a mano.
+ * un file per ogni notebook, un indice e le sottocartelle "immagini" e "pdf".
+ * Non modificarli a mano.
+ *
+ * Versione 2 (Notebook 3.8): aggiunge i PDF. Se avevi già la versione 1, incolla questo file
+ * al posto del vecchio TENENDO LA TUA FRASE SEGRETA, poi Distribuisci > Gestisci distribuzioni
+ * > Modifica (matita) > Versione: "Nuova versione" > Distribuisci. Non serve autorizzare di nuovo.
+ * Ogni PDF è salvato in pezzi da 3 MB nella sottocartella "pdf": l'app li ricompone da sola.
  */
 
-const SECRET = 'merlino';
+const SECRET = 'CAMBIA-QUESTA-FRASE';
 const FOLDER_NAME = 'StudyHub Notebook (sincronizzazione)';
 const MAX_SET_CONTENT = 7 * 1024 * 1024; // oltre questa misura il file viene ricreato invece che sovrascritto
 
+/** Da eseguire una volta dall'editor: concede l'accesso a Drive e crea la cartella. */
+function autorizza() {
+  const folder = folder_();
+  indexFile_(folder);
+  imgFolder_(folder);
+  Logger.log('Autorizzazione completata. Cartella: ' + folder.getName());
+}
+
 function doGet() {
-  return json_({ ok: true, app: 'studyhub-notebook-sync', version: 1 });
+  return json_({ ok: true, app: 'studyhub-notebook-sync', version: 2, pdf: true });
 }
 
 function doPost(e) {
@@ -33,7 +51,7 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'Richiesta non leggibile' });
   }
-  if (SECRET === 'FRASE SEGRETA') {
+  if (SECRET === 'CAMBIA-QUESTA-FRASE') {
     return json_({ ok: false, error: 'Nello script manca la frase segreta: cambiala e crea una nuova versione della distribuzione' });
   }
   if (!req || req.secret !== SECRET) return json_({ ok: false, error: 'Frase segreta errata' });
@@ -46,8 +64,12 @@ function doPost(e) {
     const index = readJson_(indexFile, { rev: 0, shards: {} });
     if (!index.shards) index.shards = {};
     if (!index.images) index.images = {};
-    if (req.action === 'ping') return json_({ ok: true, rev: index.rev });
+    if (!index.pdfs) index.pdfs = {};
+    if (req.action === 'ping') return json_({ ok: true, rev: index.rev, version: 2 });
     if (req.action === 'images') return json_(images_(index, req));
+    if (req.action === 'pdf-info') return json_(pdfInfo_(index, req));
+    if (req.action === 'pdf-up') return json_(pdfUp_(folder, indexFile, index, req));
+    if (req.action === 'pdf-down') return json_(pdfDown_(index, req));
     if (req.action !== 'sync') return json_({ ok: false, error: 'Azione sconosciuta' });
     return json_(sync_(folder, indexFile, index, req));
   } catch (err) {
@@ -86,6 +108,11 @@ function sync_(folder, indexFile, index, req) {
   let imagesChanged = false;
   (req.records || []).forEach(function (r) {
     if (!r || !r.id || !r.store) return;
+    // PDF eliminato da un dispositivo: si cestinano anche i suoi pezzi
+    if (r.store === 'pdfs' && r.deleted && index.pdfs[r.id] && !index.pdfs[r.id].deleted) {
+      trashPdf_(index, r.id);
+      imagesChanged = true;
+    }
     if (r.store === 'images') {
       if (saveImage_(folder, index, r)) { accepted['images:' + r.id] = true; imagesChanged = true; }
       return;
@@ -112,12 +139,7 @@ function sync_(folder, indexFile, index, req) {
     index.shards[key] = { fileId: sh.file.getId(), rev: index.rev };
     indexChanged = true;
   });
-  if (indexChanged) {
-    const newIndex = writeFile_(folder, indexFile, 'index.json', JSON.stringify(index));
-    if (newIndex.getId() !== indexFile.getId()) {
-      PropertiesService.getScriptProperties().setProperty('INDEX_ID', newIndex.getId());
-    }
-  }
+  if (indexChanged) saveIndex_(folder, indexFile, index);
 
   const out = [];
   if (req.pull !== false) {
@@ -183,6 +205,102 @@ function images_(index, req) {
     return false;
   });
   return { ok: true, images: out, missing: missing };
+}
+
+/* ---------------------------------------------------------------------
+   PDF: ogni file è diviso in pezzi numerati. L'app manda e chiede un pezzo
+   per volta, così anche un PDF grande non supera i limiti di Apps Script.
+   --------------------------------------------------------------------- */
+function validPdfId_(id) { return /^[A-Za-z0-9_-]{4,40}$/.test(String(id || '')); }
+
+/** Quali pezzi di un PDF sono già su Drive (per riprendere un caricamento interrotto). */
+function pdfInfo_(index, req) {
+  const m = index.pdfs[req.id];
+  if (!m || m.deleted) return { ok: true, exists: false, parts: [] };
+  const parts = [];
+  (m.parts || []).forEach(function (fid, i) { if (fid) parts.push(i); });
+  return { ok: true, exists: true, complete: !!m.complete, total: m.total, size: m.size, parts: parts };
+}
+
+/** Riceve un pezzo del PDF e lo salva come file nella sottocartella "pdf". */
+function pdfUp_(folder, indexFile, index, req) {
+  const id = String(req.id || '');
+  const part = Number(req.part);
+  const total = Number(req.total);
+  const size = Number(req.size) || 0;
+  if (!validPdfId_(id) || !(part >= 0) || !(total > 0) || part >= total || part % 1 || !req.data) {
+    return { ok: false, error: 'Pezzo del PDF non valido' };
+  }
+  let m = index.pdfs[id];
+  if (!m || m.deleted || m.total !== total || m.size !== size) {
+    if (m && m.parts) trashParts_(m.parts);
+    m = { parts: [], total: total, size: size, complete: false };
+  }
+  if (m.parts[part]) {
+    try { DriveApp.getFileById(m.parts[part]).setTrashed(true); } catch (err) { /* già rimosso */ }
+  }
+  const name = id + '.parte-' + ('000' + part).slice(-4);
+  const file = pdfFolder_(folder).createFile(Utilities.newBlob(Utilities.base64Decode(req.data), 'application/octet-stream', name));
+  m.parts[part] = file.getId();
+  m.name = String(req.name || '').slice(0, 200);
+  m.notebookId = String(req.notebookId || '');
+  let have = 0;
+  for (let i = 0; i < total; i++) if (m.parts[i]) have++;
+  m.complete = have === total;
+  m.updated = Date.now();
+  index.pdfs[id] = m;
+  saveIndex_(folder, indexFile, index);
+  return { ok: true, part: part, complete: m.complete };
+}
+
+/** Restituisce un pezzo del PDF. */
+function pdfDown_(index, req) {
+  const m = index.pdfs[req.id];
+  if (!m || m.deleted) return { ok: false, error: 'Questo PDF non è su Drive' };
+  if (!m.complete) return { ok: false, error: 'Il PDF non è ancora stato caricato del tutto su Drive' };
+  const part = Number(req.part) || 0;
+  if (part < 0 || part >= m.total || !m.parts[part]) return { ok: false, error: 'Pezzo del PDF mancante' };
+  let data;
+  try {
+    data = Utilities.base64Encode(DriveApp.getFileById(m.parts[part]).getBlob().getBytes());
+  } catch (err) {
+    return { ok: false, error: 'Un pezzo del PDF è stato cancellato da Drive: caricalo di nuovo' };
+  }
+  return { ok: true, part: part, total: m.total, size: m.size, data: data };
+}
+
+function trashParts_(parts) {
+  (parts || []).forEach(function (fid) {
+    if (!fid) return;
+    try { DriveApp.getFileById(fid).setTrashed(true); } catch (err) { /* già rimosso */ }
+  });
+}
+
+function trashPdf_(index, id) {
+  const m = index.pdfs[id];
+  if (!m) return;
+  trashParts_(m.parts);
+  index.pdfs[id] = { deleted: true, updated: Date.now() };
+}
+
+function pdfFolder_(folder) {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('PDF_FOLDER_ID');
+  if (id) {
+    try {
+      const f = DriveApp.getFolderById(id);
+      if (!f.isTrashed()) return f;
+    } catch (err) { /* cartella sparita: la ricreo */ }
+  }
+  const f = folder.createFolder('pdf');
+  props.setProperty('PDF_FOLDER_ID', f.getId());
+  return f;
+}
+
+function saveIndex_(folder, indexFile, index) {
+  const f = writeFile_(folder, indexFile, 'index.json', JSON.stringify(index));
+  if (f.getId() !== indexFile.getId()) PropertiesService.getScriptProperties().setProperty('INDEX_ID', f.getId());
+  return f;
 }
 
 function imgFolder_(folder) {

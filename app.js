@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.4';
+const APP_VERSION = '3.9';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -82,7 +82,7 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 4);
+      const req = indexedDB.open(DB_NAME, 5);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('notebooks')) db.createObjectStore('notebooks', { keyPath: 'id' });
@@ -97,6 +97,9 @@ const DB = {
         }
         if (!db.objectStoreNames.contains('deleted')) db.createObjectStore('deleted', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('links')) db.createObjectStore('links', { keyPath: 'id' });
+        // v5: PDF da leggere (metadati e annotazioni) e i loro file, solo su questo dispositivo
+        if (!db.objectStoreNames.contains('pdfs')) db.createObjectStore('pdfs', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('pdfblobs')) db.createObjectStore('pdfblobs', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('images')) {
           const im = db.createObjectStore('images', { keyPath: 'id' });
           im.createIndex('notebookId', 'notebookId');
@@ -159,6 +162,7 @@ const Settings = {
     readSpacing: 'normal',
     boardOpen: false,
     keepPdfImages: false,
+    showImages: true,
     xmCards: true
   },
   data: null,
@@ -176,11 +180,11 @@ const S = () => Settings.data;
 /* ---------------------------------------------------------------------
    Stato e dati
    --------------------------------------------------------------------- */
-const state = { notebooks: [], sections: [], cards: [], images: [], links: [], fromReview: false, cardReturn: '' };
+const state = { notebooks: [], sections: [], cards: [], images: [], links: [], pdfs: [], fromReview: false, cardReturn: '' };
 const drafts = {};              // richiami "pagina bianca" non ancora valutati
 let orderSeq = 0;
 let importJob = null;
-const importDraft = { nbId: '', src: 'text', text: '', title: '', pdf: null, split: 'every', rangesText: '', xmind: null };
+const importDraft = { nbId: '', groupId: '', src: 'text', text: '', title: '', pdf: null, split: 'every', rangesText: '', xmind: null };
 let cleanups = [];
 
 const nbById = id => state.notebooks.find(n => n.id === id);
@@ -188,10 +192,15 @@ const secById = id => state.sections.find(s => s.id === id);
 const secsOf = nbId => state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.order - b.order);
 const isDue = s => !s.studyhub && !!(s.srs && s.srs.due && s.srs.due <= todayStr());
 const sortDue = (a, b) => a.srs.due.localeCompare(b.srs.due) || a.order - b.order;
+// Macro-argomenti: elenco ordinato dentro il notebook, ogni sezione ne indica uno con groupId
+const groupsOf = nb => (nb && Array.isArray(nb.groups) ? nb.groups : []);
+const groupOf = sec => groupsOf(nbById(sec.notebookId)).find(g => g.id === sec.groupId) || null;
+// Niente spoiler: una sezione si apre in Cloze se ha termini nascosti, altrimenti in Leggi
+const openMode = s => (countCloze(s.md) || ioMaskCount(s) ? 'cloze' : 'read');
 
 function newSrs() { return { ef: 2.5, interval: 0, reps: 0, due: null, history: [] }; }
 
-function newSection(nbId, { title, md, questions, source } = {}) {
+function newSection(nbId, { title, md, questions, source, groupId } = {}) {
   const now = Date.now();
   return {
     id: uid(),
@@ -204,7 +213,8 @@ function newSection(nbId, { title, md, questions, source } = {}) {
     created: now,
     updated: now,
     srs: newSrs(),
-    needsFormat: false
+    needsFormat: false,
+    groupId: groupId || null      // macro-argomento del notebook; la sezione è il micro-argomento
   };
 }
 
@@ -229,6 +239,7 @@ async function deleteSection(id) {
   const cards = cardsOfSection(id);
   const refs = [...imageRefs(sec.md), ...cards.flatMap(cardImageRefs)];
   await removeRecords([{ store: 'sections', rec: sec }, ...cards.map(c => ({ store: 'cards', rec: c }))]);
+  for (const p of pdfsOf(id)) await deletePdf(p.id);
   delete drafts[id];
   await removeOrphanImages(refs);
 }
@@ -275,8 +286,8 @@ const countCloze = md => ((md || '').match(clozeRe()) || []).length;
 const stripCloze = md => (md || '').replace(clozeRe(), '$1');
 
 function renderMd(md) {
-  const src = (md || '')
-    .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`);
+  const src = renderXrefs((md || '')
+    .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`));
   const src2 = renderMarks(src).replace(clozeRe(), (m, t) => `<mark class="cz">${t}</mark>`);
   let html;
   const mk = window.marked;
@@ -286,6 +297,8 @@ function renderMd(md) {
     html = src2.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')
       .replace(/&lt;mark class=&quot;(cz|hl hl-[ygbpo])&quot;&gt;/g, '<mark class="$1">').replace(/&lt;\/mark&gt;/g, '</mark>')
       .replace(/&lt;u class=&quot;ul&quot;&gt;/g, '<u class="ul">').replace(/&lt;\/u&gt;/g, '</u>')
+      .replace(/&lt;a class=&quot;xref&quot; href=&quot;(#\/sec\/[a-z0-9]+)&quot;&gt;(.*?)&lt;\/a&gt;/g, '<a class="xref" href="$1">$2</a>')
+      .replace(/&lt;span class=&quot;xref missing&quot;[^&]*?(?:&quot;[^&]*?)*&gt;(.*?)&lt;\/span&gt;/g, '<span class="xref missing">$1</span>')
       .replace(/&lt;img class=&quot;nb-img&quot; data-img=&quot;([a-z0-9]+)&quot;[^&]*?(?:&quot;[^&]*?)*&gt;/g, '<img class="nb-img" data-img="$1" alt="">');
   }
   if (window.DOMPurify) html = window.DOMPurify.sanitize(html);
@@ -362,7 +375,7 @@ function parseQuestions(txt) {
   if (cur && cur.q) out.push(cur);
   return out.filter(x => x.q);
 }
-const aiText = md => stripMarks(stripCloze(md || '')).replace(IMG_MD_RE, (m, alt) => `[immagine${alt ? `: ${alt}` : ''}]`);
+const aiText = md => xrefPlain(stripMarks(stripCloze(md || ''))).replace(IMG_MD_RE, (m, alt) => `[immagine${alt ? `: ${alt}` : ''}]`);
 const serializeQs = qs => (qs || []).map(x => `D: ${x.q}\nR: ${x.a}`).join('\n\n');
 
 function parseAiNotes(raw) {
@@ -518,21 +531,14 @@ async function listModels(provider) {
 }
 
 /* Istruzioni per l’AI */
-function formatSystem({ cloze, questions }) {
+function formatSystem({ cloze, questions } = {}) {
   return [
-    'Sei un assistente che prepara materiale di studio per studenti di medicina.',
-    'Ricevi un estratto (testo o pagine di PDF) e lo trasformi in appunti di studio in Markdown.',
+    promptText('format').trim(),
     '',
-    'Regole:',
-    '- Mantieni TUTTE le informazioni: non riassumere, non omettere valori numerici, dosi, percentuali, criteri, classificazioni ed eccezioni.',
-    '- Non aggiungere informazioni che non sono nel testo.',
-    '- Usa titoli (##, ###), elenchi puntati annidati e tabelle Markdown.',
-    '- Usa una tabella ogni volta che ci sono confronti o voci con le stesse caratteristiche (es. farmaci con meccanismo, indicazioni ed effetti avversi; diagnosi differenziale; classificazioni; stadiazioni).',
-    '- Scrivi nella stessa lingua del testo originale.',
-    '- Ignora numeri di pagina, intestazioni e piè di pagina ripetuti, didascalie senza contenuto.',
-    '- Se ci sono figure o schemi con informazioni utili, descrivine il contenuto in un elenco.',
+    'Regole tecniche, da rispettare sempre:',
     '- Copia senza modifiche, nella stessa posizione, ogni riferimento a immagine nel formato ![testo](img:codice).',
     '- Mantieni le evidenziature e sottolineature nel formato {{lettera|testo}}, es. {{y|frase importante}}.',
+    '- Mantieni i collegamenti ad altre pagine nel formato [[Titolo]].',
     cloze
       ? '- Racchiudi tra == e == i termini chiave da memorizzare (definizioni, nomi, valori, criteri), es. ==insulina==. Al massimo uno o due per frase o per cella, mai un’intera frase.'
       : '- Non usare la sintassi ==...==.',
@@ -549,24 +555,6 @@ function formatSystem({ cloze, questions }) {
     ] : [])
   ].join('\n');
 }
-
-const QUESTIONS_SYSTEM = [
-  'Sei un tutor per studenti di medicina.',
-  'Dagli appunti ricevuti genera da 5 a 12 domande per il richiamo attivo, che coprano i concetti più importanti.',
-  'Preferisci domande che chiedono di spiegare, confrontare o elencare, non solo definizioni.',
-  'Scrivi nella lingua degli appunti. Formato, senza altro testo:',
-  'D: <domanda>',
-  'R: <risposta sintetica>'
-].join('\n');
-
-const EVAL_SYSTEM = [
-  'Sei un tutor per studenti di medicina. Confronta il richiamo libero dello studente con gli appunti originali.',
-  'Rispondi in italiano, in Markdown, in modo conciso, con questa struttura:',
-  '**Punteggio: X/100** (quanto dei contenuti importanti è stato ricordato correttamente)',
-  '### Ricordato bene',
-  '### Mancante (in ordine di importanza)',
-  '### Errori (solo se ci sono affermazioni sbagliate)'
-].join('\n');
 
 async function aiFormatNotes({ text, pdfBase64, cloze, questions, signal, onWait }) {
   const user = pdfBase64
@@ -760,19 +748,23 @@ function defaultMode(s) {
 
 function sectionRow(s, { showNb = false, review = false } = {}) {
   const bits = [];
-  if (showNb) bits.push(esc(nbById(s.notebookId)?.name || ''));
+  if (showNb) {
+    const g = groupOf(s);
+    bits.push(esc(nbById(s.notebookId)?.name || '') + (g ? ` › ${esc(g.name)}` : ''));
+  }
   const cz = countCloze(s.md);
   const q = (s.questions || []).length;
   if (cz) bits.push(`${cz} cloze`);
   if (q) bits.push(`${q} ${q === 1 ? 'domanda' : 'domande'}`);
   if (s.needsFormat) bits.push('da formattare');
-  const href = review ? `#/sec/${s.id}/${defaultMode(s)}` : `#/sec/${s.id}`;
+  const href = review ? `#/sec/${s.id}/${defaultMode(s)}` : `#/sec/${s.id}/${openMode(s)}`;
   return `
     <li data-id="${s.id}">
       <a class="row" href="${href}" ${review ? 'data-review="1"' : ''}>
         <span class="row-main">
           <span class="row-title">${esc(s.title)}</span>
           <span class="row-sub">${bits.filter(Boolean).join(', ') || 'Solo lettura'}</span>
+          ${tagChips(tagsOf(s), { link: false })}
         </span>
         ${statusPill(s)}
       </a>
@@ -799,6 +791,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
+const MORE_KEYS = ['more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -808,22 +801,29 @@ function route() {
   // Un’importazione finita non blocca il modulo quando ci torni
   if (p0 !== 'import' && importJob && !importJob.running) importJob = null;
   const navKey = p0 === 'nb' || p0 === 'sec' ? (state.fromReview ? 'review' : 'notebooks')
+    : p0 === 'tag' || p0 === 'pdf' ? 'notebooks'
     : ['deck', 'card', 'study'].includes(p0) ? 'cards' : p0;
   $$('.nav a').forEach(a => {
-    const onIt = a.dataset.nav === navKey;
+    const onIt = a.dataset.nav === navKey || (a.dataset.nav === 'more' && MORE_KEYS.includes(navKey));
     a.classList.toggle('on', onIt);
     if (onIt) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   window.scrollTo(0, 0);
   switch (p0) {
     case 'nb': return viewNotebook(p1);
-    case 'sec': return viewSection(p1, p2 || 'read');
-    case 'import': return viewImport(p1);
+    case 'sec': return viewSection(p1, p2);
+    case 'import': return viewImport(p1, p2);
     case 'review': return viewReview();
     case 'settings': return viewSettings();
     case 'cards': return viewCardsHome();
     case 'links': return viewLinks();
     case 'guide': return viewGuide();
+    case 'more': return viewMore();
+    case 'calendar': return viewCalendar();
+    case 'clinic': return viewClinic();
+    case 'glossary': return viewGlossary();
+    case 'tag': return viewTag(p1);
+    case 'pdf': return viewPdf(p1, p2);
     case 'deck': return viewDeck(p1);
     case 'card': return viewCardEditor(p1);
     case 'study': return viewStudy(p1);
@@ -917,43 +917,169 @@ function viewNotebook(id) {
   const secs = secsOf(id);
   const due = secs.filter(isDue).length;
   const nbCards = cardsOf(id);
+  const groups = groupsOf(nb);
+  const gIds = new Set(groups.map(g => g.id));
+  const loose = secs.filter(s => !gIds.has(s.groupId));
+  const foldKey = `nb:${id}`;
+  const closed = new Set(foldGet(foldKey));
+  const lede = [
+    `${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}`,
+    groups.length ? `${groups.length} ${groups.length === 1 ? 'macro-argomento' : 'macro-argomenti'}` : '',
+    due ? `${due} da ripassare oggi` : '',
+    nbCards.length ? `${nbCards.length} flashcard` : ''
+  ].filter(Boolean).join(', ');
+  const groupBlock = (g, i) => {
+    const gs = secs.filter(s => s.groupId === g.id);
+    const gd = gs.filter(isDue).length;
+    return `
+      <section class="grp fold" data-fold="${g.id}" data-g="${g.id}">
+        <div class="grp-head">
+          <button class="fold-btn" type="button" data-name="${esc(g.name)}">${CHEVRON}</button>
+          <span class="grp-main">
+            <h2 class="grp-title">${esc(g.name)}</h2>
+            <span class="grp-meta">${gs.length ? `${gs.length} ${gs.length === 1 ? 'micro-argomento' : 'micro-argomenti'}` : 'Ancora vuoto'}${gd ? `, <b>${gd} da ripassare</b>` : ''}</span>
+          </span>
+          <button class="btn ghost sm grp-more" type="button" data-gmenu="${g.id}" aria-label="Opzioni per ${esc(g.name)}">Opzioni</button>
+        </div>
+        <div class="fold-body">
+          ${gs.length ? `<ul class="list sec-list">${gs.map(s => sectionRow(s)).join('')}</ul>` : `
+            <div class="grp-empty">
+              <button class="btn sm" type="button" data-gadd="${g.id}">Aggiungi sezioni esistenti</button>
+              <a class="btn sm ghost" href="#/import/${id}/${g.id}">Importa qui</a>
+            </div>`}
+        </div>
+      </section>`;
+  };
   setView(`
     <a class="back" href="#/notebooks">Tutti i notebook</a>
     <header class="page-head">
       <div>
         <h1>${esc(nb.name)}</h1>
-        <p class="lede">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}${due ? `, ${due} da ripassare oggi` : ''}${nbCards.length ? `, ${nbCards.length} flashcard` : ''}</p>
+        <p class="lede">${lede}</p>
       </div>
       <div class="actions">
         <a class="btn primary" href="#/import/${nb.id}">Importa</a>
         ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
         <button class="btn" data-act="new-sec">Scrivi una sezione</button>
-        <button class="btn ghost" data-act="rename">Rinomina</button>
-        <button class="btn ghost danger" data-act="delete">Elimina</button>
+        <button class="btn" data-act="new-grp">Nuovo macro-argomento</button>
+        <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
     </header>
     ${secs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca nel notebook" aria-label="Cerca nel notebook">' : ''}
-    ${secs.length ? `<ul class="list" id="secList">${secs.map(s => sectionRow(s)).join('')}</ul>
-      <p class="hint" id="noMatch" hidden>Nessuna sezione contiene questo testo.</p>` : `
-      <div class="empty">
-        <p>Notebook vuoto. Importa testo o un PDF, oppure scrivi una sezione a mano.</p>
-        <a class="btn primary" href="#/import/${nb.id}">Importa</a>
-      </div>`}
+    <div id="nbBody">
+      ${groups.length ? groups.map(groupBlock).join('') : ''}
+      ${loose.length ? `
+        <section class="grp-loose">
+          ${groups.length ? '<h2 class="sub">Senza macro-argomento</h2>' : ''}
+          <ul class="list sec-list">${loose.map(s => sectionRow(s)).join('')}</ul>
+        </section>` : ''}
+      ${!secs.length && !groups.length ? `
+        <div class="empty">
+          <p>Notebook vuoto. Importa testo o un PDF, oppure scrivi una sezione a mano. Con i macro-argomenti (per esempio un apparato o un capitolo) raggruppi le sezioni, che diventano i micro-argomenti.</p>
+          <a class="btn primary" href="#/import/${nb.id}">Importa</a>
+          <button class="btn" data-act="new-grp">Nuovo macro-argomento</button>
+        </div>` : ''}
+    </div>
+    <p class="hint" id="noMatch" hidden>Nessuna sezione contiene questo testo.</p>
   `);
 
-  on('[data-act="new-sec"]', 'click', async () => {
-    const sec = newSection(id, { title: 'Nuova sezione' });
+  const box = $('#nbBody');
+  $$('.grp', box).forEach(g => setFold(g, closed.has(g.dataset.g)));
+  const saveFolds = () => foldSet(foldKey, $$('.grp.closed', box).map(g => g.dataset.g));
+  box.addEventListener('click', e => {
+    const head = e.target.closest('.grp-head');
+    if (!head || e.target.closest('.grp-more')) return;
+    const grp = head.parentElement;
+    setFold(grp, !grp.classList.contains('closed'));
+    saveFolds();
+  });
+
+  const newSecIn = async groupId => {
+    const sec = newSection(id, { title: 'Nuova sezione', groupId });
     await saveSection(sec);
     go(`#/sec/${sec.id}/edit`);
+  };
+  const addSectionsTo = async g => {
+    const ids = await pickSectionsSheet(nb, g);
+    if (!ids || !ids.length) return false;
+    for (const sid of ids) {
+      const s = secById(sid);
+      if (s) { s.groupId = g.id; await saveSection(s); }
+    }
+    // il macro-argomento si apre per mostrare le sezioni appena aggiunte
+    foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
+    toast(`${ids.length} ${ids.length === 1 ? 'sezione spostata' : 'sezioni spostate'} in ${g.name}`);
+    route();
+    return true;
+  };
+
+  on('[data-act="new-sec"]', 'click', () => newSecIn(null));
+  on('[data-act="new-grp"]', 'click', async () => {
+    const g = await createGroupFlow(nb);
+    if (!g) return;
+    toast('Macro-argomento creato');
+    const moved = loose.length ? await addSectionsTo(g) : false;
+    if (!moved) route();
   });
-  on('[data-act="rename"]', 'click', async () => {
+  on('[data-gadd]', 'click', e => {
+    const g = groups.find(x => x.id === e.currentTarget.dataset.gadd);
+    if (g) addSectionsTo(g);
+  });
+  on('[data-gmenu]', 'click', async e => {
+    const gi = groups.findIndex(x => x.id === e.currentTarget.dataset.gmenu);
+    const g = groups[gi];
+    if (!g) return;
+    const nIn = secs.filter(s => s.groupId === g.id).length;
+    const choice = await actionSheet(g.name, [
+      { key: 'add', label: 'Aggiungi sezioni esistenti' },
+      { key: 'write', label: 'Scrivi una sezione qui' },
+      { key: 'import', label: 'Importa qui' },
+      { key: 'rename', label: 'Rinomina' },
+      { key: 'up', label: 'Sposta su', disabled: gi === 0 },
+      { key: 'down', label: 'Sposta giù', disabled: gi === groups.length - 1 },
+      { key: 'delete', label: 'Elimina il macro-argomento', danger: true }
+    ]);
+    if (choice === 'add') return addSectionsTo(g);
+    if (choice === 'write') return newSecIn(g.id);
+    if (choice === 'import') return go(`#/import/${id}/${g.id}`);
+    if (choice === 'rename') {
+      const name = await modal({ title: 'Rinomina il macro-argomento', input: true, value: g.name, confirm: 'Rinomina' });
+      if (!name) return;
+      g.name = name;
+      await saveNotebook(nb);
+      return route();
+    }
+    if (choice === 'up' || choice === 'down') {
+      const to = gi + (choice === 'up' ? -1 : 1);
+      const arr = [...groups];
+      [arr[gi], arr[to]] = [arr[to], arr[gi]];
+      nb.groups = arr;
+      await saveNotebook(nb);
+      return route();
+    }
+    if (choice === 'delete') {
+      const ok = await modal({
+        title: 'Eliminare il macro-argomento?',
+        text: nIn ? `Le sue ${nIn} sezioni restano nel notebook, senza macro-argomento.` : 'È vuoto: non perdi nessuna sezione.',
+        confirm: 'Elimina', danger: true
+      });
+      if (!ok) return;
+      for (const s of secs.filter(x => x.groupId === g.id)) { s.groupId = null; await saveSection(s); }
+      nb.groups = groups.filter(x => x.id !== g.id);
+      await saveNotebook(nb);
+      foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
+      toast('Macro-argomento eliminato');
+      route();
+    }
+  });
+  const renameNb = async () => {
     const name = await modal({ title: 'Rinomina notebook', input: true, value: nb.name, confirm: 'Rinomina' });
     if (!name) return;
     nb.name = name;
     await saveNotebook(nb);
     route();
-  });
-  on('[data-act="delete"]', 'click', async () => {
+  };
+  const deleteNb = async () => {
     const ok = await modal({
       title: 'Eliminare il notebook?',
       text: `Verranno eliminate anche le sue ${secs.length} sezioni e ${nbCards.length} flashcard. L’operazione non si può annullare.`,
@@ -967,29 +1093,125 @@ function viewNotebook(id) {
       ...nbCards.map(c => ({ store: 'cards', rec: c }))
     ]);
     await removeOrphanImages(refs);
+    for (const p of state.pdfs.filter(x => x.notebookId === id)) await deletePdf(p.id);
+    foldSet(foldKey, []);
     toast('Notebook eliminato');
     go('#/notebooks');
+  };
+  on('[data-act="nb-more"]', 'click', async () => {
+    const choice = await actionSheet(nb.name, [
+      { key: 'rename', label: 'Rinomina il notebook' },
+      { key: 'delete', label: 'Elimina il notebook', danger: true }
+    ]);
+    if (choice === 'rename') renameNb();
+    if (choice === 'delete') deleteNb();
   });
   const search = $('#secSearch');
   if (search) {
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
+      box.classList.toggle('searching', !!q);
       let shown = 0;
-      $$('#secList li').forEach(li => {
+      $$('.sec-list li', box).forEach(li => {
         const s = secById(li.dataset.id);
-        const hit = !q || (s && (s.title + '\n' + s.md).toLowerCase().includes(q));
+        const hit = !q || (s && (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q));
         li.hidden = !hit;
         if (hit) shown++;
       });
-      $('#noMatch').hidden = shown > 0;
+      // durante la ricerca restano visibili solo i gruppi con risultati
+      $$('.grp, .grp-loose', box).forEach(g => {
+        g.hidden = !!q && !$$('.sec-list li', g).some(li => !li.hidden);
+      });
+      $('#noMatch').hidden = shown > 0 || !q;
     });
   }
+}
+
+async function createGroupFlow(nb) {
+  const name = await modal({
+    title: 'Nuovo macro-argomento',
+    text: 'Un grande tema del notebook, per esempio un apparato o un capitolo. Le sezioni che ci metti dentro sono i suoi micro-argomenti.',
+    input: true, placeholder: 'Es. Sistema cardiovascolare', confirm: 'Crea'
+  });
+  if (!name) return null;
+  const g = { id: uid(), name };
+  nb.groups = [...groupsOf(nb), g];
+  await saveNotebook(nb);
+  return g;
+}
+
+// Finestra con un elenco di azioni; restituisce la chiave scelta o null
+function actionSheet(title, items) {
+  return new Promise(resolve => {
+    const root = $('#modalRoot');
+    const prevFocus = document.activeElement;
+    root.innerHTML = `
+      <div class="overlay">
+        <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="asTitle">
+          <h2 id="asTitle">${esc(title)}</h2>
+          <div class="as-list">
+            ${items.map(it => `<button type="button" class="as-item ${it.danger ? 'danger' : ''}" data-as="${it.key}" ${it.disabled ? 'disabled' : ''}>${esc(it.label)}</button>`).join('')}
+          </div>
+          <div class="modal-actions"><button class="btn ghost" type="button" data-as-close>Chiudi</button></div>
+        </div>
+      </div>`;
+    const close = v => {
+      root.innerHTML = '';
+      document.removeEventListener('keydown', onKey, true);
+      if (prevFocus && prevFocus.isConnected && prevFocus.focus) prevFocus.focus();
+      resolve(v);
+    };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } };
+    document.addEventListener('keydown', onKey, true);
+    $('.overlay', root).addEventListener('click', e => {
+      if (e.target.classList.contains('overlay') || e.target.closest('[data-as-close]')) return close(null);
+      const b = e.target.closest('[data-as]');
+      if (b && !b.disabled) close(b.dataset.as);
+    });
+    setTimeout(() => $('.as-item:not(:disabled)', root)?.focus(), 30);
+  });
+}
+
+// Scelta delle sezioni da mettere in un macro-argomento
+function pickSectionsSheet(nb, g) {
+  return new Promise(resolve => {
+    const root = $('#modalRoot');
+    const others = secsOf(nb.id).filter(s => s.groupId !== g.id);
+    const where = s => groupsOf(nb).find(x => x.id === s.groupId)?.name || '';
+    root.innerHTML = `
+      <div class="overlay">
+        <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="psTitle">
+          <h2 id="psTitle">Aggiungi a ${esc(g.name)}</h2>
+          ${others.length ? `
+            <p class="sheet-sub">Scegli le sezioni da spostare in questo macro-argomento.</p>
+            <ul class="cand">${others.map(s => `
+              <li><label class="check"><input type="checkbox" value="${s.id}">
+                <span><span class="cand-f">${esc(s.title)}</span>${where(s) ? `<span class="cand-b">Ora in ${esc(where(s))}</span>` : ''}</span></label></li>`).join('')}
+            </ul>` : '<p>Tutte le sezioni del notebook sono già qui.</p>'}
+          <div class="modal-actions">
+            <button class="btn ghost" type="button" data-ps="no">Annulla</button>
+            ${others.length ? '<button class="btn primary" type="button" data-ps="ok">Aggiungi</button>' : ''}
+          </div>
+        </div>
+      </div>`;
+    const close = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } };
+    document.addEventListener('keydown', onKey, true);
+    $('.overlay', root).addEventListener('click', e => { if (e.target.classList.contains('overlay')) close(null); });
+    $('[data-ps="no"]', root).onclick = () => close(null);
+    const okBtn = $('[data-ps="ok"]', root);
+    if (okBtn) okBtn.onclick = () => {
+      const ids = $$('input:checked', root).map(i => i.value);
+      if (!ids.length) { toast('Scegli almeno una sezione'); return; }
+      close(ids);
+    };
+  });
 }
 
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['read', 'Leggi'], ['cloze', 'Cloze'], ['blank', 'Pagina bianca'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
+const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['pdf', 'PDF'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
   if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
@@ -1004,16 +1226,17 @@ function srsLabel(s) {
 function viewSection(id, mode) {
   const sec = secById(id);
   if (!sec) return notFound('Questa sezione');
-  if (!MODES.some(([m]) => m === mode)) mode = 'read';
+  if (!MODES.some(([m]) => m === mode)) mode = openMode(sec);
   const nb = nbById(sec.notebookId);
   const back = state.fromReview
     ? '<a class="back" href="#/review">Ripasso</a>'
-    : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}</a>`;
+    : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupOf(sec) ? ` › ${esc(groupOf(sec).name)}` : ''}</a>`;
   setView(`
     ${back}
     <header class="sec-head">
       <h1>${esc(sec.title)}</h1>
       <p class="meta">${esc(srsLabel(sec))}</p>
+      ${tagChips(tagsOf(sec))}
     </header>
     <nav class="tabs" aria-label="Modalità di studio">
       ${MODES.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}</a>`).join('')}
@@ -1022,8 +1245,14 @@ function viewSection(id, mode) {
   `);
   // Cambiare scheda non riempie la cronologia: il tasto Indietro torna al notebook.
   on('.tabs a', 'click', e => { e.preventDefault(); location.replace(e.currentTarget.getAttribute('href')); });
+  const tabsEl = $('.tabs');
+  const onTab = $('.tab.on', tabsEl);
+  if (tabsEl && onTab) {
+    const t = onTab.getBoundingClientRect(), n = tabsEl.getBoundingClientRect();
+    tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
+  }
   const body = $('#modeBody');
-  ({ read: modeRead, cloze: modeCloze, blank: modeBlank, quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
+  ({ read: modeRead, pdf: modePdf, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -1045,7 +1274,9 @@ function gradeBar(sec, slot, { mode, suggested } = {}) {
     $$('.gbtn', slot).forEach(b => { b.disabled = true; });
     sec.srs = nextSrs(sec.srs, q, mode);
     await saveSection(sec);
+    Stats.addReview();
     delete drafts[sec.id];
+    delete drafts['oral:' + sec.id];
     if (sec.studyhub) {
       const g = GRADES.find(x => x.q === q);
       Bridge.send({
@@ -1081,6 +1312,114 @@ function afterGrade(sec) {
   }
 }
 
+/* ---------------------------------------------------------------------
+   Paragrafi richiudibili: ogni titolo degli appunti ha una freccetta che
+   riduce tutto quello che sta sotto, fino al titolo successivo dello stesso
+   livello. Lo stato resta salvato su questo dispositivo.
+   --------------------------------------------------------------------- */
+const FOLD_KEY = 'nb-folds';
+const CHEVRON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
+function foldGet(key) {
+  try {
+    const all = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}');
+    return Array.isArray(all[key]) ? all[key] : [];
+  } catch { return []; }
+}
+function foldSet(key, list) {
+  try {
+    const all = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}');
+    if (list.length) all[key] = list; else delete all[key];
+    localStorage.setItem(FOLD_KEY, JSON.stringify(all));
+  } catch { /* è solo una preferenza di questo dispositivo */ }
+}
+function setFold(fold, closed) {
+  fold.classList.toggle('closed', closed);
+  const b = fold.querySelector(':scope > .fold-h > .fold-btn, :scope > .grp-head > .fold-btn');
+  if (b) {
+    b.setAttribute('aria-expanded', String(!closed));
+    b.setAttribute('aria-label', `${closed ? 'Espandi' : 'Riduci'} ${b.dataset.name || ''}`.trim());
+  }
+}
+function setupFolds(article, key) {
+  const kids = [...article.children];
+  if (!kids.some(el => /^H[1-4]$/.test(el.tagName))) return null;
+  const closed = new Set(foldGet(key));
+  const seen = {};
+  const frag = document.createDocumentFragment();
+  const stack = [];
+  const target = () => (stack.length ? stack[stack.length - 1].body : frag);
+  for (const el of kids) {
+    const m = /^H([1-4])$/.exec(el.tagName);
+    if (!m) { target().appendChild(el); continue; }
+    const lvl = +m[1];
+    while (stack.length && stack[stack.length - 1].lvl >= lvl) stack.pop();
+    const name = el.textContent.replace(/\s+/g, ' ').trim();
+    const short = name.slice(0, 80);
+    seen[short] = (seen[short] || 0) + 1;
+    const fold = document.createElement('section');
+    fold.className = 'fold';
+    fold.dataset.fold = `${lvl}:${short}#${seen[short]}`;
+    el.classList.add('fold-h');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'fold-btn';
+    btn.dataset.name = name.slice(0, 60);
+    btn.innerHTML = CHEVRON;
+    el.prepend(btn);
+    const body = document.createElement('div');
+    body.className = 'fold-body';
+    fold.append(el, body);
+    target().appendChild(fold);
+    stack.push({ lvl, body });
+  }
+  article.replaceChildren(frag);
+  $$('.fold', article).forEach(f => {
+    const empty = !f.querySelector(':scope > .fold-body').childElementCount;
+    f.classList.toggle('fold-empty', empty);
+    if (empty) f.querySelector(':scope > .fold-h > .fold-btn').disabled = true;
+    setFold(f, !empty && closed.has(f.dataset.fold));
+  });
+  const save = () => foldSet(key, $$('.fold.closed', article).map(f => f.dataset.fold));
+  article.addEventListener('click', e => {
+    const h = e.target.closest('.fold-h');
+    if (!h || !article.contains(h) || h.parentElement.classList.contains('fold-empty')) return;
+    if (!e.target.closest('.fold-btn')) {
+      // il titolo intero è cliccabile, tranne cloze nascosti, link e immagini
+      if (e.target.closest('mark.cz.hidden, a, img, button')) return;
+      const sel = document.getSelection();
+      if (sel && !sel.isCollapsed) return;
+    }
+    const fold = h.parentElement;
+    setFold(fold, !fold.classList.contains('closed'));
+    save();
+  });
+  const live = () => $$('.fold:not(.fold-empty)', article);
+  return {
+    anyOpen: () => live().some(f => !f.classList.contains('closed')),
+    setAll(isClosed) { live().forEach(f => setFold(f, isClosed)); save(); },
+    // apre i paragrafi che contengono el (per esempio il prossimo cloze da rivelare)
+    reveal(el) {
+      let f = el.parentElement?.closest('.fold');
+      let changed = false;
+      while (f && article.contains(f)) {
+        if (f.classList.contains('closed') && !f.querySelector(':scope > .fold-h')?.contains(el)) { setFold(f, false); changed = true; }
+        f = f.parentElement?.closest('.fold');
+      }
+      if (changed) save();
+    }
+  };
+}
+// Pulsante unico "Riduci tutto / Espandi tutto"
+function bindFoldAll(btn, api) {
+  if (!btn) return;
+  if (!api) { btn.hidden = true; return; }
+  btn.hidden = false;
+  const label = () => { btn.textContent = api.anyOpen() ? 'Riduci tutto' : 'Espandi tutto'; };
+  label();
+  btn.addEventListener('click', () => { api.setAll(api.anyOpen()); label(); });
+  btn.closest('.mode-body, #view')?.addEventListener('click', e => { if (e.target.closest('.fold-h')) setTimeout(label, 0); });
+}
+
 /* Leggi */
 function modeRead(sec, body) {
   body.innerHTML = `
@@ -1089,7 +1428,7 @@ function modeRead(sec, body) {
         <p>Questa sezione è stata salvata senza formattazione AI.</p>
         <button class="btn" data-act="fmt">Formatta con ${AI.name()}</button>
       </div>` : ''}
-    ${sec.md.trim() ? `<article class="notes">${renderMd(sec.md)}</article>` : `
+    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
       <div class="empty"><p>Sezione vuota.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`}
     ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona del testo per evidenziarlo, sottolinearlo, farne un cloze o una flashcard. Sul PC puoi anche usare il tasto destro.</p>' : ''}
     ${sec.studyhub ? `
@@ -1107,7 +1446,15 @@ function modeRead(sec, body) {
     ${sec.source ? `<p class="source">Fonte: ${esc(sec.source)}</p>` : ''}
   `;
   const notesEl = $('.notes', body);
-  if (notesEl) setupReadingTools(notesEl, sec);
+  if (notesEl) {
+    bindFoldAll($('[data-act="fold-all"]', body), setupFolds(notesEl, sec.id));
+    bindImagesToggle($('[data-act="imgs"]', body), prepareImages(notesEl, sec).count);
+    markGlossary(notesEl);
+    bindGlossaryClicks(notesEl);
+    setupReadingTools(notesEl, sec);
+    const bl = backlinksOf(sec);
+    if (bl.length) notesEl.insertAdjacentHTML('afterend', `<h2 class="sub backlinks">Pagine che rimandano qui</h2><ul class="list">${bl.map(s => sectionRow(s, { showNb: true })).join('')}</ul>`);
+  }
   on('[data-act="studied"]', 'click', async () => { await markStudiedInStudyHub(sec); route(); }, body);
   on('[data-act="unlink"]', 'click', async () => {
     const ok = await modal({ title: 'Riportare i ripassi nel Notebook?', text: 'StudyHub riceverà la richiesta di togliere l’argomento e il Notebook lo pianificherà per domani.', confirm: 'Riporta' });
@@ -1144,11 +1491,11 @@ function modeRead(sec, body) {
 
 /* Cloze */
 function modeCloze(sec, body) {
-  const n = countCloze(sec.md);
+  const n = countCloze(sec.md) + ioMaskCount(sec);
   if (!n) {
     body.innerHTML = `
       <div class="empty">
-        <p>Nessun termine da nascondere. In Modifica selezioni una parola e tocchi “Cloze”.</p>
+        <p>Nessun termine da nascondere. In Modifica selezioni una parola e tocchi “Cloze”; sugli schemi tocchi l’immagine in Leggi e crei un’image occlusion.</p>
         <a class="btn primary" href="#/sec/${sec.id}/edit">Apri Modifica</a>
       </div>`;
     return;
@@ -1158,11 +1505,16 @@ function modeCloze(sec, body) {
       <span id="czCount" aria-live="polite">0 di ${n} rivelati</span>
       <button class="btn sm" data-act="reveal-all">Rivela tutto</button>
       <button class="btn sm ghost" data-act="hide-all">Nascondi di nuovo</button>
+      <button class="btn sm ghost" data-act="fold-all" hidden></button>
+      <button class="btn sm ghost" data-act="imgs" hidden></button>
     </div>
     <p class="hint">Prova a ricordare ogni termine, poi toccalo per controllare.<span class="kbd-hint"> Con la tastiera: Spazio rivela il successivo, 1-4 per valutare.</span></p>
     <article class="notes cloze-mode">${renderMd(sec.md)}</article>
     <div id="gradeSlot"></div>`;
-  const marks = $$('mark.cz', body);
+  const folds = setupFolds($('.notes', body), sec.id);
+  bindFoldAll($('[data-act="fold-all"]', body), folds);
+  bindImagesToggle($('[data-act="imgs"]', body), prepareImages($('.notes', body), sec, { cloze: true }).count);
+  const marks = $$('mark.cz, .cz-io', body);
   const slot = $('#gradeSlot', body);
   const hide = m => {
     m.classList.add('hidden');
@@ -1186,17 +1538,18 @@ function modeCloze(sec, body) {
     if (r === marks.length && !slot.innerHTML) gradeBar(sec, slot, { mode: 'cloze' });
   };
   marks.forEach(hide);
-  body.addEventListener('click', e => { const m = e.target.closest('mark.cz.hidden'); if (m) reveal(m); });
+  body.addEventListener('click', e => { const m = e.target.closest('mark.cz.hidden, .cz-io.hidden'); if (m) reveal(m); });
   on('[data-act="reveal-all"]', 'click', () => marks.forEach(reveal), body);
   on('[data-act="hide-all"]', 'click', () => { marks.forEach(hide); slot.innerHTML = ''; update(); }, body);
   const onKey = e => {
     if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || $('#modalRoot').children.length) return;
     if (e.key !== ' ' && e.key !== 'Enter') return;
-    const focused = document.activeElement?.closest?.('mark.cz.hidden');
+    const focused = document.activeElement?.closest?.('mark.cz.hidden, .cz-io.hidden');
     if (e.key === 'Enter' && !focused) return;
     const target = focused || marks.find(m => m.classList.contains('hidden'));
     if (!target) return;
     e.preventDefault();
+    if (folds) folds.reveal(target);
     reveal(target);
     target.scrollIntoView({ block: 'nearest' });
     const nextHidden = marks.find(m => m.classList.contains('hidden'));
@@ -1206,30 +1559,136 @@ function modeCloze(sec, body) {
   addCleanup(() => document.removeEventListener('keydown', onKey));
 }
 
-/* Pagina bianca */
-function modeBlank(sec, body) {
+/* ---------------------------------------------------------------------
+   Voce: dettatura in italiano (riconoscimento vocale del browser) e
+   lettura ad alta voce. Su Android la trascrizione richiede internet.
+   --------------------------------------------------------------------- */
+const SpeechRec = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window;
+const MIC_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>';
+function speak(text) {
+  if (!canSpeak) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'it-IT';
+  speechSynthesis.speak(u);
+}
+// Ogni pausa chiude una frase: il riconoscimento ripartirà da solo finché non premi Stop
+function createDictation({ onText, onInterim = () => {}, onState = () => {} }) {
+  if (!SpeechRec) return null;
+  let rec = null;
+  let want = false;
+  let quick = 0;
+  const run = () => {
+    const startedAt = Date.now();
+    rec = new SpeechRec();
+    rec.lang = 'it-IT';
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.onresult = e => {
+      let fin = '';
+      let mid = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) fin += t; else mid += t;
+      }
+      if (fin.trim()) onText(fin.trim());
+      onInterim(mid.trim());
+    };
+    rec.onerror = e => {
+      const msg = {
+        'not-allowed': 'Consenti l’uso del microfono per rispondere a voce',
+        'service-not-allowed': 'Consenti l’uso del microfono per rispondere a voce',
+        'audio-capture': 'Microfono non disponibile',
+        network: 'La trascrizione vocale richiede internet'
+      }[e.error];
+      if (msg) { want = false; toast(msg, 'err'); }
+    };
+    rec.onend = () => {
+      onInterim('');
+      // se si chiude subito più volte di fila c’è un problema: mi fermo
+      quick = Date.now() - startedAt < 400 ? quick + 1 : 0;
+      if (want && quick < 4) { try { run(); return; } catch { /* ripartenza non riuscita */ } }
+      want = false;
+      onState(false);
+    };
+    rec.start();
+  };
+  return {
+    get on() { return want; },
+    start() {
+      if (want) return;
+      want = true;
+      quick = 0;
+      onState(true);
+      try { run(); } catch { want = false; onState(false); toast('Non riesco ad avviare il microfono', 'err'); }
+    },
+    stop() {
+      want = false;
+      try { rec && rec.stop(); } catch { /* già fermo */ }
+      onState(false);
+    }
+  };
+}
+// Aggiunge una frase dettata in fondo a un campo di testo
+function appendSpoken(ta, t) {
+  const s = t.charAt(0).toUpperCase() + t.slice(1);
+  const sep = ta.value && !/\s$/.test(ta.value) ? ' ' : '';
+  ta.value += sep + s + (/[.!?;:]$/.test(s) ? '' : '.');
+  ta.scrollTop = ta.scrollHeight;
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+/* Pagina bianca e Orale */
+function modeBlank(sec, body, { oral = false } = {}) {
+  const dk = oral ? `oral:${sec.id}` : sec.id;
   const headings = (sec.md.match(/^#{1,4}\s+.+$/gm) || []).map(h => stripCloze(h.replace(/^#+\s+/, '')));
   body.innerHTML = `
-    <p class="hint">Scrivi tutto quello che ricordi di questa sezione senza guardare, poi confronta con gli appunti.</p>
+    <p class="hint">${oral
+      ? 'Spiega la sezione ad alta voce, come all’esame. La trascrizione compare qui sotto e puoi correggerla; poi confrontala con gli appunti o falla valutare dall’AI.'
+      : 'Scrivi tutto quello che ricordi di questa sezione senza guardare, poi confronta con gli appunti.'}</p>
+    ${oral ? (SpeechRec ? `
+      <div class="oral-box">
+        <button class="mic-btn" type="button" data-act="mic" aria-pressed="false">${MIC_SVG}<span class="mic-label">Inizia a parlare</span></button>
+        <p class="oral-live" aria-live="polite"></p>
+      </div>` : '<div class="callout"><p>Questo browser non trascrive la voce. Usa Chrome, oppure il microfono della tastiera del telefono nel riquadro qui sotto.</p></div>') : ''}
     ${headings.length ? `
       <details class="outline">
         <summary>Mostra i titoli come traccia</summary>
         <ul>${headings.map(h => `<li>${esc(h)}</li>`).join('')}</ul>
       </details>` : ''}
-    <label class="sr-only" for="recall">Il tuo richiamo</label>
-    <textarea id="recall" class="input recall" placeholder="Inizia a scrivere quello che ricordi">${esc(drafts[sec.id] || '')}</textarea>
+    <label class="sr-only" for="recall">${oral ? 'Trascrizione di quello che dici' : 'Il tuo richiamo'}</label>
+    <textarea id="recall" class="input recall ${oral ? 'oral' : ''}" placeholder="${oral ? 'La trascrizione comparirà qui' : 'Inizia a scrivere quello che ricordi'}">${esc(drafts[dk] || '')}</textarea>
     <div class="row-actions"><button class="btn primary" data-act="compare">Confronta con gli appunti</button></div>
     <div id="cmp"></div>
     <div id="gradeSlot"></div>`;
   const ta = $('#recall', body);
-  ta.addEventListener('input', () => { drafts[sec.id] = ta.value; });
+  ta.addEventListener('input', () => { drafts[dk] = ta.value; });
+  let dict = null;
+  const micBtn = $('[data-act="mic"]', body);
+  if (micBtn) {
+    const live = $('.oral-live', body);
+    dict = createDictation({
+      onText: t => appendSpoken(ta, t),
+      onInterim: t => { live.textContent = t; },
+      onState: onNow => {
+        micBtn.setAttribute('aria-pressed', onNow);
+        $('.mic-label', micBtn).textContent = onNow ? 'Stop' : (ta.value.trim() ? 'Continua a parlare' : 'Inizia a parlare');
+        if (!onNow) live.textContent = '';
+      }
+    });
+    micBtn.addEventListener('click', () => (dict.on ? dict.stop() : dict.start()));
+    addCleanup(() => dict && dict.stop());
+  }
   on('[data-act="compare"]', 'click', () => {
+    if (dict) dict.stop();
     const val = ta.value.trim();
-    if (!val) { toast('Scrivi qualcosa prima di confrontare'); ta.focus(); return; }
+    if (!val) { toast(oral ? 'Parla o scrivi qualcosa prima di confrontare' : 'Scrivi qualcosa prima di confrontare'); ta.focus(); return; }
     $('#cmp', body).innerHTML = `
       <div class="compare">
         <div class="pane">
-          <h2>Il tuo richiamo</h2>
+          <h2>${oral ? 'Quello che hai detto' : 'Il tuo richiamo'}</h2>
           <div class="mine">${esc(val).replace(/\n/g, '<br>')}</div>
         </div>
         <div class="pane">
@@ -1238,7 +1697,8 @@ function modeBlank(sec, body) {
         </div>
       </div>
       ${AI.ready() ? `<div class="row-actions"><button class="btn" data-act="ai-eval">Fatti valutare da ${AI.name()}</button></div><div id="evalOut"></div>` : ''}`;
-    gradeBar(sec, $('#gradeSlot', body), { mode: 'blank' });
+    setupFolds($('#cmp .pane .notes', body), sec.id);
+    gradeBar(sec, $('#gradeSlot', body), { mode: oral ? 'oral' : 'blank' });
     $('#cmp', body).scrollIntoView({ block: 'start', behavior: 'auto' });
     const evalBtn = $('[data-act="ai-eval"]', body);
     if (evalBtn) evalBtn.addEventListener('click', async () => {
@@ -1246,8 +1706,10 @@ function modeBlank(sec, body) {
       evalBtn.textContent = 'Valutazione in corso…';
       try {
         const r = await AI.generate({
-          system: EVAL_SYSTEM,
-          text: `APPUNTI ORIGINALI:\n${aiText(sec.md)}\n\nRICHIAMO DELLO STUDENTE:\n${val}`,
+          system: promptFor('eval'),
+          text: `APPUNTI ORIGINALI:\n${aiText(sec.md)}\n\n${oral
+            ? 'ESPOSIZIONE ORALE DELLO STUDENTE, trascritta in automatico (ignora parole storpiate e punteggiatura mancante se il senso è chiaro; in fondo aggiungi una breve sezione “### Esposizione” su ordine, chiarezza e lessico medico)'
+            : 'RICHIAMO DELLO STUDENTE'}:\n${val}`,
           maxTokens: 4000
         });
         $('#evalOut', body).innerHTML = `<article class="notes eval">${renderMd(r.text)}</article>`;
@@ -1257,7 +1719,7 @@ function modeBlank(sec, body) {
           const sc = Math.min(100, +m[1]);
           suggested = sc < 40 ? 'again' : sc < 65 ? 'hard' : sc < 90 ? 'good' : 'easy';
         }
-        gradeBar(sec, $('#gradeSlot', body), { mode: 'blank', suggested });
+        gradeBar(sec, $('#gradeSlot', body), { mode: oral ? 'oral' : 'blank', suggested });
         evalBtn.remove();
       } catch (err) {
         toast(err.message, 'err');
@@ -1283,7 +1745,7 @@ function modeQuiz(sec, body) {
       btn.disabled = true;
       btn.textContent = 'Genero le domande…';
       try {
-        const r = await AI.generate({ system: QUESTIONS_SYSTEM, text: aiText(sec.md), maxTokens: 6000 });
+        const r = await AI.generate({ system: promptFor('questions'), text: aiText(sec.md), maxTokens: 6000 });
         const parsed = parseQuestions(r.text);
         if (!parsed.length) throw new Error('Nessuna domanda riconosciuta nella risposta.');
         sec.questions = parsed;
@@ -1302,19 +1764,41 @@ function modeQuiz(sec, body) {
   let pos = 0;
   let right = 0;
 
+  let dict = null;
+  addCleanup(() => { if (dict) dict.stop(); if (canSpeak) speechSynthesis.cancel(); });
   const show = () => {
+    if (dict) dict.stop();
     if (pos >= order.length) return finish();
     const item = qs[order[pos]];
     body.innerHTML = `
       <div class="qcard">
         <p class="qnum">Domanda ${pos + 1} di ${order.length}</p>
         <p class="q">${esc(stripCloze(item.q))}</p>
+        ${canSpeak || SpeechRec ? `<div class="q-voice">
+          ${canSpeak ? '<button class="btn sm ghost" type="button" data-act="speak">Ascolta</button>' : ''}
+          ${SpeechRec ? `<button class="btn sm mic-sm" type="button" data-act="qmic" aria-pressed="false">${MIC_SVG}<span>Rispondi a voce</span></button>` : ''}
+        </div>
+        <p class="my-answer" hidden></p>` : ''}
         <div class="a" hidden><article class="notes">${renderMd(item.a || '_Nessuna risposta salvata._')}</article></div>
         <div class="qactions">
           <button class="btn primary" data-act="show">Mostra la risposta</button>
         </div>
       </div>`;
+    const sp = $('[data-act="speak"]', body);
+    if (sp) sp.addEventListener('click', () => speak(stripCloze(item.q)));
+    const qm = $('[data-act="qmic"]', body);
+    if (qm) {
+      const out = $('.my-answer', body);
+      let said = '';
+      dict = createDictation({
+        onText: t => { said = `${said} ${t}`.trim(); out.hidden = false; out.textContent = said; },
+        onInterim: t => { if (t) { out.hidden = false; out.textContent = `${said} ${t}`.trim(); } },
+        onState: onNow => { qm.setAttribute('aria-pressed', onNow); $('span', qm).textContent = onNow ? 'Stop' : 'Rispondi a voce'; }
+      });
+      qm.addEventListener('click', () => (dict.on ? dict.stop() : dict.start()));
+    }
     $('[data-act="show"]', body).addEventListener('click', () => {
+      if (dict) dict.stop();
       $('.a', body).hidden = false;
       $('.qactions', body).innerHTML = `
         <button class="btn wrong" data-r="0">Non la sapevo</button>
@@ -1345,10 +1829,33 @@ function modeQuiz(sec, body) {
 }
 
 /* Modifica */
+function groupOptions(nb, selected) {
+  return `<option value="">Nessuno</option>${groupsOf(nb).map(g => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}<option value="__new">Nuovo macro-argomento…</option>`;
+}
+// Il menu dei macro-argomenti: la voce "Nuovo…" chiede il nome e lo crea subito
+function bindGroupSelect(select, getNb, onPick = () => {}) {
+  let prev = select.value;
+  select.addEventListener('change', async () => {
+    if (select.value !== '__new') { prev = select.value; onPick(prev); return; }
+    const nb = getNb();
+    const g = nb ? await createGroupFlow(nb) : null;
+    const pick = g ? g.id : (groupsOf(getNb()).some(x => x.id === prev) ? prev : '');
+    select.innerHTML = groupOptions(getNb(), pick);
+    select.value = pick;
+    prev = pick;
+    onPick(pick);
+  });
+}
+
 function modeEdit(sec, body) {
   const otherNbs = state.notebooks.filter(n => n.id !== sec.notebookId);
   body.innerHTML = `
-    <label class="field"><span>Titolo</span><input class="input" id="edTitle" value="${esc(sec.title)}"></label>
+    <div class="grid2 ed-head">
+      <label class="field"><span>Titolo del micro-argomento</span><input class="input" id="edTitle" value="${esc(sec.title)}"></label>
+      <label class="field"><span>Macro-argomento</span>
+        <select class="input" id="edGroup">${groupOptions(nbById(sec.notebookId), groupOf(sec)?.id || '')}</select></label>
+    </div>
+    ${tagFieldHtml('edTags', tagsOf(sec))}
     <div class="edit-tools" role="toolbar" aria-label="Formattazione">
       <button class="btn sm" data-wrap="==" title="Nasconde il testo selezionato nella modalità Cloze">Cloze</button>
       <button class="btn sm" data-wrap="**">Grassetto</button>
@@ -1358,6 +1865,7 @@ function modeEdit(sec, body) {
       <button class="btn sm" data-indent="1" title="Sposta la riga a destra (Tab)">Rientra →</button>
       <button class="btn sm" data-indent="-1" title="Sposta la riga a sinistra (Maiusc+Tab)">← Riduci rientro</button>
       <button class="btn sm" data-ins="table">Tabella</button>
+      <button class="btn sm" data-act="xref" title="Inserisce un collegamento a un’altra sezione">Link a pagina</button>
       <button class="btn sm" data-act="img">Immagine</button>
       <button class="btn sm" data-act="pdf-fig">Figura da PDF</button>
       <button class="btn sm" data-act="hw">Scrivi a mano</button>
@@ -1383,6 +1891,18 @@ function modeEdit(sec, body) {
       <a class="btn ghost" href="#/sec/${sec.id}/read">Annulla</a>
       <button class="btn ghost danger push" data-act="del">Elimina sezione</button>
     </div>`;
+  bindGroupSelect($('#edGroup', body), () => nbById(sec.notebookId));
+  bindTagField(body, 'edTags');
+  on('[data-act="xref"]', 'click', async () => {
+    const { selectionStart: s0, selectionEnd: s1 } = ta;
+    const s = await sectionPickerSheet('Collega una pagina', sec.id);
+    if (!s) return;
+    const label = ta.value.slice(s0, s1).trim().replace(/[\[\]|\n]/g, ' ');
+    const title = s.title.replace(/[\[\]|]/g, ' ').trim();
+    ta.focus();
+    ta.setRangeText(`[[${title}${label && label !== title ? `|${label}` : ''}]]`, s0, s1, 'end');
+    refresh();
+  }, body);
   const ta = $('#edMd', body);
   const prev = $('#edPrev', body);
   const prevBox = $('#prevBox', body);
@@ -1469,7 +1989,7 @@ function modeEdit(sec, body) {
     btn.disabled = true;
     btn.textContent = 'Genero le domande…';
     try {
-      const r = await AI.generate({ system: QUESTIONS_SYSTEM, text: aiText(ta.value), maxTokens: 6000 });
+      const r = await AI.generate({ system: promptFor('questions'), text: aiText(ta.value), maxTokens: 6000 });
       const parsed = parseQuestions(r.text);
       if (!parsed.length) throw new Error('Nessuna domanda riconosciuta nella risposta.');
       const box = $('#edQs', body);
@@ -1484,19 +2004,26 @@ function modeEdit(sec, body) {
 
   on('[data-act="save"]', 'click', async () => {
     const before = imageRefs(sec.md);
+    const oldTitle = sec.title;
     sec.title = $('#edTitle', body).value.trim() || 'Senza titolo';
+    sec.tags = parseTags($('#edTags', body).value);
+    const gv = $('#edGroup', body).value;
+    sec.groupId = gv && gv !== '__new' ? gv : null;
     sec.md = ta.value;
     sec.questions = parseQuestions($('#edQs', body).value);
     sec.needsFormat = false;
     await saveSection(sec);
     await removeOrphanImages(before);
-    toast('Sezione salvata');
+    const moved = await renameXrefs(oldTitle, sec.title, sec.id);
+    toast(moved ? `Sezione salvata, collegamenti aggiornati in ${moved} ${moved === 1 ? 'sezione' : 'sezioni'}` : 'Sezione salvata');
     go(`#/sec/${sec.id}/read`);
   }, body);
 
   on('[data-act="move"]', 'click', async () => {
     const target = $('#mvNb', body).value;
     sec.notebookId = target;
+    sec.groupId = null; // i macro-argomenti appartengono al notebook di partenza
+    for (const p of pdfsOf(sec.id)) { p.notebookId = target; await savePdfMeta(p); }
     await saveSection(sec);
     const cards = cardsOfSection(sec.id);
     cards.forEach(c => { c.notebookId = target; });
@@ -1565,9 +2092,10 @@ function viewReview() {
 /* ---------------------------------------------------------------------
    Vista: importazione
    --------------------------------------------------------------------- */
-function viewImport(nbParam) {
+function viewImport(nbParam, groupParam) {
   if (importJob) return renderProgress();
-  if (nbParam && nbById(nbParam)) importDraft.nbId = nbParam;
+  if (nbParam && nbById(nbParam) && nbParam !== importDraft.nbId) { importDraft.nbId = nbParam; importDraft.groupId = ''; }
+  if (groupParam && groupsOf(nbById(nbParam)).some(g => g.id === groupParam)) importDraft.groupId = groupParam;
   if (!nbById(importDraft.nbId)) importDraft.nbId = state.notebooks[0]?.id || '';
   const aiOk = AI.ready();
   const st = S();
@@ -1583,6 +2111,9 @@ function viewImport(nbParam) {
           </select>
           <button class="btn sm" data-act="new-nb" type="button">Nuovo</button>
         </div>
+      </div>
+      <div class="field" id="imGroupBox"><label class="lbl" for="imGroup">Macro-argomento</label>
+        <select class="input" id="imGroup"></select>
       </div>
 
       <div class="seg" role="tablist" aria-label="Tipo di fonte">
@@ -1638,7 +2169,15 @@ function viewImport(nbParam) {
     $('#optQs').disabled = !aiOn;
   };
 
-  $('#imNb').addEventListener('change', e => { importDraft.nbId = e.target.value; });
+  const fillGroups = () => {
+    const nb = nbById(importDraft.nbId);
+    if (!groupsOf(nb).some(g => g.id === importDraft.groupId)) importDraft.groupId = '';
+    $('#imGroupBox').hidden = !nb;
+    $('#imGroup').innerHTML = groupOptions(nb, importDraft.groupId);
+  };
+  fillGroups();
+  bindGroupSelect($('#imGroup'), () => nbById(importDraft.nbId), v => { importDraft.groupId = v; });
+  $('#imNb').addEventListener('change', e => { importDraft.nbId = e.target.value; importDraft.groupId = ''; fillGroups(); });
   on('[data-act="new-nb"]', 'click', async () => {
     const nb = await createNotebookFlow();
     if (nb) { importDraft.nbId = nb.id; viewImport(); }
@@ -1810,7 +2349,9 @@ function viewImport(nbParam) {
     const nbId = $('#imNb').value;
     if (!nbId || !nbById(nbId)) { toast('Scegli o crea un notebook'); return; }
     const opts = { ai: $('#optAi').checked && aiOk, cloze: $('#optCloze').checked, questions: $('#optQs').checked };
-    const job = { running: true, controller: new AbortController(), nbId, opts, items: [], kind: importDraft.src };
+    const gv = $('#imGroup').value;
+    const groupId = groupsOf(nbById(nbId)).some(g => g.id === gv) ? gv : null;
+    const job = { running: true, controller: new AbortController(), nbId, groupId, opts, items: [], kind: importDraft.src };
     if (job.kind === 'xmind') {
       const x = importDraft.xmind;
       if (!x) { toast('Scegli prima una mappa XMind'); return; }
@@ -1900,7 +2441,7 @@ async function runImport(job) {
     if (job.kind === 'xmind') {
       try {
         const root = it.sheet.root;
-        const sec = newSection(job.nbId, { title: root.title || it.sheet.title, md: xmindToMarkdown(root), source: `Mappa XMind ${job.fileName}` });
+        const sec = newSection(job.nbId, { groupId: job.groupId, title: root.title || it.sheet.title, md: xmindToMarkdown(root), source: `Mappa XMind ${job.fileName}` });
         await saveSection(sec);
         it.secId = sec.id;
         if (job.xmCards) {
@@ -1937,11 +2478,11 @@ async function runImport(job) {
         });
         it.wait = '';
         const title = (job.kind === 'text' && job.title) || it.title ? baseTitle : (r.title || baseTitle || firstLineTitle(r.md));
-        sec = newSection(job.nbId, { title, md: r.md, questions: r.questions, source });
+        sec = newSection(job.nbId, { groupId: job.groupId, title, md: r.md, questions: r.questions, source });
         if (r.truncated) it.note = 'Risposta troncata: controlla la fine della sezione o usa meno pagine.';
       } else {
         if (!text.trim()) throw new Error('Nessun testo trovato in queste pagine: forse è una scansione.');
-        sec = newSection(job.nbId, { title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
+        sec = newSection(job.nbId, { groupId: job.groupId, title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
       }
       if (job.kind === 'pdf' && job.keepImgs) {
         it.wait = 'Ritaglio le immagini…';
@@ -1966,7 +2507,7 @@ async function runImport(job) {
       try {
         if (!text.trim() && job.kind === 'pdf') text = await extractRange(job.pdf.doc, it.from, it.to);
         if (text.trim()) {
-          const sec = newSection(job.nbId, { title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
+          const sec = newSection(job.nbId, { groupId: job.groupId, title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
           sec.needsFormat = true;
           await saveSection(sec);
           it.secId = sec.id;
@@ -2025,6 +2566,7 @@ function viewSettings() {
       ${keyField('claude', 'Claude')}
       <p class="hint">Le chiavi restano salvate solo su questo dispositivo: non sono nel codice su GitHub e non finiscono nel backup.</p>
     </section>
+    ${settingsPromptsHtml()}
 
     <section class="block">
       <h2>Sincronizzazione con Google Drive</h2>
@@ -2041,7 +2583,7 @@ function viewSettings() {
         <button class="btn ghost" data-act="sync-test">Prova il collegamento</button>
       </div>
       <p class="hint" id="syStatus" aria-live="polite">${esc(syncStatusText())}</p>
-      <p class="hint">La sincronizzazione parte da sola all’apertura, quando torni sull’app e qualche secondo dopo ogni modifica.</p>
+      <p class="hint">La sincronizzazione parte da sola all’apertura, quando torni sull’app e qualche secondo dopo ogni modifica. I PDF si caricano su Drive a pezzi: serve lo script nella versione 2.</p>
     </section>
 
     <section class="block">
@@ -2122,6 +2664,7 @@ function viewSettings() {
     <p class="version">StudyHub Notebook ${APP_VERSION}</p>
   `);
 
+  bindSettingsPrompts($('#view'));
   $('#stProv').addEventListener('change', e => { st.provider = e.target.value; Settings.save(); toast(`Uso ${AI.name()}`); });
   $('#syUrl').addEventListener('change', e => {
     st.syncUrl = e.target.value.trim();
@@ -2442,7 +2985,7 @@ function cardPill(c) {
   return `<span class="pill soft">${esc(fmtDue(localDateStr(new Date(s.due))))}</span>`;
 }
 const plainText = (md, max = 140) => {
-  const t = stripMarks(stripCloze(md || '')).replace(IMG_MD_RE, '[immagine]').replace(/^\*([^*\n]+)\*\n\n/, '$1: ').replace(/[#*_`>|]/g, ' ').replace(/\s+/g, ' ').trim();
+  const t = xrefPlain(stripMarks(stripCloze(md || ''))).replace(IMG_MD_RE, '[immagine]').replace(/^\*([^*\n]+)\*\n\n/, '$1: ').replace(/[#*_`>|]/g, ' ').replace(/\s+/g, ' ').trim();
   return t.length > max ? t.slice(0, max - 1) + '…' : t;
 };
 function cardRow(c) {
@@ -2453,7 +2996,7 @@ function cardRow(c) {
       <a class="row" href="#/card/${c.id}">
         <span class="row-main">
           <span class="row-title">Occlusione, riquadro ${n} di ${c.io.masks.length}</span>
-          <span class="row-sub">${esc(plainText(c.back, 100)) || 'Senza etichetta'}</span>
+          <span class="row-sub spoiler">${esc(plainText(c.back, 100)) || 'Senza etichetta'}</span>
         </span>
         ${cardPill(c)}
       </a>
@@ -2464,7 +3007,8 @@ function cardRow(c) {
       <a class="row" href="#/card/${c.id}">
         <span class="row-main">
           <span class="row-title">${esc(plainText(c.front)) || '<em>Fronte vuoto</em>'}</span>
-          <span class="row-sub">${esc(plainText(c.back, 100))}</span>
+          <span class="row-sub spoiler" title="Risposta nascosta: aprila per vederla">${esc(plainText(c.back, 100))}</span>
+          ${tagChips(tagsOf(c), { link: false })}
         </span>
         ${cardPill(c)}
       </a>
@@ -2525,22 +3069,14 @@ function clozeCardsFromMd(md) {
     let m;
     while ((m = re.exec(text))) found.push({ start: m.index, end: m.index + m[0].length, term: m[1] });
     for (const f of found) {
-      const front = stripCloze(text.slice(0, f.start) + '**[…]**' + text.slice(f.end));
+      const masked = s => s.replace(clozeRe(), '___');
+      const front = masked(text.slice(0, f.start)) + '**[…]**' + masked(text.slice(f.end));
       out.push({ front: heading ? `*${heading}*\n\n${front}` : front, back: f.term });
     }
   }
   return out;
 }
 
-const CARDS_SYSTEM = [
-  'Sei un tutor per studenti di medicina. Dagli appunti ricevuti crea flashcard per la memorizzazione.',
-  'Ogni flashcard ha una domanda breve e precisa e una risposta breve (una parola, un valore, un elenco corto).',
-  'Copri i concetti, i valori numerici, le classificazioni e i confronti più importanti. Da 8 a 25 flashcard.',
-  'Scrivi nella lingua degli appunti. Formato, senza altro testo:',
-  'D: <domanda>',
-  'R: <risposta>'
-].join('\n');
-const FRONT_SYSTEM = 'Scrivi una sola domanda breve e precisa per una flashcard la cui risposta è il testo indicato. Usa la lingua del testo. Rispondi solo con la domanda, senza virgolette.';
 
 /* ---------------------------------------------------------------------
    Collegamento con StudyHub (stesso dominio: localStorage condiviso)
@@ -2586,6 +3122,7 @@ async function markStudiedInStudyHub(sec) {
     sectionId: sec.id,
     notebookId: sec.notebookId,
     subject: nb ? nb.name : '',
+    macro: groupOf(sec)?.name || '',
     topic: sec.title,
     studiedOn: todayStr(),
     url: deepLink(sec)
@@ -2611,7 +3148,7 @@ function studyhubStatusText(sec) {
 /* ---------------------------------------------------------------------
    Sincronizzazione con Google Drive (tramite il tuo script Apps Script)
    --------------------------------------------------------------------- */
-const SYNC_STORES = ['notebooks', 'sections', 'cards', 'links'];
+const SYNC_STORES = ['notebooks', 'sections', 'cards', 'links', 'pdfs'];
 
 const Sync = {
   META: 'nb-sync-meta',
@@ -2693,6 +3230,8 @@ const Sync = {
       this.saveMeta(m);
       this.errShown = false;
       setSyncStatus();
+      await prunePdfBlobs();
+      setTimeout(() => PdfCloud.uploadPending(), 400);
       if (changed) refreshAfterSync();
       if (!silent) toast(changed ? `Sincronizzato: ${changed} ${changed === 1 ? 'elemento aggiornato' : 'elementi aggiornati'}` : 'Sincronizzato');
       return true;
@@ -2798,7 +3337,7 @@ function normalizeRecord(store, d) {
 async function applyRemote(records) {
   if (!records.length) return 0;
   const tombs = new Map((await DB.all('deleted')).map(t => [t.id, t]));
-  const puts = { notebooks: [], sections: [], cards: [], links: [] };
+  const puts = { notebooks: [], sections: [], cards: [], links: [], pdfs: [] };
   const dels = [];
   let changed = 0;
   for (const r of records) {
@@ -2915,6 +3454,7 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
           ${AI.ready() ? `<button class="btn sm" data-cs="ai" type="button">Proponi la domanda con ${AI.name()}</button>` : ''}
           <label class="field"><span>Retro, la risposta</span>
             <textarea class="input card-ta" id="csBack" rows="5">${esc(back)}</textarea></label>
+          ${tagFieldHtml('csTags', tagsOf(sec))}
           <div class="modal-actions">
             <button class="btn ghost" data-cs="no" type="button">Annulla</button>
             <button class="btn primary" data-cs="yes" type="button">Crea la flashcard</button>
@@ -2924,6 +3464,7 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
     const fEl = $('#csFront', root);
     const bEl = $('#csBack', root);
     bindCardFieldTools(root, front ? [fEl, bEl] : [bEl, fEl], notebookId);
+    bindTagField(root, 'csTags');
     const close = v => {
       root.innerHTML = '';
       document.removeEventListener('keydown', onKey, true);
@@ -2934,6 +3475,8 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
       if (!fEl.value.trim()) { toast('Scrivi la domanda sul fronte'); fEl.focus(); return; }
       if (!bEl.value.trim()) { toast('Scrivi la risposta sul retro'); bEl.focus(); return; }
       const card = newCard(notebookId, { front: fEl.value.trim(), back: bEl.value.trim(), sectionId });
+      const tags = parseTags($('#csTags', root)?.value || '');
+      if (tags.length) card.tags = tags;
       await saveCard(card);
       toast('Flashcard creata');
       close(card);
@@ -2951,7 +3494,7 @@ function openCardSheet({ front = '', back = '', sectionId = null, notebookId, he
       aiBtn.textContent = 'Scrivo la domanda…';
       try {
         const ctx = sec ? `ARGOMENTO: ${sec.title}\n\nCONTESTO:\n${aiText(sec.md).slice(0, 5000)}\n\n` : '';
-        const r = await AI.generate({ system: FRONT_SYSTEM, text: `${ctx}RISPOSTA DELLA FLASHCARD:\n${bEl.value.trim()}`, maxTokens: 3000 });
+        const r = await AI.generate({ system: promptFor('front'), text: `${ctx}RISPOSTA DELLA FLASHCARD:\n${bEl.value.trim()}`, maxTokens: 3000 });
         fEl.value = r.text.trim().split('\n').find(l => l.trim())?.replace(/^(D|Domanda)\s*:\s*/i, '').trim() || fEl.value;
       } catch (err) { toast(err.message, 'err'); }
       aiBtn.disabled = false;
@@ -3028,7 +3571,7 @@ function modeCards(sec, body) {
     btn.disabled = true;
     btn.textContent = 'Genero le flashcard…';
     try {
-      const r = await AI.generate({ system: CARDS_SYSTEM, text: aiText(sec.md), maxTokens: 8000 });
+      const r = await AI.generate({ system: promptFor('cards'), text: aiText(sec.md), maxTokens: 8000 });
       showCandidates(parseQuestions(r.text).map(q => ({ front: q.q, back: q.a })).filter(c => c.back));
     } catch (err) { toast(err.message, 'err'); }
     btn.disabled = false;
@@ -3132,6 +3675,7 @@ function viewCardEditor(id) {
         <label class="field"><span>Retro</span><textarea class="input card-ta" id="ceBack">${esc(c.back)}</textarea></label>`}
       <label class="field"><span>Nota sull’errore, compare dopo la risposta</span>
         <input class="input" id="ceNote" value="${esc(c.note || '')}" placeholder="Es. confondo beta1 e beta2"></label>
+      ${tagFieldHtml('ceTags', tagsOf(c))}
       <label class="field"><span>Sezione collegata</span>
         <select class="input" id="ceSec">
           <option value="">Nessuna</option>
@@ -3157,6 +3701,7 @@ function viewCardEditor(id) {
     fEl.addEventListener('input', prev);
     bEl.addEventListener('input', prev);
   }
+  bindTagField($('#view'), 'ceTags');
   on('[data-act="io-edit"]', 'click', () => openOcclusionEditor({ imageId: c.io.imageId, notebookId: c.notebookId, sectionId: c.sectionId, group: c.io.group }));
   on('[data-act="save"]', 'click', async () => {
     if (!isIo && !fEl.value.trim()) { toast('Il fronte non può essere vuoto'); fEl.focus(); return; }
@@ -3164,6 +3709,7 @@ function viewCardEditor(id) {
     if (!isIo) c.front = fEl.value.trim();
     c.back = bEl.value.trim();
     c.note = $('#ceNote').value.trim();
+    c.tags = parseTags($('#ceTags').value);
     c.sectionId = $('#ceSec').value || null;
     await saveCard(c);
     await removeOrphanImages(before);
@@ -3203,16 +3749,19 @@ let session = null;
 function scopeCards(scope) {
   if (scope === 'all') return state.cards.filter(c => !c.suspended);
   if (scope.startsWith('sec-')) { const id = scope.slice(4); return state.cards.filter(c => c.sectionId === id && !c.suspended); }
+  if (scope.startsWith('tag-')) { const t = scope.slice(4); return state.cards.filter(c => tagsOf(c).includes(t) && !c.suspended); }
   return state.cards.filter(c => c.notebookId === scope && !c.suspended);
 }
 function scopeTitle(scope) {
   if (scope === 'all') return 'Tutte le flashcard';
   if (scope.startsWith('sec-')) return secById(scope.slice(4))?.title || 'Sezione';
+  if (scope.startsWith('tag-')) return `#${scope.slice(4)}`;
   return nbById(scope)?.name || 'Flashcard';
 }
 function scopeBack(scope) {
   if (scope === 'all') return '#/cards';
   if (scope.startsWith('sec-')) return `#/sec/${scope.slice(4)}/cards`;
+  if (scope.startsWith('tag-')) return `#/tag/${encodeURIComponent(scope.slice(4))}`;
   return `#/deck/${scope}`;
 }
 function startSession(scope) {
@@ -3289,23 +3838,32 @@ function renderStudy() {
       ${cardFaceHtml(card, session.revealed)}
       ${session.revealed && card.note ? `<p class="card-note"><strong>La tua nota sull’errore:</strong> ${esc(card.note)}</p>` : ''}
     </article>
-    <div class="board">
-      <button class="btn sm ghost board-toggle" data-act="board" aria-expanded="${S().boardOpen}">${S().boardOpen ? 'Chiudi la lavagna' : 'Lavagna: scrivi la risposta a mano'}</button>
-      ${S().boardOpen ? `<div class="board-wrap">${penToolsHtml({ colors: false })}<canvas class="board-canvas" id="boardCanvas" aria-label="Lavagna per scrivere la risposta"></canvas></div>` : ''}
-    </div>
-    <div class="study-actions">
-      ${session.revealed ? `
-        <div class="grade-btns">
+    ${(() => {
+      // Con l’occlusione, o con la lavagna aperta, “Mostra la risposta” sta sulla riga della lavagna
+      const inline = card.type === 'occlusion' || S().boardOpen;
+      const grades = session.revealed ? `
+        <div class="study-actions"><div class="grade-btns">
           ${CARD_GRADES.map((g, i) => `<button class="gbtn g-${g.key}" data-g="${g.key}" aria-keyshortcuts="${i + 1}">
             <span>${g.label}</span><small>${fmtCardNext(scheduleCard(card.srs, g.key, now, true), now)}</small></button>`).join('')}
-        </div>` : '<button class="btn primary block big" data-act="reveal" aria-keyshortcuts="Space">Mostra la risposta</button>'}
-    </div>
+        </div></div>` : '';
+      const board = `
+        <div class="board">
+          <div class="board-row">
+            <button class="btn sm ghost board-toggle" data-act="board" aria-expanded="${S().boardOpen}">${S().boardOpen ? (inline ? 'Chiudi lavagna' : 'Chiudi la lavagna') : inline ? 'Lavagna' : 'Lavagna: scrivi la risposta a mano'}</button>
+            ${inline && !session.revealed ? '<button class="btn primary reveal-inline" data-act="reveal" aria-keyshortcuts="Space">Mostra la risposta</button>' : ''}
+          </div>
+          ${S().boardOpen ? `<div class="board-wrap">${penToolsHtml({ colors: false })}<canvas class="board-canvas" id="boardCanvas" aria-label="Lavagna per scrivere la risposta"></canvas></div>` : ''}
+        </div>`;
+      if (inline) return grades + board;
+      return board + (session.revealed ? grades : '<div class="study-actions"><button class="btn primary block big" data-act="reveal" aria-keyshortcuts="Space">Mostra la risposta</button></div>');
+    })()}
     <div class="study-tools">
       <button class="btn sm ghost" data-act="undo" ${session.undo.length ? '' : 'disabled'}>Annulla l’ultima</button>
       <a class="btn sm ghost" href="#/card/${card.id}">Modifica</a>
       <button class="btn sm ghost" data-act="suspend">Sospendi</button>
     </div>
-    ${sec ? `<p class="source">Dalla sezione <a href="#/sec/${sec.id}/read">${esc(sec.title)}</a></p>` : ''}
+    ${sec && session.revealed ? `<p class="source">Dalla sezione <a href="#/sec/${sec.id}/read">${esc(sec.title)}</a></p>` : ''}
+    ${session.revealed && card.pdf && pdfById(card.pdf.id) ? `<p class="source">Dal PDF <a href="#/pdf/${card.pdf.id}/${card.pdf.page}">${esc(pdfById(card.pdf.id).name)}, pagina ${card.pdf.page}</a></p>` : ''}
     <p class="hint kbd-hint">Spazio mostra la risposta, 1-4 per valutare, Ctrl+Z annulla.</p>
   `);
   on('[data-act="reveal"]', 'click', () => { session.revealed = true; renderStudy(); });
@@ -3349,6 +3907,7 @@ async function answerCard(grade) {
     const wasLearned = c.sectionId ? sectionLearned(c.sectionId) : true;
     c.srs = scheduleCard(c.srs, grade);
     await saveCard(c);
+    Stats.addReview();
     session.undo.push({ id: c.id, prev, inQueue: session.queue.includes(c.id) });
     if (session.undo.length > 30) session.undo.shift();
     session.queue = session.queue.filter(id => id !== c.id);
@@ -3733,36 +4292,44 @@ const linkHost = url => { try { return new URL(url).hostname.replace(/^www\./, '
 
 function viewLinks() {
   const groups = [];
-  [...state.links].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.created - b.created).forEach(l => {
+  [...linksOnly()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.created - b.created).forEach(l => {
     let g = groups.find(x => x.name === (l.group || 'Altri'));
     if (!g) { g = { name: l.group || 'Altri', items: [] }; groups.push(g); }
     g.items.push(l);
   });
   setView(`
     <header class="page-head">
-      <div><h1>Link utili</h1><p class="lede">Si aprono in una nuova scheda. Puoi aggiungere, modificare ed eliminare quelli che vuoi.</p></div>
-      <button class="btn primary" data-act="add-link">Aggiungi un link</button>
+      <div><h1>Link utili</h1><p class="lede">${linksEditing ? 'Tocca un’icona per modificarla o eliminarla.' : 'Tocca un’icona per aprire il sito in una nuova scheda.'}</p></div>
+      <div class="actions">
+        <button class="btn ${linksEditing ? 'primary' : ''}" data-act="edit-links">${linksEditing ? 'Fatto' : 'Modifica'}</button>
+        <button class="btn" data-act="add-link">Aggiungi</button>
+      </div>
     </header>
-    ${groups.length ? groups.map(g => `
-      <h2 class="sub">${esc(g.name)}</h2>
-      <ul class="list">${g.items.map(l => `
-        <li class="link-row">
-          <a class="row" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">
-            <span class="row-main"><span class="row-title">${esc(l.title)}</span>
-            <span class="row-sub">${esc(l.note || linkHost(l.url))}</span></span>
-            <span class="ext" aria-hidden="true">↗</span>
-          </a>
-          <button class="btn sm ghost" data-edit="${l.id}" aria-label="Modifica ${esc(l.title)}">Modifica</button>
-        </li>`).join('')}</ul>`).join('') : '<div class="empty"><p>Nessun link salvato.</p></div>'}
+    <div class="${linksEditing ? 'links-editing' : ''}" id="linkTiles">
+      ${groups.length ? groups.map(g => `<h2 class="sub">${esc(g.name)}</h2><div class="tile-grid icons">${g.items.map(linkTile).join('')}</div>`).join('') : '<div class="empty"><p>Nessun link salvato.</p></div>'}
+    </div>
   `);
+  $$('.tile-fav').forEach(img => {
+    const ok = () => img.classList.add('ok');
+    const fail = () => img.remove();
+    img.addEventListener('load', () => (img.naturalWidth > 1 ? ok() : fail()));
+    img.addEventListener('error', fail);
+    if (img.complete) (img.naturalWidth > 1 ? ok() : fail());
+  });
+  on('[data-act="edit-links"]', 'click', () => { linksEditing = !linksEditing; route(); });
   on('[data-act="add-link"]', 'click', async () => { if (await linkSheet()) route(); });
-  on('[data-edit]', 'click', async e => { if (await linkSheet(state.links.find(l => l.id === e.currentTarget.dataset.edit))) route(); });
+  $('#linkTiles').addEventListener('click', async e => {
+    const t = e.target.closest('.tile[data-id]');
+    if (!t || !linksEditing) return;
+    e.preventDefault();
+    if (await linkSheet(state.links.find(l => l.id === t.dataset.id))) route();
+  });
 }
 
 function linkSheet(link = null) {
   return new Promise(resolve => {
     const root = $('#modalRoot');
-    const groups = [...new Set(state.links.map(l => l.group).filter(Boolean))];
+    const groups = [...new Set(linksOnly().map(l => l.group).filter(Boolean))];
     root.innerHTML = `
       <div class="overlay">
         <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="lkTitle">
@@ -3792,7 +4359,7 @@ function linkSheet(link = null) {
       if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
       try { new URL(url); } catch { toast('Indirizzo non valido'); $('#lkUrl', root).focus(); return; }
       const now = Date.now();
-      const rec = link || { id: uid(), notebookId: '_links', order: state.links.length, created: now };
+      const rec = link || { id: uid(), notebookId: '_links', order: linksOnly().length, created: now };
       Object.assign(rec, { title, url, group: $('#lkGroup', root).value.trim() || 'Altri', note: $('#lkNote', root).value.trim() });
       await saveLink(rec);
       toast('Link salvato');
@@ -3814,7 +4381,8 @@ function viewGuide() {
       <ol>
         <li>Crea un <strong>notebook</strong> per ogni materia (Notebook → Nuovo notebook).</li>
         <li>In <strong>Importa</strong> incolla del testo, carica un PDF o una mappa XMind: l’app crea le sezioni.</li>
-        <li>Apri una sezione e studiala in <strong>Leggi</strong>, poi mettiti alla prova con Cloze, Pagina bianca, Domande o Flashcard.</li>
+        <li>Se la materia è vasta, dividila in <strong>macro-argomenti</strong> (Nuovo macro-argomento): le sezioni dentro sono i micro-argomenti.</li>
+        <li>Apri una sezione: se ha termini cloze parte da <strong>Cloze</strong>, così non vedi le risposte prima di provarci. Poi Leggi, Pagina bianca, Domande o Flashcard.</li>
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
@@ -3827,8 +4395,37 @@ function viewGuide() {
         <li><strong>XMind</strong>: ogni foglio della mappa diventa una sezione con elenchi annidati; se vuoi, ogni nodo con sottopunti diventa una flashcard.</li>
         <li>Da altre app puoi usare <strong>Condividi → Notebook</strong> per mandare testo o PDF.</li>
       </ul>`)}
+    ${sec('Lettore PDF', `
+      <ul>
+        <li>In ogni sezione la scheda <strong>PDF</strong> raccoglie i file che carichi: appunti scritti a mano, slide, capitoli. Con la sincronizzazione attiva il file va su Drive (a pezzi da 3 MB, nella cartella “pdf”) e sugli altri dispositivi si scarica la prima volta che lo apri. Annotazioni, segnalibri e Trascina si sincronizzano come il resto.</li>
+        <li><strong>Segnalibri</strong>: tocca “Segnalibro” in alto, o premi B, per segnare la pagina che stai leggendo. Il nome si prende dalla prima riga della pagina e puoi cambiarlo. Li ritrovi nel pannello, insieme all’indice del PDF se ce l’ha.</li>
+        <li><strong>Seleziona</strong> del testo per evidenziarlo in cinque colori, sottolinearlo, aggiungere una nota, crearne una flashcard o mandarlo a <strong>Trascina</strong>. Sul PC funziona anche il tasto destro.</li>
+        <li>Tocca un’evidenziazione per cambiarne il colore, trasformarla in sottolineatura, aggiungere una nota o eliminarla.</li>
+        <li><strong>Penna</strong> per scrivere sulle pagine, anche come evidenziatore a mano libera; <strong>Gomma</strong> cancella penna ed evidenziazioni; <strong>Nota</strong> mette un appunto dove tocchi. Col pennino, il dito continua a scorrere le pagine.</li>
+        <li>Il <strong>pannello</strong> ha miniature delle pagine, segnalibri e indice, tutte le note, la ricerca nel testo e Trascina.</li>
+        <li><strong>Trascina</strong>: ogni brano che ci mandi diventa una bozza di flashcard con il testo sul retro. Scrivi la domanda (o falla proporre all’AI), riordina con la maniglia ⠿ e crea le flashcard. Sul PC puoi anche trascinare il testo selezionato direttamente nel pannello.</li>
+        <li>Le flashcard nate dal PDF, dopo la risposta, hanno il link alla pagina da cui vengono.</li>
+      </ul>`)}
+    ${sec('Novità: calendario, tag, glossario, note cliniche', `
+      <ul>
+        <li><strong>Calendario</strong> (su telefono in Altro): ripassi in programma giorno per giorno, tempo di studio, giorni di fila e <strong>punti deboli</strong>, cioè le sezioni e le flashcard che sbagli più spesso. Il tempo si conta su questo dispositivo.</li>
+        <li><strong>Tag</strong>: aggiungili in Modifica e nelle flashcard, separati da virgole. Toccane uno per vedere tutto ciò che lo usa e studiare solo quelle flashcard. Nella ricerca scrivi <code>#</code> per cercare tra i tag.</li>
+        <li><strong>Collegamenti tra pagine</strong>: in Modifica tocca “Link a pagina”, oppure scrivi <code>[[Titolo della sezione]]</code>. Con del testo selezionato il link usa quel testo. In fondo a Leggi trovi le pagine che rimandano a quella aperta. Se rinomini una sezione, i collegamenti si aggiornano.</li>
+        <li><strong>Glossario</strong>: aggiungi parole da Altro → Glossario o selezionandole mentre leggi. In Leggi la prima volta che compaiono sono sottolineate a puntini: toccale per il significato.</li>
+        <li><strong>Note cliniche</strong>: quadro clinico, sintomi e segni, materia e note. Selezionando del testo in Leggi e toccando “Nota clinica” la crei già collegata alla sezione. Si cercano per sintomo, anche combinandone più di uno.</li>
+        <li><strong>Immagini</strong>: in Leggi e Cloze “Nascondi le immagini” le riduce a un riquadro da toccare. In Cloze, gli schemi con image occlusion hanno i riquadri coperti come i termini: toccali per scoprirli.</li>
+        <li><strong>Link utili</strong> sono icone: “Modifica” per cambiarli.</li>
+      </ul>`)}
+    ${sec('Macro e micro-argomenti', `
+      <ul>
+        <li>Nel notebook tocca <strong>Nuovo macro-argomento</strong> e scegli le sezioni da metterci dentro.</li>
+        <li>Da <strong>Opzioni</strong> del macro-argomento aggiungi sezioni, ne scrivi una nuova, importi direttamente lì, lo rinomini, lo sposti su o giù o lo elimini (le sezioni restano nel notebook).</li>
+        <li>In Modifica e in Importa scegli il macro-argomento dal menu.</li>
+        <li>Tocca il nome di un macro-argomento per ridurlo o espanderlo.</li>
+      </ul>`)}
     ${sec('Leggere ed evidenziare', `
       <ul>
+        <li>Ogni titolo degli appunti ha una <strong>freccetta</strong>: toccala, o tocca il titolo, per ridurre il paragrafo. “Riduci tutto” chiude tutti i paragrafi; l’app ricorda quali hai chiuso.</li>
         <li>Seleziona del testo: compare una barra con <strong>Cloze</strong>, cinque colori di evidenziatore, <u>sottolineatura</u>, ✕ per togliere la formattazione e <strong>Flashcard</strong>. Sul PC c’è anche il menu del tasto destro.</li>
         <li>Dopo ogni modifica puoi toccare <strong>Annulla</strong> nell’avviso in basso.</li>
         <li>Tocca un’immagine per vederla a schermo intero o creare un’image occlusion.</li>
@@ -3845,6 +4442,8 @@ function viewGuide() {
       <ul>
         <li><strong>Cloze</strong>: i termini evidenziati per il cloze sono coperti; toccali per controllare.</li>
         <li><strong>Pagina bianca</strong>: scrivi tutto quello che ricordi, poi confronta; l’AI può darti un punteggio e dirti cosa manca.</li>
+        <li><strong>Orale</strong>: come all’esame, spieghi la sezione ad alta voce. Il telefono trascrive (serve internet), tu correggi se serve, poi confronti con gli appunti o ti fai valutare dall’AI, che commenta anche ordine e chiarezza dell’esposizione.</li>
+        <li>In <strong>Domande</strong> puoi farti leggere la domanda (“Ascolta”) e rispondere a voce prima di vedere la soluzione.</li>
         <li><strong>Domande</strong>: rispondi a mente, poi segna se la sapevi.</li>
         <li>Alla fine valuti con <strong>Di nuovo, Difficile, Bene, Facile</strong>: il prossimo ripasso si calcola da qui.</li>
       </ul>`)}
@@ -3855,6 +4454,7 @@ function viewGuide() {
         <li>Il ripasso segue l’algoritmo di <strong>Anki</strong>: passi di 1 e 10 minuti, poi i giorni crescono in base alle tue risposte.</li>
         <li>Con <strong>Lavagna</strong> scrivi la risposta a mano prima di girare la carta.</li>
         <li>Quando premi “Di nuovo” puoi scrivere perché hai sbagliato: la nota comparirà al ripasso successivo.</li>
+        <li>Negli elenchi la risposta è sfocata: la vedi aprendo la flashcard.</li>
         <li><strong>Image occlusion</strong>: copri le etichette di uno schema, ogni riquadro diventa una carta.</li>
       </ul>`)}
     ${sec('Pennino e tablet', `
@@ -3863,6 +4463,9 @@ function viewGuide() {
         <li>Quando l’app riconosce il pennino ignora il palmo appoggiato sullo schermo.</li>
         <li>Il tasto gomma del pennino cancella.</li>
       </ul>`)}
+    ${sec('Prompt per l’AI', `
+      <p>In Impostazioni → Prompt per l’AI trovi le istruzioni che l’app dà all’AI per formattare gli appunti, creare flashcard e domande, proporre il fronte di una flashcard e valutare la pagina bianca. Puoi cambiarle e tornare all’originale quando vuoi. Le parti tecniche (cloze, immagini, formato della risposta) si aggiungono da sole, così l’app continua a leggere bene le risposte.</p>
+      <p>“Copia il prompt completo” lo copia pronto da incollare in Gemini o NotebookLM. Le flashcard nel formato <code>D:</code> / <code>R:</code> che ottieni puoi incollarle nel riquadro Domande di una sezione (Modifica), poi crearle dalla scheda Flashcard con “Dalle domande”.</p>`)}
     ${sec('Sincronizzazione con Drive', `
       <ol>
         <li>Su script.google.com crea un nuovo progetto e incolla <code>sync-notebook.gs</code>; cambia la frase segreta.</li>
@@ -4005,6 +4608,8 @@ function readingToolsHtml() {
     </span>
     <button type="button" class="rt-btn rt-u" data-rt="u" title="Sottolinea" aria-label="Sottolinea">S</button>
     <button type="button" class="rt-btn" data-rt="none" title="Togli evidenziatura e sottolineatura" aria-label="Togli evidenziatura e sottolineatura">✕</button>
+    <button type="button" class="rt-btn" data-rt="gloss" title="Aggiungi al glossario">Glossario</button>
+    <button type="button" class="rt-btn" data-rt="clin" title="Crea una nota clinica">Nota clinica</button>
     <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>`;
 }
 
@@ -4055,6 +4660,14 @@ function setupReadingTools(container, sec) {
     const c = last;
     if (!c) return;
     document.getSelection()?.removeAllRanges();
+    if (kind === 'gloss') {
+      if (await glossarySheet(null, { term: c.text.slice(0, 80), nbId: sec.notebookId })) { const y = window.scrollY; route(); window.scrollTo(0, y); }
+      return;
+    }
+    if (kind === 'clin') {
+      await clinicSheet(null, { title: sec.title, body: c.listText || c.text, nbId: sec.notebookId, sectionId: sec.id });
+      return;
+    }
     if (kind === 'card') {
       const back = c.listText || c.text;
       const card = await openCardSheet({ back, sectionId: sec.id, notebookId: sec.notebookId });
@@ -4932,6 +5545,13 @@ function searchSnippet(text, q) {
   return `${a > 0 ? '…' : ''}${esc(t.slice(a, i))}<mark class="hit">${esc(t.slice(i, i + q.length))}</mark>${esc(t.slice(i + q.length, b))}${b < t.length ? '…' : ''}`;
 }
 function searchResultsHtml(q) {
+  if (q.startsWith('#')) {
+    const t = normTag(q);
+    const tags = allTags().filter(([x]) => !t || x.includes(t));
+    return tags.length
+      ? `<h2 class="sub">Tag</h2><div class="tag-cloud big">${tags.map(([x, n]) => `<a class="tag" href="#/tag/${encodeURIComponent(x)}">#${esc(x)} <small>${n}</small></a>`).join('')}</div>`
+      : '<p class="hint">Nessun tag trovato.</p>';
+  }
   const secs = state.sections.filter(s => (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q)).slice(0, 60);
   const cards = state.cards.filter(c => (c.front + '\n' + c.back).toLowerCase().includes(q)).slice(0, 60);
   if (!secs.length && !cards.length) return '<p class="hint">Nessun risultato.</p>';
@@ -4944,7 +5564,7 @@ function searchResultsHtml(q) {
     ${cards.length ? `<h2 class="sub">Flashcard</h2><ul class="list">${cards.map(c => `
       <li><a class="row" href="#/card/${c.id}"><span class="row-main">
         <span class="row-title">${c.type === 'occlusion' ? 'Image occlusion' : searchSnippet(c.front, q)}</span>
-        <span class="row-sub">${searchSnippet(c.back, q) || '&nbsp;'}</span>
+        <span class="row-sub spoiler">${searchSnippet(c.back, q) || '&nbsp;'}</span>
       </span></a></li>`).join('')}</ul>` : ''}`;
 }
 
@@ -5031,6 +5651,2091 @@ function takeSharedText() {
 /* ---------------------------------------------------------------------
    Avvio
    --------------------------------------------------------------------- */
+/* =====================================================================
+   v3.6: pagina Altro, link a icone, calendario e statistiche, tag,
+   collegamenti tra pagine, glossario, note cliniche, immagini
+   ===================================================================== */
+
+const ICONS = {
+  calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>',
+  clinic: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M10 13v2a5 5 0 0 0 10 0v-2"/><circle cx="20" cy="11" r="2"/></svg>',
+  glossary: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M9 9h6M9 13h4"/></svg>',
+  tag: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4h8l9 9-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/></svg>',
+  links: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/></svg>',
+  guide: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4"/><path d="M12 16.8v.2"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>'
+};
+const hueOf = str => { let h = 0; for (const ch of String(str)) h = (h * 31 + ch.codePointAt(0)) % 360; return h; };
+const foldAccents = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const fmtMin = sec => {
+  const m = Math.round((sec || 0) / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+};
+
+// Finestra generica: restituisce l’elemento e la funzione per chiuderla
+function openSheet(inner, { label = '', onClose = () => {} } = {}) {
+  const root = $('#modalRoot');
+  const prevFocus = document.activeElement;
+  root.innerHTML = `<div class="overlay"><div class="modal sheet" role="dialog" aria-modal="true" aria-label="${esc(label)}">${inner}</div></div>`;
+  const el = $('.modal', root);
+  let closed = false;
+  const onKey = e => { if (e.key === 'Escape' && el.isConnected) { e.stopPropagation(); close(null); } };
+  const close = v => {
+    if (closed) return;
+    closed = true;
+    if (el.isConnected) root.innerHTML = '';
+    document.removeEventListener('keydown', onKey, true);
+    if (prevFocus && prevFocus.isConnected && prevFocus.focus) prevFocus.focus({ preventScroll: true });
+    onClose(v);
+  };
+  document.addEventListener('keydown', onKey, true);
+  $('.overlay', root).addEventListener('click', e => { if (e.target.classList.contains('overlay')) close(null); });
+  return { el, close };
+}
+
+/* ---------- Pagina "Altro" ---------- */
+const MORE_ITEMS = [
+  ['calendar', 'Calendario', 'Ripassi in programma, tempo di studio, punti deboli'],
+  ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
+  ['glossary', 'Glossario', 'Parole particolari e il loro significato'],
+  ['tag', 'Tag', 'Appunti e flashcard per etichetta'],
+  ['links', 'Link utili', 'I siti che usi per studiare'],
+  ['guide', 'Guida', 'Come funziona ogni parte dell’app'],
+  ['settings', 'Impostazioni', 'AI, sincronizzazione, lettura, backup']
+];
+function viewMore() {
+  setView(`
+    <header class="page-head"><h1>Altro</h1></header>
+    <div class="tile-grid wide-grid">
+      ${MORE_ITEMS.map(([k, label, sub]) => `
+        <a class="tile wide" href="#/${k}">
+          <span class="tile-ic app-ic" style="--h:${hueOf(k + 'x')}">${ICONS[k]}</span>
+          <span class="tile-text"><span class="tile-name">${label}</span><span class="tile-sub">${sub}</span></span>
+        </a>`).join('')}
+    </div>`);
+}
+
+/* ---------- Link utili come icone ---------- */
+const linksOnly = () => state.links.filter(l => !l.kind);
+let linksEditing = false;
+const faviconUrl = url => { const h = linkHost(url); return h && /\./.test(h) ? `https://www.google.com/s2/favicons?domain=${encodeURIComponent(h)}&sz=64` : ''; };
+function linkTile(l) {
+  const first = [...(l.title || '?').trim()][0] || '?';
+  const fav = faviconUrl(l.url);
+  return `
+    <a class="tile" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" data-id="${l.id}" title="${esc(l.note || linkHost(l.url))}">
+      <span class="tile-ic" style="--h:${hueOf(l.id)}">
+        <span class="tile-letter">${esc(first.toUpperCase())}</span>
+        ${fav ? `<img class="tile-fav" alt="" referrerpolicy="no-referrer" src="${esc(fav)}">` : ''}
+        <span class="tile-edit" aria-hidden="true">✎</span>
+      </span>
+      <span class="tile-name">${esc(l.title)}</span>
+    </a>`;
+}
+
+/* ---------- Statistiche e tempo di studio (solo su questo dispositivo) ---------- */
+const Stats = {
+  KEY: 'nb-stats',
+  data: null,
+  load() {
+    if (this.data) return this.data;
+    try { this.data = JSON.parse(localStorage.getItem(this.KEY) || '{}'); } catch { this.data = {}; }
+    if (!this.data.d || typeof this.data.d !== 'object') this.data.d = {};
+    return this.data;
+  },
+  save() { try { localStorage.setItem(this.KEY, JSON.stringify(this.data)); } catch { /* spazio pieno */ } },
+  day(d = todayStr()) {
+    const all = this.load().d;
+    if (!all[d]) all[d] = { t: 0, r: 0, nb: {} };
+    return all[d];
+  },
+  addTime(sec, nbId) {
+    const x = this.day();
+    x.t += sec;
+    if (nbId) x.nb[nbId] = (x.nb[nbId] || 0) + sec;
+    const keys = Object.keys(this.data.d);
+    if (keys.length > 420) keys.sort().slice(0, keys.length - 400).forEach(k => delete this.data.d[k]);
+    this.save();
+  },
+  addReview() { this.day().r += 1; this.save(); }
+};
+// Conta il tempo passato su sezioni (tranne Modifica) e flashcard, solo se stai usando l’app
+const Tracker = {
+  last: Date.now(),
+  start() {
+    const mark = () => { this.last = Date.now(); };
+    ['pointerdown', 'keydown', 'scroll', 'wheel'].forEach(ev => window.addEventListener(ev, mark, { passive: true, capture: true }));
+    setInterval(() => this.tick(), 15000);
+  },
+  context() {
+    const [p0, p1, p2] = decodeURIComponent(location.hash.replace(/^#\/?/, '')).split('/');
+    if (p0 === 'sec' && p2 !== 'edit') return secById(p1)?.notebookId || '';
+    if (p0 === 'pdf') return pdfById(p1)?.notebookId || '';
+    if (p0 === 'study') {
+      if (!p1 || p1 === 'all' || p1.startsWith('tag-')) return '';
+      if (p1.startsWith('sec-')) return secById(p1.slice(4))?.notebookId || '';
+      return p1;
+    }
+    return null;
+  },
+  tick() {
+    if (document.visibilityState !== 'visible' || Date.now() - this.last > 120000) return;
+    const nb = this.context();
+    if (nb !== null) Stats.addTime(15, nb);
+  }
+};
+
+/* ---------- Calendario ---------- */
+let calMonth = '';
+let calDay = '';
+function dueIndex() {
+  const today = todayStr();
+  const map = {};
+  const slot = d => (map[d] || (map[d] = { secs: [], cards: 0, cardNb: {} }));
+  for (const s of state.sections) {
+    if (s.studyhub || !s.srs?.due) continue;
+    slot(s.srs.due < today ? today : s.srs.due).secs.push(s);
+  }
+  for (const c of state.cards) {
+    if (c.suspended || !c.srs || c.srs.state === 'new' || !c.srs.due) continue;
+    let d = localDateStr(new Date(c.srs.due));
+    if (d < today) d = today;
+    const x = slot(d);
+    x.cards++;
+    x.cardNb[c.notebookId] = (x.cardNb[c.notebookId] || 0) + 1;
+  }
+  return map;
+}
+function weakSections() {
+  return state.sections
+    .map(s => {
+      const h = (s.srs?.history || []).slice(-6);
+      const again = h.filter(x => x.q < 3).length;
+      const hard = h.filter(x => x.q === 3).length;
+      return { s, again, hard, score: again * 2 + hard };
+    })
+    .filter(x => x.score >= 2)
+    .sort((a, b) => b.score - a.score || a.s.title.localeCompare(b.s.title))
+    .slice(0, 8);
+}
+function weakCards() {
+  return state.cards
+    .filter(c => !c.suspended && c.srs && (c.srs.lapses >= 2 || (c.srs.state === 'review' && c.srs.ease < 2)))
+    .sort((a, b) => (b.srs.lapses || 0) - (a.srs.lapses || 0) || a.srs.ease - b.srs.ease)
+    .slice(0, 10);
+}
+function viewCalendar() {
+  const today = todayStr();
+  if (!calMonth) calMonth = today.slice(0, 7);
+  if (!calDay) calDay = today;
+  const [y, m] = calMonth.split('-').map(Number);
+  const first = new Date(y, m - 1, 1);
+  const pad = (first.getDay() + 6) % 7;
+  const days = new Date(y, m, 0).getDate();
+  const idx = dueIndex();
+  const st = Stats.load().d;
+  const monthName = first.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
+  const cells = [];
+  for (let i = 0; i < pad; i++) cells.push('<span class="cal-cell pad" aria-hidden="true"></span>');
+  for (let d = 1; d <= days; d++) {
+    const ds = `${calMonth}-${String(d).padStart(2, '0')}`;
+    const x = idx[ds];
+    const n = x ? x.secs.length + x.cards : 0;
+    const past = ds < today;
+    const secs = st[ds]?.t || 0;
+    cells.push(`
+      <button type="button" class="cal-cell ${ds === today ? 'is-today' : ''} ${ds === calDay ? 'sel' : ''} ${past ? 'past' : ''}" data-day="${ds}"
+        aria-label="${d} ${monthName}${!past && n ? `, ${n} da ripassare` : ''}${past && secs ? `, ${fmtMin(secs)} di studio` : ''}" ${ds === calDay ? 'aria-pressed="true"' : ''}>
+        <span class="cal-n">${d}</span>
+        ${!past && n ? `<span class="cal-due" style="--load:${Math.min(1, 0.25 + n / 50).toFixed(2)}">${n}</span>` : ''}
+        ${past && secs >= 60 ? `<span class="cal-min">${Math.round(secs / 60)}′</span>` : ''}
+      </button>`);
+  }
+  // giorno scelto
+  const x = idx[calDay];
+  const dayLabel = new Date(calDay + 'T12:00').toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+  let dayHtml;
+  if (calDay < today) {
+    const s = st[calDay];
+    dayHtml = s && (s.t || s.r)
+      ? `<p>${s.t ? `Hai studiato ${fmtMin(s.t)}` : 'Hai studiato'}${s.r ? ` e dato ${s.r} ${s.r === 1 ? 'valutazione' : 'valutazioni'}` : ''}.</p>`
+      : '<p class="hint">Nessuna attività registrata su questo dispositivo.</p>';
+  } else if (x) {
+    const nbRows = Object.entries(x.cardNb).map(([id, k]) => `
+      <li><a class="row" href="${calDay === today ? `#/study/${id}` : `#/deck/${id}`}">
+        <span class="row-main"><span class="row-title">${esc(nbById(id)?.name || 'Notebook')}</span><span class="row-sub">${k} flashcard</span></span>
+        ${calDay === today ? '<span class="pill due">Studia</span>' : ''}</a></li>`).join('');
+    dayHtml = `
+      ${x.secs.length ? `<ul class="list">${x.secs.sort(sortDue).map(s => sectionRow(s, { showNb: true, review: calDay === today })).join('')}</ul>` : ''}
+      ${nbRows ? `<ul class="list cal-cards">${nbRows}</ul>` : ''}`;
+  } else {
+    dayHtml = '<p class="hint">Niente in programma.</p>';
+  }
+  // ultimi 14 giorni
+  const bars = [];
+  let maxT = 60;
+  for (let i = 13; i >= 0; i--) { const d = addDays(today, -i); maxT = Math.max(maxT, st[d]?.t || 0); bars.push(d); }
+  const sumDays = n => { let t = 0; for (let i = 0; i < n; i++) t += st[addDays(today, -i)]?.t || 0; return t; };
+  let streak = 0;
+  for (let i = (st[today]?.t || st[today]?.r) ? 0 : 1; i < 400; i++) {
+    const s = st[addDays(today, -i)];
+    if (s && (s.t || s.r)) streak++; else break;
+  }
+  const perNb = {};
+  for (let i = 0; i < 30; i++) Object.entries(st[addDays(today, -i)]?.nb || {}).forEach(([id, t]) => { perNb[id] = (perNb[id] || 0) + t; });
+  const nbList = Object.entries(perNb).filter(([id]) => nbById(id)).sort((a, b) => b[1] - a[1]);
+  const nbMax = nbList.length ? nbList[0][1] : 1;
+  const ws = weakSections();
+  const wc = weakCards();
+
+  setView(`
+    <header class="page-head"><div><h1>Calendario</h1>
+      <p class="lede">Ripassi in programma e tempo di studio. Le sezioni affidate a StudyHub le pianifica StudyHub.</p></div></header>
+    <section class="cal" aria-label="Calendario dei ripassi">
+      <div class="cal-head">
+        <button class="btn sm ghost" data-cal="-1" aria-label="Mese precedente">‹</button>
+        <h2 class="cal-title">${esc(monthName)}</h2>
+        <button class="btn sm ghost" data-cal="1" aria-label="Mese successivo">›</button>
+        ${calMonth !== today.slice(0, 7) ? '<button class="btn sm" data-cal="0">Oggi</button>' : ''}
+      </div>
+      <div class="cal-grid">
+        ${['L', 'M', 'M', 'G', 'V', 'S', 'D'].map(d => `<span class="cal-dow" aria-hidden="true">${d}</span>`).join('')}
+        ${cells.join('')}
+      </div>
+    </section>
+    <h2 class="sub cal-day-title">${esc(dayLabel.charAt(0).toUpperCase() + dayLabel.slice(1))}</h2>
+    ${dayHtml}
+
+    <h2 class="sub">Tempo di studio</h2>
+    <div class="stat-row">
+      <div class="stat"><b>${fmtMin(st[today]?.t)}</b><span>oggi</span></div>
+      <div class="stat"><b>${fmtMin(sumDays(7))}</b><span>ultimi 7 giorni</span></div>
+      <div class="stat"><b>${fmtMin(sumDays(30))}</b><span>ultimi 30 giorni</span></div>
+      <div class="stat"><b>${streak}</b><span>${streak === 1 ? 'giorno di fila' : 'giorni di fila'}</span></div>
+    </div>
+    <div class="bars" role="img" aria-label="Minuti di studio negli ultimi 14 giorni">
+      ${bars.map(d => { const t = st[d]?.t || 0; return `<span class="bar ${d === today ? 'is-today' : ''}" style="--v:${(t / maxT).toFixed(3)}" title="${esc(d)}: ${fmtMin(t)}"><i></i><small>${new Date(d + 'T12:00').toLocaleDateString('it-IT', { weekday: 'narrow' })}</small></span>`; }).join('')}
+    </div>
+    ${nbList.length ? `
+      <ul class="nb-time">${nbList.map(([id, t]) => `
+        <li><span class="nb-time-name">${esc(nbById(id).name)}</span><span class="nb-time-bar" style="--v:${(t / nbMax).toFixed(3)}"><i></i></span><span class="nb-time-v">${fmtMin(t)}</span></li>`).join('')}
+      </ul>` : ''}
+    <p class="hint">Il tempo si conta mentre studi sezioni e flashcard e resta su questo dispositivo.</p>
+
+    <h2 class="sub">Punti deboli</h2>
+    ${ws.length || wc.length ? `
+      ${ws.length ? `<ul class="list">${ws.map(({ s, again, hard }) => `
+        <li><a class="row" href="#/sec/${s.id}">
+          <span class="row-main"><span class="row-title">${esc(s.title)}</span>
+          <span class="row-sub">${esc(nbById(s.notebookId)?.name || '')}: ${again ? `${again} volte “Di nuovo”` : ''}${again && hard ? ', ' : ''}${hard ? `${hard} volte “Difficile”` : ''} negli ultimi ripassi</span></span>
+        </a></li>`).join('')}</ul>` : ''}
+      ${wc.length ? `<h3 class="sub3">Flashcard sbagliate più spesso</h3><ul class="list">${wc.map(cardRow).join('')}</ul>` : ''}` : '<p class="hint">Ancora nessuno: compariranno le sezioni e le flashcard che sbagli più spesso.</p>'}
+  `);
+  on('[data-cal]', 'click', e => {
+    const v = +e.currentTarget.dataset.cal;
+    if (!v) { calMonth = today.slice(0, 7); calDay = today; }
+    else { const d = new Date(y, m - 1 + v, 1); calMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
+    viewCalendar();
+  });
+  on('[data-day]', 'click', e => { calDay = e.currentTarget.dataset.day; viewCalendar(); $('.cal-day-title')?.scrollIntoView({ block: 'nearest' }); });
+  on('[data-review]', 'click', () => { state.fromReview = true; });
+}
+
+/* ---------- Tag ---------- */
+const normTag = t => String(t || '').trim().replace(/^#+/, '').replace(/[\/\\]/g, '-').replace(/\s+/g, ' ').toLowerCase().slice(0, 40);
+const parseTags = s => [...new Set(String(s || '').split(/[,;\n]/).map(normTag).filter(Boolean))];
+const tagsOf = x => (x && Array.isArray(x.tags) ? x.tags : []);
+function allTags() {
+  const n = new Map();
+  [...state.sections, ...state.cards].forEach(x => tagsOf(x).forEach(t => n.set(t, (n.get(t) || 0) + 1)));
+  return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+function tagChips(tags, { link = true } = {}) {
+  if (!tags.length) return '';
+  return `<span class="tags">${tags.map(t => link
+    ? `<a class="tag" href="#/tag/${encodeURIComponent(t)}">#${esc(t)}</a>`
+    : `<span class="tag">#${esc(t)}</span>`).join('')}</span>`;
+}
+function tagFieldHtml(id, tags) {
+  const known = allTags().map(([t]) => t).filter(t => !tags.includes(t)).slice(0, 14);
+  return `
+    <label class="field tag-field"><span>Tag, separati da virgole</span>
+      <input class="input" id="${id}" value="${esc(tags.join(', '))}" placeholder="Es. alta resa, da rivedere" autocomplete="off" autocapitalize="off"></label>
+    ${known.length ? `<div class="tag-suggest" data-for="${id}"><span class="hint">Già usati:</span>${known.map(t => `<button type="button" class="tag" data-addtag="${esc(t)}">#${esc(t)}</button>`).join('')}</div>` : ''}`;
+}
+function bindTagField(root, id) {
+  const inp = root.querySelector('#' + id);
+  $$(`[data-for="${id}"] [data-addtag]`, root).forEach(b => b.addEventListener('click', () => {
+    const cur = parseTags(inp.value);
+    if (!cur.includes(b.dataset.addtag)) cur.push(b.dataset.addtag);
+    inp.value = cur.join(', ');
+    b.remove();
+  }));
+}
+function viewTag(name) {
+  const t = normTag(name || '');
+  if (!t) {
+    const tags = allTags();
+    setView(`
+      <header class="page-head"><div><h1>Tag</h1><p class="lede">${tags.length ? 'Tocca un tag per vedere appunti e flashcard che lo usano.' : 'Aggiungi tag alle sezioni (in Modifica) e alle flashcard: qui li ritrovi tutti.'}</p></div></header>
+      ${tags.length ? `<div class="tag-cloud big">${tags.map(([x, n]) => `<a class="tag" href="#/tag/${encodeURIComponent(x)}">#${esc(x)} <small>${n}</small></a>`).join('')}</div>` : ''}`);
+    return;
+  }
+  const secs = state.sections.filter(s => tagsOf(s).includes(t)).sort((a, b) => a.title.localeCompare(b.title));
+  const cards = state.cards.filter(c => tagsOf(c).includes(t));
+  const toStudy = cardCounts(cards.filter(c => !c.suspended));
+  setView(`
+    <a class="back" href="#/tag">Tutti i tag</a>
+    <header class="page-head">
+      <div><h1>#${esc(t)}</h1><p class="lede">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}, ${cards.length} flashcard</p></div>
+      ${toStudy.n + toStudy.l + toStudy.r ? `<a class="btn primary" href="#/study/tag-${encodeURIComponent(t)}">Studia queste flashcard</a>` : ''}
+    </header>
+    ${secs.length ? `<h2 class="sub">Sezioni</h2><ul class="list">${secs.map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : ''}
+    ${cards.length ? `<h2 class="sub">Flashcard</h2><ul class="list">${cards.slice(0, 300).map(cardRow).join('')}</ul>` : ''}
+    ${!secs.length && !cards.length ? '<div class="empty"><p>Nessun elemento usa più questo tag.</p></div>' : ''}`);
+}
+
+/* ---------- Collegamenti tra pagine: [[Titolo]] o [[Titolo|testo]] ---------- */
+const XREF_RE = /\[\[([^\[\]\n|]+?)(?:\|([^\[\]\n]+?))?\]\]/g;
+const secByTitle = t => { const k = String(t || '').trim().toLowerCase(); return k ? state.sections.find(s => s.title.trim().toLowerCase() === k) : null; };
+function renderXrefs(src) {
+  return src.replace(XREF_RE, (m, t, label) => {
+    const s = secByTitle(t);
+    const txt = esc((label || t).trim());
+    return s ? `<a class="xref" href="#/sec/${s.id}">${txt}</a>` : `<span class="xref missing" title="Nessuna sezione con questo titolo">${txt}</span>`;
+  });
+}
+const xrefPlain = s => String(s || '').replace(XREF_RE, (m, t, label) => (label || t).trim());
+function backlinksOf(sec) {
+  const k = sec.title.trim().toLowerCase();
+  if (!k) return [];
+  return state.sections.filter(s => s.id !== sec.id && (s.md || '').toLowerCase().includes('[[' + k)
+    && [...s.md.matchAll(XREF_RE)].some(m => m[1].trim().toLowerCase() === k));
+}
+async function renameXrefs(oldTitle, newTitle, skipId) {
+  const k = oldTitle.trim().toLowerCase();
+  if (!k || k === newTitle.trim().toLowerCase()) return 0;
+  let n = 0;
+  for (const s of state.sections) {
+    if (s.id === skipId || !(s.md || '').toLowerCase().includes('[[' + k)) continue;
+    const md = s.md.replace(XREF_RE, (m, t, label) => (t.trim().toLowerCase() === k ? `[[${newTitle}${label ? `|${label}` : ''}]]` : m));
+    if (md !== s.md) { s.md = md; await saveSection(s); n++; }
+  }
+  return n;
+}
+function sectionPickerSheet(title = 'Collega una pagina', exceptId = null) {
+  return new Promise(resolve => {
+    const all = state.sections.filter(s => s.id !== exceptId).sort((a, b) => a.title.localeCompare(b.title));
+    const where = s => [nbById(s.notebookId)?.name, groupOf(s)?.name].filter(Boolean).join(' › ');
+    const sh = openSheet(`
+      <h2>${esc(title)}</h2>
+      <input type="search" class="input search" id="spQ" placeholder="Cerca una sezione" aria-label="Cerca una sezione">
+      <ul class="list pick-list" id="spList"></ul>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-sp="no">Annulla</button></div>`, { label: title, onClose: resolve });
+    const list = $('#spList', sh.el);
+    const draw = q => {
+      const f = foldAccents(q.trim());
+      const hits = all.filter(s => !f || foldAccents(s.title + ' ' + where(s)).includes(f)).slice(0, 80);
+      list.innerHTML = hits.map(s => `<li><button type="button" class="row" data-pick="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('')
+        || '<li class="row muted">Nessuna sezione trovata.</li>';
+    };
+    draw('');
+    $('#spQ', sh.el).addEventListener('input', e => draw(e.target.value));
+    list.addEventListener('click', e => { const b = e.target.closest('[data-pick]'); if (b) sh.close(secById(b.dataset.pick)); });
+    $('[data-sp="no"]', sh.el).onclick = () => sh.close(null);
+    setTimeout(() => $('#spQ', sh.el)?.focus(), 40);
+  });
+}
+
+/* ---------- Glossario e note cliniche (salvati con i link, così si sincronizzano) ---------- */
+const glossary = () => state.links.filter(l => l.kind === 'glossary').sort((a, b) => a.term.localeCompare(b.term, 'it', { sensitivity: 'base' }));
+const clinicalNotes = () => state.links.filter(l => l.kind === 'clinical');
+const nbSelectHtml = (id, selected) => `<select class="input" id="${id}"><option value="">Nessuna in particolare</option>${state.notebooks.map(n => `<option value="${n.id}" ${n.id === selected ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select>`;
+
+function glossarySheet(entry = null, prefill = {}) {
+  return new Promise(resolve => {
+    const e = entry || {};
+    const sh = openSheet(`
+      <h2>${entry ? 'Modifica la parola' : 'Nuova parola nel glossario'}</h2>
+      <label class="field"><span>Parola</span><input class="input" id="glTerm" value="${esc(e.term || prefill.term || '')}" placeholder="Es. Anasarca" autocomplete="off"></label>
+      <label class="field"><span>Significato</span><textarea class="input card-ta" id="glDef" rows="4" placeholder="Edema generalizzato del sottocutaneo…">${esc(e.def || prefill.def || '')}</textarea></label>
+      <label class="field"><span>Materia</span>${nbSelectHtml('glNb', e.nbId || prefill.nbId || '')}</label>
+      <div class="modal-actions">
+        ${entry ? '<button class="btn ghost danger" type="button" data-gl-act="del">Elimina</button>' : ''}
+        <button class="btn ghost" type="button" data-gl-act="no">Annulla</button>
+        <button class="btn primary" type="button" data-gl-act="ok">Salva</button>
+      </div>`, { label: 'Glossario', onClose: resolve });
+    $('[data-gl-act="no"]', sh.el).onclick = () => sh.close(false);
+    const del = $('[data-gl-act="del"]', sh.el);
+    if (del) del.onclick = async () => { await removeRecords([{ store: 'links', rec: entry }]); toast('Parola eliminata'); sh.close(true); };
+    $('[data-gl-act="ok"]', sh.el).onclick = async () => {
+      const term = $('#glTerm', sh.el).value.trim();
+      const def = $('#glDef', sh.el).value.trim();
+      if (!term) { toast('Scrivi la parola'); $('#glTerm', sh.el).focus(); return; }
+      if (!def) { toast('Scrivi il significato'); $('#glDef', sh.el).focus(); return; }
+      const dup = glossary().find(g => g.id !== e.id && g.term.trim().toLowerCase() === term.toLowerCase());
+      if (dup) { toast(`“${dup.term}” è già nel glossario`); return; }
+      const rec = entry || { id: uid(), kind: 'glossary', notebookId: '_glossary', created: Date.now() };
+      Object.assign(rec, { term, def, nbId: $('#glNb', sh.el).value || '' });
+      await saveLink(rec);
+      toast(entry ? 'Parola aggiornata' : 'Aggiunta al glossario');
+      sh.close(true);
+    };
+    setTimeout(() => $(e.term || prefill.term ? '#glDef' : '#glTerm', sh.el)?.focus(), 40);
+  });
+}
+function showGlossaryEntry(id) {
+  const g = state.links.find(l => l.id === id);
+  if (!g) return;
+  const sh = openSheet(`
+    <h2>${esc(g.term)}</h2>
+    ${g.nbId && nbById(g.nbId) ? `<p class="sheet-sub">${esc(nbById(g.nbId).name)}</p>` : ''}
+    <div class="notes gl-def-full">${renderMd(g.def)}</div>
+    <div class="modal-actions">
+      <button class="btn ghost" type="button" data-g="edit">Modifica</button>
+      <button class="btn primary" type="button" data-g="close">Chiudi</button>
+    </div>`, { label: g.term });
+  $('[data-g="close"]', sh.el).onclick = () => sh.close();
+  $('[data-g="edit"]', sh.el).onclick = async () => { sh.close(); if (await glossarySheet(g)) { const y = scrollY; route(); scrollTo(0, y); } };
+}
+// Sottolinea a puntini la prima occorrenza di ogni parola del glossario
+function markGlossary(root) {
+  const list = glossary().filter(g => g.term.trim().length > 1);
+  if (!list.length || !root) return;
+  const byKey = new Map(list.map(g => [g.term.trim().toLowerCase(), g]));
+  const pattern = [...byKey.keys()].sort((a, b) => b.length - a.length).map(escRe).join('|');
+  let re;
+  try { re = new RegExp(`(?<![\\p{L}\\p{N}])(${pattern})(?![\\p{L}\\p{N}])`, 'giu'); } catch { return; }
+  const done = new Set();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: n => (n.parentElement.closest('a, code, pre, mark.cz, .gl, button, .img-box') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT)
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    re.lastIndex = 0;
+    let m;
+    let last = 0;
+    let hit = false;
+    const frag = document.createDocumentFragment();
+    while ((m = re.exec(text))) {
+      const key = m[1].toLowerCase();
+      if (done.has(key) || !byKey.has(key)) continue;
+      done.add(key);
+      hit = true;
+      frag.append(text.slice(last, m.index));
+      const span = document.createElement('span');
+      span.className = 'gl';
+      span.dataset.gl = byKey.get(key).id;
+      span.tabIndex = 0;
+      span.setAttribute('role', 'button');
+      span.textContent = m[1];
+      frag.append(span);
+      last = m.index + m[1].length;
+    }
+    if (hit) { frag.append(text.slice(last)); node.replaceWith(frag); }
+    if (done.size === byKey.size) break;
+  }
+}
+function bindGlossaryClicks(root) {
+  root.addEventListener('click', e => {
+    const g = e.target.closest('.gl');
+    if (!g) return;
+    const sel = document.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    showGlossaryEntry(g.dataset.gl);
+  });
+  root.addEventListener('keydown', e => { const g = e.target.closest?.('.gl'); if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); showGlossaryEntry(g.dataset.gl); } });
+}
+let glossaryQuery = '';
+function viewGlossary() {
+  const list = glossary();
+  setView(`
+    <header class="page-head">
+      <div><h1>Glossario</h1><p class="lede">${list.length ? `${list.length} ${list.length === 1 ? 'parola' : 'parole'}. Negli appunti, in Leggi, le trovi sottolineate a puntini: toccale per il significato.` : 'Le parole particolari e il loro significato, tutte in un posto.'}</p></div>
+      <button class="btn primary" data-act="add-gl">Aggiungi una parola</button>
+    </header>
+    ${list.length ? `<input type="search" class="input search" id="glQ" placeholder="Cerca una parola o un significato" aria-label="Cerca nel glossario" value="${esc(glossaryQuery)}"><div id="glList"></div>` : `
+      <div class="empty"><p>Puoi aggiungere una parola da qui o selezionandola mentre leggi gli appunti.</p><button class="btn primary" data-act="add-gl">Aggiungi una parola</button></div>`}`);
+  const draw = () => {
+    const box = $('#glList');
+    if (!box) return;
+    const f = foldAccents(glossaryQuery.trim());
+    const hits = list.filter(g => !f || foldAccents(g.term + ' ' + g.def).includes(f));
+    const groups = [];
+    hits.forEach(g => {
+      const L = foldAccents(g.term).charAt(0).toUpperCase() || '#';
+      let grp = groups.find(x => x.L === L);
+      if (!grp) { grp = { L, items: [] }; groups.push(grp); }
+      grp.items.push(g);
+    });
+    box.innerHTML = groups.map(grp => `
+      <h2 class="sub gl-letter">${esc(grp.L)}</h2>
+      <ul class="list">${grp.items.map(g => `
+        <li><button type="button" class="row" data-gl-edit="${g.id}"><span class="row-main">
+          <span class="row-title">${esc(g.term)}</span>
+          <span class="row-sub gl-def">${esc(plainText(g.def, 180))}</span>
+          ${g.nbId && nbById(g.nbId) ? `<span class="row-sub gl-nb">${esc(nbById(g.nbId).name)}</span>` : ''}
+        </span></button></li>`).join('')}</ul>`).join('') || '<p class="hint">Nessuna parola trovata.</p>';
+  };
+  draw();
+  $('#glQ')?.addEventListener('input', e => { glossaryQuery = e.target.value; draw(); });
+  on('[data-act="add-gl"]', 'click', async () => { if (await glossarySheet()) route(); });
+  $('#glList')?.addEventListener('click', async e => {
+    const b = e.target.closest('[data-gl-edit]');
+    if (b && await glossarySheet(state.links.find(l => l.id === b.dataset.glEdit))) route();
+  });
+}
+
+/* Note cliniche */
+let clinicQuery = '';
+const clinicSyms = new Set();
+function clinicSheet(entry = null, prefill = {}) {
+  return new Promise(resolve => {
+    const e = entry || {};
+    const syms = e.symptoms || prefill.symptoms || [];
+    const known = [...new Set(clinicalNotes().flatMap(n => n.symptoms || []))].filter(s => !syms.includes(s)).slice(0, 16);
+    const sec = secById(e.sectionId || prefill.sectionId);
+    const sh = openSheet(`
+      <h2>${entry ? 'Modifica la nota clinica' : 'Nuova nota clinica'}</h2>
+      ${sec ? `<p class="sheet-sub">Collegata a ${esc(sec.title)}</p>` : ''}
+      <label class="field"><span>Quadro clinico o malattia</span><input class="input" id="cnTitle" value="${esc(e.title || prefill.title || '')}" placeholder="Es. Scompenso cardiaco sinistro"></label>
+      <label class="field"><span>Sintomi e segni, separati da virgole</span><input class="input" id="cnSyms" value="${esc(syms.join(', '))}" placeholder="Es. dispnea, ortopnea, rantoli" autocomplete="off" autocapitalize="off"></label>
+      ${known.length ? `<div class="tag-suggest" data-for="cnSyms"><span class="hint">Già usati:</span>${known.map(t => `<button type="button" class="tag" data-addtag="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
+      <label class="field"><span>Materia</span>${nbSelectHtml('cnNb', e.nbId || prefill.nbId || '')}</label>
+      <label class="field"><span>Note: diagnosi, esami, terapia…</span><textarea class="input card-ta" id="cnBody" rows="6">${esc(e.body || prefill.body || '')}</textarea></label>
+      <div class="modal-actions">
+        ${entry ? '<button class="btn ghost danger" type="button" data-cn-act="del">Elimina</button>' : ''}
+        <button class="btn ghost" type="button" data-cn-act="no">Annulla</button>
+        <button class="btn primary" type="button" data-cn-act="ok">Salva</button>
+      </div>`, { label: 'Nota clinica', onClose: resolve });
+    bindTagField(sh.el, 'cnSyms');
+    $('[data-cn-act="no"]', sh.el).onclick = () => sh.close(false);
+    const del = $('[data-cn-act="del"]', sh.el);
+    if (del) del.onclick = async () => { await removeRecords([{ store: 'links', rec: entry }]); toast('Nota clinica eliminata'); sh.close(true); };
+    $('[data-cn-act="ok"]', sh.el).onclick = async () => {
+      const title = $('#cnTitle', sh.el).value.trim();
+      if (!title) { toast('Scrivi il quadro clinico'); $('#cnTitle', sh.el).focus(); return; }
+      const rec = entry || { id: uid(), kind: 'clinical', notebookId: '_clinical', created: Date.now(), sectionId: prefill.sectionId || '' };
+      Object.assign(rec, { title, symptoms: parseTags($('#cnSyms', sh.el).value), nbId: $('#cnNb', sh.el).value || '', body: $('#cnBody', sh.el).value.trim() });
+      await saveLink(rec);
+      toast(entry ? 'Nota clinica aggiornata' : 'Nota clinica salvata');
+      sh.close(true);
+    };
+    setTimeout(() => $(e.title || prefill.title ? '#cnSyms' : '#cnTitle', sh.el)?.focus(), 40);
+  });
+}
+function showClinicNote(id) {
+  const n = state.links.find(l => l.id === id);
+  if (!n) return;
+  const sec = secById(n.sectionId);
+  const sh = openSheet(`
+    <h2>${esc(n.title)}</h2>
+    ${n.nbId && nbById(n.nbId) ? `<p class="sheet-sub">${esc(nbById(n.nbId).name)}</p>` : ''}
+    ${(n.symptoms || []).length ? `<div class="tags sym-tags">${n.symptoms.map(s => `<span class="tag sym">${esc(s)}</span>`).join('')}</div>` : ''}
+    ${n.body ? `<div class="notes cn-body">${renderMd(n.body)}</div>` : ''}
+    ${sec ? `<p class="source">Dalla sezione <a href="#/sec/${sec.id}" data-g="go">${esc(sec.title)}</a></p>` : ''}
+    <div class="modal-actions">
+      <button class="btn ghost" type="button" data-g="edit">Modifica</button>
+      <button class="btn primary" type="button" data-g="close">Chiudi</button>
+    </div>`, { label: n.title });
+  $('[data-g="close"]', sh.el).onclick = () => sh.close();
+  const go2 = $('[data-g="go"]', sh.el);
+  if (go2) go2.onclick = () => sh.close();
+  $('[data-g="edit"]', sh.el).onclick = async () => { sh.close(); if (await clinicSheet(n)) route(); };
+}
+function viewClinic() {
+  const notes = clinicalNotes();
+  const symCount = new Map();
+  notes.forEach(n => (n.symptoms || []).forEach(s => symCount.set(s, (symCount.get(s) || 0) + 1)));
+  [...clinicSyms].forEach(s => { if (!symCount.has(s)) clinicSyms.delete(s); });
+  const topSyms = [...symCount.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 40);
+  setView(`
+    <header class="page-head">
+      <div><h1>Note cliniche</h1><p class="lede">I quadri clinici di tutte le materie, cercabili per sintomo.</p></div>
+      <button class="btn primary" data-act="add-cn">Nuova nota clinica</button>
+    </header>
+    ${notes.length ? `
+      <input type="search" class="input search" id="cnQ" placeholder="Cerca un sintomo, un segno o una malattia" aria-label="Cerca nelle note cliniche" value="${esc(clinicQuery)}">
+      ${topSyms.length ? `<div class="tag-cloud" id="cnSym" aria-label="Filtra per sintomo">${topSyms.map(([s, n]) => `<button type="button" class="tag sym ${clinicSyms.has(s) ? 'on' : ''}" data-sym="${esc(s)}" aria-pressed="${clinicSyms.has(s)}">${esc(s)} <small>${n}</small></button>`).join('')}</div>` : ''}
+      <div id="cnList"></div>` : `
+      <div class="empty"><p>Scrivi una nota da qui, oppure seleziona del testo mentre leggi una sezione e tocca “Nota clinica”.</p><button class="btn primary" data-act="add-cn">Nuova nota clinica</button></div>`}`);
+  const draw = () => {
+    const box = $('#cnList');
+    if (!box) return;
+    const tokens = foldAccents(clinicQuery).split(/[\s,]+/).filter(Boolean);
+    const scored = notes.map(n => {
+      const syms = (n.symptoms || []).map(foldAccents);
+      if ([...clinicSyms].some(s => !(n.symptoms || []).includes(s))) return null;
+      let score = 0;
+      for (const t of tokens) {
+        let best = 0;
+        if (syms.some(s => s === t)) best = 4;
+        else if (syms.some(s => s.includes(t))) best = 3;
+        else if (foldAccents(n.title).includes(t)) best = 2;
+        else if (foldAccents(n.body).includes(t)) best = 1;
+        if (!best) return null;
+        score += best;
+      }
+      return { n, score };
+    }).filter(Boolean).sort((a, b) => b.score - a.score || a.n.title.localeCompare(b.n.title));
+    box.innerHTML = scored.length ? `<ul class="list">${scored.map(({ n }) => `
+      <li><button type="button" class="row" data-cn="${n.id}"><span class="row-main">
+        <span class="row-title">${esc(n.title)}</span>
+        ${n.nbId && nbById(n.nbId) ? `<span class="row-sub">${esc(nbById(n.nbId).name)}</span>` : ''}
+        ${(n.symptoms || []).length ? `<span class="tags">${n.symptoms.map(s => `<span class="tag sym ${tokens.some(t => foldAccents(s).includes(t)) || clinicSyms.has(s) ? 'on' : ''}">${esc(s)}</span>`).join('')}</span>` : ''}
+      </span></button></li>`).join('')}</ul>` : '<p class="hint">Nessuna nota corrisponde alla ricerca.</p>';
+  };
+  draw();
+  $('#cnQ')?.addEventListener('input', e => { clinicQuery = e.target.value; draw(); });
+  on('[data-sym]', 'click', e => {
+    const s = e.currentTarget.dataset.sym;
+    if (clinicSyms.has(s)) clinicSyms.delete(s); else clinicSyms.add(s);
+    e.currentTarget.classList.toggle('on', clinicSyms.has(s));
+    e.currentTarget.setAttribute('aria-pressed', clinicSyms.has(s));
+    draw();
+  });
+  on('[data-act="add-cn"]', 'click', async () => { if (await clinicSheet()) route(); });
+  $('#cnList')?.addEventListener('click', e => { const b = e.target.closest('[data-cn]'); if (b) showClinicNote(b.dataset.cn); });
+}
+
+/* ---------- Immagini negli appunti: mostra o nascondi, cloze sugli schemi ---------- */
+function sectionMasks(sec) {
+  const map = new Map();
+  if (!/\(img:/.test(sec.md || '')) return map;
+  const ids = new Set(imageRefs(sec.md));
+  for (const c of state.cards) {
+    if (c.type !== 'occlusion' || !c.io || !ids.has(c.io.imageId)) continue;
+    const list = map.get(c.io.imageId) || [];
+    for (const m of c.io.masks || []) if (!list.some(x => x.id === m.id)) list.push(m);
+    map.set(c.io.imageId, list);
+  }
+  return map;
+}
+const ioMaskCount = sec => (S().showImages === false ? 0 : [...sectionMasks(sec).values()].reduce((a, l) => a + l.length, 0));
+function prepareImages(article, sec, { cloze = false } = {}) {
+  const imgs = article ? $$('img.nb-img', article) : [];
+  if (!imgs.length) return { count: 0, masks: [] };
+  const show = S().showImages !== false;
+  article.classList.toggle('imgs-off', !show);
+  const maskMap = cloze && show ? sectionMasks(sec) : new Map();
+  const masks = [];
+  imgs.forEach(img => {
+    const box = document.createElement('span');
+    box.className = 'img-box';
+    img.replaceWith(box);
+    const ph = document.createElement('button');
+    ph.type = 'button';
+    ph.className = 'img-ph';
+    ph.setAttribute('aria-label', 'Immagine nascosta: tocca per vederla');
+    ph.addEventListener('click', () => box.classList.add('img-on'));
+    box.append(ph, img);
+    const ms = maskMap.get(img.dataset.img);
+    if (ms && ms.length) {
+      box.classList.add('io', 'io-notes');
+      ms.forEach(m => {
+        const d = document.createElement('span');
+        d.className = 'io-mask cz-io';
+        d.setAttribute('style', posStyle(m));
+        box.append(d);
+        masks.push(d);
+      });
+    }
+  });
+  return { count: imgs.length, masks };
+}
+function bindImagesToggle(btn, count) {
+  if (!btn) return;
+  if (!count) { btn.hidden = true; return; }
+  btn.hidden = false;
+  btn.textContent = S().showImages === false ? 'Mostra immagini' : 'Nascondi immagini';
+  btn.addEventListener('click', () => {
+    S().showImages = S().showImages === false;
+    Settings.save();
+    const y = window.scrollY;
+    route();
+    window.scrollTo(0, y);
+  });
+}
+
+/* =====================================================================
+   v3.7: lettore PDF con evidenziatore, sottolineatura, penna, note,
+   segnalibri, ricerca, miniature e pannello “Trascina” per le flashcard.
+   Il file del PDF resta su questo dispositivo (archivio pdfblobs); le
+   annotazioni stanno nel record del PDF (archivio pdfs).
+   ===================================================================== */
+const PDF_COLORS = [
+  ['y', '#ffd84d', '#c27c00', 'Giallo'],
+  ['g', '#7ee08a', '#15803d', 'Verde'],
+  ['b', '#7cc7ff', '#1d4ed8', 'Azzurro'],
+  ['p', '#ff9ad5', '#be185d', 'Rosa'],
+  ['o', '#ffb066', '#c2410c', 'Arancio']
+];
+const PEN_INKS = [['#111111', 'Nero'], ['#1d4ed8', 'Blu'], ['#dc2626', 'Rosso'], ['#15803d', 'Verde']];
+const pdfCol = (k, i = 1) => (PDF_COLORS.find(c => c[0] === k) || PDF_COLORS[0])[i];
+const pdfById = id => state.pdfs.find(p => p.id === id);
+const pdfsOf = secId => state.pdfs.filter(p => p.sectionId === secId).sort((a, b) => a.created - b.created);
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const ICON_BM = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>';
+const ICON_PANEL = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg>';
+
+async function savePdfMeta(meta) {
+  meta.updated = Date.now();
+  await DB.put('pdfs', meta);
+  const i = state.pdfs.findIndex(x => x.id === meta.id);
+  if (i < 0) state.pdfs.push(meta); else state.pdfs[i] = meta;
+  scheduleSync();
+}
+async function deletePdf(id) {
+  const meta = pdfById(id);
+  if (meta) await removeRecords([{ store: 'pdfs', rec: meta }]);
+  await DB.removeMany([['pdfblobs', id]]);
+  localPdfIds.delete(id);
+}
+function choosePdfFile() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'application/pdf,.pdf';
+    inp.addEventListener('change', () => resolve(inp.files && inp.files[0] ? inp.files[0] : null), { once: true });
+    inp.click();
+  });
+}
+async function storePdfFile(file, sec) {
+  await ensurePdfJs();
+  let pages;
+  try {
+    const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    pages = doc.numPages;
+    doc.destroy();
+  } catch (e) {
+    throw new Error(e && e.name === 'PasswordException' ? 'Il PDF è protetto da password.' : 'Non riesco ad aprire questo PDF.');
+  }
+  const now = Date.now();
+  const meta = {
+    id: uid(), notebookId: sec.notebookId, sectionId: sec.id,
+    name: (file.name || 'Documento').replace(/\.pdf$/i, ''), size: file.size || 0, pages,
+    annots: [], bookmarks: [], drafts: [], lastPage: 1, zoom: 1, uploaded: false, created: now, updated: now
+  };
+  await DB.put('pdfblobs', { id: meta.id, blob: file });
+  localPdfIds.add(meta.id);
+  await savePdfMeta(meta);
+  setTimeout(() => PdfCloud.uploadPending(), 300);
+  return meta;
+}
+const fmtSize = b => (b > 1048576 ? `${(b / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} kB`);
+
+/* Scheda "PDF" della sezione */
+function modePdf(sec, body) {
+  const list = pdfsOf(sec.id);
+  body.innerHTML = `
+    <div class="row-actions"><button class="btn primary" data-act="pdf-add">Carica un PDF</button></div>
+    <p class="hint">Appunti scritti a mano, slide o capitoli: li leggi qui, li evidenzi, metti segnalibri e ne ricavi flashcard. ${Sync.configured() ? 'Con la sincronizzazione attiva il file va anche su Drive e lo ritrovi sugli altri dispositivi.' : 'Attiva la sincronizzazione con Drive per ritrovarli sugli altri dispositivi.'}</p>
+    ${list.length ? `<ul class="list pdf-list">${list.map(p => {
+      const nAnn = (p.annots || []).length;
+      return `
+      <li class="pdf-row">
+        <a class="row" href="#/pdf/${p.id}">
+          <span class="pdf-ic" aria-hidden="true">PDF</span>
+          <span class="row-main"><span class="row-title">${esc(p.name)}</span>
+          <span class="row-sub">${p.pages} ${p.pages === 1 ? 'pagina' : 'pagine'}, ${fmtSize(p.size)}${p.lastPage > 1 ? `, eri a pagina ${p.lastPage}` : ''}${(p.bookmarks || []).length ? `, ${p.bookmarks.length} ${p.bookmarks.length === 1 ? 'segnalibro' : 'segnalibri'}` : ''}${nAnn ? `, ${nAnn} ${nAnn === 1 ? 'annotazione' : 'annotazioni'}` : ''}</span>
+          <span class="row-sub pdf-cloud" data-pdf-status="${p.id}">${esc(pdfCloudText(p))}</span></span>
+        </a>
+        <button class="btn sm ghost" type="button" data-pdf-more="${p.id}" aria-label="Opzioni per ${esc(p.name)}">Opzioni</button>
+      </li>`;
+    }).join('')}</ul>` : '<div class="empty"><p>Nessun PDF in questa sezione.</p></div>'}`;
+  on('[data-act="pdf-add"]', 'click', async e => {
+    const file = await choosePdfFile();
+    if (!file) return;
+    if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli un file PDF', 'err'); return; }
+    const btn = e.target.closest('button');
+    btn.disabled = true;
+    btn.textContent = 'Carico il PDF…';
+    try {
+      const meta = await storePdfFile(file, sec);
+      go(`#/pdf/${meta.id}`);
+    } catch (err) {
+      toast(err.message, 'err');
+      btn.disabled = false;
+      btn.textContent = 'Carica un PDF';
+    }
+  }, body);
+  on('[data-pdf-more]', 'click', async e => {
+    const p = pdfById(e.currentTarget.dataset.pdfMore);
+    if (!p) return;
+    const choice = await actionSheet(p.name, [
+      { key: 'open', label: 'Apri' },
+      { key: 'rename', label: 'Rinomina' },
+      { key: 'delete', label: 'Elimina il PDF', danger: true }
+    ]);
+    if (choice === 'open') go(`#/pdf/${p.id}`);
+    if (choice === 'rename') {
+      const name = await modal({ title: 'Rinomina il PDF', input: true, value: p.name, confirm: 'Rinomina' });
+      if (name) { p.name = name; await savePdfMeta(p); route(); }
+    }
+    if (choice === 'delete') {
+      const ok = await modal({ title: 'Eliminare il PDF?', text: 'Si perdono anche evidenziazioni, note e segnalibri. Le flashcard già create restano.', confirm: 'Elimina', danger: true });
+      if (ok) { await deletePdf(p.id); toast('PDF eliminato'); route(); }
+    }
+  }, body);
+}
+
+// Livello di testo: compatibile con pdf.js 3 (renderTextLayer) e successivi (TextLayer)
+async function renderTextLayerCompat(textContent, container, viewport) {
+  const L = window.pdfjsLib;
+  container.style.setProperty('--scale-factor', viewport.scale);
+  container.style.setProperty('--user-unit', 1);
+  container.style.setProperty('--total-scale-factor', viewport.scale);
+  if (L.TextLayer) {
+    await new L.TextLayer({ textContentSource: textContent, container, viewport }).render();
+  } else {
+    await L.renderTextLayer({ textContentSource: textContent, container, viewport, textDivs: [] }).promise;
+  }
+}
+// Unisce i rettangoli della selezione riga per riga
+function mergeRects(list) {
+  const rs = list.map(r => [...r]).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+  const out = [];
+  for (const r of rs) {
+    const last = out.find(o => {
+      const top = Math.max(o[1], r[1]);
+      const bot = Math.min(o[1] + o[3], r[1] + r[3]);
+      const sameLine = bot - top > Math.min(o[3], r[3]) * 0.5;
+      const near = r[0] <= o[0] + o[2] + 4 && r[0] + r[2] >= o[0] - 4;
+      return sameLine && near;
+    });
+    if (last) {
+      const x1 = Math.min(last[0], r[0]);
+      const y1 = Math.min(last[1], r[1]);
+      const x2 = Math.max(last[0] + last[2], r[0] + r[2]);
+      const y2 = Math.max(last[1] + last[3], r[1] + r[3]);
+      last.splice(0, 4, x1, y1, x2 - x1, y2 - y1);
+    } else out.push(r);
+  }
+  return out.map(r => r.map(v => +v.toFixed(2)));
+}
+const inkPath = pts => {
+  if (!pts.length) return '';
+  if (pts.length === 1) return `M${pts[0][0]} ${pts[0][1]}l0.01 0`;
+  let d = `M${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const mx = ((pts[i][0] + pts[i + 1][0]) / 2).toFixed(2);
+    const my = ((pts[i][1] + pts[i + 1][1]) / 2).toFixed(2);
+    d += `Q${pts[i][0]} ${pts[i][1]} ${mx} ${my}`;
+  }
+  const l = pts[pts.length - 1];
+  return `${d}L${l[0]} ${l[1]}`;
+};
+
+function viewPdf(id, pageParam) {
+  const meta = pdfById(id);
+  if (!meta) return notFound('Questo PDF');
+  meta.annots = meta.annots || [];
+  meta.bookmarks = meta.bookmarks || [];
+  meta.drafts = meta.drafts || [];
+  const sec = secById(meta.sectionId);
+  const back = sec ? `#/sec/${sec.id}/pdf` : '#/notebooks';
+  const panelTabs = [['pages', 'Pagine'], ['marks', 'Segnalibri'], ['notes', 'Note'], ['search', 'Cerca'], ['drag', 'Trascina']];
+  setView(`
+    <div class="pdf-app" id="pdfApp">
+      <header class="pdf-bar">
+        <a class="btn ghost sm pdf-back" href="${back}" aria-label="Torna alla sezione">‹</a>
+        <div class="pdf-title"><b>${esc(meta.name)}</b>${sec ? `<small>${esc(sec.title)}</small>` : ''}</div>
+        <label class="pdf-pageno"><span class="sr-only">Pagina</span><input class="input" id="pdfPage" type="number" inputmode="numeric" min="1" max="${meta.pages}" value="1"><span>/ ${meta.pages}</span></label>
+        <button class="btn sm pdf-bm-btn" type="button" data-pdf="bookmark" aria-pressed="false" title="Segnalibro su questa pagina (B)">${ICON_BM}<span>Segnalibro</span></button>
+        <button class="btn sm ghost pdf-panel-btn" type="button" data-pdf="panel" aria-expanded="false" title="Pannello laterale">${ICON_PANEL}<span>Pannello</span></button>
+      </header>
+      <div class="pdf-tools" role="toolbar" aria-label="Strumenti">
+        <div class="seg sm pdf-seg" role="radiogroup" aria-label="Strumento">
+          <button type="button" data-tool="select" role="radio">Seleziona</button>
+          <button type="button" data-tool="pen" role="radio">Penna</button>
+          <button type="button" data-tool="eraser" role="radio">Gomma</button>
+          <button type="button" data-tool="note" role="radio">Nota</button>
+        </div>
+        <span class="pdf-pen-opts" hidden>
+          ${PEN_INKS.map(([c, n]) => `<button type="button" class="rt-dot ink-dot" data-ink="${c}" style="--ink:${c}" aria-label="Penna ${n.toLowerCase()}" title="${n}"></button>`).join('')}
+          <select class="input pdf-pen-size" aria-label="Spessore"><option value="1.2">Fine</option><option value="2">Media</option><option value="3.4">Spessa</option><option value="9">Evidenziatore</option></select>
+        </span>
+        <span class="pdf-zoom">
+          <button type="button" class="btn sm ghost" data-pdf="zoom-" aria-label="Riduci">−</button>
+          <button type="button" class="btn sm ghost" data-pdf="zoom-fit" id="pdfZoom" title="Adatta alla larghezza">100%</button>
+          <button type="button" class="btn sm ghost" data-pdf="zoom+" aria-label="Ingrandisci">+</button>
+        </span>
+        <button type="button" class="btn sm ghost" data-pdf="undo" title="Annulla l’ultima annotazione (Ctrl+Z)">Annulla</button>
+      </div>
+      <div class="pdf-main">
+        <div class="pdf-scroll" id="pdfScroll" tabindex="-1"><div class="pdf-pages" id="pdfPages"><p class="hint pdf-loading">Apro il PDF…</p></div></div>
+        <aside class="pdf-panel" id="pdfPanel" hidden aria-label="Pannello del PDF">
+          <div class="pdf-tabs" role="tablist">
+            ${panelTabs.map(([k, l]) => `<button type="button" role="tab" data-ptab="${k}">${l}</button>`).join('')}
+            <button type="button" class="btn sm ghost pdf-panel-x" data-pdf="panel" aria-label="Chiudi il pannello">✕</button>
+          </div>
+          <div class="pdf-panel-body" id="pdfPanelBody"></div>
+        </aside>
+      </div>
+    </div>`);
+
+  const app = $('#pdfApp');
+  const scroller = $('#pdfScroll');
+  const pagesEl = $('#pdfPages');
+  const panel = $('#pdfPanel');
+  const panelBody = $('#pdfPanelBody');
+  document.documentElement.classList.add('pdf-open');
+  const R = {
+    doc: null, base: null, sizes: [], scale: 1, zoom: meta.zoom || 1, cur: 1,
+    tool: 'select', color: S().pdfColor || 'y', ink: S().pdfInk || '#1d4ed8', inkW: +(S().pdfInkW || 2),
+    undo: [], rendered: new Map(), textCache: new Map(), hit: null, penSeen: false,
+    destroyed: false, tab: S().pdfPanel || '', searchToken: 0, outline: null, thumbIo: null
+  };
+
+  // ---------- salvataggio
+  let saveTimer = null;
+  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => savePdfMeta(meta), 700); };
+  const saveNow = () => { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; savePdfMeta(meta); } };
+
+  // ---------- geometria delle pagine
+  const pageEl = n => pagesEl.querySelector(`.pdf-page[data-p="${n}"]`);
+  const sizeOf = n => R.sizes[n] || R.base;
+  const fitScale = () => {
+    const avail = Math.max(200, scroller.clientWidth - (window.innerWidth < 600 ? 12 : 40));
+    return Math.min(avail / R.base.width, 2.2);
+  };
+  const applySizes = () => {
+    R.scale = fitScale() * R.zoom;
+    $$('.pdf-page', pagesEl).forEach(el => {
+      const sz = sizeOf(+el.dataset.p);
+      el.style.width = `${Math.round(sz.width * R.scale)}px`;
+      el.style.height = `${Math.round(sz.height * R.scale)}px`;
+    });
+    $('#pdfZoom').textContent = `${Math.round(R.zoom * 100)}%`;
+  };
+  const pageTop = el => el.offsetTop;
+  const findCurrent = () => {
+    const els = pagesEl.children;
+    const y = scroller.scrollTop + scroller.clientHeight * 0.35;
+    let lo = 0, hi = els.length - 1, ans = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pageTop(els[mid]) <= y) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    return ans + 1;
+  };
+  const goTo = (n, { flash = false } = {}) => {
+    n = Math.max(1, Math.min(meta.pages, Math.round(n) || 1));
+    const el = pageEl(n);
+    if (!el) return;
+    scroller.scrollTop = pageTop(el) - 8;
+    if (flash) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+    onScroll();
+  };
+
+  // ---------- disegno delle pagine (solo quelle vicine allo schermo)
+  const renderPage = async n => {
+    const el = pageEl(n);
+    if (!el || !R.doc) return;
+    const key = R.scale.toFixed(4);
+    if (el.dataset.scale === key) return;
+    el.dataset.scale = key;
+    let page;
+    try { page = await R.doc.getPage(n); } catch { return; }
+    if (R.destroyed || el.dataset.scale !== key) return;
+    const base = page.getViewport({ scale: 1 });
+    if (!R.sizes[n] || Math.abs(R.sizes[n].width - base.width) > 0.5 || Math.abs(R.sizes[n].height - base.height) > 0.5) {
+      R.sizes[n] = { width: base.width, height: base.height };
+      el.style.width = `${Math.round(base.width * R.scale)}px`;
+      el.style.height = `${Math.round(base.height * R.scale)}px`;
+    }
+    const vp = page.getViewport({ scale: R.scale });
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-canvas';
+    canvas.width = Math.floor(vp.width * dpr);
+    canvas.height = Math.floor(vp.height * dpr);
+    const task = page.render({ canvas, canvasContext: canvas.getContext('2d'), viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined });
+    try { await task.promise; } catch { return; }
+    if (R.destroyed || el.dataset.scale !== key) return;
+    const tl = document.createElement('div');
+    tl.className = 'textLayer';
+    try {
+      const tc = await page.getTextContent();
+      if (!R.textCache.has(n)) R.textCache.set(n, tc.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join(''));
+      await renderTextLayerCompat(tc, tl, vp);
+    } catch { /* pagina senza testo */ }
+    if (R.destroyed || el.dataset.scale !== key) return;
+    el.querySelectorAll('.pdf-canvas, .textLayer').forEach(x => x.remove());
+    el.prepend(canvas);
+    el.append(tl);
+    el.classList.add('ready');
+    drawAnnots(n);
+    applyHit(n);
+    R.rendered.set(n, true);
+  };
+  const releasePage = n => {
+    const el = pageEl(n);
+    if (!el) return;
+    el.querySelectorAll('.pdf-canvas, .textLayer').forEach(x => x.remove());
+    el.classList.remove('ready');
+    delete el.dataset.scale;
+    R.rendered.delete(n);
+  };
+  const renderAround = () => {
+    if (!R.doc) return;
+    const first = findCurrent();
+    const want = new Set();
+    for (let n = first - 1; n <= meta.pages; n++) {
+      const el = pageEl(n);
+      if (!el) continue;
+      if (pageTop(el) > scroller.scrollTop + scroller.clientHeight * 2.2) break;
+      want.add(n);
+    }
+    want.forEach(n => renderPage(n));
+    [...R.rendered.keys()].forEach(n => { if (Math.abs(n - first) > 6 && !want.has(n)) releasePage(n); });
+  };
+
+  // ---------- annotazioni
+  const drawAnnots = n => {
+    const el = pageEl(n);
+    if (!el) return;
+    const sz = sizeOf(n);
+    let svg = el.querySelector('svg.pdf-ann');
+    if (!svg) {
+      svg = document.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('class', 'pdf-ann');
+      svg.setAttribute('preserveAspectRatio', 'none');
+      el.append(svg);
+    }
+    svg.setAttribute('viewBox', `0 0 ${sz.width} ${sz.height}`);
+    const anns = meta.annots.filter(a => a.page === n);
+    svg.innerHTML = anns.map(a => {
+      if (a.type === 'hl') return `<g class="ann-hl" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="1.5" fill="${pdfCol(a.color)}"/>`).join('')}</g>`;
+      if (a.type === 'ul') return `<g class="ann-ul" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] - 1.6).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
+      if (a.type === 'ink') return `<path class="ann-ink ${a.w >= 6 ? 'marker' : ''}" data-id="${a.id}" d="${inkPath(a.pts)}" stroke="${esc(a.color)}" stroke-width="${a.w}"/>`;
+      return '';
+    }).join('');
+    let pins = el.querySelector('.pdf-pins');
+    if (!pins) { pins = document.createElement('div'); pins.className = 'pdf-pins'; el.append(pins); }
+    pins.innerHTML = anns.filter(a => a.type === 'note' || (a.note && a.rects)).map(a => {
+      const pos = a.type === 'note' ? [a.x, a.y] : (() => { const r = a.rects[a.rects.length - 1]; return [r[0] + r[2], r[1]]; })();
+      return `<button type="button" class="pdf-pin" data-ann="${a.id}" style="left:${(pos[0] / sz.width * 100).toFixed(3)}%;top:${(pos[1] / sz.height * 100).toFixed(3)}%" aria-label="Nota: ${esc((a.note || '').slice(0, 60))}">✎</button>`;
+    }).join('');
+    el.classList.toggle('bm', meta.bookmarks.some(b => b.page === n));
+  };
+  const redrawPages = pages => [...new Set(pages)].forEach(drawAnnots);
+  const addAnnots = list => {
+    if (!list.length) return;
+    meta.annots.push(...list);
+    R.undo.push({ add: list.map(a => a.id) });
+    saveSoon();
+    redrawPages(list.map(a => a.page));
+    refreshPanel('notes');
+  };
+  const removeAnnots = ids => {
+    const gone = meta.annots.filter(a => ids.includes(a.id));
+    if (!gone.length) return;
+    meta.annots = meta.annots.filter(a => !ids.includes(a.id));
+    R.undo.push({ del: gone });
+    saveSoon();
+    redrawPages(gone.map(a => a.page));
+    refreshPanel('notes');
+  };
+  const undo = () => {
+    const u = R.undo.pop();
+    if (!u) { toast('Niente da annullare'); return; }
+    if (u.add) {
+      const gone = meta.annots.filter(a => u.add.includes(a.id));
+      meta.annots = meta.annots.filter(a => !u.add.includes(a.id));
+      redrawPages(gone.map(a => a.page));
+    } else if (u.del) {
+      meta.annots.push(...u.del);
+      redrawPages(u.del.map(a => a.page));
+    }
+    saveSoon();
+    refreshPanel('notes');
+  };
+
+  // ---------- selezione del testo
+  const readSelection = () => {
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!pagesEl.contains(range.commonAncestorContainer)) return null;
+    const text = sel.toString().replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+    if (!text) return null;
+    const pgs = $$('.pdf-page.ready', pagesEl).filter(p => range.intersectsNode(p)).map(p => ({ n: +p.dataset.p, r: p.getBoundingClientRect() }));
+    const byPage = new Map();
+    for (const cr of range.getClientRects()) {
+      if (cr.width < 1 || cr.height < 2) continue;
+      const cx = cr.left + cr.width / 2;
+      const cy = cr.top + cr.height / 2;
+      const pg = pgs.find(({ r }) => cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom);
+      if (!pg) continue;
+      const sz = sizeOf(pg.n);
+      const k = sz.width / pg.r.width;
+      if (!byPage.has(pg.n)) byPage.set(pg.n, []);
+      byPage.get(pg.n).push([(cr.left - pg.r.left) * k, (cr.top - pg.r.top) * k, cr.width * k, cr.height * k]);
+    }
+    if (!byPage.size) return null;
+    for (const [n, list] of byPage) byPage.set(n, mergeRects(list));
+    return { text, byPage, firstPage: Math.min(...byPage.keys()) };
+  };
+  const selHtml = () => `
+    ${PDF_COLORS.map(([k, , , n]) => `<button type="button" class="rt-dot pdf-hl-dot" data-ps="hl" data-c="${k}" style="--dot:${pdfCol(k)}" aria-label="Evidenzia in ${n.toLowerCase()}" title="Evidenzia in ${n.toLowerCase()}"></button>`).join('')}
+    <button type="button" class="rt-btn rt-u" data-ps="ul" title="Sottolinea" aria-label="Sottolinea">S</button>
+    <button type="button" class="rt-btn" data-ps="note">Nota</button>
+    <button type="button" class="rt-btn rt-drag" data-ps="drag" title="Aggiunge il testo al pannello Trascina">Trascina</button>
+    <button type="button" class="rt-btn rt-card" data-ps="card">Flashcard</button>
+    <button type="button" class="rt-btn" data-ps="copy">Copia</button>`;
+  const bar = document.createElement('div');
+  bar.className = 'sel-bar rt-bar pdf-selbar';
+  bar.hidden = true;
+  bar.setAttribute('role', 'toolbar');
+  bar.setAttribute('aria-label', 'Strumenti per il testo selezionato');
+  bar.innerHTML = selHtml();
+  const menu = document.createElement('div');
+  menu.className = 'rt-menu';
+  menu.hidden = true;
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = selHtml();
+  document.body.append(bar, menu);
+  let lastSel = null;
+  let hideTimer = null;
+  const onSel = () => {
+    if (R.tool !== 'select') return;
+    const s = readSelection();
+    if (s) { clearTimeout(hideTimer); lastSel = s; bar.hidden = false; }
+    else if (!bar.hidden) { clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 600); }
+  };
+  const newAnnotsFromSel = (s, type, color) => [...s.byPage.entries()].map(([n, rects], i) => ({
+    id: uid(), type, color, page: n, rects, text: i === 0 ? s.text.slice(0, 2000) : '', created: Date.now()
+  }));
+  const addDraft = (text, page) => {
+    meta.drafts.push({ id: uid(), front: '', back: text.slice(0, 4000), page: page || R.cur });
+    saveSoon();
+    openPanel('drag');
+    refreshPanel('drag');
+  };
+  const selAction = async kind => {
+    const s = lastSel;
+    bar.hidden = true;
+    menu.hidden = true;
+    if (!s) return;
+    if (kind !== 'copy') document.getSelection()?.removeAllRanges();
+    if (kind === 'hl' || kind === 'ul') { addAnnots(newAnnotsFromSel(s, kind, R.color)); return; }
+    if (kind === 'copy') {
+      try { await navigator.clipboard.writeText(s.text); toast('Testo copiato'); } catch { toast('Copia non riuscita', 'err'); }
+      return;
+    }
+    if (kind === 'drag') { addDraft(s.text, s.firstPage); toast('Aggiunto a Trascina'); return; }
+    if (kind === 'card') {
+      const card = await openCardSheet({ back: s.text, sectionId: meta.sectionId, notebookId: meta.notebookId });
+      if (card) { card.pdf = { id: meta.id, page: s.firstPage }; await saveCard(card); }
+      return;
+    }
+    if (kind === 'note') {
+      const rects = s.byPage.get(s.firstPage);
+      const r = rects[rects.length - 1];
+      const text = await noteSheet('', s.text);
+      if (text === null) return;
+      addAnnots([{ id: uid(), type: 'note', page: s.firstPage, x: r[0] + r[2], y: r[1], note: text, text: s.text.slice(0, 2000), created: Date.now() }]);
+    }
+  };
+  [bar, menu].forEach(el => {
+    el.addEventListener('pointerdown', e => e.preventDefault());
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-ps]');
+      if (!b) return;
+      if (b.dataset.c) { R.color = b.dataset.c; S().pdfColor = R.color; Settings.save(); }
+      selAction(b.dataset.ps);
+    });
+  });
+  const onContext = e => {
+    if (R.tool !== 'select') return;
+    const s = readSelection();
+    if (!s) return;
+    e.preventDefault();
+    lastSel = s;
+    bar.hidden = true;
+    menu.hidden = false;
+    const w = menu.offsetWidth || 300;
+    const h = menu.offsetHeight || 60;
+    menu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - w - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - h - 8))}px`;
+  };
+  const onDocDown = e => { if (!menu.hidden && !menu.contains(e.target)) menu.hidden = true; };
+
+  // ---------- finestre per note e annotazioni
+  function noteSheet(value = '', quote = '') {
+    return new Promise(resolve => {
+      const sh = openSheet(`
+        <h2>Nota</h2>
+        ${quote ? `<blockquote class="pdf-quote">${esc(quote.slice(0, 400))}</blockquote>` : ''}
+        <textarea class="input card-ta" id="pnText" rows="4" placeholder="Scrivi la nota">${esc(value)}</textarea>
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" data-pn="no">Annulla</button>
+          <button class="btn primary" type="button" data-pn="ok">Salva</button>
+        </div>`, { label: 'Nota', onClose: resolve });
+      $('[data-pn="no"]', sh.el).onclick = () => sh.close(null);
+      $('[data-pn="ok"]', sh.el).onclick = () => sh.close($('#pnText', sh.el).value.trim());
+      setTimeout(() => $('#pnText', sh.el)?.focus(), 40);
+    });
+  }
+  const annotSheet = a => {
+    const isMark = a.type === 'hl' || a.type === 'ul';
+    const sh = openSheet(`
+      <h2>${a.type === 'hl' ? 'Evidenziazione' : a.type === 'ul' ? 'Sottolineatura' : a.type === 'ink' ? 'Tratto a penna' : 'Nota'}, pagina ${a.page}</h2>
+      ${a.text ? `<blockquote class="pdf-quote">${esc(a.text.slice(0, 500))}</blockquote>` : ''}
+      ${isMark ? `
+        <div class="pdf-ann-colors" role="group" aria-label="Colore">
+          ${PDF_COLORS.map(([k, , , n]) => `<button type="button" class="rt-dot pdf-hl-dot ${a.color === k ? 'on' : ''}" data-ac="${k}" style="--dot:${pdfCol(k)}" aria-label="${n}" aria-pressed="${a.color === k}"></button>`).join('')}
+          <button type="button" class="btn sm ghost" data-aa="type">${a.type === 'hl' ? 'Trasforma in sottolineatura' : 'Trasforma in evidenziazione'}</button>
+        </div>` : ''}
+      ${a.type !== 'ink' ? `<label class="field"><span>Nota</span><textarea class="input card-ta" id="anNote" rows="3" placeholder="Facoltativa">${esc(a.note || '')}</textarea></label>` : ''}
+      <div class="modal-actions">
+        <button class="btn ghost danger" type="button" data-aa="del">Elimina</button>
+        ${a.text ? '<button class="btn ghost" type="button" data-aa="drag">Trascina</button><button class="btn ghost" type="button" data-aa="card">Flashcard</button>' : ''}
+        <button class="btn primary" type="button" data-aa="ok">Fatto</button>
+      </div>`, { label: 'Annotazione', onClose: () => keepNote() });
+    const keepNote = () => { const t = $('#anNote', sh.el); if (t && meta.annots.includes(a) && t.value.trim() !== (a.note || '')) { a.note = t.value.trim(); saveSoon(); drawAnnots(a.page); refreshPanel('notes'); } };
+    sh.el.addEventListener('click', async e => {
+      const c = e.target.closest('[data-ac]');
+      if (c) {
+        a.color = c.dataset.ac;
+        $$('[data-ac]', sh.el).forEach(x => { x.classList.toggle('on', x === c); x.setAttribute('aria-pressed', x === c); });
+        saveSoon(); drawAnnots(a.page); refreshPanel('notes');
+        return;
+      }
+      const b = e.target.closest('[data-aa]');
+      if (!b) return;
+      const act = b.dataset.aa;
+      if (act === 'type') { a.type = a.type === 'hl' ? 'ul' : 'hl'; saveSoon(); drawAnnots(a.page); refreshPanel('notes'); b.textContent = a.type === 'hl' ? 'Trasforma in sottolineatura' : 'Trasforma in evidenziazione'; return; }
+      if (act === 'del') { sh.close(); removeAnnots([a.id]); toast('Annotazione eliminata', '', { label: 'Annulla', fn: undo }); return; }
+      keepNote();
+      sh.close();
+      if (act === 'drag') { addDraft(a.text, a.page); toast('Aggiunto a Trascina'); }
+      if (act === 'card') {
+        const card = await openCardSheet({ back: a.text, sectionId: meta.sectionId, notebookId: meta.notebookId });
+        if (card) { card.pdf = { id: meta.id, page: a.page }; await saveCard(card); }
+      }
+    });
+  };
+  const pointInPage = (el, e) => {
+    const r = el.getBoundingClientRect();
+    const sz = sizeOf(+el.dataset.p);
+    return [+((e.clientX - r.left) / r.width * sz.width).toFixed(2), +((e.clientY - r.top) / r.height * sz.height).toFixed(2)];
+  };
+  const hitAnnot = (n, x, y) => {
+    const anns = meta.annots.filter(a => a.page === n && a.rects);
+    for (let i = anns.length - 1; i >= 0; i--) {
+      if (anns[i].rects.some(r => x >= r[0] - 1 && x <= r[0] + r[2] + 1 && y >= r[1] - 1 && y <= r[1] + r[3] + 2)) return anns[i];
+    }
+    return null;
+  };
+
+  // ---------- penna, gomma, note
+  let ink = null;
+  let pan = null;
+  const setTool = t => {
+    R.tool = t;
+    app.dataset.tool = t;
+    $$('button[data-tool]', app).forEach(b => { b.setAttribute('aria-checked', b.dataset.tool === t); b.setAttribute('aria-selected', b.dataset.tool === t); });
+    $('.pdf-pen-opts', app).hidden = t !== 'pen';
+    if (t !== 'select') { bar.hidden = true; document.getSelection()?.removeAllRanges(); }
+  };
+  const eraseAt = e => {
+    const hit = document.elementFromPoint(e.clientX, e.clientY);
+    const g = hit && hit.closest && hit.closest('svg.pdf-ann [data-id]');
+    if (g) removeAnnots([g.dataset.id]);
+  };
+  pagesEl.addEventListener('pointerdown', e => {
+    const el = e.target.closest('.pdf-page');
+    if (!el || e.target.closest('.pdf-pin')) return;
+    if (e.pointerType === 'pen') R.penSeen = true;
+    if (R.tool === 'pen' || R.tool === 'eraser') {
+      if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
+      if (e.button > 0) return;
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      if (R.tool === 'eraser') { ink = { eraser: true, id: e.pointerId }; eraseAt(e); return; }
+      const svg = el.querySelector('svg.pdf-ann') || (drawAnnots(+el.dataset.p), el.querySelector('svg.pdf-ann'));
+      const path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('class', `ann-ink live ${R.inkW >= 6 ? 'marker' : ''}`);
+      path.setAttribute('stroke', R.ink);
+      path.setAttribute('stroke-width', R.inkW);
+      svg.append(path);
+      ink = { id: e.pointerId, el, path, pts: [pointInPage(el, e)] };
+      path.setAttribute('d', inkPath(ink.pts));
+    }
+  });
+  pagesEl.addEventListener('pointermove', e => {
+    if (pan && e.pointerId === pan.id) { scroller.scrollBy(pan.x - e.clientX, pan.y - e.clientY); pan.x = e.clientX; pan.y = e.clientY; return; }
+    if (!ink || e.pointerId !== ink.id) return;
+    if (ink.eraser) { eraseAt(e); return; }
+    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of evs) {
+      const p = pointInPage(ink.el, ev);
+      const l = ink.pts[ink.pts.length - 1];
+      if (Math.hypot(p[0] - l[0], p[1] - l[1]) > 0.7) ink.pts.push(p);
+    }
+    ink.path.setAttribute('d', inkPath(ink.pts));
+  });
+  const endInk = e => {
+    if (pan && e.pointerId === pan.id) { pan = null; return; }
+    if (!ink || e.pointerId !== ink.id) return;
+    const cur = ink;
+    ink = null;
+    if (cur.eraser) return;
+    cur.path.remove();
+    addAnnots([{ id: uid(), type: 'ink', page: +cur.el.dataset.p, color: R.ink, w: R.inkW, pts: cur.pts, created: Date.now() }]);
+  };
+  pagesEl.addEventListener('pointerup', endInk);
+  pagesEl.addEventListener('pointercancel', endInk);
+  pagesEl.addEventListener('click', async e => {
+    const pin = e.target.closest('.pdf-pin');
+    if (pin) { const a = meta.annots.find(x => x.id === pin.dataset.ann); if (a) annotSheet(a); return; }
+    const el = e.target.closest('.pdf-page');
+    if (!el) return;
+    const n = +el.dataset.p;
+    const [x, y] = pointInPage(el, e);
+    if (R.tool === 'note') {
+      const text = await noteSheet('');
+      if (text) addAnnots([{ id: uid(), type: 'note', page: n, x, y, note: text, created: Date.now() }]);
+      return;
+    }
+    if (R.tool === 'select') {
+      const sel = document.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      const a = hitAnnot(n, x, y);
+      if (a) annotSheet(a);
+    }
+  });
+
+  // ---------- segnalibri
+  const bookmarkTitle = async n => {
+    try {
+      let t = R.textCache.get(n);
+      if (t == null) { const p = await R.doc.getPage(n); const tc = await p.getTextContent(); t = tc.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join(''); R.textCache.set(n, t); }
+      const line = t.split('\n').map(x => x.replace(/\s+/g, ' ').trim()).find(x => x.length > 3 && !/^\d+$/.test(x));
+      return line ? line.slice(0, 70) : `Pagina ${n}`;
+    } catch { return `Pagina ${n}`; }
+  };
+  const refreshBm = () => {
+    const has = meta.bookmarks.some(b => b.page === R.cur);
+    const btn = $('[data-pdf="bookmark"]', app);
+    btn.setAttribute('aria-pressed', has);
+    btn.classList.toggle('on', has);
+    btn.querySelector('span').textContent = has ? 'Segnato' : 'Segnalibro';
+    $$('.pdf-page', pagesEl).forEach(el => el.classList.toggle('bm', meta.bookmarks.some(b => b.page === +el.dataset.p)));
+    refreshPanel('marks');
+    refreshPanel('pages');
+  };
+  const renameBookmark = async b => {
+    const t = await modal({ title: 'Nome del segnalibro', input: true, value: b.title, confirm: 'Salva' });
+    if (!t) return;
+    b.title = t;
+    saveSoon();
+    refreshPanel('marks');
+  };
+  const toggleBookmark = async (n = R.cur) => {
+    const ex = meta.bookmarks.find(b => b.page === n);
+    if (ex) {
+      meta.bookmarks = meta.bookmarks.filter(b => b !== ex);
+      saveSoon();
+      refreshBm();
+      toast(`Segnalibro di pagina ${n} tolto`, '', { label: 'Annulla', fn: () => { meta.bookmarks.push(ex); meta.bookmarks.sort((a, b) => a.page - b.page); saveSoon(); refreshBm(); } });
+      return;
+    }
+    const b = { id: uid(), page: n, title: await bookmarkTitle(n), created: Date.now() };
+    meta.bookmarks.push(b);
+    meta.bookmarks.sort((x, y) => x.page - y.page);
+    saveSoon();
+    refreshBm();
+    toast(`Segnalibro a pagina ${n}`, '', { label: 'Rinomina', fn: () => renameBookmark(b) });
+  };
+
+  // ---------- pannello laterale
+  const openPanel = tab => {
+    R.tab = tab || R.tab || 'marks';
+    S().pdfPanel = R.tab;
+    Settings.save();
+    panel.hidden = false;
+    app.classList.add('panel-open');
+    $('[data-pdf="panel"]', app).setAttribute('aria-expanded', 'true');
+    $$('[data-ptab]', panel).forEach(b => b.setAttribute('aria-selected', b.dataset.ptab === R.tab));
+    drawPanel();
+    if (R.doc && window.innerWidth >= 900) zoomTo(R.zoom);
+  };
+  const closePanel = () => {
+    panel.hidden = true;
+    app.classList.remove('panel-open');
+    $('[data-pdf="panel"]', app).setAttribute('aria-expanded', 'false');
+    S().pdfPanel = '';
+    Settings.save();
+    R.thumbIo?.disconnect();
+    if (R.doc && window.innerWidth >= 900) zoomTo(R.zoom);
+  };
+  const refreshPanel = tab => { if (!panel.hidden && R.tab === tab) drawPanel(); };
+  const drawPanel = () => {
+    R.thumbIo?.disconnect();
+    if (!R.doc && R.tab !== 'drag' && R.tab !== 'marks' && R.tab !== 'notes') { panelBody.innerHTML = '<p class="hint">Apro il PDF…</p>'; return; }
+    ({ pages: drawThumbs, marks: drawMarks, notes: drawNotes, search: drawSearch, drag: drawDrag }[R.tab] || drawMarks)();
+  };
+
+  function drawMarks() {
+    panelBody.innerHTML = `
+      <button class="btn sm block" type="button" data-pm="add">${meta.bookmarks.some(b => b.page === R.cur) ? `Togli il segnalibro da pagina ${R.cur}` : `Segnalibro su pagina ${R.cur}`}</button>
+      ${meta.bookmarks.length ? `<ul class="pdf-plist">${meta.bookmarks.map(b => `
+        <li><button type="button" class="pdf-pitem ${b.page === R.cur ? 'cur' : ''}" data-go="${b.page}">
+          <span class="pdf-bm-ic">${ICON_BM}</span><span class="pdf-pitem-t">${esc(b.title)}</span><span class="pdf-pitem-p">p. ${b.page}</span></button>
+          <button type="button" class="btn sm ghost" data-bmren="${b.id}" aria-label="Rinomina">✎</button>
+          <button type="button" class="btn sm ghost" data-bmdel="${b.id}" aria-label="Elimina">✕</button></li>`).join('')}</ul>`
+        : '<p class="hint">Nessun segnalibro. Toccando “Segnalibro” in alto, o premendo B, segni la pagina che stai leggendo.</p>'}
+      <h3 class="sub3">Indice del PDF</h3>
+      <div id="pdfOutline"><p class="hint">Carico l’indice…</p></div>`;
+    drawOutline();
+  }
+  async function drawOutline() {
+    const box = $('#pdfOutline', panelBody);
+    if (!box || !R.doc) return;
+    if (!R.outline) {
+      try { R.outline = (await R.doc.getOutline()) || []; } catch { R.outline = []; }
+    }
+    if (!box.isConnected) return;
+    const flat = [];
+    const walk = (items, d) => items.forEach(it => { if (flat.length < 400) { flat.push({ it, d }); if (d < 2 && it.items?.length) walk(it.items, d + 1); } });
+    walk(R.outline, 0);
+    box.innerHTML = flat.length
+      ? `<ul class="pdf-plist outline">${flat.map(({ it, d }, i) => `<li style="--d:${d}"><button type="button" class="pdf-pitem" data-ol="${i}"><span class="pdf-pitem-t">${esc(String(it.title || '').trim() || 'Senza titolo')}</span></button></li>`).join('')}</ul>`
+      : '<p class="hint">Questo PDF non ha un indice.</p>';
+    box.onclick = async e => {
+      const b = e.target.closest('[data-ol]');
+      if (!b) return;
+      try {
+        let dest = flat[+b.dataset.ol].it.dest;
+        if (typeof dest === 'string') dest = await R.doc.getDestination(dest);
+        if (!Array.isArray(dest) || !dest[0]) return;
+        const ref = dest[0];
+        const idx = typeof ref === 'number' ? ref : await R.doc.getPageIndex(ref);
+        goTo(idx + 1, { flash: true });
+        if (window.innerWidth < 900) closePanel();
+      } catch { toast('Questa voce non porta a una pagina'); }
+    };
+  }
+  function drawNotes() {
+    const list = [...meta.annots].filter(a => a.type !== 'ink').sort((a, b) => a.page - b.page || (a.rects?.[0]?.[1] ?? a.y ?? 0) - (b.rects?.[0]?.[1] ?? b.y ?? 0));
+    const inks = meta.annots.filter(a => a.type === 'ink').length;
+    panelBody.innerHTML = list.length || inks ? `
+      <ul class="pdf-plist">${list.map(a => `
+        <li><button type="button" class="pdf-pitem note-item" data-go="${a.page}" data-annid="${a.id}">
+          <span class="pdf-swatch ${a.type}" style="--dot:${a.type === 'note' ? 'var(--accent)' : pdfCol(a.color, a.type === 'ul' ? 2 : 1)}"></span>
+          <span class="pdf-pitem-t">${a.text ? esc(a.text.slice(0, 160)) : ''}${a.note ? `<em>${esc(a.note.slice(0, 160))}</em>` : ''}${!a.text && !a.note ? '<em>Senza testo</em>' : ''}</span>
+          <span class="pdf-pitem-p">p. ${a.page}</span></button></li>`).join('')}</ul>
+      ${inks ? `<p class="hint">${inks} ${inks === 1 ? 'tratto' : 'tratti'} a penna.</p>` : ''}`
+      : '<p class="hint">Le evidenziazioni, le sottolineature e le note compaiono qui, in ordine di pagina.</p>';
+  }
+  let searchQ = '';
+  let searchRes = [];
+  function drawSearch() {
+    panelBody.innerHTML = `
+      <form class="pdf-search" id="pdfSearchForm"><input type="search" class="input" id="pdfQ" placeholder="Cerca nel PDF" value="${esc(searchQ)}" aria-label="Cerca nel PDF"></form>
+      <p class="hint" id="pdfSearchInfo">${searchRes.length ? `${searchRes.length}${searchRes.length >= 300 ? '+' : ''} risultati` : searchQ ? 'Nessun risultato.' : 'Cerca una parola in tutte le pagine.'}</p>
+      <ul class="pdf-plist" id="pdfSearchList">${searchRes.map((r, i) => `<li><button type="button" class="pdf-pitem" data-sr="${i}"><span class="pdf-pitem-t">${r.html}</span><span class="pdf-pitem-p">p. ${r.n}</span></button></li>`).join('')}</ul>`;
+    $('#pdfSearchForm', panelBody).addEventListener('submit', e => { e.preventDefault(); runSearch($('#pdfQ', panelBody).value); });
+    if (!searchQ) setTimeout(() => $('#pdfQ', panelBody)?.focus(), 30);
+  }
+  const pageText = async n => {
+    if (R.textCache.has(n)) return R.textCache.get(n);
+    const p = await R.doc.getPage(n);
+    const tc = await p.getTextContent();
+    const t = tc.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join('');
+    R.textCache.set(n, t);
+    return t;
+  };
+  async function runSearch(q) {
+    searchQ = q.trim();
+    searchRes = [];
+    const f = foldAccents(searchQ);
+    const token = ++R.searchToken;
+    if (f.length < 2) { drawSearch(); return; }
+    drawSearch();
+    const info = () => $('#pdfSearchInfo', panelBody);
+    for (let n = 1; n <= meta.pages; n++) {
+      if (token !== R.searchToken || R.destroyed) return;
+      let t;
+      try { t = await pageText(n); } catch { continue; }
+      const ft = foldAccents(t);
+      let i = ft.indexOf(f);
+      while (i >= 0 && searchRes.length < 300) {
+        const a = Math.max(0, i - 50);
+        const b = Math.min(t.length, i + f.length + 60);
+        searchRes.push({ n, html: `${a ? '…' : ''}${esc(t.slice(a, i))}<mark class="hit">${esc(t.slice(i, i + f.length))}</mark>${esc(t.slice(i + f.length, b))}…` });
+        i = ft.indexOf(f, i + f.length);
+      }
+      if (n % 15 === 0 && info()) info().textContent = `Cerco… pagina ${n} di ${meta.pages}`;
+      if (searchRes.length >= 300) break;
+    }
+    if (token === R.searchToken && R.tab === 'search' && !panel.hidden) drawSearch();
+  }
+  const applyHit = n => {
+    if (!R.hit || R.hit.n !== n) return;
+    const el = pageEl(n);
+    const f = foldAccents(R.hit.q);
+    const spans = $$('.textLayer span', el).filter(s => foldAccents(s.textContent).includes(f));
+    spans.forEach(s => s.classList.add('pdf-hit'));
+    if (spans[0]) {
+      const r = spans[0].getBoundingClientRect();
+      const sr = scroller.getBoundingClientRect();
+      scroller.scrollTop += r.top - sr.top - scroller.clientHeight * 0.3;
+    }
+    R.hit = null;
+  };
+  function drawThumbs() {
+    panelBody.innerHTML = `<div class="pdf-thumbs">${Array.from({ length: meta.pages }, (_, i) => {
+      const n = i + 1;
+      const sz = sizeOf(n) || { width: 1, height: 1.4 };
+      return `<button type="button" class="pdf-thumb ${n === R.cur ? 'cur' : ''} ${meta.bookmarks.some(b => b.page === n) ? 'bm' : ''}" data-go="${n}" data-thumb="${n}" style="aspect-ratio:${sz.width}/${sz.height}" aria-label="Pagina ${n}"><span>${n}</span></button>`;
+    }).join('')}</div>`;
+    R.thumbIo = new IntersectionObserver(entries => entries.forEach(async en => {
+      if (!en.isIntersecting) return;
+      const b = en.target;
+      R.thumbIo?.unobserve(b);
+      try {
+        const page = await R.doc.getPage(+b.dataset.thumb);
+        const vp = page.getViewport({ scale: 160 / page.getViewport({ scale: 1 }).width });
+        const c = document.createElement('canvas');
+        c.width = Math.floor(vp.width);
+        c.height = Math.floor(vp.height);
+        await page.render({ canvas: c, canvasContext: c.getContext('2d'), viewport: vp }).promise;
+        if (b.isConnected) b.prepend(c);
+      } catch { /* miniatura non disponibile */ }
+    }), { root: panelBody, rootMargin: '300px' });
+    $$('.pdf-thumb', panelBody).forEach(b => R.thumbIo.observe(b));
+    $('.pdf-thumb.cur', panelBody)?.scrollIntoView({ block: 'center' });
+  }
+
+  // Trascina: bozze di flashcard
+  function drawDrag() {
+    const d = meta.drafts;
+    const missing = d.filter(x => !x.front.trim()).length;
+    const ready = d.filter(x => x.front.trim() && x.back.trim()).length;
+    panelBody.innerHTML = `
+      <p class="hint">Seleziona del testo nel PDF e tocca <b>Trascina</b>, oppure trascinalo qui col mouse. Scrivi la domanda sul fronte e crea le flashcard. Riordinale tenendo premuta la maniglia ⠿.</p>
+      <ol class="drag-list" id="dragList">${d.map(x => `
+        <li class="drag-item" data-d="${x.id}">
+          <span class="drag-handle" role="button" tabindex="0" aria-label="Sposta: usa le frecce su e giù">⠿</span>
+          <div class="drag-fields">
+            <textarea class="input" data-f="front" rows="2" placeholder="Fronte: la domanda">${esc(x.front)}</textarea>
+            <textarea class="input" data-f="back" rows="3" placeholder="Retro: la risposta">${esc(x.back)}</textarea>
+            <div class="drag-acts">
+              <button type="button" class="btn sm ghost" data-go="${x.page}">Pagina ${x.page}</button>
+              <button type="button" class="btn sm ghost danger" data-ddel="${x.id}">Elimina</button>
+              <button type="button" class="btn sm" data-dmake="${x.id}">Crea</button>
+            </div>
+          </div>
+        </li>`).join('')}</ol>
+      <div class="drop-zone" id="dropZone">${d.length ? 'Trascina qui altro testo' : 'Trascina qui il testo dal PDF'}</div>
+      ${d.length ? `
+        <div class="drag-foot">
+          ${AI.ready() ? `<button type="button" class="btn sm" data-dai ${missing ? '' : 'hidden'}>Proponi ${missing === 1 ? 'la domanda' : `le ${missing} domande`} con ${AI.name()}</button>` : ''}
+          <button type="button" class="btn primary" data-dall ${ready ? '' : 'disabled'}>Crea ${ready === 1 ? 'la flashcard pronta' : `le ${ready} flashcard pronte`}</button>
+        </div>` : ''}`;
+  }
+  const makeCards = async list => {
+    const tags = tagsOf(secById(meta.sectionId));
+    const cards = list.map(x => {
+      const c = newCard(meta.notebookId, { front: x.front.trim(), back: x.back.trim(), sectionId: meta.sectionId });
+      c.pdf = { id: meta.id, page: x.page };
+      if (tags.length) c.tags = [...tags];
+      return c;
+    });
+    await saveCards(cards);
+    meta.drafts = meta.drafts.filter(x => !list.includes(x));
+    saveSoon();
+    drawDrag();
+    toast(cards.length === 1 ? 'Flashcard creata' : `${cards.length} flashcard create`);
+  };
+  // aggiorna i pulsanti in fondo senza ricrearli (un clic in corso non va perso)
+  const updateDragFoot = () => {
+    const missing = meta.drafts.filter(x => !x.front.trim()).length;
+    const ready = meta.drafts.filter(x => x.front.trim() && x.back.trim()).length;
+    const all = $('[data-dall]', panelBody);
+    if (all) { all.disabled = !ready; all.textContent = `Crea ${ready === 1 ? 'la flashcard pronta' : `le ${ready} flashcard pronte`}`; }
+    const ai = $('[data-dai]', panelBody);
+    if (ai && !ai.disabled) { ai.hidden = !missing; ai.textContent = `Proponi ${missing === 1 ? 'la domanda' : `le ${missing} domande`} con ${AI.name()}`; }
+  };
+  panelBody.addEventListener('input', e => {
+    const t = e.target.closest('.drag-item textarea');
+    if (!t) return;
+    const x = meta.drafts.find(d => d.id === t.closest('.drag-item').dataset.d);
+    if (x) { x[t.dataset.f] = t.value; saveSoon(); updateDragFoot(); }
+  });
+  panelBody.addEventListener('click', async e => {
+    const goB = e.target.closest('[data-go]');
+    if (goB) {
+      goTo(+goB.dataset.go, { flash: true });
+      if (window.innerWidth < 900 && R.tab !== 'drag') closePanel();
+      return;
+    }
+    const srB = e.target.closest('[data-sr]');
+    if (srB) {
+      const r = searchRes[+srB.dataset.sr];
+      R.hit = { n: r.n, q: searchQ };
+      const el = pageEl(r.n);
+      goTo(r.n);
+      if (el && el.dataset.scale === R.scale.toFixed(4) && el.classList.contains('ready')) applyHit(r.n);
+      if (window.innerWidth < 900) closePanel();
+      return;
+    }
+    const pm = e.target.closest('[data-pm]');
+    if (pm) { await toggleBookmark(); return; }
+    const ren = e.target.closest('[data-bmren]');
+    if (ren) { const b = meta.bookmarks.find(x => x.id === ren.dataset.bmren); if (b) renameBookmark(b); return; }
+    const del = e.target.closest('[data-bmdel]');
+    if (del) { const b = meta.bookmarks.find(x => x.id === del.dataset.bmdel); if (b) toggleBookmark(b.page); return; }
+    const dd = e.target.closest('[data-ddel]');
+    if (dd) { meta.drafts = meta.drafts.filter(x => x.id !== dd.dataset.ddel); saveSoon(); drawDrag(); return; }
+    const dm = e.target.closest('[data-dmake]');
+    if (dm) {
+      const x = meta.drafts.find(d => d.id === dm.dataset.dmake);
+      if (!x) return;
+      if (!x.front.trim()) { toast('Scrivi la domanda sul fronte'); $(`[data-d="${x.id}"] [data-f="front"]`, panelBody)?.focus(); return; }
+      if (!x.back.trim()) { toast('Scrivi la risposta sul retro'); return; }
+      await makeCards([x]);
+      return;
+    }
+    if (e.target.closest('[data-dall]')) {
+      const list = meta.drafts.filter(x => x.front.trim() && x.back.trim());
+      if (list.length) await makeCards(list);
+      return;
+    }
+    const ai = e.target.closest('[data-dai]');
+    if (ai) {
+      ai.disabled = true;
+      const todo = meta.drafts.filter(x => !x.front.trim() && x.back.trim());
+      let done = 0;
+      for (const x of todo) {
+        ai.textContent = `Scrivo le domande… ${done + 1} di ${todo.length}`;
+        try {
+          const ctx = sec ? `ARGOMENTO: ${sec.title}\n\n` : '';
+          const r = await AI.generate({ system: promptFor('front'), text: `${ctx}RISPOSTA DELLA FLASHCARD:\n${x.back.trim()}`, maxTokens: 3000 });
+          x.front = r.text.trim().split('\n').find(l => l.trim())?.replace(/^(D|Domanda)\s*:\s*/i, '').trim() || x.front;
+          done++;
+        } catch (err) { toast(err.message, 'err'); break; }
+        if (R.destroyed) return;
+      }
+      saveSoon();
+      if (R.tab === 'drag' && !panel.hidden) drawDrag();
+    }
+  });
+  // riordino con la maniglia (dito, pennino o mouse)
+  panelBody.addEventListener('pointerdown', e => {
+    const h = e.target.closest('.drag-handle');
+    if (!h) return;
+    e.preventDefault();
+    const li = h.closest('.drag-item');
+    const list = li.parentElement;
+    li.classList.add('dragging');
+    h.setPointerCapture(e.pointerId);
+    const move = ev => {
+      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.drag-item');
+      if (over && over !== li && over.parentElement === list) {
+        const r = over.getBoundingClientRect();
+        list.insertBefore(li, ev.clientY > r.top + r.height / 2 ? over.nextSibling : over);
+      }
+      const pr = panelBody.getBoundingClientRect();
+      if (ev.clientY < pr.top + 40) panelBody.scrollTop -= 12;
+      else if (ev.clientY > pr.bottom - 40) panelBody.scrollTop += 12;
+    };
+    const up = () => {
+      li.classList.remove('dragging');
+      h.removeEventListener('pointermove', move);
+      h.removeEventListener('pointerup', up);
+      h.removeEventListener('pointercancel', up);
+      const order = $$('.drag-item', list).map(x => x.dataset.d);
+      meta.drafts.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+      saveSoon();
+    };
+    h.addEventListener('pointermove', move);
+    h.addEventListener('pointerup', up);
+    h.addEventListener('pointercancel', up);
+  });
+  panelBody.addEventListener('keydown', e => {
+    const h = e.target.closest('.drag-handle');
+    if (!h || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    const i = meta.drafts.findIndex(x => x.id === h.closest('.drag-item').dataset.d);
+    const j = i + (e.key === 'ArrowUp' ? -1 : 1);
+    if (i < 0 || j < 0 || j >= meta.drafts.length) return;
+    [meta.drafts[i], meta.drafts[j]] = [meta.drafts[j], meta.drafts[i]];
+    saveSoon();
+    drawDrag();
+    $(`[data-d="${meta.drafts[j].id}"] .drag-handle`, panelBody)?.focus();
+  });
+  // testo trascinato col mouse dal PDF (o da un’altra app)
+  panel.addEventListener('dragover', e => {
+    if (R.tab !== 'drag' || e.target.closest('textarea')) return;
+    e.preventDefault();
+    panel.classList.add('drop-on');
+  });
+  panel.addEventListener('dragleave', e => { if (!panel.contains(e.relatedTarget)) panel.classList.remove('drop-on'); });
+  panel.addEventListener('drop', e => {
+    panel.classList.remove('drop-on');
+    if (R.tab !== 'drag' || e.target.closest('textarea')) return;
+    const t = (e.dataTransfer.getData('text/plain') || '').replace(/[ \t]+/g, ' ').trim();
+    if (!t) return;
+    e.preventDefault();
+    addDraft(t, R.cur);
+  });
+  // apre il pannello Trascina quando inizi a trascinare testo dal PDF
+  pagesEl.addEventListener('dragstart', () => { if (panel.hidden || R.tab !== 'drag') openPanel('drag'); });
+
+  // ---------- barra in alto e scorrimento
+  let scrollRaf = 0;
+  let renderTimer = null;
+  function onScroll() {
+    if (scrollRaf) return;
+    scrollRaf = requestAnimationFrame(() => {
+      scrollRaf = 0;
+      if (!R.doc) return;
+      const n = findCurrent();
+      if (n !== R.cur) {
+        R.cur = n;
+        const inp = $('#pdfPage');
+        if (document.activeElement !== inp) inp.value = n;
+        meta.lastPage = n;
+        saveSoon();
+        refreshBm();
+        if (!panel.hidden && R.tab === 'pages') $$('.pdf-thumb', panelBody).forEach(b => b.classList.toggle('cur', +b.dataset.thumb === n));
+      }
+      clearTimeout(renderTimer);
+      renderTimer = setTimeout(renderAround, 60);
+    });
+  }
+  scroller.addEventListener('scroll', onScroll, { passive: true });
+  const zoomTo = z => {
+    const keep = R.cur;
+    const el = pageEl(keep);
+    const frac = el ? (scroller.scrollTop - pageTop(el)) / el.offsetHeight : 0;
+    R.zoom = Math.max(0.5, Math.min(3, +z.toFixed(3)));
+    meta.zoom = R.zoom;
+    saveSoon();
+    applySizes();
+    const el2 = pageEl(keep);
+    if (el2) scroller.scrollTop = pageTop(el2) + frac * el2.offsetHeight;
+    renderAround();
+  };
+  app.addEventListener('click', e => {
+    const t = e.target.closest('button[data-tool]');
+    if (t) { setTool(t.dataset.tool); return; }
+    const inkB = e.target.closest('[data-ink]');
+    if (inkB) { R.ink = inkB.dataset.ink; S().pdfInk = R.ink; Settings.save(); $$('[data-ink]', app).forEach(b => b.classList.toggle('on', b === inkB)); return; }
+    const p = e.target.closest('[data-pdf]');
+    if (!p) return;
+    const act = p.dataset.pdf;
+    if (act === 'bookmark') toggleBookmark();
+    else if (act === 'panel') { if (panel.hidden) openPanel(); else closePanel(); }
+    else if (act === 'zoom+') zoomTo(R.zoom * 1.2);
+    else if (act === 'zoom-') zoomTo(R.zoom / 1.2);
+    else if (act === 'zoom-fit') zoomTo(1);
+    else if (act === 'undo') undo();
+  });
+  panel.addEventListener('click', e => { const b = e.target.closest('[data-ptab]'); if (b) openPanel(b.dataset.ptab); });
+  $('.pdf-pen-size', app).value = String(R.inkW);
+  $('.pdf-pen-size', app).addEventListener('change', e => { R.inkW = +e.target.value; S().pdfInkW = R.inkW; Settings.save(); });
+  $$('[data-ink]', app).forEach(b => b.classList.toggle('on', b.dataset.ink === R.ink));
+  $('#pdfPage').addEventListener('change', e => goTo(+e.target.value, { flash: true }));
+  $('#pdfPage').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); goTo(+e.target.value, { flash: true }); e.target.blur(); } });
+  const onKey = e => {
+    if ($('#modalRoot').children.length) return;
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); return; }
+    if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'b' || e.key === 'B') { e.preventDefault(); toggleBookmark(); }
+    else if (e.key === 'Escape') { if (!menu.hidden) menu.hidden = true; else if (!panel.hidden) closePanel(); }
+  };
+  let resizeTimer = null;
+  const onResize = () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (R.doc) zoomTo(R.zoom); }, 200);
+  };
+  document.addEventListener('selectionchange', onSel);
+  document.addEventListener('keydown', onKey);
+  document.addEventListener('pointerdown', onDocDown, true);
+  pagesEl.addEventListener('contextmenu', onContext);
+  window.addEventListener('resize', onResize);
+  addCleanup(() => {
+    R.destroyed = true;
+    clearTimeout(hideTimer);
+    clearTimeout(renderTimer);
+    clearTimeout(resizeTimer);
+    saveNow();
+    document.documentElement.classList.remove('pdf-open');
+    document.removeEventListener('selectionchange', onSel);
+    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('pointerdown', onDocDown, true);
+    window.removeEventListener('resize', onResize);
+    R.thumbIo?.disconnect();
+    bar.remove();
+    menu.remove();
+    try { R.doc?.destroy(); } catch { /* già chiuso */ }
+  });
+  setTool('select');
+  if (R.tab) openPanel(R.tab);
+
+  // ---------- apertura del file
+  (async () => {
+    try {
+      await ensurePdfJs();
+      const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(id));
+      let blob = rec && rec.blob;
+      if (!blob) {
+        if (!meta.uploaded || !Sync.configured()) throw new Error(pdfCloudText(meta) || 'Il file di questo PDF non è su questo dispositivo.');
+        pagesEl.innerHTML = '<p class="hint pdf-loading" id="pdfDl">Scarico il PDF da Drive…</p>';
+        blob = await PdfCloud.download(meta, f => { const el = $('#pdfDl'); if (el) el.textContent = `Scarico il PDF da Drive, ${Math.round(f * 100)}%…`; });
+        if (R.destroyed) return;
+      }
+      const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+      if (R.destroyed) { doc.destroy(); return; }
+      R.doc = doc;
+      if (doc.numPages !== meta.pages) { meta.pages = doc.numPages; saveSoon(); }
+      const p1 = await doc.getPage(1);
+      R.base = p1.getViewport({ scale: 1 });
+      R.sizes[1] = { width: R.base.width, height: R.base.height };
+      pagesEl.innerHTML = Array.from({ length: doc.numPages }, (_, i) => `<div class="pdf-page" data-p="${i + 1}"><span class="pdf-pn" aria-hidden="true">${i + 1}</span><span class="pdf-flag" aria-hidden="true">${ICON_BM}</span></div>`).join('');
+      applySizes();
+      new Set(meta.annots.map(a => a.page)).forEach(drawAnnots);
+      refreshBm();
+      const start = +pageParam || meta.lastPage || 1;
+      R.cur = 0;
+      goTo(start);
+      renderAround();
+      if (!panel.hidden) drawPanel();
+    } catch (err) {
+      pagesEl.innerHTML = `<div class="empty"><p>${esc(err.message || 'Non riesco ad aprire il PDF.')}</p><a class="btn" href="${back}">Torna indietro</a></div>`;
+    }
+  })();
+}
+
+/* =====================================================================
+   v3.8: PDF sincronizzati su Drive (a pezzi, tramite lo script) e
+   prompt dell’AI modificabili nelle Impostazioni
+   ===================================================================== */
+const PDF_CHUNK = 3 * 1024 * 1024;
+const localPdfIds = new Set();      // PDF il cui file è su questo dispositivo
+async function loadLocalPdfIds() {
+  try {
+    const keys = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').getAllKeys());
+    (keys || []).forEach(k => localPdfIds.add(k));
+  } catch { /* archivio non disponibile */ }
+}
+// i file dei PDF eliminati su un altro dispositivo
+async function prunePdfBlobs() {
+  const gone = [...localPdfIds].filter(id => !pdfById(id));
+  if (!gone.length) return;
+  await DB.removeMany(gone.map(id => ['pdfblobs', id]));
+  gone.forEach(id => localPdfIds.delete(id));
+}
+const PdfCloud = {
+  busy: false,
+  progress: {},
+  error: '',
+  async uploadPending() {
+    if (this.busy || !Sync.configured() || navigator.onLine === false) return;
+    this.busy = true;
+    try {
+      for (const m of [...state.pdfs]) {
+        if (m.uploaded || !localPdfIds.has(m.id)) continue;
+        await this.upload(m);
+      }
+      this.error = '';
+    } catch (e) {
+      this.error = e.message || 'Caricamento del PDF non riuscito';
+      Object.keys(this.progress).forEach(id => { delete this.progress[id]; this.paint(id); });
+    } finally {
+      this.busy = false;
+    }
+  },
+  async upload(meta) {
+    const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+    if (!rec || !rec.blob) return;
+    const blob = rec.blob;
+    const total = Math.max(1, Math.ceil(blob.size / PDF_CHUNK));
+    const secret = S().syncSecret.trim();
+    const info = await Sync.post({ secret, action: 'pdf-info', id: meta.id });
+    if (info.exists === undefined) throw new Error('Per sincronizzare i PDF aggiorna lo script su Google Apps Script alla versione 2.');
+    const have = new Set(info.exists && info.total === total && info.size === blob.size ? info.parts || [] : []);
+    for (let i = 0; i < total; i++) {
+      if (!pdfById(meta.id)) return; // eliminato nel frattempo
+      this.progress[meta.id] = i / total;
+      this.paint(meta.id);
+      if (have.has(i)) continue;
+      const data = await blobToBase64(blob.slice(i * PDF_CHUNK, (i + 1) * PDF_CHUNK));
+      await Sync.post({ secret, action: 'pdf-up', id: meta.id, part: i, total, size: blob.size, name: meta.name, notebookId: meta.notebookId, data });
+    }
+    delete this.progress[meta.id];
+    const cur = pdfById(meta.id);
+    if (cur) { cur.uploaded = true; await savePdfMeta(cur); }
+    this.paint(meta.id);
+  },
+  async download(meta, onProgress = () => {}) {
+    const secret = S().syncSecret.trim();
+    const parts = [];
+    let total = 1;
+    for (let i = 0; i < total; i++) {
+      const r = await Sync.post({ secret, action: 'pdf-down', id: meta.id, part: i });
+      if (r.total === undefined) throw new Error('Per sincronizzare i PDF aggiorna lo script su Google Apps Script alla versione 2.');
+      total = r.total;
+      parts.push(base64ToBlob(r.data, 'application/octet-stream'));
+      onProgress((i + 1) / total);
+    }
+    const blob = new Blob(parts, { type: 'application/pdf' });
+    await DB.put('pdfblobs', { id: meta.id, blob });
+    localPdfIds.add(meta.id);
+    return blob;
+  },
+  paint(id) {
+    const el = document.querySelector(`[data-pdf-status="${id}"]`);
+    if (el) el.textContent = pdfCloudText(pdfById(id));
+  }
+};
+function pdfCloudText(p) {
+  if (!p) return '';
+  if (p.id in PdfCloud.progress) return `Caricamento su Drive, ${Math.round(PdfCloud.progress[p.id] * 100)}%`;
+  const local = localPdfIds.has(p.id);
+  if (!Sync.configured()) return local ? '' : 'Il file è su un altro dispositivo: attiva la sincronizzazione per scaricarlo';
+  if (p.uploaded) return local ? 'Anche su Drive' : 'Su Drive: si scarica quando lo apri';
+  if (local) return PdfCloud.error ? `Non ancora su Drive: ${PdfCloud.error}` : 'In attesa del caricamento su Drive';
+  return 'Il file non è ancora su Drive: aprilo sul dispositivo dove l’hai caricato';
+}
+
+/* ---------- Prompt dell’AI ---------- */
+const PROMPT_DEFAULTS = {
+  format: [
+    'Sei un assistente che prepara materiale di studio per studenti di medicina.',
+    'Ricevi un estratto (testo o pagine di PDF) e lo trasformi in appunti di studio in Markdown.',
+    '',
+    'Regole:',
+    '- Mantieni TUTTE le informazioni: non riassumere, non omettere valori numerici, dosi, percentuali, criteri, classificazioni ed eccezioni.',
+    '- Non aggiungere informazioni che non sono nel testo.',
+    '- Usa titoli (##, ###), elenchi puntati annidati e tabelle Markdown.',
+    '- Usa una tabella ogni volta che ci sono confronti o voci con le stesse caratteristiche (es. farmaci con meccanismo, indicazioni ed effetti avversi; diagnosi differenziale; classificazioni; stadiazioni).',
+    '- Scrivi nella stessa lingua del testo originale.',
+    '- Ignora numeri di pagina, intestazioni e piè di pagina ripetuti, didascalie senza contenuto.',
+    '- Se ci sono figure o schemi con informazioni utili, descrivine il contenuto in un elenco.'
+  ].join('\n'),
+  cards: [
+    'Sei un tutor per studenti di medicina. Dagli appunti ricevuti crea flashcard per la memorizzazione.',
+    'Ogni flashcard ha una domanda breve e precisa e una risposta breve (una parola, un valore, un elenco corto).',
+    'Copri i concetti, i valori numerici, le classificazioni e i confronti più importanti. Da 8 a 25 flashcard.',
+    'Scrivi nella lingua degli appunti.'
+  ].join('\n'),
+  questions: [
+    'Sei un tutor per studenti di medicina.',
+    'Dagli appunti ricevuti genera da 5 a 12 domande per il richiamo attivo, che coprano i concetti più importanti.',
+    'Preferisci domande che chiedono di spiegare, confrontare o elencare, non solo definizioni.',
+    'Scrivi nella lingua degli appunti.'
+  ].join('\n'),
+  front: 'Scrivi una sola domanda breve e precisa per una flashcard la cui risposta è il testo indicato. Usa la lingua del testo.',
+  eval: [
+    'Sei un tutor per studenti di medicina. Confronta il richiamo libero dello studente con gli appunti originali.',
+    'Rispondi in italiano, in Markdown, in modo conciso, con questa struttura:',
+    '**Punteggio: X/100** (quanto dei contenuti importanti è stato ricordato correttamente)',
+    '### Ricordato bene',
+    '### Mancante (in ordine di importanza)',
+    '### Errori (solo se ci sono affermazioni sbagliate)'
+  ].join('\n')
+};
+const PROMPT_INFO = [
+  ['format', 'Formattazione degli appunti', 'In Importa e in “Riformatta”. Le regole su cloze, immagini ed evidenziature e il formato della risposta si aggiungono da sole.'],
+  ['cards', 'Flashcard dagli appunti', 'Nella scheda Flashcard di una sezione, con “Genera con l’AI”. Il formato D:/R: si aggiunge da solo.'],
+  ['questions', 'Domande per il richiamo', 'In Importa e nella scheda Domande. Il formato D:/R: si aggiunge da solo.'],
+  ['front', 'Domanda di una flashcard', 'Quando l’AI propone il fronte a partire dalla risposta, anche in Trascina.'],
+  ['eval', 'Valutazione della pagina bianca', 'Quando l’AI confronta il tuo richiamo con gli appunti. La riga del punteggio serve per suggerire il voto.']
+];
+const QA_FORMAT = 'Formato della risposta, senza altro testo prima o dopo:\nD: <domanda>\nR: <risposta>';
+const promptsRec = () => state.links.find(l => l.kind === 'prompts');
+function promptText(key) {
+  const v = promptsRec()?.data?.[key];
+  return typeof v === 'string' && v.trim() ? v : PROMPT_DEFAULTS[key];
+}
+const promptCustom = key => { const v = promptsRec()?.data?.[key]; return typeof v === 'string' && !!v.trim() && v.trim() !== PROMPT_DEFAULTS[key].trim(); };
+async function setPrompt(key, value) {
+  const rec = promptsRec() || { id: '_prompts', kind: 'prompts', notebookId: '_prompts', data: {}, created: Date.now() };
+  rec.data = { ...(rec.data || {}) };
+  if (!value.trim() || value.trim() === PROMPT_DEFAULTS[key].trim()) delete rec.data[key];
+  else rec.data[key] = value;
+  await saveLink(rec);
+}
+// il prompt completo, come lo riceve l’AI
+function promptFor(key, opts = {}) {
+  const base = promptText(key).trim();
+  if (key === 'format') return formatSystem(opts);
+  if (key === 'cards' || key === 'questions') return `${base}\n\n${QA_FORMAT}`;
+  if (key === 'front') return `${base}\nRispondi solo con la domanda, senza virgolette.`;
+  if (key === 'eval') return /punteggio/i.test(base) ? base : `${base}\n\nInizia la risposta con la riga **Punteggio: X/100**.`;
+  return base;
+}
+function settingsPromptsHtml() {
+  return `
+    <section class="block" id="aiPrompts">
+      <h2>Prompt per l’AI</h2>
+      <p class="hint">Le istruzioni che l’app dà all’AI. Cambiale come vuoi: si salvano da sole e valgono su tutti i tuoi dispositivi sincronizzati. Con “Copia” prendi il prompt completo da incollare in Gemini o NotebookLM.</p>
+      ${PROMPT_INFO.map(([k, title, desc]) => `
+        <details class="prompt-box" data-pk="${k}">
+          <summary><span class="prompt-title">${title}</span><span class="pill soft prompt-flag" ${promptCustom(k) ? '' : 'hidden'}>Personalizzato</span></summary>
+          <p class="hint">${desc}</p>
+          <label class="sr-only" for="pr-${k}">${title}</label>
+          <textarea class="input prompt-ta" id="pr-${k}" rows="9" spellcheck="false">${esc(promptText(k))}</textarea>
+          <div class="inline prompt-acts">
+            <button class="btn sm" type="button" data-pcopy="${k}">Copia il prompt completo</button>
+            <button class="btn sm ghost" type="button" data-preset="${k}">Ripristina l’originale</button>
+            <span class="hint prompt-saved" aria-live="polite"></span>
+          </div>
+        </details>`).join('')}
+    </section>`;
+}
+function bindSettingsPrompts(root) {
+  const box = $('#aiPrompts', root);
+  if (!box) return;
+  const timers = {};
+  const flag = k => { const f = $(`[data-pk="${k}"] .prompt-flag`, box); if (f) f.hidden = !promptCustom(k); };
+  const saved = (k, text) => { const s = $(`[data-pk="${k}"] .prompt-saved`, box); if (s) { s.textContent = text; clearTimeout(timers[k + 's']); timers[k + 's'] = setTimeout(() => { s.textContent = ''; }, 2000); } };
+  box.addEventListener('input', e => {
+    const ta = e.target.closest('.prompt-ta');
+    if (!ta) return;
+    const k = ta.closest('[data-pk]').dataset.pk;
+    clearTimeout(timers[k]);
+    timers[k] = setTimeout(async () => { await setPrompt(k, ta.value); flag(k); saved(k, 'Salvato'); }, 700);
+  });
+  box.addEventListener('click', async e => {
+    const c = e.target.closest('[data-pcopy]');
+    if (c) {
+      const k = c.dataset.pcopy;
+      const ta = $(`#pr-${k}`, box);
+      clearTimeout(timers[k]);
+      await setPrompt(k, ta.value);
+      flag(k);
+      const st = S();
+      const full = promptFor(k, { cloze: st.aiCloze, questions: st.aiQuestions });
+      try { await navigator.clipboard.writeText(full); toast('Prompt copiato'); }
+      catch { toast('Copia non riuscita: seleziona il testo e copialo a mano', 'err'); }
+      return;
+    }
+    const r = e.target.closest('[data-preset]');
+    if (r) {
+      const k = r.dataset.preset;
+      const ok = await modal({ title: 'Ripristinare il prompt originale?', text: 'Le tue modifiche a questo prompt si perdono.', confirm: 'Ripristina' });
+      if (!ok) return;
+      clearTimeout(timers[k]);
+      await setPrompt(k, '');
+      $(`#pr-${k}`, box).value = PROMPT_DEFAULTS[k];
+      flag(k);
+      saved(k, 'Ripristinato');
+    }
+  });
+}
+
 async function init() {
   Settings.load();
   applyTheme();
@@ -5042,6 +7747,8 @@ async function init() {
     state.cards = await DB.all('cards');
     state.images = await DB.all('images');
     state.links = await DB.all('links');
+    state.pdfs = await DB.all('pdfs');
+    await loadLocalPdfIds();
     await ensureDefaultLinks();
   } catch (err) {
     setView(`<div class="empty"><p>Non riesco ad aprire l’archivio del browser: ${esc(err.message || err)}. In navigazione privata potrebbe non essere disponibile.</p></div>`);
@@ -5080,6 +7787,7 @@ async function init() {
   });
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
   setupPwa();
+  Tracker.start();
   const sharedFile = await takeSharedFile();
   const shared = sharedFile || takeSharedText();
   route();
