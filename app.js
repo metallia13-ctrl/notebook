@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.18';
+const APP_VERSION = '3.19';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -232,7 +232,64 @@ function newSection(nbId, { title, md, questions, source, groupId } = {}) {
   };
 }
 
+/* ---------------------------------------------------------------------
+   Cloze rimasti aperti: un cloze che comincia dentro un grassetto o
+   un’evidenziatura deve chiudersi prima che questi finiscano, altrimenti
+   “mangia” il testo fino al cloze successivo e lo rompe. Qui lo chiudo
+   al punto giusto; un’apertura senza chiusura viene tolta.
+   --------------------------------------------------------------------- */
+function repairClozeLine(line) {
+  if (line.indexOf('==') < 0) return line;
+  let out = '';
+  let open = -1;
+  let boldAt = -1;
+  const wraps = [];
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === '`') {
+      const k = line.indexOf('`', i + 1);
+      if (k > i) { out += line.slice(i, k + 1); i = k + 1; continue; }
+    }
+    if (line.startsWith('==', i) && line[i + 2] !== '=' && line[i - 1] !== '=') {
+      const next = line[i + 2];
+      const prev = line[i - 1];
+      if (open < 0 && next && !/\s/.test(next)) { open = out.length; out += '=='; i += 2; continue; }
+      if (open >= 0 && prev && !/\s/.test(prev)) { out += '=='; open = -1; i += 2; continue; }
+      out += '=='; i += 2; continue;
+    }
+    if (line.startsWith('**', i)) {
+      if (boldAt < 0) boldAt = out.length;
+      else {
+        if (open >= 0 && boldAt < open) { out += '=='; open = -1; }
+        boldAt = -1;
+      }
+      out += '**'; i += 2; continue;
+    }
+    const w = /^\{\{[uygbpovrtl]\|/.exec(line.slice(i, i + 4));
+    if (w) { wraps.push(out.length); out += w[0]; i += w[0].length; continue; }
+    if (line.startsWith('}}', i) && wraps.length) {
+      const at = wraps.pop();
+      if (open >= 0 && at < open) { out += '=='; open = -1; }
+      out += '}}'; i += 2; continue;
+    }
+    out += ch;
+    i++;
+  }
+  if (open >= 0) out = out.slice(0, open) + out.slice(open + 2);
+  return out;
+}
+function repairClozes(md) {
+  if (!md || md.indexOf('==') < 0) return md;
+  let fence = false;
+  return md.split('\n').map(l => {
+    if (/^\s*```/.test(l)) { fence = !fence; return l; }
+    return fence ? l : repairClozeLine(l);
+  }).join('\n');
+}
+
 async function saveSection(sec) {
+  if (typeof sec.md === 'string') sec.md = repairClozes(sec.md);
   sec.updated = Date.now();
   await DB.put('sections', sec);
   const i = state.sections.findIndex(s => s.id === sec.id);
@@ -1270,6 +1327,11 @@ function srsLabel(s) {
 function viewSection(id, mode) {
   const sec = secById(id);
   if (!sec) return notFound('Questa sezione');
+  // appunti già salvati con un cloze rimasto aperto: li sistemo una volta
+  if (mode !== 'edit' && typeof sec.md === 'string' && repairClozes(sec.md) !== sec.md) {
+    saveSection(sec).then(() => { toast('Ho chiuso un cloze rimasto aperto in questa sezione'); route(); });
+    return;
+  }
   if (!MODES.some(([m]) => m === mode)) mode = openMode(sec);
   const nb = nbById(sec.notebookId);
   const back = state.fromReview
