@@ -2203,3 +2203,64 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 .czm-btn[data-v="o"] { background: #fb923c; border: 2px solid #fb923c; }
 .czm-btn[data-v="r"] { background: #ef4444; border: 2px solid #ef4444; }
 @media (max-width: 600px) { .czm-block { margin-left: -12px; padding-left: 8px; } }
+
+/* v3.11: occlusioni sulle pagine dei PDF */
+.pdf-occ { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; }
+.pdf-occ .ann-occ { fill: rgba(245, 207, 134, 0.45); stroke: #c27c00; stroke-width: 1.2; stroke-dasharray: 4 3; }
+.pdf-occ .ann-occ.live { fill: rgba(245, 207, 134, 0.55); }
+.pdf-app.occ-quiz .pdf-occ .ann-occ { fill: #f5cf86; stroke: #c27c00; stroke-dasharray: none; cursor: pointer; }
+.pdf-app.occ-quiz .pdf-occ .ann-occ.open { fill: transparent; stroke: #0ea5e9; stroke-width: 2; }
+.pdf-app.occ-quiz .textLayer { pointer-events: none; }
+.pdf-app[data-tool="occ"] .textLayer { pointer-events: none; }
+.pdf-app[data-tool="occ"] .pdf-page { touch-action: none; -webkit-user-select: none; user-select: none; cursor: crosshair; }
+.pdf-app[data-tool="eraser"] .pdf-occ * { pointer-events: visiblePainted; }
+.occ-quiz-btn[hidden] { display: none; }
+.pdf-swatch.occ { border-radius: 2px; border: 1px dashed #c27c00; }
+
+/* v3.12: simulazione d’esame e punti deboli del Cloze */
+.exam-setup .field .check { padding: 6px 0; }
+.exam-setup .btn.big { margin-top: 6px; }
+.exam-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.exam-head .back { margin: 0 auto 0 -6px; }
+.exam-pos { color: var(--muted); font-weight: 650; font-variant-numeric: tabular-nums; }
+.exam-clock { padding: 4px 12px; border-radius: 999px; background: var(--surface-2); font-weight: 800; font-variant-numeric: tabular-nums; }
+.exam-clock.low { background: var(--danger-soft); color: var(--danger); }
+.exam-bar { height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; margin-bottom: 18px; }
+.exam-bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.3s var(--ease); }
+.exam-card .q.notes { font-size: 1.1rem; }
+.exam-card .a { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.exam-acts { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 8px; margin-top: 16px; }
+.exam-acts .btn.big { grid-column: 1 / -1; }
+.exam-hint { text-align: center; }
+.link-btn { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+.exam-score { display: flex; align-items: center; gap: 18px; padding: 20px 22px; border-radius: var(--r-xl); background: var(--surface); border: 1px solid var(--line); }
+.exam-score b { font-size: 2.8rem; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.exam-score.good b { color: var(--good); }
+.exam-score.mid b { color: var(--warn); }
+.exam-score.low b { color: var(--danger); }
+.exam-score span { color: var(--muted); }
+.exam-rows { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 6px; }
+.exam-rows li { display: grid; grid-template-columns: minmax(0, 1fr) 90px 3.2em; align-items: center; gap: 10px; }
+.exam-rows .check { padding: 4px 0; }
+.exam-row-t { display: flex; flex-direction: column; min-width: 0; }
+.exam-row-t a { color: var(--text); font-weight: 650; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exam-row-t small { color: var(--muted); }
+.exam-row-bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.exam-row-bar i { display: block; height: 100%; width: calc(var(--v) * 100%); border-radius: 999px; }
+.exam-row-bar.good i { background: var(--good); }
+.exam-row-bar.mid i { background: var(--warn); }
+.exam-row-bar.low i { background: var(--danger); }
+.exam-rows b { text-align: right; font-variant-numeric: tabular-nums; }
+.exam-end { margin-top: 22px; }
+.czw-box { margin: 0 0 16px; padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); border-radius: var(--r-lg); background: var(--danger-soft); }
+.czw-box > summary { color: var(--text); font-weight: 500; padding: 0; }
+.czw-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 8px; }
+.czw-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); }
+.czw-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; }
+.czw-dot.r { background: #ef4444; }
+.czw-dot.o { background: #fb923c; }
+.czw-main { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; }
+.czw-label { font-weight: 650; overflow-wrap: anywhere; }
+.czw-label a { color: var(--accent); }
+.czw-sub { color: var(--muted); font-size: 0.82rem; }
+.czw-acts { display: flex; gap: 6px; }

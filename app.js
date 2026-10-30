@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.10';
+const APP_VERSION = '3.12';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -816,7 +816,7 @@ function route() {
   if (p0 !== 'import' && importJob && !importJob.running) importJob = null;
   const navKey = p0 === 'nb' || p0 === 'sec' ? (state.fromReview ? 'review' : 'notebooks')
     : p0 === 'pdf' || p0 === 'pdfs' ? 'pdfs'
-    : p0 === 'tag' ? 'notebooks'
+    : p0 === 'tag' || p0 === 'exam' ? 'notebooks'
     : ['deck', 'card', 'study'].includes(p0) ? 'cards' : p0;
   $$('.nav a').forEach(a => {
     const onIt = a.dataset.nav === navKey || (a.dataset.nav === 'more' && MORE_KEYS.includes(navKey));
@@ -840,6 +840,7 @@ function route() {
     case 'tag': return viewTag(p1);
     case 'pdf': return viewPdf(p1, p2);
     case 'pdfs': return viewPdfLibrary(p1);
+    case 'exam': return viewExam(p1, p2);
     case 'deck': return viewDeck(p1);
     case 'card': return viewCardEditor(p1);
     case 'study': return viewStudy(p1);
@@ -987,6 +988,7 @@ function viewNotebook(id) {
         ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
         <button class="btn" data-act="new-sec">Scrivi una sezione</button>
         <button class="btn" data-act="new-grp">Nuovo macro-argomento</button>
+        ${secs.length ? `<a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
         <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
     </header>
@@ -1065,6 +1067,7 @@ function viewNotebook(id) {
       { key: 'write', label: 'Scrivi una sezione qui' },
       ...(parent ? [] : [{ key: 'sub', label: 'Nuovo sottoargomento' }]),
       { key: 'import', label: 'Importa qui' },
+      { key: 'exam', label: 'Simulazione d’esame su questo argomento' },
       { key: 'rename', label: 'Rinomina' },
       { key: 'up', label: 'Sposta su', disabled: si <= 0 },
       { key: 'down', label: 'Sposta giù', disabled: si === sibs.length - 1 },
@@ -1081,6 +1084,7 @@ function viewNotebook(id) {
     if (choice === 'add') return addSectionsTo(g);
     if (choice === 'write') return newSecIn(g.id);
     if (choice === 'import') return go(`#/import/${id}/${g.id}`);
+    if (choice === 'exam') { examRun = null; return go(`#/exam/${id}/${g.id}`); }
     if (choice === 'rename') {
       const name = await modal({ title: `Rinomina il ${word}`, input: true, value: g.name, confirm: 'Rinomina' });
       if (!name) return;
@@ -1570,6 +1574,15 @@ function modeCloze(sec, body) {
   bindFoldAll($('[data-act="fold-all"]', body), folds);
   bindImagesToggle($('[data-act="imgs"]', body), prepareImages($('.notes', body), sec, { cloze: true }).count);
   setupClozeMarks($('.notes', body), sec);
+  const weak = czWeakOf(sec);
+  if (weak.length) {
+    $('.notes', body).insertAdjacentHTML('beforebegin', `
+      <details class="czw-box">
+        <summary><b>Punti deboli:</b> ${weak.length === 1 ? 'una parte è rimasta' : `${weak.length} parti sono rimaste`} in rosso o arancio più volte. Conviene farne flashcard o ripassare la sezione più spesso.</summary>
+        <ul class="czw-list">${weak.map(w => czWeakItemHtml(sec, w)).join('')}</ul>
+      </details>`);
+    bindCzWeak($('.czw-box', body));
+  }
   const marks = $$('mark.cz, .cz-io', body);
   const slot = $('#gradeSlot', body);
   const hide = m => {
@@ -4484,6 +4497,7 @@ function viewGuide() {
         <li><strong>Segnalibri</strong>: tocca “Segnalibro” in alto, o premi B, per segnare la pagina che stai leggendo. Il nome si prende dalla prima riga della pagina e puoi cambiarlo. Li ritrovi nel pannello, insieme all’indice del PDF se ce l’ha.</li>
         <li><strong>Seleziona</strong> del testo per evidenziarlo in cinque colori, sottolinearlo, aggiungere una nota, crearne una flashcard o mandarlo a <strong>Trascina</strong>. Sul PC funziona anche il tasto destro.</li>
         <li>Tocca un’evidenziazione per cambiarne il colore, trasformarla in sottolineatura, aggiungere una nota o eliminarla.</li>
+        <li><strong>Occlusione</strong>: trascina sulle pagine per coprire etichette, valori o parti di uno schema. “Ripassa le occlusioni” le rende piene: tocchi un riquadro per scoprirlo e di nuovo per ricoprirlo. Toccando un riquadro fuori dal ripasso scrivi cosa c’è sotto, lo elimini o crei le flashcard della pagina (una per riquadro, con la pagina come immagine).</li>
         <li><strong>Penna</strong> per scrivere sulle pagine, anche come evidenziatore a mano libera; <strong>Gomma</strong> cancella penna ed evidenziazioni; <strong>Nota</strong> mette un appunto dove tocchi. Col pennino, il dito continua a scorrere le pagine.</li>
         <li>Il <strong>pannello</strong> ha miniature delle pagine, segnalibri e indice, tutte le note, la ricerca nel testo e Trascina.</li>
         <li><strong>Trascina</strong>: ogni brano che ci mandi diventa una bozza di flashcard con il testo sul retro. Scrivi la domanda (o falla proporre all’AI), riordina con la maniglia ⠿ e crea le flashcard. Sul PC puoi anche trascinare il testo selezionato direttamente nel pannello.</li>
@@ -4498,6 +4512,11 @@ function viewGuide() {
         <li><strong>Note cliniche</strong>: quadro clinico, sintomi e segni, materia e note. Selezionando del testo in Leggi e toccando “Nota clinica” la crei già collegata alla sezione. Si cercano per sintomo, anche combinandone più di uno.</li>
         <li><strong>Immagini</strong>: in Leggi e Cloze “Nascondi le immagini” le riduce a un riquadro da toccare. In Cloze, gli schemi con image occlusion hanno i riquadri coperti come i termini: toccali per scoprirli.</li>
         <li><strong>Link utili</strong> sono icone: “Modifica” per cambiarli.</li>
+      </ul>`)}
+    ${sec('Simulazione d’esame e punti deboli del Cloze', `
+      <ul>
+        <li><strong>Simulazione d’esame</strong>: dal notebook (pulsante in alto) o da Opzioni di un macro-argomento. Scegli quante domande, se metterci un tempo limite e da dove pescare (domande, frasi con cloze, flashcard). Le domande arrivano a turno da tutte le sezioni; alla fine vedi il punteggio sezione per sezione e puoi mettere da ripassare oggi quelle andate peggio. Non cambia i ripassi programmati.</li>
+        <li><strong>Punti deboli del Cloze</strong>: l’app ricorda il colore che dai a ogni parte, giorno per giorno. Se una parte resta rossa o arancio in almeno due letture, in cima al Cloze e nel Calendario ti propone di farne una flashcard o di ripassare la sezione prima (intervalli dimezzati).</li>
       </ul>`)}
     ${sec('Novità della 3.10', `
       <ul>
@@ -6003,6 +6022,8 @@ function viewCalendar() {
   const nbMax = nbList.length ? nbList[0][1] : 1;
   const ws = weakSections();
   const wc = weakCards();
+  const czAll = state.sections.flatMap(s => czWeakOf(s).map(w => ({ s, w }))).sort((a, b) => b.w.bad - a.w.bad);
+  const exams = (Stats.load().exams || []).slice(-5).reverse();
 
   setView(`
     <header class="page-head"><div><h1>Calendario</h1>
@@ -6045,7 +6066,10 @@ function viewCalendar() {
           <span class="row-main"><span class="row-title">${esc(s.title)}</span>
           <span class="row-sub">${esc(nbById(s.notebookId)?.name || '')}: ${again ? `${again} volte “Di nuovo”` : ''}${again && hard ? ', ' : ''}${hard ? `${hard} volte “Difficile”` : ''} negli ultimi ripassi</span></span>
         </a></li>`).join('')}</ul>` : ''}
-      ${wc.length ? `<h3 class="sub3">Flashcard sbagliate più spesso</h3><ul class="list">${wc.map(cardRow).join('')}</ul>` : ''}` : '<p class="hint">Ancora nessuno: compariranno le sezioni e le flashcard che sbagli più spesso.</p>'}
+      ${wc.length ? `<h3 class="sub3">Flashcard sbagliate più spesso</h3><ul class="list">${wc.map(cardRow).join('')}</ul>` : ''}` : ''}
+    ${czAll.length ? `<h3 class="sub3">Parti rimaste in rosso o arancio nel Cloze</h3><ul class="czw-list" id="czwAll">${czAll.slice(0, 20).map(({ s, w }) => czWeakItemHtml(s, w, { showSec: true })).join('')}</ul>` : ''}
+    ${!ws.length && !wc.length && !czAll.length ? '<p class="hint">Ancora nessuno: compariranno le sezioni, le flashcard e le parti del Cloze che sbagli più spesso.</p>' : ''}
+    ${exams.length ? `<h2 class="sub">Simulazioni d’esame</h2><ul class="list">${exams.map(x => `<li class="row"><span class="row-main"><span class="row-title">${esc(x.name)}: ${x.score}%</span><span class="row-sub">${esc(new Date(x.d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' }))}, ${x.n} domande</span></span></li>`).join('')}</ul>` : ''}
   `);
   on('[data-cal]', 'click', e => {
     const v = +e.currentTarget.dataset.cal;
@@ -6053,6 +6077,8 @@ function viewCalendar() {
     else { const d = new Date(y, m - 1 + v, 1); calMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }
     viewCalendar();
   });
+  const czBox = $('#czwAll');
+  if (czBox) bindCzWeak(czBox);
   on('[data-day]', 'click', e => { calDay = e.currentTarget.dataset.day; viewCalendar(); $('.cal-day-title')?.scrollIntoView({ block: 'nearest' }); });
   on('[data-review]', 'click', () => { state.fromReview = true; });
 }
@@ -6618,6 +6644,7 @@ function viewPdf(id, pageParam) {
           <button type="button" data-tool="pen" role="radio">Penna</button>
           <button type="button" data-tool="eraser" role="radio">Gomma</button>
           <button type="button" data-tool="note" role="radio">Nota</button>
+          <button type="button" data-tool="occ" role="radio" title="Disegna riquadri che coprono etichette e valori">Occlusione</button>
         </div>
         <span class="pdf-pen-opts" hidden>
           ${PEN_INKS.map(([c, n]) => `<button type="button" class="rt-dot ink-dot" data-ink="${c}" style="--ink:${c}" aria-label="Penna ${n.toLowerCase()}" title="${n}"></button>`).join('')}
@@ -6628,6 +6655,7 @@ function viewPdf(id, pageParam) {
           <button type="button" class="btn sm ghost" data-pdf="zoom-fit" id="pdfZoom" title="Adatta alla larghezza">100%</button>
           <button type="button" class="btn sm ghost" data-pdf="zoom+" aria-label="Ingrandisci">+</button>
         </span>
+        <button type="button" class="btn sm occ-quiz-btn" data-pdf="occ-quiz" aria-pressed="false" hidden>Ripassa le occlusioni</button>
         <button type="button" class="btn sm ghost" data-pdf="undo" title="Annulla l’ultima annotazione (Ctrl+Z)">Annulla</button>
       </div>
       <div class="pdf-main">
@@ -6650,6 +6678,7 @@ function viewPdf(id, pageParam) {
   document.documentElement.classList.add('pdf-open');
   const R = {
     doc: null, base: null, sizes: [], scale: 1, zoom: meta.zoom || 1, cur: 1,
+    occQuiz: false, occOpen: new Set(),
     tool: 'select', color: S().pdfColor || 'y', ink: S().pdfInk || '#1d4ed8', inkW: +(S().pdfInkW || 2),
     undo: [], rendered: new Map(), textCache: new Map(), hit: null, penSeen: false,
     destroyed: false, tab: S().pdfPanel || '', searchToken: 0, outline: null, thumbIo: null
@@ -6779,15 +6808,82 @@ function viewPdf(id, pageParam) {
       if (a.type === 'ink') return `<path class="ann-ink ${a.w >= 6 ? 'marker' : ''}" data-id="${a.id}" d="${inkPath(a.pts)}" stroke="${esc(a.color)}" stroke-width="${a.w}"/>`;
       return '';
     }).join('');
+    let occ = el.querySelector('svg.pdf-occ');
+    if (!occ) {
+      occ = document.createElementNS(SVG_NS, 'svg');
+      occ.setAttribute('class', 'pdf-occ');
+      occ.setAttribute('preserveAspectRatio', 'none');
+      el.append(occ);
+    }
+    occ.setAttribute('viewBox', `0 0 ${sz.width} ${sz.height}`);
+    occ.innerHTML = anns.filter(a => a.type === 'occ').map(a => {
+      const r = a.rects[0];
+      return `<rect class="ann-occ ${R.occOpen.has(a.id) ? 'open' : ''}" data-id="${a.id}" x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="2"/>`;
+    }).join('');
+    refreshOccBtn();
     let pins = el.querySelector('.pdf-pins');
     if (!pins) { pins = document.createElement('div'); pins.className = 'pdf-pins'; el.append(pins); }
-    pins.innerHTML = anns.filter(a => a.type === 'note' || (a.note && a.rects)).map(a => {
+    pins.innerHTML = anns.filter(a => a.type === 'note' || (a.note && a.rects && a.type !== 'occ')).map(a => {
       const pos = a.type === 'note' ? [a.x, a.y] : (() => { const r = a.rects[a.rects.length - 1]; return [r[0] + r[2], r[1]]; })();
       return `<button type="button" class="pdf-pin" data-ann="${a.id}" style="left:${(pos[0] / sz.width * 100).toFixed(3)}%;top:${(pos[1] / sz.height * 100).toFixed(3)}%" aria-label="Nota: ${esc((a.note || '').slice(0, 60))}">✎</button>`;
     }).join('');
     el.classList.toggle('bm', meta.bookmarks.some(b => b.page === n));
   };
   const redrawPages = pages => [...new Set(pages)].forEach(drawAnnots);
+  function refreshOccBtn() {
+    const b = $('[data-pdf="occ-quiz"]', app);
+    if (!b) return;
+    const has = meta.annots.some(a => a.type === 'occ');
+    b.hidden = !has && !R.occQuiz;
+    b.setAttribute('aria-pressed', R.occQuiz);
+    b.classList.toggle('primary', R.occQuiz);
+    b.textContent = R.occQuiz ? 'Fine ripasso' : 'Ripassa le occlusioni';
+  }
+  const setOccQuiz = v => {
+    R.occQuiz = v;
+    R.occOpen.clear();
+    app.classList.toggle('occ-quiz', v);
+    if (v && R.tool !== 'select') setTool('select');
+    redrawPages(meta.annots.filter(a => a.type === 'occ').map(a => a.page));
+    refreshOccBtn();
+    if (v) toast('Tocca un riquadro per scoprirlo, toccalo di nuovo per coprirlo');
+  };
+  // Flashcard di image occlusion da una pagina: la pagina diventa un’immagine
+  const occCards = async n => {
+    const occs = meta.annots.filter(a => a.page === n && a.type === 'occ' && !a.card);
+    if (!occs.length) { toast('Su questa pagina non ci sono occlusioni nuove'); return; }
+    try {
+      const page = await R.doc.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: Math.min(3, 1400 / base.width) });
+      const c = document.createElement('canvas');
+      c.width = Math.floor(vp.width);
+      c.height = Math.floor(vp.height);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvas: c, canvasContext: ctx, viewport: vp }).promise;
+      const blob = await new Promise(res => c.toBlob(res, 'image/webp', 0.85));
+      const im = await saveImage({ blob, w: c.width, h: c.height }, meta.notebookId);
+      const group = uid();
+      const masks = occs.map(a => { const r = a.rects[0]; return { id: a.id, x: r[0] / base.width, y: r[1] / base.height, w: r[2] / base.width, h: r[3] / base.height }; });
+      const tags = tagsOf(secById(meta.sectionId));
+      const cards = occs.map(a => {
+        const card = newCard(meta.notebookId, { front: '', back: a.note || '', sectionId: meta.sectionId });
+        card.type = 'occlusion';
+        card.io = { group, imageId: im.id, masks, maskId: a.id };
+        card.pdf = { id: meta.id, page: n };
+        if (tags.length) card.tags = [...tags];
+        a.card = group;
+        return card;
+      });
+      await saveCards(cards);
+      saveSoon();
+      toast(cards.length === 1 ? 'Flashcard creata' : `${cards.length} flashcard create, una per riquadro`);
+    } catch (err) {
+      toast('Non riesco a creare le flashcard da questa pagina', 'err');
+    }
+  };
   const addAnnots = list => {
     if (!list.length) return;
     meta.annots.push(...list);
@@ -6951,18 +7047,21 @@ function viewPdf(id, pageParam) {
   }
   const annotSheet = a => {
     const isMark = a.type === 'hl' || a.type === 'ul';
+    const isOcc = a.type === 'occ';
     const sh = openSheet(`
-      <h2>${a.type === 'hl' ? 'Evidenziazione' : a.type === 'ul' ? 'Sottolineatura' : a.type === 'ink' ? 'Tratto a penna' : 'Nota'}, pagina ${a.page}</h2>
+      <h2>${a.type === 'hl' ? 'Evidenziazione' : a.type === 'ul' ? 'Sottolineatura' : a.type === 'ink' ? 'Tratto a penna' : isOcc ? 'Occlusione' : 'Nota'}, pagina ${a.page}</h2>
+      ${isOcc ? `<p class="sheet-sub">${a.card ? 'Ha già la sua flashcard.' : 'Puoi trasformare le occlusioni di questa pagina in flashcard da ripassare con le altre.'}</p>` : ''}
       ${a.text ? `<blockquote class="pdf-quote">${esc(a.text.slice(0, 500))}</blockquote>` : ''}
       ${isMark ? `
         <div class="pdf-ann-colors" role="group" aria-label="Colore">
           ${PDF_COLORS.map(([k, , , n]) => `<button type="button" class="rt-dot pdf-hl-dot ${a.color === k ? 'on' : ''}" data-ac="${k}" style="--dot:${pdfCol(k)}" aria-label="${n}" aria-pressed="${a.color === k}"></button>`).join('')}
           <button type="button" class="btn sm ghost" data-aa="type">${a.type === 'hl' ? 'Trasforma in sottolineatura' : 'Trasforma in evidenziazione'}</button>
         </div>` : ''}
-      ${a.type !== 'ink' ? `<label class="field"><span>Nota</span><textarea class="input card-ta" id="anNote" rows="3" placeholder="Facoltativa">${esc(a.note || '')}</textarea></label>` : ''}
+      ${a.type !== 'ink' ? `<label class="field"><span>${isOcc ? 'Cosa c’è sotto (facoltativo, diventa la risposta della flashcard)' : 'Nota'}</span><textarea class="input card-ta" id="anNote" rows="3" placeholder="Facoltativa">${esc(a.note || '')}</textarea></label>` : ''}
       <div class="modal-actions">
         <button class="btn ghost danger" type="button" data-aa="del">Elimina</button>
         ${a.text ? '<button class="btn ghost" type="button" data-aa="drag">Trascina</button><button class="btn ghost" type="button" data-aa="card">Flashcard</button>' : ''}
+        ${isOcc ? '<button class="btn ghost" type="button" data-aa="occcards">Flashcard dalla pagina</button>' : ''}
         <button class="btn primary" type="button" data-aa="ok">Fatto</button>
       </div>`, { label: 'Annotazione', onClose: () => keepNote() });
     const keepNote = () => { const t = $('#anNote', sh.el); if (t && meta.annots.includes(a) && t.value.trim() !== (a.note || '')) { a.note = t.value.trim(); saveSoon(); drawAnnots(a.page); refreshPanel('notes'); } };
@@ -6982,6 +7081,7 @@ function viewPdf(id, pageParam) {
       keepNote();
       sh.close();
       if (act === 'drag') { addDraft(a.text, a.page); toast('Aggiunto a Trascina'); }
+      if (act === 'occcards') await occCards(a.page);
       if (act === 'card') {
         const card = await openCardSheet({ back: a.text, sectionId: meta.sectionId, notebookId: meta.notebookId });
         if (card) { card.pdf = { id: meta.id, page: a.page }; await saveCard(card); }
@@ -7013,13 +7113,25 @@ function viewPdf(id, pageParam) {
   };
   const eraseAt = e => {
     const hit = document.elementFromPoint(e.clientX, e.clientY);
-    const g = hit && hit.closest && hit.closest('svg.pdf-ann [data-id]');
+    const g = hit && hit.closest && hit.closest('svg.pdf-ann [data-id], svg.pdf-occ [data-id]');
     if (g) removeAnnots([g.dataset.id]);
   };
   pagesEl.addEventListener('pointerdown', e => {
     const el = e.target.closest('.pdf-page');
     if (!el || e.target.closest('.pdf-pin')) return;
     if (e.pointerType === 'pen') R.penSeen = true;
+    if (R.tool === 'occ') {
+      if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
+      if (e.button > 0) return;
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      const svg = el.querySelector('svg.pdf-occ') || (drawAnnots(+el.dataset.p), el.querySelector('svg.pdf-occ'));
+      const r = document.createElementNS(SVG_NS, 'rect');
+      r.setAttribute('class', 'ann-occ live');
+      svg.append(r);
+      ink = { id: e.pointerId, el, occ: r, p0: pointInPage(el, e) };
+      return;
+    }
     if (R.tool === 'pen' || R.tool === 'eraser') {
       if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
       if (e.button > 0) return;
@@ -7040,6 +7152,13 @@ function viewPdf(id, pageParam) {
     if (pan && e.pointerId === pan.id) { scroller.scrollBy(pan.x - e.clientX, pan.y - e.clientY); pan.x = e.clientX; pan.y = e.clientY; return; }
     if (!ink || e.pointerId !== ink.id) return;
     if (ink.eraser) { eraseAt(e); return; }
+    if (ink.occ) {
+      const [x, y] = pointInPage(ink.el, e);
+      const [x0, y0] = ink.p0;
+      ink.box = [Math.min(x, x0), Math.min(y, y0), Math.abs(x - x0), Math.abs(y - y0)].map(v => +v.toFixed(2));
+      ['x', 'y', 'width', 'height'].forEach((k, i) => ink.occ.setAttribute(k, ink.box[i]));
+      return;
+    }
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of evs) {
       const p = pointInPage(ink.el, ev);
@@ -7054,6 +7173,11 @@ function viewPdf(id, pageParam) {
     const cur = ink;
     ink = null;
     if (cur.eraser) return;
+    if (cur.occ) {
+      cur.occ.remove();
+      if (cur.box && cur.box[2] > 6 && cur.box[3] > 4) addAnnots([{ id: uid(), type: 'occ', page: +cur.el.dataset.p, rects: [cur.box], created: Date.now() }]);
+      return;
+    }
     cur.path.remove();
     addAnnots([{ id: uid(), type: 'ink', page: +cur.el.dataset.p, color: R.ink, w: R.inkW, pts: cur.pts, created: Date.now() }]);
   };
@@ -7074,7 +7198,12 @@ function viewPdf(id, pageParam) {
     if (R.tool === 'select') {
       const sel = document.getSelection();
       if (sel && !sel.isCollapsed) return;
-      const a = hitAnnot(n, x, y);
+      const occA = meta.annots.filter(o => o.page === n && o.type === 'occ').reverse().find(o => { const r = o.rects[0]; return x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]; });
+      if (R.occQuiz) {
+        if (occA) { if (R.occOpen.has(occA.id)) R.occOpen.delete(occA.id); else R.occOpen.add(occA.id); drawAnnots(n); }
+        return;
+      }
+      const a = occA || hitAnnot(n, x, y);
       if (a) annotSheet(a);
     }
   });
@@ -7197,8 +7326,8 @@ function viewPdf(id, pageParam) {
     panelBody.innerHTML = list.length || inks ? `
       <ul class="pdf-plist">${list.map(a => `
         <li><button type="button" class="pdf-pitem note-item" data-go="${a.page}" data-annid="${a.id}">
-          <span class="pdf-swatch ${a.type}" style="--dot:${a.type === 'note' ? 'var(--accent)' : pdfCol(a.color, a.type === 'ul' ? 2 : 1)}"></span>
-          <span class="pdf-pitem-t">${a.text ? esc(a.text.slice(0, 160)) : ''}${a.note ? `<em>${esc(a.note.slice(0, 160))}</em>` : ''}${!a.text && !a.note ? '<em>Senza testo</em>' : ''}</span>
+          <span class="pdf-swatch ${a.type}" style="--dot:${a.type === 'note' ? 'var(--accent)' : a.type === 'occ' ? '#f5cf86' : pdfCol(a.color, a.type === 'ul' ? 2 : 1)}"></span>
+          <span class="pdf-pitem-t">${a.type === 'occ' ? 'Occlusione' : ''}${a.text ? esc(a.text.slice(0, 160)) : ''}${a.note ? `<em>${esc(a.note.slice(0, 160))}</em>` : ''}${!a.text && !a.note && a.type !== 'occ' ? '<em>Senza testo</em>' : ''}</span>
           <span class="pdf-pitem-p">p. ${a.page}</span></button></li>`).join('')}</ul>
       ${inks ? `<p class="hint">${inks} ${inks === 1 ? 'tratto' : 'tratti'} a penna.</p>` : ''}`
       : '<p class="hint">Le evidenziazioni, le sottolineature e le note compaiono qui, in ordine di pagina.</p>';
@@ -7509,6 +7638,7 @@ function viewPdf(id, pageParam) {
     else if (act === 'zoom-') zoomTo(R.zoom / 1.2);
     else if (act === 'zoom-fit') zoomTo(1);
     else if (act === 'undo') undo();
+    else if (act === 'occ-quiz') setOccQuiz(!R.occQuiz);
   });
   panel.addEventListener('click', e => { const b = e.target.closest('[data-ptab]'); if (b) openPanel(b.dataset.ptab); });
   $('.pdf-pen-size', app).value = String(R.inkW);
@@ -8051,8 +8181,8 @@ function setupClozeMarks(article, sec) {
   if (!article) return;
   const folds = $$('.fold', article);
   const targets = folds.length
-    ? folds.map(f => ({ el: f, host: f.querySelector(':scope > .fold-h'), key: f.dataset.fold }))
-    : [...article.children].filter(el => el.textContent.trim()).map((el, i) => ({ el, host: el, key: `b${i}:${el.textContent.trim().slice(0, 24)}` }));
+    ? folds.map(f => ({ el: f, host: f.querySelector(':scope > .fold-h'), key: f.dataset.fold, label: f.querySelector(':scope > .fold-h')?.textContent.trim() }))
+    : [...article.children].filter(el => el.textContent.trim()).map((el, i) => ({ el, host: el, key: `b${i}:${el.textContent.trim().slice(0, 24)}`, label: el.textContent.trim().slice(0, 60) }));
   const marks = () => (sec.czMarks && typeof sec.czMarks === 'object' ? sec.czMarks : (sec.czMarks = {}));
   const paint = t => {
     const v = marks()[t.key] || '';
@@ -8078,6 +8208,7 @@ function setupClozeMarks(article, sec) {
       const i = CZ_MARKS.indexOf(m[t.key] || '');
       const next = i === CZ_MARKS.length - 1 ? '' : CZ_MARKS[i + 1];
       if (next) m[t.key] = next; else delete m[t.key];
+      recordCzMark(sec, t.key, next, t.label, t.el.textContent.replace(/\s+/g, ' ').trim());
       paint(t);
       clearTimeout(setupClozeMarks.t);
       setupClozeMarks.t = setTimeout(() => saveSection(sec), 800);
@@ -8202,6 +8333,258 @@ function mergePdfMeta(local, remote, rUpdated) {
   if (after === before) return false;
   local.updated = Date.now();
   return true;
+}
+
+/* =====================================================================
+   v3.12: simulazione d’esame e punti deboli dai segni colorati del Cloze
+   ===================================================================== */
+const shuffleArr = a => { const r = [...a]; for (let i = r.length - 1; i > 0; i--) { const k = Math.floor(Math.random() * (i + 1)); [r[i], r[k]] = [r[k], r[i]]; } return r; };
+async function boostSection(sec) {
+  if (sec.studyhub) { toast('Questa sezione la pianifica StudyHub: segnala lì che vuoi rivederla prima', 'err'); return false; }
+  sec.srs = { ...sec.srs, due: todayStr(), interval: Math.max(1, Math.round((sec.srs?.interval || 1) / 2)) };
+  await saveSection(sec);
+  updateBadge();
+  return true;
+}
+
+/* ---------- Cloze: storico dei segni e punti deboli ---------- */
+function recordCzMark(sec, key, color, label, text) {
+  if (!sec.czHist || typeof sec.czHist !== 'object') sec.czHist = {};
+  const e = sec.czHist[key] || (sec.czHist[key] = { label: '', text: '', h: [] });
+  e.label = String(label || '').slice(0, 120);
+  e.text = String(text || '').slice(0, 800);
+  const d = todayStr();
+  const last = e.h[e.h.length - 1];
+  if (last && last.d === d) last.c = color || '';
+  else e.h.push({ d, c: color || '' });
+  e.h = e.h.slice(-20);
+}
+// parti rimaste rosse o arancio in almeno due letture recenti, e ancora segnate così
+function czWeakOf(sec) {
+  const hist = sec.czHist && typeof sec.czHist === 'object' ? sec.czHist : {};
+  const now = sec.czMarks || {};
+  return Object.entries(hist).map(([key, e]) => {
+    const bad = (e.h || []).slice(-6).filter(x => x.c === 'r' || x.c === 'o').length;
+    const cur = now[key] || (e.h || []).slice(-1)[0]?.c || '';
+    return { key, label: e.label, text: e.text, bad, cur };
+  }).filter(x => x.bad >= 2 && (x.cur === 'r' || x.cur === 'o')).sort((a, b) => b.bad - a.bad);
+}
+function czWeakItemHtml(sec, w, { showSec = false } = {}) {
+  return `
+    <li class="czw-item" data-czw="${sec.id}" data-key="${esc(w.key)}">
+      <span class="czw-dot ${w.cur}" aria-hidden="true"></span>
+      <span class="czw-main">
+        <span class="czw-label">${showSec ? `<a href="#/sec/${sec.id}/cloze">${esc(sec.title)}</a> › ` : ''}${esc(w.label || 'Paragrafo')}</span>
+        <span class="czw-sub">${w.bad} ${w.bad === 1 ? 'volta' : 'volte'} in rosso o arancio nelle ultime letture</span>
+      </span>
+      <span class="czw-acts">
+        <button type="button" class="btn sm" data-czw-act="card">Crea flashcard</button>
+        <button type="button" class="btn sm ghost" data-czw-act="boost">Ripassa prima</button>
+      </span>
+    </li>`;
+}
+function bindCzWeak(root) {
+  root.addEventListener('click', async e => {
+    const b = e.target.closest('[data-czw-act]');
+    if (!b) return;
+    const li = b.closest('[data-czw]');
+    const sec = secById(li.dataset.czw);
+    if (!sec) return;
+    const w = czWeakOf(sec).find(x => x.key === li.dataset.key) || { label: '', text: '' };
+    if (b.dataset.czwAct === 'card') {
+      const body = w.text && w.label && w.text.startsWith(w.label) ? w.text.slice(w.label.length).trim() : w.text;
+      await openCardSheet({ front: w.label ? `Spiega: ${w.label}` : '', back: body || w.text || '', sectionId: sec.id, notebookId: sec.notebookId });
+    } else if (await boostSection(sec)) {
+      toast(`${sec.title} è da ripassare oggi, con intervalli più brevi`);
+    }
+  });
+}
+
+/* ---------- Simulazione d’esame ---------- */
+let examRun = null;
+let examTimer = null;
+let examStepOff = null;
+function examScope(nbId, gid) {
+  const nb = nbById(nbId);
+  if (!nb) return null;
+  const g = gid ? groupsOf(nb).find(x => x.id === gid) : null;
+  const ids = g ? new Set([g.id, ...subGroups(nb, g).map(x => x.id)]) : null;
+  const secs = secsOf(nb.id).filter(s => !ids || ids.has(s.groupId));
+  return { nb, g, secs, key: `${nb.id}/${g ? g.id : ''}`, name: g ? `${nb.name} › ${g.name}` : nb.name };
+}
+function examPool(sc, types) {
+  const bySec = new Map();
+  const add = (sid, it) => { if (!bySec.has(sid)) bySec.set(sid, []); bySec.get(sid).push(it); };
+  const secIds = new Set(sc.secs.map(s => s.id));
+  for (const s of sc.secs) {
+    if (types.q) (s.questions || []).forEach(q => { if (q.q) add(s.id, { t: 'q', sid: s.id, q: q.q, a: q.a || '' }); });
+    if (types.c) clozeCardsFromMd(s.md).forEach(c => add(s.id, { t: 'c', sid: s.id, q: c.front, a: c.back }));
+  }
+  if (types.f) state.cards.filter(c => !c.suspended && secIds.has(c.sectionId)).forEach(c => add(c.sectionId, { t: 'f', sid: c.sectionId, cid: c.id }));
+  return bySec;
+}
+// pesca a turno da ogni sezione, così l’esame copre tutto il programma
+function examSample(bySec, n) {
+  const lists = shuffleArr([...bySec.values()].map(shuffleArr));
+  const out = [];
+  while (out.length < n && lists.some(l => l.length)) lists.forEach(l => { if (l.length && out.length < n) out.push(l.pop()); });
+  return shuffleArr(out);
+}
+const fmtClock = ms => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+function viewExam(nbId, gid) {
+  const sc = examScope(nbId, gid);
+  if (!sc) return notFound('Questo notebook');
+  if (examRun && examRun.key === sc.key) return examRun.done ? examResults(sc) : examStep(sc);
+  const st = S();
+  const types = st.examTypes || { q: true, c: true, f: true };
+  const pool = examPool(sc, { q: true, c: true, f: true });
+  const counts = { q: 0, c: 0, f: 0 };
+  pool.forEach(l => l.forEach(it => { counts[it.t]++; }));
+  const past = (Stats.load().exams || []).filter(x => x.key === sc.key).slice(-5).reverse();
+  setView(`
+    <a class="back" href="#/nb/${sc.nb.id}">${esc(sc.nb.name)}</a>
+    <header class="page-head"><div><h1>Simulazione d’esame</h1>
+      <p class="lede">${esc(sc.name)}: ${sc.secs.length} ${sc.secs.length === 1 ? 'sezione' : 'sezioni'}. Domande pescate a caso da tutto il programma, senza toccare i ripassi programmati.</p></div></header>
+    ${counts.q + counts.c + counts.f ? `
+    <section class="block exam-setup">
+      <div class="field"><span class="lbl">Cosa includere</span>
+        <label class="check"><input type="checkbox" id="exQ" ${types.q ? 'checked' : ''} ${counts.q ? '' : 'disabled'}><span>Domande per il richiamo (${counts.q})</span></label>
+        <label class="check"><input type="checkbox" id="exC" ${types.c ? 'checked' : ''} ${counts.c ? '' : 'disabled'}><span>Frasi con cloze (${counts.c})</span></label>
+        <label class="check"><input type="checkbox" id="exF" ${types.f ? 'checked' : ''} ${counts.f ? '' : 'disabled'}><span>Flashcard (${counts.f})</span></label>
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Quante domande</span><select class="input" id="exN">${[10, 20, 30, 50].map(n => `<option value="${n}" ${n === (st.examN || 20) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        <label class="field"><span>Tempo</span><select class="input" id="exT">${[[0, 'Senza limite'], [10, '10 minuti'], [20, '20 minuti'], [30, '30 minuti'], [60, '1 ora']].map(([v, l]) => `<option value="${v}" ${v === (st.examT ?? 0) ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      </div>
+      <button class="btn primary big" data-act="ex-start">Inizia la simulazione</button>
+    </section>` : '<div class="empty"><p>Qui non ci sono ancora domande, cloze o flashcard da cui pescare.</p></div>'}
+    ${past.length ? `<h2 class="sub">Ultime simulazioni</h2><ul class="list">${past.map(x => `<li class="row"><span class="row-main"><span class="row-title">${x.score}%</span><span class="row-sub">${esc(new Date(x.d + 'T12:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long' }))}, ${x.n} domande</span></span></li>`).join('')}</ul>` : ''}`);
+  on('[data-act="ex-start"]', 'click', () => {
+    const t = { q: $('#exQ').checked, c: $('#exC').checked, f: $('#exF').checked };
+    if (!t.q && !t.c && !t.f) { toast('Scegli almeno un tipo di domanda'); return; }
+    const n = +$('#exN').value;
+    const mins = +$('#exT').value;
+    Object.assign(S(), { examTypes: t, examN: n, examT: mins });
+    Settings.save();
+    const items = examSample(examPool(sc, t), n);
+    if (!items.length) { toast('Nessuna domanda con queste scelte'); return; }
+    examRun = { key: sc.key, items, i: 0, res: [], revealed: false, start: Date.now(), limit: mins * 60000, done: false };
+    examStep(sc);
+  });
+}
+function examStep(sc) {
+  if (examStepOff) examStepOff();
+  const run = examRun;
+  if (run.i >= run.items.length) return examFinish(sc);
+  const it = run.items[run.i];
+  const card = it.t === 'f' ? state.cards.find(c => c.id === it.cid) : null;
+  if (it.t === 'f' && !card) { run.i++; return examStep(sc); }
+  const s = secById(it.sid);
+  const label = { q: 'Domanda', c: 'Completa', f: 'Flashcard' }[it.t];
+  setView(`
+    <div class="exam-head">
+      <a class="back" href="#/nb/${sc.nb.id}">${esc(sc.name)}</a>
+      <span class="exam-pos">${run.i + 1} di ${run.items.length}</span>
+      ${run.limit ? `<span class="exam-clock" id="exClock">${fmtClock(run.limit - (Date.now() - run.start))}</span>` : ''}
+    </div>
+    <div class="exam-bar"><i style="width:${(run.i / run.items.length * 100).toFixed(1)}%"></i></div>
+    <article class="qcard exam-card">
+      <p class="qnum">${label}</p>
+      ${card ? `<div class="fcard-in">${cardFaceHtml(card, run.revealed)}</div>` : `<div class="q notes">${renderMd(it.q)}</div>`}
+      ${!card && SpeechRec && !run.revealed ? `<div class="q-voice"><button class="btn sm mic-sm" type="button" data-act="qmic" aria-pressed="false">${MIC_SVG}<span>Rispondi a voce</span></button></div><p class="my-answer" hidden></p>` : ''}
+      ${run.revealed && !card ? `<div class="a"><article class="notes">${renderMd(it.a || '_Nessuna risposta salvata._')}</article></div>` : ''}
+      ${run.revealed && s ? `<p class="source">Da <a href="#/sec/${s.id}/read">${esc(s.title)}</a></p>` : ''}
+    </article>
+    <div class="exam-acts">
+      ${run.revealed ? `
+        <button class="btn wrong" data-ex="0">Sbagliata</button>
+        <button class="btn" data-ex="0.5">In parte</button>
+        <button class="btn right" data-ex="1">Giusta</button>` : '<button class="btn primary big" data-act="ex-show">Mostra la risposta</button>'}
+    </div>
+    <p class="hint exam-hint">Spazio mostra la risposta, 1, 2 e 3 per valutarti. <button class="link-btn" data-act="ex-stop">Termina ora</button></p>`);
+  let dict = null;
+  const qm = $('[data-act="qmic"]');
+  if (qm) {
+    const out = $('.my-answer');
+    let said = '';
+    dict = createDictation({
+      onText: t => { said = `${said} ${t}`.trim(); out.hidden = false; out.textContent = said; },
+      onInterim: t => { if (t) { out.hidden = false; out.textContent = `${said} ${t}`.trim(); } },
+      onState: v => { qm.setAttribute('aria-pressed', v); $('span', qm).textContent = v ? 'Stop' : 'Rispondi a voce'; }
+    });
+    qm.addEventListener('click', () => (dict.on ? dict.stop() : dict.start()));
+  }
+  const show = () => { if (dict) dict.stop(); run.revealed = true; examStep(sc); };
+  const grade = v => { run.res.push({ sid: it.sid, v }); run.i++; run.revealed = false; examStep(sc); };
+  on('[data-act="ex-show"]', 'click', show);
+  on('[data-ex]', 'click', e => grade(+e.currentTarget.dataset.ex));
+  on('[data-act="ex-stop"]', 'click', async () => {
+    const ok = await modal({ title: 'Terminare la simulazione?', text: 'Le domande a cui non hai risposto non contano nel punteggio.', confirm: 'Termina' });
+    if (ok) examFinish(sc);
+  });
+  const onKey = e => {
+    if ($('#modalRoot').children.length || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+    if (!run.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); show(); }
+    else if (run.revealed && ['1', '2', '3'].includes(e.key)) { e.preventDefault(); grade([0, 0.5, 1][+e.key - 1]); }
+  };
+  document.addEventListener('keydown', onKey);
+  clearInterval(examTimer);
+  if (run.limit) {
+    examTimer = setInterval(() => {
+      const left = run.limit - (Date.now() - run.start);
+      const c = $('#exClock');
+      if (c) { c.textContent = fmtClock(left); c.classList.toggle('low', left < 60000); }
+      if (left <= 0) { clearInterval(examTimer); toast('Tempo scaduto'); examFinish(sc); }
+    }, 1000);
+  }
+  examStepOff = () => { document.removeEventListener('keydown', onKey); clearInterval(examTimer); if (dict) dict.stop(); examStepOff = null; };
+  addCleanup(() => examStepOff && examStepOff());
+  $('[data-act="ex-show"]')?.focus({ preventScroll: true });
+}
+function examFinish(sc) {
+  const run = examRun;
+  if (!run || run.done) return examResults(sc);
+  run.done = true;
+  run.end = Date.now();
+  const n = run.res.length;
+  const score = n ? Math.round(run.res.reduce((a, r) => a + r.v, 0) / n * 100) : 0;
+  run.score = score;
+  const st = Stats.load();
+  st.exams = [...(st.exams || []), { d: todayStr(), key: sc.key, name: sc.name, n, score }].slice(-60);
+  Stats.save();
+  if (n) Stats.addReview();
+  examResults(sc);
+}
+function examResults(sc) {
+  if (examStepOff) examStepOff();
+  const run = examRun;
+  const per = new Map();
+  run.res.forEach(r => { const p = per.get(r.sid) || { ok: 0, n: 0 }; p.ok += r.v; p.n++; per.set(r.sid, p); });
+  const rows = [...per.entries()].map(([sid, p]) => ({ s: secById(sid), pct: Math.round(p.ok / p.n * 100), n: p.n })).filter(x => x.s).sort((a, b) => a.pct - b.pct);
+  const mins = Math.max(1, Math.round(((run.end || Date.now()) - run.start) / 60000));
+  setView(`
+    <a class="back" href="#/nb/${sc.nb.id}">${esc(sc.nb.name)}</a>
+    <header class="page-head"><div><h1>Risultato</h1><p class="lede">${esc(sc.name)}: ${run.res.length} di ${run.items.length} domande in ${mins} min.</p></div></header>
+    <div class="exam-score ${run.score >= 80 ? 'good' : run.score >= 60 ? 'mid' : 'low'}"><b>${run.score}%</b><span>${run.score >= 80 ? 'Pronta per l’esame su questa parte' : run.score >= 60 ? 'Buona base, qualche punto da rinforzare' : 'Da ripassare prima dell’esame'}</span></div>
+    ${rows.length ? `
+      <h2 class="sub">Sezione per sezione</h2>
+      <ul class="exam-rows">${rows.map(x => `
+        <li><label class="check"><input type="checkbox" data-boost="${x.s.id}" ${x.pct < 60 && !x.s.studyhub ? 'checked' : ''} ${x.s.studyhub ? 'disabled' : ''}>
+          <span class="exam-row-t"><a href="#/sec/${x.s.id}">${esc(x.s.title)}</a><small>${x.n} ${x.n === 1 ? 'domanda' : 'domande'}${x.s.studyhub ? ', pianificata da StudyHub' : ''}</small></span></label>
+          <span class="exam-row-bar ${x.pct >= 80 ? 'good' : x.pct >= 60 ? 'mid' : 'low'}" style="--v:${x.pct / 100}"><i></i></span><b>${x.pct}%</b></li>`).join('')}</ul>
+      <button class="btn" data-act="ex-boost">Metti da ripassare oggi le sezioni selezionate</button>` : ''}
+    <div class="row-actions exam-end">
+      <button class="btn primary" data-act="ex-again">Nuova simulazione</button>
+      <a class="btn ghost" href="#/nb/${sc.nb.id}">Torna al notebook</a>
+    </div>`);
+  on('[data-act="ex-again"]', 'click', () => { examRun = null; viewExam(sc.nb.id, sc.g ? sc.g.id : ''); });
+  on('[data-act="ex-boost"]', 'click', async () => {
+    const ids = $$('[data-boost]:checked').map(i => i.dataset.boost);
+    if (!ids.length) { toast('Seleziona almeno una sezione'); return; }
+    let k = 0;
+    for (const id of ids) { const s = secById(id); if (s && await boostSection(s)) k++; }
+    toast(`${k} ${k === 1 ? 'sezione da ripassare' : 'sezioni da ripassare'} oggi`);
+  });
 }
 
 async function init() {
