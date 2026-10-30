@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.9';
+const APP_VERSION = '3.10';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -195,6 +195,18 @@ const sortDue = (a, b) => a.srs.due.localeCompare(b.srs.due) || a.order - b.orde
 // Macro-argomenti: elenco ordinato dentro il notebook, ogni sezione ne indica uno con groupId
 const groupsOf = nb => (nb && Array.isArray(nb.groups) ? nb.groups : []);
 const groupOf = sec => groupsOf(nbById(sec.notebookId)).find(g => g.id === sec.groupId) || null;
+// un gruppo può stare dentro un macro-argomento (sottoargomento); solo due livelli
+const groupParent = (nb, g) => (g && g.parentId ? groupsOf(nb).find(x => x.id === g.parentId && !x.parentId) || null : null);
+const topGroups = nb => groupsOf(nb).filter(g => !groupParent(nb, g));
+const subGroups = (nb, g) => groupsOf(nb).filter(x => x.parentId === g.id && !groupParent(nb, g));
+function groupPathOf(sec) {
+  const nb = nbById(sec.notebookId);
+  const g = groupOf(sec);
+  if (!g) return [];
+  const p = groupParent(nb, g);
+  return p ? [p, g] : [g];
+}
+const groupPathText = sec => groupPathOf(sec).map(g => g.name).join(' › ');
 // Niente spoiler: una sezione si apre in Cloze se ha termini nascosti, altrimenti in Leggi
 const openMode = s => (countCloze(s.md) || ioMaskCount(s) ? 'cloze' : 'read');
 
@@ -286,7 +298,7 @@ const countCloze = md => ((md || '').match(clozeRe()) || []).length;
 const stripCloze = md => (md || '').replace(clozeRe(), '$1');
 
 function renderMd(md) {
-  const src = renderXrefs((md || '')
+  const src = renderXrefs(extractHtmlBlocks(md || '')
     .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`));
   const src2 = renderMarks(src).replace(clozeRe(), (m, t) => `<mark class="cz">${t}</mark>`);
   let html;
@@ -295,7 +307,7 @@ function renderMd(md) {
     html = mk.parse ? mk.parse(src2, { gfm: true, breaks: false }) : mk(src2);
   } else {
     html = src2.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')
-      .replace(/&lt;mark class=&quot;(cz|hl hl-[ygbpo])&quot;&gt;/g, '<mark class="$1">').replace(/&lt;\/mark&gt;/g, '</mark>')
+      .replace(/&lt;mark class=&quot;(cz|hl hl-[ygbpovrtl])&quot;&gt;/g, '<mark class="$1">').replace(/&lt;\/mark&gt;/g, '</mark>')
       .replace(/&lt;u class=&quot;ul&quot;&gt;/g, '<u class="ul">').replace(/&lt;\/u&gt;/g, '</u>')
       .replace(/&lt;a class=&quot;xref&quot; href=&quot;(#\/sec\/[a-z0-9]+)&quot;&gt;(.*?)&lt;\/a&gt;/g, '<a class="xref" href="$1">$2</a>')
       .replace(/&lt;span class=&quot;xref missing&quot;[^&]*?(?:&quot;[^&]*?)*&gt;(.*?)&lt;\/span&gt;/g, '<span class="xref missing">$1</span>')
@@ -375,7 +387,7 @@ function parseQuestions(txt) {
   if (cur && cur.q) out.push(cur);
   return out.filter(x => x.q);
 }
-const aiText = md => xrefPlain(stripMarks(stripCloze(md || ''))).replace(IMG_MD_RE, (m, alt) => `[immagine${alt ? `: ${alt}` : ''}]`);
+const aiText = md => xrefPlain(stripMarks(stripCloze(String(md || '').replace(/```html\s*\n([\s\S]*?)```/g, (m, h) => h.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' '))))).replace(IMG_MD_RE, (m, alt) => `[immagine${alt ? `: ${alt}` : ''}]`);
 const serializeQs = qs => (qs || []).map(x => `D: ${x.q}\nR: ${x.a}`).join('\n\n');
 
 function parseAiNotes(raw) {
@@ -660,7 +672,7 @@ function toast(msg, kind = '', action = null) {
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 300); }, action ? 6000 : 3400);
 }
 
-function modal({ title, text = '', input = false, value = '', placeholder = '', confirm = 'Conferma', cancel = 'Annulla', danger = false }) {
+function modal({ title, text = '', input = false, multiline = false, value = '', placeholder = '', confirm = 'Conferma', cancel = 'Annulla', danger = false }) {
   return new Promise(resolve => {
     const root = $('#modalRoot');
     const prevFocus = document.activeElement;
@@ -669,7 +681,9 @@ function modal({ title, text = '', input = false, value = '', placeholder = '', 
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
           <h2 id="mTitle">${esc(title)}</h2>
           ${text ? `<p>${esc(text)}</p>` : ''}
-          ${input ? `<input class="input" id="mInput" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off">` : ''}
+          ${input ? (multiline
+            ? `<textarea class="input card-ta mono-ta" id="mInput" rows="9" spellcheck="false" placeholder="${esc(placeholder)}">${esc(value)}</textarea>`
+            : `<input class="input" id="mInput" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off">`) : ''}
           <div class="modal-actions">
             <button class="btn ghost" data-m="no">${esc(cancel)}</button>
             <button class="btn ${danger ? 'danger-solid' : 'primary'}" data-m="yes">${esc(confirm)}</button>
@@ -691,7 +705,7 @@ function modal({ title, text = '', input = false, value = '', placeholder = '', 
     };
     const onKey = e => {
       if (e.key === 'Escape') { e.stopPropagation(); close(null); }
-      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); ok(); }
+      else if (e.key === 'Enter' && !(multiline && !(e.ctrlKey || e.metaKey))) { e.preventDefault(); e.stopPropagation(); ok(); }
     };
     $('[data-m="yes"]', root).onclick = ok;
     $('[data-m="no"]', root).onclick = () => close(null);
@@ -749,8 +763,8 @@ function defaultMode(s) {
 function sectionRow(s, { showNb = false, review = false } = {}) {
   const bits = [];
   if (showNb) {
-    const g = groupOf(s);
-    bits.push(esc(nbById(s.notebookId)?.name || '') + (g ? ` › ${esc(g.name)}` : ''));
+    const gp = groupPathText(s);
+    bits.push(esc(nbById(s.notebookId)?.name || '') + (gp ? ` › ${esc(gp)}` : ''));
   }
   const cz = countCloze(s.md);
   const q = (s.questions || []).length;
@@ -801,7 +815,8 @@ function route() {
   // Un’importazione finita non blocca il modulo quando ci torni
   if (p0 !== 'import' && importJob && !importJob.running) importJob = null;
   const navKey = p0 === 'nb' || p0 === 'sec' ? (state.fromReview ? 'review' : 'notebooks')
-    : p0 === 'tag' || p0 === 'pdf' ? 'notebooks'
+    : p0 === 'pdf' || p0 === 'pdfs' ? 'pdfs'
+    : p0 === 'tag' ? 'notebooks'
     : ['deck', 'card', 'study'].includes(p0) ? 'cards' : p0;
   $$('.nav a').forEach(a => {
     const onIt = a.dataset.nav === navKey || (a.dataset.nav === 'more' && MORE_KEYS.includes(navKey));
@@ -811,7 +826,7 @@ function route() {
   window.scrollTo(0, 0);
   switch (p0) {
     case 'nb': return viewNotebook(p1);
-    case 'sec': return viewSection(p1, p2);
+    case 'sec': return p2 === 'pdf' ? go(`#/pdfs/${p1}`) : viewSection(p1, p2);
     case 'import': return viewImport(p1, p2);
     case 'review': return viewReview();
     case 'settings': return viewSettings();
@@ -824,6 +839,7 @@ function route() {
     case 'glossary': return viewGlossary();
     case 'tag': return viewTag(p1);
     case 'pdf': return viewPdf(p1, p2);
+    case 'pdfs': return viewPdfLibrary(p1);
     case 'deck': return viewDeck(p1);
     case 'card': return viewCardEditor(p1);
     case 'study': return viewStudy(p1);
@@ -924,25 +940,34 @@ function viewNotebook(id) {
   const closed = new Set(foldGet(foldKey));
   const lede = [
     `${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}`,
-    groups.length ? `${groups.length} ${groups.length === 1 ? 'macro-argomento' : 'macro-argomenti'}` : '',
+    topGroups(nb).length ? `${topGroups(nb).length} ${topGroups(nb).length === 1 ? 'macro-argomento' : 'macro-argomenti'}` : '',
     due ? `${due} da ripassare oggi` : '',
     nbCards.length ? `${nbCards.length} flashcard` : ''
   ].filter(Boolean).join(', ');
-  const groupBlock = (g, i) => {
+  const groupBlock = g => {
     const gs = secs.filter(s => s.groupId === g.id);
-    const gd = gs.filter(isDue).length;
+    const subs = groupParent(nb, g) ? [] : subGroups(nb, g);
+    const all = secs.filter(s => s.groupId === g.id || subs.some(x => x.id === s.groupId));
+    const gd = all.filter(isDue).length;
+    const isSub = !!groupParent(nb, g);
+    const meta = [
+      subs.length ? `${subs.length} ${subs.length === 1 ? 'sottoargomento' : 'sottoargomenti'}` : '',
+      gs.length ? `${gs.length} ${gs.length === 1 ? 'sezione' : 'sezioni'}` : ''
+    ].filter(Boolean).join(', ') || 'Ancora vuoto';
     return `
-      <section class="grp fold" data-fold="${g.id}" data-g="${g.id}">
+      <section class="grp fold ${isSub ? 'sub-grp' : ''}" data-fold="${g.id}" data-g="${g.id}">
         <div class="grp-head">
           <button class="fold-btn" type="button" data-name="${esc(g.name)}">${CHEVRON}</button>
           <span class="grp-main">
             <h2 class="grp-title">${esc(g.name)}</h2>
-            <span class="grp-meta">${gs.length ? `${gs.length} ${gs.length === 1 ? 'micro-argomento' : 'micro-argomenti'}` : 'Ancora vuoto'}${gd ? `, <b>${gd} da ripassare</b>` : ''}</span>
+            <span class="grp-meta">${meta}${gd ? `, <b>${gd} da ripassare</b>` : ''}</span>
           </span>
           <button class="btn ghost sm grp-more" type="button" data-gmenu="${g.id}" aria-label="Opzioni per ${esc(g.name)}">Opzioni</button>
         </div>
         <div class="fold-body">
-          ${gs.length ? `<ul class="list sec-list">${gs.map(s => sectionRow(s)).join('')}</ul>` : `
+          ${gs.length ? `<ul class="list sec-list">${gs.map(s => sectionRow(s)).join('')}</ul>` : ''}
+          ${subs.map(groupBlock).join('')}
+          ${gs.length || subs.length ? '' : `
             <div class="grp-empty">
               <button class="btn sm" type="button" data-gadd="${g.id}">Aggiungi sezioni esistenti</button>
               <a class="btn sm ghost" href="#/import/${id}/${g.id}">Importa qui</a>
@@ -967,7 +992,7 @@ function viewNotebook(id) {
     </header>
     ${secs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca nel notebook" aria-label="Cerca nel notebook">' : ''}
     <div id="nbBody">
-      ${groups.length ? groups.map(groupBlock).join('') : ''}
+      ${topGroups(nb).map(groupBlock).join('')}
       ${loose.length ? `
         <section class="grp-loose">
           ${groups.length ? '<h2 class="sub">Senza macro-argomento</h2>' : ''}
@@ -1029,28 +1054,43 @@ function viewNotebook(id) {
     const gi = groups.findIndex(x => x.id === e.currentTarget.dataset.gmenu);
     const g = groups[gi];
     if (!g) return;
+    const parent = groupParent(nb, g);
+    const sibs = groups.filter(x => (parent ? x.parentId === parent.id : !groupParent(nb, x)));
+    const si = sibs.indexOf(g);
     const nIn = secs.filter(s => s.groupId === g.id).length;
+    const kids = parent ? [] : subGroups(nb, g);
+    const word = parent ? 'sottoargomento' : 'macro-argomento';
     const choice = await actionSheet(g.name, [
       { key: 'add', label: 'Aggiungi sezioni esistenti' },
       { key: 'write', label: 'Scrivi una sezione qui' },
+      ...(parent ? [] : [{ key: 'sub', label: 'Nuovo sottoargomento' }]),
       { key: 'import', label: 'Importa qui' },
       { key: 'rename', label: 'Rinomina' },
-      { key: 'up', label: 'Sposta su', disabled: gi === 0 },
-      { key: 'down', label: 'Sposta giù', disabled: gi === groups.length - 1 },
-      { key: 'delete', label: 'Elimina il macro-argomento', danger: true }
+      { key: 'up', label: 'Sposta su', disabled: si <= 0 },
+      { key: 'down', label: 'Sposta giù', disabled: si === sibs.length - 1 },
+      { key: 'delete', label: `Elimina il ${word}`, danger: true }
     ]);
+    if (choice === 'sub') {
+      const sg = await createGroupFlow(nb, g.id);
+      if (!sg) return;
+      foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
+      const moved = secs.some(s => s.groupId === g.id) ? await addSectionsTo(sg) : false;
+      if (!moved) route();
+      return;
+    }
     if (choice === 'add') return addSectionsTo(g);
     if (choice === 'write') return newSecIn(g.id);
     if (choice === 'import') return go(`#/import/${id}/${g.id}`);
     if (choice === 'rename') {
-      const name = await modal({ title: 'Rinomina il macro-argomento', input: true, value: g.name, confirm: 'Rinomina' });
+      const name = await modal({ title: `Rinomina il ${word}`, input: true, value: g.name, confirm: 'Rinomina' });
       if (!name) return;
       g.name = name;
       await saveNotebook(nb);
       return route();
     }
     if (choice === 'up' || choice === 'down') {
-      const to = gi + (choice === 'up' ? -1 : 1);
+      const other = sibs[si + (choice === 'up' ? -1 : 1)];
+      const to = groups.indexOf(other);
       const arr = [...groups];
       [arr[gi], arr[to]] = [arr[to], arr[gi]];
       nb.groups = arr;
@@ -1059,16 +1099,20 @@ function viewNotebook(id) {
     }
     if (choice === 'delete') {
       const ok = await modal({
-        title: 'Eliminare il macro-argomento?',
-        text: nIn ? `Le sue ${nIn} sezioni restano nel notebook, senza macro-argomento.` : 'È vuoto: non perdi nessuna sezione.',
+        title: `Eliminare il ${word}?`,
+        text: [
+          nIn ? `Le sue ${nIn} sezioni restano nel notebook${parent ? `, dentro ${parent.name}` : ', senza macro-argomento'}.` : 'Non perdi nessuna sezione.',
+          kids.length ? `I suoi ${kids.length} sottoargomenti diventano macro-argomenti.` : ''
+        ].filter(Boolean).join(' '),
         confirm: 'Elimina', danger: true
       });
       if (!ok) return;
-      for (const s of secs.filter(x => x.groupId === g.id)) { s.groupId = null; await saveSection(s); }
+      for (const s of secs.filter(x => x.groupId === g.id)) { s.groupId = parent ? parent.id : null; await saveSection(s); }
+      kids.forEach(k => { delete k.parentId; });
       nb.groups = groups.filter(x => x.id !== g.id);
       await saveNotebook(nb);
       foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
-      toast('Macro-argomento eliminato');
+      toast(parent ? 'Sottoargomento eliminato' : 'Macro-argomento eliminato');
       route();
     }
   });
@@ -1127,14 +1171,20 @@ function viewNotebook(id) {
   }
 }
 
-async function createGroupFlow(nb) {
-  const name = await modal({
+async function createGroupFlow(nb, parentId = null) {
+  const parent = parentId ? groupsOf(nb).find(x => x.id === parentId) : null;
+  const name = await modal(parent ? {
+    title: 'Nuovo sottoargomento',
+    text: `Dentro ${parent.name}. Raccoglie alcune sezioni del macro-argomento.`,
+    input: true, placeholder: 'Es. Valvulopatie', confirm: 'Crea'
+  } : {
     title: 'Nuovo macro-argomento',
-    text: 'Un grande tema del notebook, per esempio un apparato o un capitolo. Le sezioni che ci metti dentro sono i suoi micro-argomenti.',
+    text: 'Un grande tema del notebook, per esempio un apparato o un capitolo. Dentro puoi creare sottoargomenti e metterci le sezioni.',
     input: true, placeholder: 'Es. Sistema cardiovascolare', confirm: 'Crea'
   });
   if (!name) return null;
   const g = { id: uid(), name };
+  if (parent) g.parentId = parent.id;
   nb.groups = [...groupsOf(nb), g];
   await saveNotebook(nb);
   return g;
@@ -1177,7 +1227,7 @@ function pickSectionsSheet(nb, g) {
   return new Promise(resolve => {
     const root = $('#modalRoot');
     const others = secsOf(nb.id).filter(s => s.groupId !== g.id);
-    const where = s => groupsOf(nb).find(x => x.id === s.groupId)?.name || '';
+    const where = s => groupPathText(s);
     root.innerHTML = `
       <div class="overlay">
         <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="psTitle">
@@ -1211,7 +1261,7 @@ function pickSectionsSheet(nb, g) {
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['pdf', 'PDF'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
+const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
   if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
@@ -1230,13 +1280,17 @@ function viewSection(id, mode) {
   const nb = nbById(sec.notebookId);
   const back = state.fromReview
     ? '<a class="back" href="#/review">Ripasso</a>'
-    : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupOf(sec) ? ` › ${esc(groupOf(sec).name)}` : ''}</a>`;
+    : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
   setView(`
     ${back}
     <header class="sec-head">
       <h1>${esc(sec.title)}</h1>
       <p class="meta">${esc(srsLabel(sec))}</p>
       ${tagChips(tagsOf(sec))}
+      <div class="sec-extra">
+        <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length ? ` (${pdfsOf(sec.id).length})` : ''}</a>
+        ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
+      </div>
     </header>
     <nav class="tabs" aria-label="Modalità di studio">
       ${MODES.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}</a>`).join('')}
@@ -1252,7 +1306,7 @@ function viewSection(id, mode) {
     tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
   }
   const body = $('#modeBody');
-  ({ read: modeRead, pdf: modePdf, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
+  ({ read: modeRead, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -1385,7 +1439,7 @@ function setupFolds(article, key) {
     if (!h || !article.contains(h) || h.parentElement.classList.contains('fold-empty')) return;
     if (!e.target.closest('.fold-btn')) {
       // il titolo intero è cliccabile, tranne cloze nascosti, link e immagini
-      if (e.target.closest('mark.cz.hidden, a, img, button')) return;
+      if (e.target.closest('mark.cz, a, img, button')) return;
       const sel = document.getSelection();
       if (sel && !sel.isCollapsed) return;
     }
@@ -1428,7 +1482,7 @@ function modeRead(sec, body) {
         <p>Questa sezione è stata salvata senza formattazione AI.</p>
         <button class="btn" data-act="fmt">Formatta con ${AI.name()}</button>
       </div>` : ''}
-    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
+    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost ink-btn" data-act="ink" hidden>Scrivi a mano</button><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
       <div class="empty"><p>Sezione vuota.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`}
     ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona del testo per evidenziarlo, sottolinearlo, farne un cloze o una flashcard. Sul PC puoi anche usare il tasto destro.</p>' : ''}
     ${sec.studyhub ? `
@@ -1452,6 +1506,7 @@ function modeRead(sec, body) {
     markGlossary(notesEl);
     bindGlossaryClicks(notesEl);
     setupReadingTools(notesEl, sec);
+    setupNotesInk(notesEl, sec, $('[data-act="ink"]', body));
     const bl = backlinksOf(sec);
     if (bl.length) notesEl.insertAdjacentHTML('afterend', `<h2 class="sub backlinks">Pagine che rimandano qui</h2><ul class="list">${bl.map(s => sectionRow(s, { showNb: true })).join('')}</ul>`);
   }
@@ -1514,6 +1569,7 @@ function modeCloze(sec, body) {
   const folds = setupFolds($('.notes', body), sec.id);
   bindFoldAll($('[data-act="fold-all"]', body), folds);
   bindImagesToggle($('[data-act="imgs"]', body), prepareImages($('.notes', body), sec, { cloze: true }).count);
+  setupClozeMarks($('.notes', body), sec);
   const marks = $$('mark.cz, .cz-io', body);
   const slot = $('#gradeSlot', body);
   const hide = m => {
@@ -1527,9 +1583,7 @@ function modeCloze(sec, body) {
     if (!m.classList.contains('hidden')) return;
     m.classList.remove('hidden');
     m.classList.add('shown');
-    m.removeAttribute('aria-label');
-    m.removeAttribute('role');
-    m.tabIndex = -1;
+    m.setAttribute('aria-label', 'Termine mostrato, attiva per nasconderlo di nuovo');
     update();
   };
   const update = () => {
@@ -1538,7 +1592,12 @@ function modeCloze(sec, body) {
     if (r === marks.length && !slot.innerHTML) gradeBar(sec, slot, { mode: 'cloze' });
   };
   marks.forEach(hide);
-  body.addEventListener('click', e => { const m = e.target.closest('mark.cz.hidden, .cz-io.hidden'); if (m) reveal(m); });
+  body.addEventListener('click', e => {
+    const m = e.target.closest('mark.cz, .cz-io');
+    if (!m || !marks.includes(m)) return;
+    if (m.classList.contains('hidden')) reveal(m);
+    else { hide(m); update(); }
+  });
   on('[data-act="reveal-all"]', 'click', () => marks.forEach(reveal), body);
   on('[data-act="hide-all"]', 'click', () => { marks.forEach(hide); slot.innerHTML = ''; update(); }, body);
   const onKey = e => {
@@ -1830,7 +1889,8 @@ function modeQuiz(sec, body) {
 
 /* Modifica */
 function groupOptions(nb, selected) {
-  return `<option value="">Nessuno</option>${groupsOf(nb).map(g => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}<option value="__new">Nuovo macro-argomento…</option>`;
+  const opt = (g, label) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(label)}</option>`;
+  return `<option value="">Nessuno</option>${topGroups(nb).map(g => opt(g, g.name) + subGroups(nb, g).map(s => opt(s, `${g.name} › ${s.name}`)).join('')).join('')}<option value="__new">Nuovo macro-argomento…</option>`;
 }
 // Il menu dei macro-argomenti: la voce "Nuovo…" chiede il nome e lo crea subito
 function bindGroupSelect(select, getNb, onPick = () => {}) {
@@ -1866,6 +1926,7 @@ function modeEdit(sec, body) {
       <button class="btn sm" data-indent="-1" title="Sposta la riga a sinistra (Maiusc+Tab)">← Riduci rientro</button>
       <button class="btn sm" data-ins="table">Tabella</button>
       <button class="btn sm" data-act="xref" title="Inserisce un collegamento a un’altra sezione">Link a pagina</button>
+      <button class="btn sm" data-act="html" title="Inserisce un blocco HTML">HTML</button>
       <button class="btn sm" data-act="img">Immagine</button>
       <button class="btn sm" data-act="pdf-fig">Figura da PDF</button>
       <button class="btn sm" data-act="hw">Scrivi a mano</button>
@@ -1877,6 +1938,8 @@ function modeEdit(sec, body) {
     <details class="preview" id="prevBox"><summary>Anteprima</summary><article class="notes" id="edPrev"></article></details>
     <label class="field"><span>Domande per il richiamo, una riga “D:” e una “R:” per domanda</span>
       <textarea id="edQs" class="input qs-edit" spellcheck="false">${esc(serializeQs(sec.questions))}</textarea></label>
+    <label class="field"><span>Link a siti utili, uno per riga: Titolo | https://indirizzo</span>
+      <textarea id="edLinks" class="input qs-edit links-edit" spellcheck="false" placeholder="Radiopaedia: stenosi aortica | https://radiopaedia.org/…">${esc(secLinksOf(sec).map(l => `${l.title} | ${l.url}`).join('\n'))}</textarea></label>
     ${AI.ready() ? `<button class="btn sm" data-act="ai-qs">Aggiungi domande con ${AI.name()}</button>` : ''}
     ${otherNbs.length ? `
       <details class="move">
@@ -1892,7 +1955,22 @@ function modeEdit(sec, body) {
       <button class="btn ghost danger push" data-act="del">Elimina sezione</button>
     </div>`;
   bindGroupSelect($('#edGroup', body), () => nbById(sec.notebookId));
+  if (editJump && editJump.secId === sec.id) {
+    const jmp = editJump;
+    editJump = null;
+    setTimeout(() => jumpInTextarea($('#edMd', body), jmp), 60);
+  }
   bindTagField(body, 'edTags');
+  on('[data-act="html"]', 'click', async () => {
+    const { selectionStart: s0, selectionEnd: s1 } = ta;
+    const code = await modal({ title: 'Blocco HTML', text: 'Incolla il codice HTML, anche una pagina intera con il suo stile. Si vede in un riquadro dentro gli appunti, separato dal resto dell’app.', input: true, multiline: true, placeholder: '<div>…</div>', confirm: 'Inserisci' });
+    if (!code) return;
+    const before = ta.value.slice(0, s0);
+    const pre = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+    ta.focus();
+    ta.setRangeText(`${pre}\`\`\`html\n${code.trim()}\n\`\`\`\n\n`, s0, s1, 'end');
+    refresh();
+  }, body);
   on('[data-act="xref"]', 'click', async () => {
     const { selectionStart: s0, selectionEnd: s1 } = ta;
     const s = await sectionPickerSheet('Collega una pagina', sec.id);
@@ -2011,6 +2089,7 @@ function modeEdit(sec, body) {
     sec.groupId = gv && gv !== '__new' ? gv : null;
     sec.md = ta.value;
     sec.questions = parseQuestions($('#edQs', body).value);
+    sec.links = parseSecLinks($('#edLinks', body).value);
     sec.needsFormat = false;
     await saveSection(sec);
     await removeOrphanImages(before);
@@ -3352,6 +3431,10 @@ async function applyRemote(records) {
     if (!r.data) continue;
     const tomb = tombs.get(`${r.store}:${r.id}`);
     if (tomb && tomb.updated >= (r.updated || 0)) continue;
+    if (r.store === 'pdfs' && local) {
+      if (mergePdfMeta(local, normalizeRecord('pdfs', r.data), r.updated)) { puts.pdfs.push(local); changed++; }
+      continue;
+    }
     if (!local || (r.updated || 0) > (local.updated || 0)) {
       const rec = normalizeRecord(r.store, r.data);
       rec.updated = r.updated;
@@ -4416,6 +4499,16 @@ function viewGuide() {
         <li><strong>Immagini</strong>: in Leggi e Cloze “Nascondi le immagini” le riduce a un riquadro da toccare. In Cloze, gli schemi con image occlusion hanno i riquadri coperti come i termini: toccali per scoprirli.</li>
         <li><strong>Link utili</strong> sono icone: “Modifica” per cambiarli.</li>
       </ul>`)}
+    ${sec('Novità della 3.10', `
+      <ul>
+        <li><strong>Tre livelli</strong>: macro-argomento › sottoargomento › sezione. Da “Opzioni” di un macro-argomento scegli “Nuovo sottoargomento”.</li>
+        <li><strong>HTML negli appunti</strong>: in Modifica il pulsante “HTML” inserisce un blocco (anche una pagina intera con il suo stile), che si vede in un riquadro isolato.</li>
+        <li><strong>Link a siti</strong>: in Modifica, campo “Link a siti utili”, uno per riga (Titolo | indirizzo). Compaiono sotto il titolo della sezione.</li>
+        <li><strong>Modifica qui</strong>: in Leggi, col tasto destro su una parola (o selezionando del testo) apri Modifica con il cursore già in quel punto.</li>
+        <li><strong>Scrivi a mano</strong> in Leggi: penna in cinque colori, evidenziatore, gomma e annulla. I tratti si salvano e seguono il paragrafo su cui li hai fatti.</li>
+        <li><strong>Cloze</strong>: un secondo tocco nasconde di nuovo il termine. Il pallino a destra di ogni titolo colora la riga a sinistra (verde, giallo, arancio, rosso) per ricordare com’è andata.</li>
+        <li><strong>PDF</strong> ha la sua voce nel menu; dalla sezione ci arrivi con il pulsante “PDF” sotto il titolo. Le annotazioni fatte su dispositivi diversi ora si sommano invece di sovrascriversi.</li>
+      </ul>`)}
     ${sec('Macro e micro-argomenti', `
       <ul>
         <li>Nel notebook tocca <strong>Nuovo macro-argomento</strong> e scegli le sezioni da metterci dentro.</li>
@@ -4499,9 +4592,13 @@ const HL_COLORS = [
   { key: 'g', name: 'Verde' },
   { key: 'b', name: 'Azzurro' },
   { key: 'p', name: 'Rosa' },
-  { key: 'o', name: 'Arancio' }
+  { key: 'o', name: 'Arancio' },
+  { key: 'r', name: 'Rosso' },
+  { key: 'v', name: 'Viola' },
+  { key: 't', name: 'Turchese' },
+  { key: 'l', name: 'Lime' }
 ];
-const MARK_RE = /\{\{([uygbpo])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
+const MARK_RE = /\{\{([uygbpovrtl])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
 function renderMarks(src) {
   let out = src;
   // due passaggi: gestisce anche un sottolineato dentro un’evidenziatura
@@ -4517,7 +4614,7 @@ const stripMarks = md => {
 };
 
 /* Dal testo selezionato nella pagina al punto corrispondente del Markdown */
-const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpo]\\||\\}\\}|<[^>\\n]{1,40}>)*';
+const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpovrtl]\\||\\}\\}|<[^>\\n]{1,40}>)*';
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function countOccurrences(hay, needle) {
   if (!needle) return 0;
@@ -4548,10 +4645,10 @@ function findSourceRange(md, selText, occurrence) {
   if ((slice().match(/==/g) || []).length % 2) {
     if (md.slice(r.end, r.end + 2) === '==') r.end += 2; else if (md.slice(r.start - 2, r.start) === '==') r.start -= 2;
   }
-  const opens = (slice().match(/\{\{[uygbpo]\|/g) || []).length;
+  const opens = (slice().match(/\{\{[uygbpovrtl]\|/g) || []).length;
   const closes = (slice().match(/\}\}/g) || []).length;
   if (opens > closes && md.slice(r.end, r.end + 2) === '}}') r.end += 2;
-  if (closes > opens && /\{\{[uygbpo]\|$/.test(md.slice(r.start - 4, r.start))) r.start -= 4;
+  if (closes > opens && /\{\{[uygbpovrtl]\|$/.test(md.slice(r.start - 4, r.start))) r.start -= 4;
   return r;
 }
 
@@ -4564,7 +4661,7 @@ function applyMarkToMd(md, r, kind) {
     if (before.endsWith('==') && after.startsWith('==')) return before.slice(0, -2) + inner + after.slice(2);
     return `${before}==${inner}==${after}`;
   }
-  const wrap = before.match(/\{\{([uygbpo])\|$/);
+  const wrap = before.match(/\{\{([uygbpovrtl])\|$/);
   if (wrap && after.startsWith('}}')) {
     // stesso tipo: toglie; colore diverso: cambia colore
     if (wrap[1] === kind || kind === 'none') return before.slice(0, -4) + inner + after.slice(2);
@@ -4584,7 +4681,7 @@ function wrapSelectionInTextarea(ta, open, close) {
   const trail = sel.match(/\s*$/)[0];
   const core = sel.trim();
   let next;
-  const already = core.match(/^\{\{([uygbpo])\|([\s\S]*)\}\}$/);
+  const already = core.match(/^\{\{([uygbpovrtl])\|([\s\S]*)\}\}$/);
   if (open.startsWith('{{') && already) {
     const k = open.slice(2, 3);
     next = already[1] === k ? already[2] : `${open}${already[2]}${close}`;
@@ -4610,7 +4707,8 @@ function readingToolsHtml() {
     <button type="button" class="rt-btn" data-rt="none" title="Togli evidenziatura e sottolineatura" aria-label="Togli evidenziatura e sottolineatura">✕</button>
     <button type="button" class="rt-btn" data-rt="gloss" title="Aggiungi al glossario">Glossario</button>
     <button type="button" class="rt-btn" data-rt="clin" title="Crea una nota clinica">Nota clinica</button>
-    <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>`;
+    <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>
+    <button type="button" class="rt-btn" data-rt="edit" title="Apre Modifica con il cursore in questo punto">Modifica qui</button>`;
 }
 
 function setupReadingTools(container, sec) {
@@ -4668,6 +4766,12 @@ function setupReadingTools(container, sec) {
       await clinicSheet(null, { title: sec.title, body: c.listText || c.text, nbId: sec.notebookId, sectionId: sec.id });
       return;
     }
+    if (kind === 'edit') {
+      const r0 = findSourceRange(sec.md, c.text, c.occurrence);
+      editJump = { secId: sec.id, start: r0 ? r0.start : -1, end: r0 ? r0.end : -1, text: c.text };
+      go(`#/sec/${sec.id}/edit`);
+      return;
+    }
     if (kind === 'card') {
       const back = c.listText || c.text;
       const card = await openCardSheet({ back, sectionId: sec.id, notebookId: sec.notebookId });
@@ -4702,8 +4806,19 @@ function setupReadingTools(container, sec) {
     el.addEventListener('click', e => { const b = e.target.closest('[data-rt]'); if (b) act(b.dataset.rt); });
   });
   const onContext = e => {
-    const c = capture();
-    if (!c) return; // nessuna selezione: menu normale del browser
+    let c = capture();
+    if (!c && !e.target.closest('a, img, button, input, textarea')) {
+      // nessuna selezione: prendo la parola sotto il puntatore
+      const pos = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+      if (pos && container.contains(pos.startContainer)) {
+        const sel = document.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(pos);
+        try { sel.modify('move', 'backward', 'word'); sel.modify('extend', 'forward', 'word'); } catch { /* browser senza modify */ }
+        c = capture();
+      }
+    }
+    if (!c) return; // menu normale del browser
     e.preventDefault();
     last = c;
     bar.hidden = true;
@@ -6027,7 +6142,7 @@ async function renameXrefs(oldTitle, newTitle, skipId) {
 function sectionPickerSheet(title = 'Collega una pagina', exceptId = null) {
   return new Promise(resolve => {
     const all = state.sections.filter(s => s.id !== exceptId).sort((a, b) => a.title.localeCompare(b.title));
-    const where = s => [nbById(s.notebookId)?.name, groupOf(s)?.name].filter(Boolean).join(' › ');
+    const where = s => [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › ');
     const sh = openSheet(`
       <h2>${esc(title)}</h2>
       <input type="search" class="input search" id="spQ" placeholder="Cerca una sezione" aria-label="Cerca una sezione">
@@ -6371,7 +6486,11 @@ const PDF_COLORS = [
   ['g', '#7ee08a', '#15803d', 'Verde'],
   ['b', '#7cc7ff', '#1d4ed8', 'Azzurro'],
   ['p', '#ff9ad5', '#be185d', 'Rosa'],
-  ['o', '#ffb066', '#c2410c', 'Arancio']
+  ['o', '#ffb066', '#c2410c', 'Arancio'],
+  ['r', '#ff8a8a', '#dc2626', 'Rosso'],
+  ['v', '#c4a7ff', '#7c3aed', 'Viola'],
+  ['t', '#5eead4', '#0f766e', 'Turchese'],
+  ['l', '#c6f36b', '#4d7c0f', 'Lime']
 ];
 const PEN_INKS = [['#111111', 'Nero'], ['#1d4ed8', 'Blu'], ['#dc2626', 'Rosso'], ['#15803d', 'Verde']];
 const pdfCol = (k, i = 1) => (PDF_COLORS.find(c => c[0] === k) || PDF_COLORS[0])[i];
@@ -6428,60 +6547,6 @@ async function storePdfFile(file, sec) {
 const fmtSize = b => (b > 1048576 ? `${(b / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} kB`);
 
 /* Scheda "PDF" della sezione */
-function modePdf(sec, body) {
-  const list = pdfsOf(sec.id);
-  body.innerHTML = `
-    <div class="row-actions"><button class="btn primary" data-act="pdf-add">Carica un PDF</button></div>
-    <p class="hint">Appunti scritti a mano, slide o capitoli: li leggi qui, li evidenzi, metti segnalibri e ne ricavi flashcard. ${Sync.configured() ? 'Con la sincronizzazione attiva il file va anche su Drive e lo ritrovi sugli altri dispositivi.' : 'Attiva la sincronizzazione con Drive per ritrovarli sugli altri dispositivi.'}</p>
-    ${list.length ? `<ul class="list pdf-list">${list.map(p => {
-      const nAnn = (p.annots || []).length;
-      return `
-      <li class="pdf-row">
-        <a class="row" href="#/pdf/${p.id}">
-          <span class="pdf-ic" aria-hidden="true">PDF</span>
-          <span class="row-main"><span class="row-title">${esc(p.name)}</span>
-          <span class="row-sub">${p.pages} ${p.pages === 1 ? 'pagina' : 'pagine'}, ${fmtSize(p.size)}${p.lastPage > 1 ? `, eri a pagina ${p.lastPage}` : ''}${(p.bookmarks || []).length ? `, ${p.bookmarks.length} ${p.bookmarks.length === 1 ? 'segnalibro' : 'segnalibri'}` : ''}${nAnn ? `, ${nAnn} ${nAnn === 1 ? 'annotazione' : 'annotazioni'}` : ''}</span>
-          <span class="row-sub pdf-cloud" data-pdf-status="${p.id}">${esc(pdfCloudText(p))}</span></span>
-        </a>
-        <button class="btn sm ghost" type="button" data-pdf-more="${p.id}" aria-label="Opzioni per ${esc(p.name)}">Opzioni</button>
-      </li>`;
-    }).join('')}</ul>` : '<div class="empty"><p>Nessun PDF in questa sezione.</p></div>'}`;
-  on('[data-act="pdf-add"]', 'click', async e => {
-    const file = await choosePdfFile();
-    if (!file) return;
-    if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli un file PDF', 'err'); return; }
-    const btn = e.target.closest('button');
-    btn.disabled = true;
-    btn.textContent = 'Carico il PDF…';
-    try {
-      const meta = await storePdfFile(file, sec);
-      go(`#/pdf/${meta.id}`);
-    } catch (err) {
-      toast(err.message, 'err');
-      btn.disabled = false;
-      btn.textContent = 'Carica un PDF';
-    }
-  }, body);
-  on('[data-pdf-more]', 'click', async e => {
-    const p = pdfById(e.currentTarget.dataset.pdfMore);
-    if (!p) return;
-    const choice = await actionSheet(p.name, [
-      { key: 'open', label: 'Apri' },
-      { key: 'rename', label: 'Rinomina' },
-      { key: 'delete', label: 'Elimina il PDF', danger: true }
-    ]);
-    if (choice === 'open') go(`#/pdf/${p.id}`);
-    if (choice === 'rename') {
-      const name = await modal({ title: 'Rinomina il PDF', input: true, value: p.name, confirm: 'Rinomina' });
-      if (name) { p.name = name; await savePdfMeta(p); route(); }
-    }
-    if (choice === 'delete') {
-      const ok = await modal({ title: 'Eliminare il PDF?', text: 'Si perdono anche evidenziazioni, note e segnalibri. Le flashcard già create restano.', confirm: 'Elimina', danger: true });
-      if (ok) { await deletePdf(p.id); toast('PDF eliminato'); route(); }
-    }
-  }, body);
-}
-
 // Livello di testo: compatibile con pdf.js 3 (renderTextLayer) e successivi (TextLayer)
 async function renderTextLayerCompat(textContent, container, viewport) {
   const L = window.pdfjsLib;
@@ -6536,7 +6601,7 @@ function viewPdf(id, pageParam) {
   meta.bookmarks = meta.bookmarks || [];
   meta.drafts = meta.drafts || [];
   const sec = secById(meta.sectionId);
-  const back = sec ? `#/sec/${sec.id}/pdf` : '#/notebooks';
+  const back = sec ? `#/pdfs/${sec.id}` : '#/pdfs';
   const panelTabs = [['pages', 'Pagine'], ['marks', 'Segnalibri'], ['notes', 'Note'], ['search', 'Cerca'], ['drag', 'Trascina']];
   setView(`
     <div class="pdf-app" id="pdfApp">
@@ -6735,6 +6800,7 @@ function viewPdf(id, pageParam) {
     const gone = meta.annots.filter(a => ids.includes(a.id));
     if (!gone.length) return;
     meta.annots = meta.annots.filter(a => !ids.includes(a.id));
+    markGone(meta, ids);
     R.undo.push({ del: gone });
     saveSoon();
     redrawPages(gone.map(a => a.page));
@@ -6746,9 +6812,11 @@ function viewPdf(id, pageParam) {
     if (u.add) {
       const gone = meta.annots.filter(a => u.add.includes(a.id));
       meta.annots = meta.annots.filter(a => !u.add.includes(a.id));
+      markGone(meta, u.add);
       redrawPages(gone.map(a => a.page));
     } else if (u.del) {
       meta.annots.push(...u.del);
+      unGone(meta, u.del.map(a => a.id));
       redrawPages(u.del.map(a => a.page));
     }
     saveSoon();
@@ -7041,9 +7109,10 @@ function viewPdf(id, pageParam) {
     const ex = meta.bookmarks.find(b => b.page === n);
     if (ex) {
       meta.bookmarks = meta.bookmarks.filter(b => b !== ex);
+      markGone(meta, [ex.id]);
       saveSoon();
       refreshBm();
-      toast(`Segnalibro di pagina ${n} tolto`, '', { label: 'Annulla', fn: () => { meta.bookmarks.push(ex); meta.bookmarks.sort((a, b) => a.page - b.page); saveSoon(); refreshBm(); } });
+      toast(`Segnalibro di pagina ${n} tolto`, '', { label: 'Annulla', fn: () => { unGone(meta, [ex.id]); meta.bookmarks.push(ex); meta.bookmarks.sort((a, b) => a.page - b.page); saveSoon(); refreshBm(); } });
       return;
     }
     const b = { id: uid(), page: n, title: await bookmarkTitle(n), created: Date.now() };
@@ -7251,6 +7320,7 @@ function viewPdf(id, pageParam) {
     });
     await saveCards(cards);
     meta.drafts = meta.drafts.filter(x => !list.includes(x));
+    markGone(meta, list.map(x => x.id));
     saveSoon();
     drawDrag();
     toast(cards.length === 1 ? 'Flashcard creata' : `${cards.length} flashcard create`);
@@ -7294,7 +7364,7 @@ function viewPdf(id, pageParam) {
     const del = e.target.closest('[data-bmdel]');
     if (del) { const b = meta.bookmarks.find(x => x.id === del.dataset.bmdel); if (b) toggleBookmark(b.page); return; }
     const dd = e.target.closest('[data-ddel]');
-    if (dd) { meta.drafts = meta.drafts.filter(x => x.id !== dd.dataset.ddel); saveSoon(); drawDrag(); return; }
+    if (dd) { meta.drafts = meta.drafts.filter(x => x.id !== dd.dataset.ddel); markGone(meta, [dd.dataset.ddel]); saveSoon(); drawDrag(); return; }
     const dm = e.target.closest('[data-dmake]');
     if (dm) {
       const x = meta.drafts.find(d => d.id === dm.dataset.dmake);
@@ -7736,6 +7806,404 @@ function bindSettingsPrompts(root) {
   });
 }
 
+/* =====================================================================
+   v3.10: link nelle sezioni, blocchi HTML, “Modifica qui”, scrittura a
+   mano in Leggi, segni colorati in Cloze, libreria dei PDF, annotazioni
+   dei PDF unite tra dispositivi
+   ===================================================================== */
+let editJump = null;
+
+/* ---------- Link a siti dentro una sezione ---------- */
+const secLinksOf = sec => (Array.isArray(sec.links) ? sec.links.filter(l => l && l.url) : []);
+function parseSecLinks(text) {
+  return String(text || '').split('\n').map(line => {
+    const t = line.trim();
+    if (!t) return null;
+    const i = t.lastIndexOf('|');
+    let title = i >= 0 ? t.slice(0, i).trim() : '';
+    let url = (i >= 0 ? t.slice(i + 1) : t).trim();
+    if (!/^https?:\/\//i.test(url)) {
+      if (!/^[\w-]+(\.[\w-]+)+/.test(url)) return null;
+      url = `https://${url}`;
+    }
+    try { url = new URL(url).href; } catch { return null; }
+    return { title: title || linkHost(url), url };
+  }).filter(Boolean).slice(0, 30);
+}
+
+/* ---------- Blocchi HTML: ```html … ``` diventa un riquadro isolato ---------- */
+function extractHtmlBlocks(md) {
+  return md.replace(/^```html[ \t]*\n([\s\S]*?)\n?```[ \t]*$/gim, (m, code) => {
+    const b64 = btoa(unescape(encodeURIComponent(code)));
+    return `\n<div class="html-embed" data-html="${b64}"></div>\n`;
+  });
+}
+const EMBED_RESIZE = `<script>(function(){function s(){parent.postMessage({nbEmbedH:Math.ceil(document.documentElement.scrollHeight)},'*')}new ResizeObserver(s).observe(document.documentElement);addEventListener('load',s);s();})();<\/script>`;
+function hydrateHtmlBlocks(root) {
+  const list = root.matches && root.matches('.html-embed') ? [root] : [...root.querySelectorAll('.html-embed:not(.ready)')];
+  list.forEach(box => {
+    if (box.classList.contains('ready')) return;
+    box.classList.add('ready');
+    let code = '';
+    try { code = decodeURIComponent(escape(atob(box.dataset.html || ''))); } catch { return; }
+    const fr = document.createElement('iframe');
+    fr.className = 'html-frame';
+    fr.setAttribute('sandbox', 'allow-scripts allow-popups allow-forms');
+    fr.setAttribute('title', 'Contenuto HTML');
+    fr.setAttribute('loading', 'lazy');
+    const dark = document.documentElement.dataset.theme === 'dark';
+    fr.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank"><style>html{color-scheme:${dark ? 'dark' : 'light'}}body{margin:0;padding:12px;font-family:system-ui,sans-serif;line-height:1.5;${dark ? 'color:#e9ecf7;' : ''}}img{max-width:100%}</style></head><body>${code}${EMBED_RESIZE}</body></html>`;
+    box.append(fr);
+  });
+}
+window.addEventListener('message', e => {
+  const h = e.data && e.data.nbEmbedH;
+  if (!h) return;
+  document.querySelectorAll('iframe.html-frame').forEach(fr => {
+    if (fr.contentWindow === e.source) fr.style.height = `${Math.min(Math.max(h, 40), 4000)}px`;
+  });
+});
+
+/* ---------- Modifica qui: porta il cursore nel punto scelto ---------- */
+function jumpInTextarea(ta, jmp) {
+  if (!ta) return;
+  let { start, end } = jmp;
+  if (start < 0 && jmp.text) {
+    const i = ta.value.toLowerCase().indexOf(jmp.text.trim().toLowerCase().slice(0, 60));
+    if (i >= 0) { start = i; end = i + Math.min(jmp.text.trim().length, 60); }
+  }
+  if (start < 0) { ta.focus(); toast('Non trovo il punto esatto: cercalo nel testo'); return; }
+  // misuro dove cade il punto con una copia invisibile del campo
+  const cs = getComputedStyle(ta);
+  const mirror = document.createElement('div');
+  ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderLeftWidth', 'borderRightWidth', 'boxSizing', 'tabSize'].forEach(p => { mirror.style[p] = cs[p]; });
+  Object.assign(mirror.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', width: `${ta.clientWidth}px`, top: '0', left: '-9999px' });
+  mirror.textContent = ta.value.slice(0, start);
+  const mark = document.createElement('span');
+  mark.textContent = '|';
+  mirror.append(mark);
+  document.body.append(mirror);
+  const y = mark.offsetTop;
+  mirror.remove();
+  ta.focus({ preventScroll: true });
+  ta.setSelectionRange(start, end);
+  ta.scrollTop = Math.max(0, y - ta.clientHeight / 3);
+  const r = ta.getBoundingClientRect();
+  const caretY = r.top + (y - ta.scrollTop);
+  window.scrollBy(0, caretY - window.innerHeight * 0.35);
+}
+
+/* ---------- Scrittura a mano in Leggi ---------- */
+const inkBlocksOf = article => $$(':scope > :not(.fold):not(svg), .fold-body > :not(.fold), .fold > .fold-h', article);
+function setupNotesInk(article, sec, btn) {
+  if (!article || !btn) return;
+  btn.hidden = false;
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'notes-ink');
+  article.classList.add('ink-host');
+  article.append(svg);
+  const data = () => (sec.ink && Array.isArray(sec.ink.strokes) ? sec.ink : (sec.ink = { w: 0, strokes: [] }));
+  let on = false;
+  let tool = 'pen';
+  let color = S().inkColor || '#e5484d';
+  let size = +(S().inkSize || 2.5);
+  let penSeen = false;
+  let cur = null;
+  let pan = null;
+  const undoStack = [];
+  let saveT = null;
+  const save = () => { clearTimeout(saveT); saveT = setTimeout(() => saveSection(sec), 900); };
+  const blockTop = (el, ar) => el.getBoundingClientRect().top - ar.top;
+  const draw = () => {
+    const ar = article.getBoundingClientRect();
+    const W = article.clientWidth;
+    svg.setAttribute('viewBox', `0 0 ${W} ${article.scrollHeight}`);
+    svg.style.height = `${article.scrollHeight}px`;
+    const d = data();
+    if (!d.strokes.length) { svg.innerHTML = ''; return; }
+    const k = d.w ? W / d.w : 1;
+    const blocks = inkBlocksOf(article);
+    svg.innerHTML = d.strokes.map(s => {
+      const b = blocks[s.b];
+      if (!b || !b.offsetParent) return '';
+      const top = blockTop(b, ar);
+      const pts = s.p.map(([x, y]) => [+(x * k).toFixed(1), +(top + y * k).toFixed(1)]);
+      return `<path data-id="${s.id}" d="${inkPath(pts)}" stroke="${esc(s.c)}" stroke-width="${(s.s * k).toFixed(2)}" class="${s.s >= 8 ? 'marker' : ''}"/>`;
+    }).join('');
+  };
+  const ro = new ResizeObserver(() => draw());
+  ro.observe(article);
+  addCleanup(() => { ro.disconnect(); clearTimeout(saveT); if (saveT) saveSection(sec); bar.remove(); });
+  // barra degli strumenti
+  const bar = document.createElement('div');
+  bar.className = 'ink-bar';
+  bar.hidden = true;
+  bar.innerHTML = `
+    ${['#e5484d', '#1d4ed8', '#15803d', '#111111', '#f59e0b'].map(c => `<button type="button" class="rt-dot ink-dot" data-ic="${c}" style="--ink:${c}" aria-label="Colore"></button>`).join('')}
+    <select class="input ink-size" aria-label="Spessore"><option value="1.5">Fine</option><option value="2.5">Media</option><option value="4">Spessa</option><option value="12">Evidenziatore</option></select>
+    <button type="button" class="btn sm ghost" data-it="eraser" aria-pressed="false">Gomma</button>
+    <button type="button" class="btn sm ghost" data-it="undo">Annulla</button>
+    <button type="button" class="btn sm primary" data-it="done">Fine</button>`;
+  document.body.append(bar);
+  $('.ink-size', bar).value = String(size);
+  const paintTools = () => {
+    $$('[data-ic]', bar).forEach(b => b.classList.toggle('on', tool === 'pen' && b.dataset.ic === color));
+    $('[data-it="eraser"]', bar).setAttribute('aria-pressed', tool === 'eraser');
+  };
+  paintTools();
+  const setOn = v => {
+    on = v;
+    article.classList.toggle('inking', on);
+    article.dataset.inkTool = tool;
+    bar.hidden = !on;
+    btn.textContent = on ? 'Scrittura a mano attiva' : 'Scrivi a mano';
+    btn.classList.toggle('on', on);
+    if (on && !data().w) data().w = article.clientWidth;
+  };
+  btn.addEventListener('click', () => setOn(!on));
+  bar.addEventListener('click', e => {
+    const c = e.target.closest('[data-ic]');
+    if (c) { color = c.dataset.ic; tool = 'pen'; S().inkColor = color; Settings.save(); article.dataset.inkTool = tool; paintTools(); return; }
+    const t = e.target.closest('[data-it]');
+    if (!t) return;
+    if (t.dataset.it === 'eraser') { tool = tool === 'eraser' ? 'pen' : 'eraser'; article.dataset.inkTool = tool; paintTools(); }
+    if (t.dataset.it === 'done') setOn(false);
+    if (t.dataset.it === 'undo') {
+      const u = undoStack.pop();
+      if (!u) { toast('Niente da annullare'); return; }
+      const d = data();
+      if (u.add) d.strokes = d.strokes.filter(s => s.id !== u.add);
+      if (u.del) d.strokes.push(u.del);
+      draw(); save();
+    }
+  });
+  $('.ink-size', bar).addEventListener('change', e => { size = +e.target.value; S().inkSize = size; Settings.save(); });
+  const toLocal = e => {
+    const ar = article.getBoundingClientRect();
+    return [e.clientX - ar.left, e.clientY - ar.top];
+  };
+  const erase = e => {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const p = el && el.closest && el.closest('svg.notes-ink path[data-id]');
+    if (!p) return;
+    const d = data();
+    const s = d.strokes.find(x => x.id === p.dataset.id);
+    if (!s) return;
+    d.strokes = d.strokes.filter(x => x !== s);
+    undoStack.push({ del: s });
+    draw(); save();
+  };
+  article.addEventListener('pointerdown', e => {
+    if (!on) return;
+    if (e.pointerType === 'pen') penSeen = true;
+    if (e.pointerType === 'touch' && penSeen) { pan = { id: e.pointerId, y: e.clientY }; return; }
+    if (e.button > 0) return;
+    e.preventDefault();
+    article.setPointerCapture(e.pointerId);
+    if (tool === 'eraser') { cur = { id: e.pointerId, eraser: true }; erase(e); return; }
+    const [x, y] = toLocal(e);
+    // ancoro il tratto al blocco di testo sotto il primo punto, così segue il testo
+    const blocks = inkBlocksOf(article);
+    const ar = article.getBoundingClientRect();
+    let bi = 0;
+    for (let i = 0; i < blocks.length; i++) { if (!blocks[i].offsetParent) continue; if (blockTop(blocks[i], ar) <= y) bi = i; else break; }
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', size);
+    if (size >= 8) path.setAttribute('class', 'marker');
+    svg.append(path);
+    cur = { id: e.pointerId, path, pts: [[x, y]], bi, top: blocks[bi] ? blockTop(blocks[bi], ar) : 0 };
+    path.setAttribute('d', inkPath(cur.pts));
+  });
+  article.addEventListener('pointermove', e => {
+    if (pan && e.pointerId === pan.id) { window.scrollBy(0, pan.y - e.clientY); pan.y = e.clientY; return; }
+    if (!cur || e.pointerId !== cur.id) return;
+    if (cur.eraser) { erase(e); return; }
+    for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) {
+      const p = toLocal(ev);
+      const l = cur.pts[cur.pts.length - 1];
+      if (Math.hypot(p[0] - l[0], p[1] - l[1]) > 1) cur.pts.push(p);
+    }
+    cur.path.setAttribute('d', inkPath(cur.pts));
+  });
+  const end = e => {
+    if (pan && e.pointerId === pan.id) { pan = null; return; }
+    if (!cur || e.pointerId !== cur.id) return;
+    const c = cur;
+    cur = null;
+    if (c.eraser) return;
+    const d = data();
+    const k = d.w / article.clientWidth;
+    const s = { id: uid(), c: color, s: +(size * k).toFixed(2), b: c.bi, p: c.pts.map(([x, y]) => [+(x * k).toFixed(1), +((y - c.top) * k).toFixed(1)]) };
+    d.strokes.push(s);
+    undoStack.push({ add: s.id });
+    draw(); save();
+  };
+  article.addEventListener('pointerup', end);
+  article.addEventListener('pointercancel', end);
+  draw();
+}
+
+/* ---------- Cloze: riga colorata per ricordare com’è andata ---------- */
+const CZ_MARKS = ['g', 'y', 'o', 'r'];
+const CZ_MARK_NAMES = { g: 'andata bene', y: 'qualche dubbio', o: 'da rivedere', r: 'non la sapevo' };
+function setupClozeMarks(article, sec) {
+  if (!article) return;
+  const folds = $$('.fold', article);
+  const targets = folds.length
+    ? folds.map(f => ({ el: f, host: f.querySelector(':scope > .fold-h'), key: f.dataset.fold }))
+    : [...article.children].filter(el => el.textContent.trim()).map((el, i) => ({ el, host: el, key: `b${i}:${el.textContent.trim().slice(0, 24)}` }));
+  const marks = () => (sec.czMarks && typeof sec.czMarks === 'object' ? sec.czMarks : (sec.czMarks = {}));
+  const paint = t => {
+    const v = marks()[t.key] || '';
+    CZ_MARKS.forEach(c => t.el.classList.toggle(`czm-${c}`, v === c));
+    const b = t.btn;
+    b.dataset.v = v;
+    b.setAttribute('aria-label', v ? `Segnata: ${CZ_MARK_NAMES[v]}. Tocca per cambiare` : 'Segna com’è andata');
+    b.title = v ? CZ_MARK_NAMES[v] : 'Segna com’è andata: verde, giallo, arancio, rosso';
+  };
+  targets.forEach(t => {
+    if (!t.host) return;
+    t.el.classList.add('czm-block');
+    t.host.classList.add('czm-host');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'czm-btn';
+    t.btn = b;
+    t.host.append(b);
+    paint(t);
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const m = marks();
+      const i = CZ_MARKS.indexOf(m[t.key] || '');
+      const next = i === CZ_MARKS.length - 1 ? '' : CZ_MARKS[i + 1];
+      if (next) m[t.key] = next; else delete m[t.key];
+      paint(t);
+      clearTimeout(setupClozeMarks.t);
+      setupClozeMarks.t = setTimeout(() => saveSection(sec), 800);
+    });
+  });
+}
+
+/* ---------- Libreria dei PDF ---------- */
+function pdfRowHtml(p, { where = false } = {}) {
+  const nAnn = (p.annots || []).length;
+  const s = secById(p.sectionId);
+  const place = s ? [nbById(s.notebookId)?.name, groupPathText(s), s.title].filter(Boolean).join(' › ') : '';
+  return `
+    <li class="pdf-row">
+      <a class="row" href="#/pdf/${p.id}">
+        <span class="pdf-ic" aria-hidden="true">PDF</span>
+        <span class="row-main"><span class="row-title">${esc(p.name)}</span>
+        ${where && place ? `<span class="row-sub">${esc(place)}</span>` : ''}
+        <span class="row-sub">${p.pages} ${p.pages === 1 ? 'pagina' : 'pagine'}, ${fmtSize(p.size)}${p.lastPage > 1 ? `, eri a pagina ${p.lastPage}` : ''}${(p.bookmarks || []).length ? `, ${p.bookmarks.length} ${p.bookmarks.length === 1 ? 'segnalibro' : 'segnalibri'}` : ''}${nAnn ? `, ${nAnn} ${nAnn === 1 ? 'annotazione' : 'annotazioni'}` : ''}</span>
+        <span class="row-sub pdf-cloud" data-pdf-status="${p.id}">${esc(pdfCloudText(p))}</span></span>
+      </a>
+      <button class="btn sm ghost" type="button" data-pdf-more="${p.id}" aria-label="Opzioni per ${esc(p.name)}">Opzioni</button>
+    </li>`;
+}
+function bindPdfRows(root) {
+  on('[data-pdf-more]', 'click', async e => {
+    const p = pdfById(e.currentTarget.dataset.pdfMore);
+    if (!p) return;
+    const choice = await actionSheet(p.name, [
+      { key: 'open', label: 'Apri' },
+      { key: 'rename', label: 'Rinomina' },
+      { key: 'move', label: 'Sposta in un’altra sezione' },
+      { key: 'delete', label: 'Elimina il PDF', danger: true }
+    ]);
+    if (choice === 'open') go(`#/pdf/${p.id}`);
+    if (choice === 'rename') {
+      const name = await modal({ title: 'Rinomina il PDF', input: true, value: p.name, confirm: 'Rinomina' });
+      if (name) { p.name = name; await savePdfMeta(p); route(); }
+    }
+    if (choice === 'move') {
+      const s = await sectionPickerSheet('In quale sezione lo sposto?', p.sectionId);
+      if (s) { p.sectionId = s.id; p.notebookId = s.notebookId; await savePdfMeta(p); toast(`Spostato in ${s.title}`); route(); }
+    }
+    if (choice === 'delete') {
+      const ok = await modal({ title: 'Eliminare il PDF?', text: 'Si perdono anche evidenziazioni, note e segnalibri, su tutti i dispositivi. Le flashcard già create restano.', confirm: 'Elimina', danger: true });
+      if (ok) { await deletePdf(p.id); toast('PDF eliminato'); route(); }
+    }
+  }, root);
+}
+async function uploadPdfInto(sec, btn) {
+  const file = await choosePdfFile();
+  if (!file) return;
+  if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli un file PDF', 'err'); return; }
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Carico il PDF…'; }
+  try {
+    const meta = await storePdfFile(file, sec);
+    go(`#/pdf/${meta.id}`);
+  } catch (err) {
+    toast(err.message, 'err');
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
+}
+function viewPdfLibrary(secId) {
+  const sec = secId ? secById(secId) : null;
+  if (secId && !sec) return notFound('Questa sezione');
+  const list = sec ? pdfsOf(sec.id) : [...state.pdfs].sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  const q = '';
+  setView(`
+    ${sec ? `<a class="back" href="#/sec/${sec.id}">${esc(sec.title)}</a>` : ''}
+    <header class="page-head">
+      <div><h1>PDF</h1><p class="lede">${sec ? `I PDF di ${esc(sec.title)}.` : 'Tutti i tuoi PDF: appunti scritti a mano, slide, capitoli. Ognuno sta in una sezione.'}</p></div>
+      <button class="btn primary" type="button" data-act="pdf-add">Carica un PDF</button>
+    </header>
+    ${!sec && list.length > 5 ? '<input type="search" class="input search" id="pdfQ" placeholder="Cerca un PDF" aria-label="Cerca un PDF">' : ''}
+    ${list.length ? `<ul class="list pdf-list" id="pdfList">${list.map(p => pdfRowHtml(p, { where: !sec })).join('')}</ul>`
+      : `<div class="empty"><p>${sec ? 'Nessun PDF in questa sezione.' : 'Nessun PDF ancora. Caricane uno e scegli la sezione a cui appartiene.'}</p></div>`}
+    ${Sync.configured() ? '<p class="hint">Con la sincronizzazione attiva i PDF vanno anche su Drive e li ritrovi sugli altri dispositivi.</p>' : '<p class="hint">Attiva la sincronizzazione con Drive per ritrovare i PDF sugli altri dispositivi.</p>'}`);
+  bindPdfRows($('#view'));
+  on('[data-act="pdf-add"]', 'click', async e => {
+    const btn = e.currentTarget;
+    const target = sec || await sectionPickerSheet('In quale sezione metto il PDF?');
+    if (target) uploadPdfInto(target, btn);
+  });
+  $('#pdfQ')?.addEventListener('input', e => {
+    const f = foldAccents(e.target.value.trim());
+    $$('#pdfList > li').forEach(li => {
+      const p = pdfById(li.querySelector('[data-pdf-more]').dataset.pdfMore);
+      const s = p && secById(p.sectionId);
+      li.hidden = !!f && !foldAccents(`${p?.name} ${s?.title || ''} ${s ? nbById(s.notebookId)?.name : ''}`).includes(f);
+    });
+  });
+}
+
+/* ---------- PDF: annotazioni unite tra dispositivi ---------- */
+const markGone = (meta, ids) => { meta.gone = [...new Set([...(meta.gone || []), ...ids])].slice(-3000); };
+const unGone = (meta, ids) => { if (meta.gone) meta.gone = meta.gone.filter(x => !ids.includes(x)); };
+function mergePdfMeta(local, remote, rUpdated) {
+  const ids = a => (a || []).map(x => x && x.id).join(',');
+  const before = [ids(local.annots), ids(local.bookmarks), ids(local.drafts), local.name, local.sectionId, local.uploaded].join('|');
+  const gone = new Set([...(local.gone || []), ...(remote.gone || [])]);
+  const remoteNewer = (rUpdated || 0) > (local.updated || 0);
+  const mergeArr = (a, b) => {
+    const m = new Map();
+    (remoteNewer ? [...(a || []), ...(b || [])] : [...(b || []), ...(a || [])]).forEach(x => { if (x && x.id) m.set(x.id, x); });
+    return [...m.values()].filter(x => !gone.has(x.id));
+  };
+  const annots = mergeArr(local.annots, remote.annots);
+  const bookmarks = mergeArr(local.bookmarks, remote.bookmarks).sort((x, y) => x.page - y.page);
+  const drafts = mergeArr(local.drafts, remote.drafts);
+  if (remoteNewer) {
+    ['name', 'lastPage', 'zoom', 'pages', 'notebookId', 'sectionId', 'size'].forEach(k => { if (remote[k] !== undefined) local[k] = remote[k]; });
+  }
+  local.uploaded = !!(local.uploaded || remote.uploaded);
+  local.annots = annots;
+  local.bookmarks = bookmarks;
+  local.drafts = drafts;
+  local.gone = [...gone].slice(-3000);
+  const after = [ids(annots), ids(bookmarks), ids(drafts), local.name, local.sectionId, local.uploaded].join('|');
+  const sameAsRemote = after === [ids(remote.annots), ids(remote.bookmarks), ids(remote.drafts), remote.name, remote.sectionId, !!remote.uploaded].join('|');
+  if (remoteNewer) { local.updated = sameAsRemote ? rUpdated : Date.now(); return true; }
+  if (after === before) return false;
+  local.updated = Date.now();
+  return true;
+}
+
 async function init() {
   Settings.load();
   applyTheme();
@@ -7771,7 +8239,7 @@ async function init() {
   });
   document.addEventListener('focusin', e => { if (e.target.tagName === 'TEXTAREA') e.target.dataset.touched = '1'; });
   // Mostra le immagini appena compaiono nella pagina o nelle finestre
-  const obs = new MutationObserver(list => list.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) hydrateImages(n); })));
+  const obs = new MutationObserver(list => list.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) { hydrateImages(n); hydrateHtmlBlocks(n); } })));
   obs.observe($('#view'), { childList: true, subtree: true });
   obs.observe($('#modalRoot'), { childList: true, subtree: true });
   // StudyHub conferma la ricezione scrivendo nel localStorage condiviso
