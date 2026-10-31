@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.25';
+const APP_VERSION = '3.26';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -148,6 +148,7 @@ const Settings = {
     provider: 'gemini',
     geminiKey: '',
     geminiModel: 'gemini-flash-latest',
+    geminiBackup: 'gemini-flash-lite-latest',
     claudeKey: '',
     claudeModel: 'claude-sonnet-5-5',
     pagesPerSection: 5,
@@ -541,27 +542,145 @@ function apiError(msg, status) {
 const AI = {
   ready(p = S().provider) { return p === 'claude' ? !!S().claudeKey.trim() : !!S().geminiKey.trim(); },
   name(p = S().provider) { return p === 'claude' ? 'Claude' : 'Gemini'; },
-  async generate(opts) {
-    const p = opts.provider || S().provider;
-    const waits = [15000, 40000];
+  // riprova da sola i limiti al minuto e i sovraccarichi, aspettando quanto dice il servizio
+  async withRetry(call, opts) {
+    const waits = [15000, 40000, 60000];
     for (let i = 0; ; i++) {
       try {
-        return p === 'claude' ? await callClaude(opts) : await callGemini(opts);
+        return await call();
       } catch (e) {
-        if (e.retryable && i < waits.length && !opts.signal?.aborted) {
-          opts.onWait && opts.onWait(waits[i]);
-          await sleepAbortable(waits[i], opts.signal);
+        const max = e.quota === 'minute' ? 3 : 2;
+        if (e.retryable && i < max && !opts.signal?.aborted) {
+          const ms = Math.min(120000, Math.max(e.retryAfter ? e.retryAfter * 1000 + 1500 : 0, waits[i]));
+          opts.onWait && opts.onWait(ms, e);
+          await sleepAbortable(ms, opts.signal);
           continue;
         }
+        if (e.quota === 'minute' && e.tokens) e.message += ' Se succede ancora, importa meno pagine per volta.';
         throw e;
       }
     }
+  },
+  async generate(opts) {
+    const p = opts.provider || S().provider;
+    if (p === 'claude') return this.withRetry(() => callClaude(opts), opts);
+    // Gemini: ogni modello ha la sua quota gratuita del giorno. Finita quella del
+    // modello principale, si passa al modello di riserva fino all’azzeramento.
+    const chain = GemQuota.chain();
+    if (!chain.length) throw apiError(GemQuota.allGoneMsg(), 429);
+    let last = null;
+    for (const model of chain) {
+      try {
+        const r = await this.withRetry(() => callGemini({ ...opts, model }), opts);
+        if (model !== chain[0] || last) GemQuota.noteSwitch(GemQuota.main(), model);
+        return r;
+      } catch (e) {
+        if (e.quota === 'day' || e.quota === 'zero') { GemQuota.markOut(model, e.quota); last = e; continue; }
+        if (last && e.status === 404) break;   // il modello di riserva non esiste: vale l’errore di prima
+        throw e;
+      }
+    }
+    throw last || apiError(GemQuota.allGoneMsg(), 429);
   }
 };
 
-async function callGemini({ system, text, pdfBase64, maxTokens = 32768, signal }) {
+/* Quote gratuite di Gemini: i modelli finiti per oggi restano in pausa fino
+   alla mezzanotte del Pacifico (le 9:00 in Italia, le 8:00 con l’ora legale) */
+const GemQuota = {
+  KEY: 'nb-gem-out',
+  main() { return (S().geminiModel || '').trim().replace(/^models\//, '') || Settings.defaults.geminiModel; },
+  backups() {
+    return String(S().geminiBackup ?? Settings.defaults.geminiBackup).split(/[,\s]+/).map(x => x.trim().replace(/^models\//, '')).filter(Boolean);
+  },
+  read() {
+    let o = {};
+    try { o = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { o = {}; }
+    const now = Date.now();
+    for (const k of Object.keys(o)) if (!(o[k] && o[k].until > now)) delete o[k];
+    return o;
+  },
+  chain() {
+    const out = this.read();
+    return [...new Set([this.main(), ...this.backups()])].filter(m => !out[m]);
+  },
+  markOut(model, why) {
+    const o = this.read();
+    // "limite 0": il modello non ha richieste gratuite, inutile riprovarlo prima di domani
+    o[model] = { until: geminiResetTs(), why };
+    try { localStorage.setItem(this.KEY, JSON.stringify(o)); } catch { /* solo un promemoria */ }
+  },
+  paused() { return Object.entries(this.read()).map(([m, v]) => ({ model: m, ...v })); },
+  clear() { try { localStorage.removeItem(this.KEY); } catch { /* niente */ } },
+  noteSwitch(from, to) {
+    if (from === to) return;
+    const k = `nb-gem-switch:${to}:${new Date(geminiResetTs()).toDateString()}`;
+    try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); } catch { /* niente */ }
+    toast(`“${from}” ha finito le richieste gratuite di oggi: uso “${to}” fino alle ${geminiResetLabel()}`);
+  },
+  allGoneMsg() {
+    return `Per oggi sono finite le richieste gratuite di tutti i modelli Gemini scelti (${[this.main(), ...this.backups()].join(', ')}). Ripartono alle ${geminiResetLabel()}. Intanto puoi usare Claude o aggiungere un altro modello di riserva in Impostazioni.`;
+  }
+};
+function geminiResetTs() {
+  const now = new Date();
+  const la = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+  const off = la.getTime() - now.getTime();
+  const mid = new Date(la);
+  mid.setHours(24, 0, 0, 0);
+  return mid.getTime() - off;
+}
+const geminiResetLabel = () => new Date(geminiResetTs()).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+
+// Legge dal 429 di Google quale limite è scattato: al minuto o al giorno, richieste o token
+function geminiQuotaInfo(data) {
+  const det = Array.isArray(data?.error?.details) ? data.error.details : [];
+  const viol = det.filter(d => /QuotaFailure/.test(d['@type'] || '')).flatMap(d => d.violations || []);
+  const ids = viol.map(v => `${v.quotaId || ''} ${v.quotaMetric || ''}`).join(' ');
+  const msg = String(data?.error?.message || '');
+  const valRaw = viol.map(v => v.quotaValue).find(v => v !== undefined && v !== null && v !== '');
+  const msgLimit = msg.match(/limit:\s*(\d+)/i);
+  const value = valRaw !== undefined ? +valRaw : msgLimit ? +msgLimit[1] : null;
+  const retry = det.find(d => /RetryInfo/.test(d['@type'] || ''))?.retryDelay;
+  const retryAfter = retry ? parseFloat(retry) : (msg.match(/retry in ([\d.]+)\s*s/i) || [])[1] ? parseFloat(msg.match(/retry in ([\d.]+)\s*s/i)[1]) : 0;
+  const all = `${ids} ${msg}`;
+  return {
+    kind: /PerDay|per_day|per day|daily/i.test(all) ? 'day' : /PerMinute|per_minute|per minute/i.test(all) ? 'minute' : '',
+    tokens: /token/i.test(ids || msg),
+    free: /free.?tier/i.test(all),
+    value: Number.isFinite(value) ? value : null,
+    retryAfter: Number.isFinite(retryAfter) ? retryAfter : 0
+  };
+}
+function geminiQuotaError(data, model) {
+  const q = geminiQuotaInfo(data);
+  const free = q.free ? ' gratuite' : '';
+  let e;
+  if (q.value === 0) {
+    e = apiError(`Con la tua chiave il modello “${model}” non ha richieste${free} a disposizione (limite 0). Scegli un altro modello in Impostazioni, per esempio un Flash.`, 429);
+    e.quota = 'zero';
+    e.retryable = false;
+  } else if (q.kind === 'day') {
+    e = apiError(`Per oggi hai usato tutte le${q.value ? ` ${q.value}` : ''} richieste${free} di “${model}”. Ripartono alle ${geminiResetLabel()}.`, 429);
+    e.quota = 'day';
+    e.retryable = false;
+  } else if (q.kind === 'minute') {
+    e = apiError(q.tokens
+      ? `Testo o PDF troppo lungo per il limite${q.free ? ' gratuito' : ''} di Gemini al minuto${q.value ? ` (${q.value.toLocaleString('it-IT')} token)` : ''}.`
+      : `Troppe richieste a Gemini nello stesso minuto${q.value ? ` (al massimo ${q.value})` : ''}.`, 429);
+    e.quota = 'minute';
+    e.tokens = q.tokens;
+  } else {
+    const m = String(data?.error?.message || '').split('\n')[0].slice(0, 220).replace(/[.\s]+$/, '');
+    e = apiError(`Gemini ha rifiutato la richiesta per un limite di quota${m ? `: ${m}` : ''}. Controlla l’uso della chiave su Google AI Studio.`, 429);
+    e.quota = 'other';
+  }
+  e.retryAfter = q.retryAfter;
+  return e;
+}
+
+async function callGemini({ system, text, pdfBase64, maxTokens = 32768, signal, model: forced }) {
   const key = S().geminiKey.trim();
-  const model = (S().geminiModel || '').trim().replace(/^models\//, '') || Settings.defaults.geminiModel;
+  const model = forced || GemQuota.main();
   const parts = [];
   if (pdfBase64) parts.push({ inline_data: { mime_type: 'application/pdf', data: pdfBase64 } });
   parts.push({ text });
@@ -586,7 +705,8 @@ async function callGemini({ system, text, pdfBase64, maxTokens = 32768, signal }
     if (res.status === 400 && /api key/i.test(m)) msg = 'La chiave Gemini non è valida. Controllala in Impostazioni.';
     else if (res.status === 403) msg = 'La chiave Gemini non ha accesso a questo modello.';
     else if (res.status === 404) msg = `Il modello “${model}” non esiste più. Scegline un altro con “Carica modelli” in Impostazioni.`;
-    else if (res.status === 429) msg = 'Limite di richieste Gemini raggiunto. Riprova tra qualche minuto.';
+    else if (res.status === 429) throw geminiQuotaError(data, model);
+    else if (res.status === 503) msg = `Gemini è sovraccarico in questo momento (non è un limite della tua chiave)${m ? `: ${m}` : ''}.`;
     throw apiError(msg, res.status);
   }
   const cand = data.candidates?.[0];
@@ -930,6 +1050,7 @@ const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', '
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
+  const back = Nav.enter();
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, '')) || 'notebooks';
   const [p0, p1, p2] = h.split('/');
   if (p0 !== 'sec') state.fromReview = false;
@@ -945,6 +1066,7 @@ function route() {
     if (onIt) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   window.scrollTo(0, 0);
+  if (back) Nav.restore();
   switch (p0) {
     case 'nb': return viewNotebook(p1);
     case 'sec': return p2 === 'pdf' ? go(`#/pdfs/${p1}`) : viewSection(p1, p2);
@@ -1373,7 +1495,7 @@ function pickSectionsSheet(nb, g) {
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
+const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['video', 'Video'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
   if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
@@ -1395,9 +1517,18 @@ function viewSection(id, mode) {
   }
   if (!MODES.some(([m]) => m === mode)) mode = openMode(sec);
   const nb = nbById(sec.notebookId);
-  const back = state.fromReview
+  const crumb = state.fromReview
     ? '<a class="back" href="#/review">Ripasso</a>'
     : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
+  // “Torna a…”: la pagina da cui sei arrivato, se non è già quella del percorso
+  const from = Nav.from();
+  const crumbHref = state.fromReview ? '#/review' : `#/nb/${sec.notebookId}`;
+  const prevLabel = from && Nav.key(from) !== Nav.key(location.hash) && Nav.key(from) !== Nav.key(crumbHref) ? Nav.label(from) : '';
+  const back = `<div class="back-row">${prevLabel ? `<a class="back back-prev" href="${esc(from)}" data-nav-back title="Torna alla pagina di prima">${esc(prevLabel)}</a>` : ''}${crumb}</div>`;
+  const order = nb ? nbReadingOrder(nb) : [];
+  const at = order.findIndex(x => x.id === sec.id);
+  const prevSec = at > 0 ? order[at - 1] : null;
+  const nextSec = at >= 0 && at < order.length - 1 ? order[at + 1] : null;
   setView(`
     ${back}
     <header class="sec-head">
@@ -1406,16 +1537,23 @@ function viewSection(id, mode) {
       ${tagChips(tagsOf(sec))}
       <div class="sec-extra">
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length ? ` (${pdfsOf(sec.id).length})` : ''}</a>
+        ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
     </header>
     <nav class="tabs" aria-label="Modalità di studio">
-      ${MODES.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}</a>`).join('')}
+      ${MODES.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}</a>`).join('')}
     </nav>
     <section id="modeBody" class="mode-body"></section>
+    ${prevSec || nextSec ? `
+      <nav class="sec-pager" aria-label="Sezioni vicine">
+        ${prevSec ? `<a class="pg pg-prev" href="#/sec/${prevSec.id}" rel="prev"><span class="pg-k">‹ Precedente</span><span class="pg-t">${esc(prevSec.title)}</span></a>` : '<span></span>'}
+        ${nextSec ? `<a class="pg pg-next" href="#/sec/${nextSec.id}" rel="next"><span class="pg-k">Successiva ›</span><span class="pg-t">${esc(nextSec.title)}</span></a>` : '<span></span>'}
+      </nav>` : ''}
   `);
+  on('[data-act="labels"]', 'click', () => startLabels(sec));
   // Cambiare scheda non riempie la cronologia: il tasto Indietro torna al notebook.
-  on('.tabs a', 'click', e => { e.preventDefault(); location.replace(e.currentTarget.getAttribute('href')); });
+  on('.tabs a', 'click', e => { e.preventDefault(); Nav.replace(e.currentTarget.getAttribute('href')); });
   const tabsEl = $('.tabs');
   const onTab = $('.tab.on', tabsEl);
   if (tabsEl && onTab) {
@@ -1423,7 +1561,7 @@ function viewSection(id, mode) {
     tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
   }
   const body = $('#modeBody');
-  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
+  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, edit: modeEdit }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -2778,7 +2916,7 @@ async function runImport(job) {
       if (job.opts.ai) {
         const r = await aiFormatNotes({
           text, pdfBase64: pdfB64, cloze: job.opts.cloze, questions: job.opts.questions, signal,
-          onWait: ms => { it.wait = `Limite raggiunto, riprovo tra ${Math.round(ms / 1000)} secondi`; renderProgress(); }
+          onWait: (ms, e) => { it.wait = `${e && e.status === 429 ? (e.tokens ? 'Limite di testo al minuto' : 'Limite di richieste al minuto') : 'Servizio occupato'}: riprovo tra ${Math.round(ms / 1000)} secondi`; renderProgress(); }
         });
         it.wait = '';
         const title = (job.kind === 'text' && job.title) || it.title ? baseTitle : (r.title || baseTitle || firstLineTitle(r.md));
@@ -2845,6 +2983,10 @@ function viewSettings() {
       <label class="field"><span>Modello</span>
         <input class="input" id="${p}Model" value="${esc(st[p + 'Model'])}" list="${p}Models" spellcheck="false">
         <datalist id="${p}Models"></datalist></label>
+      ${p === 'gemini' ? `<label class="field"><span>Modelli di riserva, separati da virgola</span>
+        <input class="input" id="geminiBackup" value="${esc(st.geminiBackup ?? Settings.defaults.geminiBackup)}" list="geminiModels" spellcheck="false" placeholder="${Settings.defaults.geminiBackup}"></label>
+      <p class="hint">Con la chiave gratuita ogni modello ha un numero di richieste al giorno. Quando il modello principale le finisce, l’app passa da sola a quello di riserva fino alle ${geminiResetLabel()}, quando ripartono.</p>
+      <div id="gemPaused"></div>` : ''}
       <div class="inline">
         <button class="btn sm" data-list="${p}">Carica modelli</button>
         <button class="btn sm" data-test="${p}">Prova la connessione</button>
@@ -3078,8 +3220,23 @@ function viewSettings() {
     Settings.save();
     updateBadge();
   });
+  const drawPaused = () => {
+    const box = $('#gemPaused');
+    if (!box) return;
+    const list = GemQuota.paused();
+    box.innerHTML = list.length ? `<p class="hint">In pausa fino alle ${geminiResetLabel()}: ${list.map(x => `“${esc(x.model)}”${x.why === 'zero' ? ' (senza richieste gratuite)' : ''}`).join(', ')}. <button class="btn sm ghost" type="button" data-gem-retry>Riprova adesso</button></p>` : '';
+    const b = $('[data-gem-retry]', box);
+    if (b) b.onclick = () => { GemQuota.clear(); drawPaused(); toast('Riprovo i modelli Gemini alla prossima richiesta'); };
+  };
+  drawPaused();
+  $('#geminiBackup').addEventListener('change', e => {
+    st.geminiBackup = e.target.value.split(/[,\s]+/).map(x => x.trim().replace(/^models\//, '')).filter(Boolean).join(', ');
+    e.target.value = st.geminiBackup;
+    Settings.save();
+    toast(st.geminiBackup ? 'Modelli di riserva salvati' : 'Nessun modello di riserva');
+  });
   ['gemini', 'claude'].forEach(p => {
-    $(`#${p}Key`).addEventListener('change', e => { st[p + 'Key'] = e.target.value.trim(); Settings.save(); toast('Chiave salvata'); });
+    $(`#${p}Key`).addEventListener('change', e => { st[p + 'Key'] = e.target.value.trim(); Settings.save(); GemQuota.clear(); toast('Chiave salvata'); });
     $(`#${p}Model`).addEventListener('change', e => {
       st[p + 'Model'] = e.target.value.trim().replace(/^models\//, '') || Settings.defaults[p + 'Model'];
       e.target.value = st[p + 'Model'];
@@ -3112,9 +3269,13 @@ function viewSettings() {
     if (!AI.ready(p)) { msg.textContent = 'Inserisci prima la chiave.'; return; }
     msg.textContent = 'Provo…';
     try {
-      await AI.generate({ provider: p, text: 'Rispondi solo con la parola: ok', maxTokens: 2000 });
+      if (p === 'gemini') {
+        // prova proprio il modello scelto, senza passare a quello di riserva
+        await AI.withRetry(() => callGemini({ text: 'Rispondi solo con la parola: ok', maxTokens: 2000 }), { onWait: ms => { msg.textContent = `Limite al minuto: riprovo tra ${Math.round(ms / 1000)} secondi…`; } });
+      } else await AI.generate({ provider: p, text: 'Rispondi solo con la parola: ok', maxTokens: 2000 });
       msg.textContent = `Connessione riuscita con ${S()[p + 'Model']}.`;
     } catch (err) {
+      if (p === 'gemini' && (err.quota === 'day' || err.quota === 'zero')) { GemQuota.markOut(GemQuota.main(), err.quota); drawPaused(); }
       msg.textContent = err.message;
     }
   });
@@ -4787,6 +4948,13 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.26: video, etichette e tasto Torna', `
+      <ul>
+        <li><strong>Video</strong>: ogni sezione ha la scheda Video. Incolli il link (YouTube, Vimeo, Google Drive o un file video) e lo guardi lì, con titolo e note. Nelle note i minuti scritti come 12:30 diventano pulsanti che portano a quel punto del video.</li>
+        <li><strong>Etichette</strong>: tocca “Etichette” in cima a una sezione con immagini, oppure tocca un’immagine e scegli “Ritaglia le etichette”. Trascina sopra ogni scritta da staccare; se hai già un’image occlusion puoi riusarne i riquadri. Nell’esercizio le scritte spariscono e le etichette, mescolate, vanno trascinate al posto giusto (o toccate, e poi tocchi il riquadro). “Controlla” colora di verde le giuste e rimanda indietro le sbagliate; con Zoom ingrandisci gli schemi fitti.</li>
+        <li><strong>Torna a…</strong>: se arrivi in una sezione da un’altra (con un collegamento, dalla ricerca o dal ripasso), in alto c’è “Torna a” con il nome della pagina di prima. Tornando, anche il notebook si riapre al punto in cui eri. In fondo a ogni sezione trovi la precedente e la successiva del notebook.</li>
+        <li><strong>Gemini</strong>: quando dice che il limite è raggiunto ora spiega quale (troppe richieste in un minuto, testo troppo lungo o richieste gratuite del giorno finite) e a che ora ripartono. Finite quelle del giorno passa da solo al modello di riserva, che scegli in Impostazioni.</li>
+      </ul>`)}
     ${sec('Novità della 3.25: StudyHub collegato davvero', `
       <ul>
         <li><strong>Segna come studiata in StudyHub</strong> ora chiede in quale materia e dove: dentro un argomento (per esempio un macro-argomento) oppure collegata a un argomento che hai già, come quelli importati dal programma. La materia scelta resta come proposta per le altre sezioni dello stesso notebook.</li>
@@ -5701,6 +5869,7 @@ function openLightbox(imageId) {
       <div class="lb-img"><img class="nb-img" data-img="${imageId}" alt=""></div>
       <div class="lb-actions">
         ${ctx ? '<button class="btn" data-lb="io">Crea image occlusion</button>' : ''}
+        ${ctx && ctx.sectionId ? `<button class="btn" data-lb="labels">${(labelSets(secById(ctx.sectionId) || {})[imageId]?.masks || []).length ? 'Rimetti le etichette' : 'Ritaglia le etichette'}</button>` : ''}
         <button class="btn primary" data-lb="close">Chiudi</button>
       </div>
     </div>`;
@@ -5710,6 +5879,8 @@ function openLightbox(imageId) {
   $('[data-lb="close"]', root).onclick = close;
   const io = $('[data-lb="io"]', root);
   if (io) io.onclick = () => { close(); openOcclusionEditor({ imageId, ...ctx }); };
+  const lb = $('[data-lb="labels"]', root);
+  if (lb) lb.onclick = () => { const sec = secById(ctx.sectionId); close(); if (sec) startLabels(sec, imageId); };
 }
 
 /* Scelta di un’immagine della sezione o caricamento di una nuova */
@@ -10223,6 +10394,7 @@ async function init() {
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
   setupPwa();
   ShDock.init();
+  Nav.init();
   Tracker.start();
   applyBlueLight();
   watchKeyboard();
@@ -10618,6 +10790,652 @@ function rlSummaryHtml(s) {
   return `<div class="rl-sum">${chips}<span class="rl-sum-t">${tail}</span></div>`;
 }
 
+
+
+/* ---------------------------------------------------------------------
+   Navigazione: “Torna a…”, posizione di scorrimento, ordine di lettura
+   Ogni voce della cronologia ricorda da quale pagina sei arrivato; tornando
+   indietro la pagina si riapre dove l’avevi lasciata.
+   --------------------------------------------------------------------- */
+const Nav = {
+  cur: null,
+  ys: new Map(),
+  seq: 0,
+  key(h) {
+    const p = String(h || '').replace(/^#\/?/, '').split('/');
+    return p[0] === 'sec' ? `sec/${p[1]}` : p.filter(Boolean).join('/') || 'notebooks';
+  },
+  // da chiamare all’inizio di route(): dice se è un ritorno su una pagina già vista
+  enter() {
+    if (this.cur) this.ys.set(this.cur.k, window.scrollY);
+    const st = history.state;
+    let back = true;
+    if (!st || !st.nbk) {
+      back = false;
+      const from = this.cur && this.key(this.cur.hash) !== this.key(location.hash) ? this.cur.hash : (this.cur ? this.cur.from : null);
+      try { history.replaceState({ ...(st || {}), nbk: `${Date.now().toString(36)}-${++this.seq}`, from: from || null }, ''); } catch { /* niente */ }
+    }
+    const s2 = history.state || {};
+    this.cur = { k: s2.nbk, hash: location.hash || '#/notebooks', from: s2.from || null };
+    if (this.fresh) { this.fresh = false; return false; }
+    return back && this.ys.has(this.cur.k);
+  },
+  restore() {
+    const y = this.ys.get(this.cur.k) || 0;
+    if (!y) return;
+    // le pagine si completano in un attimo: riprovo finché c’è abbastanza altezza
+    let tries = 0;
+    const go = () => {
+      window.scrollTo(0, y);
+      if (Math.abs(window.scrollY - y) > 4 && ++tries < 12) setTimeout(go, 60);
+    };
+    requestAnimationFrame(go);
+  },
+  from() { return history.state && history.state.from || null; },
+  // cambia l’indirizzo senza nuova voce (le schede di una sezione), tenendo “da dove vieni”
+  replace(hash) {
+    try { history.replaceState(history.state, '', hash); } catch { location.replace(hash); return; }
+    if (this.cur) this.cur.hash = hash;
+    this.fresh = true;   // un’altra scheda parte dall’alto
+    route();
+  },
+  label(h) {
+    const p = String(h || '').replace(/^#\/?/, '').split('/');
+    if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
+    if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
+    const names = { review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
+  },
+  init() {
+    // “Torna a…” e i link del percorso: se portano alla pagina di prima, si torna indietro davvero
+    document.addEventListener('click', e => {
+      const a = e.target.closest('a.back');
+      if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button > 0) return;
+      const from = this.from();
+      if (!from || this.key(a.getAttribute('href')) !== this.key(from)) return;
+      e.preventDefault();
+      history.back();
+    });
+  }
+};
+// sezioni del notebook nell’ordine in cui le vedi: macro-argomenti, sottoargomenti, poi le sciolte
+function nbReadingOrder(nb) {
+  const secs = secsOf(nb.id);
+  const out = [];
+  const seen = new Set();
+  const add = list => list.forEach(s => { if (!seen.has(s.id)) { seen.add(s.id); out.push(s); } });
+  topGroups(nb).forEach(g => {
+    add(secs.filter(s => s.groupId === g.id));
+    subGroups(nb, g).forEach(sg => add(secs.filter(s => s.groupId === sg.id)));
+  });
+  add(secs);
+  return out;
+}
+
+/* =====================================================================
+   v3.26: video nelle sezioni ed esercizio “rimetti le etichette” sugli schemi
+   ===================================================================== */
+
+/* ---------- Video: link a YouTube, Vimeo, Google Drive o file video ---------- */
+function parseVideoTime(v) {
+  if (!v) return 0;
+  const t = String(v).trim();
+  if (/^\d+$/.test(t)) return +t;
+  const m = t.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i);
+  if (m && (m[1] || m[2] || m[3])) return (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0);
+  const c = t.match(/^(?:(\d+):)?(\d{1,2}):(\d{2})$/);
+  if (c) return (+c[1] || 0) * 3600 + (+c[2]) * 60 + (+c[3]);
+  return 0;
+}
+const fmtVideoTime = s => {
+  s = Math.max(0, Math.round(s || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}` : `${m}:${String(x).padStart(2, '0')}`;
+};
+function videoInfo(raw) {
+  let u;
+  try { u = new URL(String(raw || '').trim()); } catch { return null; }
+  if (!/^https?:$/.test(u.protocol)) return null;
+  const host = u.hostname.replace(/^www\.|^m\./, '');
+  const start = parseVideoTime(u.searchParams.get('t') || u.searchParams.get('start') || (u.hash.match(/t=([^&]+)/) || [])[1]);
+  let m;
+  if (host === 'youtu.be' && (m = u.pathname.match(/^\/([\w-]{6,})/))) return { kind: 'youtube', id: m[1], start, url: u.href };
+  if (/(^|\.)youtube(-nocookie)?\.com$/.test(host)) {
+    const id = u.searchParams.get('v') || (u.pathname.match(/^\/(?:embed|shorts|live|v)\/([\w-]{6,})/) || [])[1];
+    if (id) return { kind: 'youtube', id, start, url: u.href };
+  }
+  if (/(^|\.)vimeo\.com$/.test(host) && (m = u.pathname.match(/\/(?:video\/)?(\d{5,})(?:\/([0-9a-f]{6,}))?/))) {
+    return { kind: 'vimeo', id: m[1], hash: m[2] || u.searchParams.get('h') || '', start, url: u.href };
+  }
+  if (host === 'drive.google.com' && (m = u.pathname.match(/\/file\/d\/([\w-]+)/))) return { kind: 'drive', id: m[1], start, url: u.href };
+  if (/\.(mp4|webm|ogv|ogg|mov|m4v)$/i.test(u.pathname)) return { kind: 'file', start, url: u.href };
+  return { kind: 'link', start: 0, url: u.href };
+}
+function videoEmbedSrc(v, at = null) {
+  const info = videoInfo(v.url);
+  if (!info) return '';
+  const s = at !== null ? at : (v.start || info.start || 0);
+  if (info.kind === 'youtube') return `https://www.youtube-nocookie.com/embed/${encodeURIComponent(info.id)}?rel=0&playsinline=1&enablejsapi=1&autoplay=1${s ? `&start=${Math.floor(s)}` : ''}`;
+  if (info.kind === 'vimeo') return `https://player.vimeo.com/video/${info.id}?autoplay=1${info.hash ? `&h=${info.hash}` : ''}${s ? `#t=${Math.floor(s)}s` : ''}`;
+  if (info.kind === 'drive') return `https://drive.google.com/file/d/${encodeURIComponent(info.id)}/preview`;
+  return '';
+}
+const videoKindName = k => ({ youtube: 'YouTube', vimeo: 'Vimeo', drive: 'Google Drive', file: 'Video', link: 'Link' }[k] || 'Video');
+// minuti scritti nelle note (“12:30 valvole”) diventano salti nel video
+function videoNoteHtml(note) {
+  const re = /(^|[\s(])((?:\d{1,2}:)?\d{1,2}:\d{2})(?=[\s).,;:!?]|$)/g;
+  return esc(note || '').replace(re, (all, pre, t) => `${pre}<button type="button" class="vid-ts" data-ts="${parseVideoTime(t)}">${t}</button>`).replace(/\n/g, '<br>');
+}
+async function videoTitleGuess(url) {
+  const info = videoInfo(url);
+  if (!info) return '';
+  const api = info.kind === 'youtube' ? `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(info.url)}`
+    : info.kind === 'vimeo' ? `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(info.url)}` : '';
+  if (!api) return '';
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 5000);
+    const res = await fetch(api, { signal: ctl.signal });
+    clearTimeout(t);
+    if (!res.ok) return '';
+    const d = await res.json();
+    return String(d.title || '').trim().slice(0, 140);
+  } catch { return ''; }
+}
+const videosOf = sec => (Array.isArray(sec.videos) ? sec.videos : (sec.videos = []));
+
+function modeVideo(sec, body) {
+  const list = videosOf(sec);
+  const card = (v, i) => {
+    const info = videoInfo(v.url) || { kind: 'link' };
+    const embed = videoEmbedSrc(v) || info.kind === 'file';
+    const thumb = info.kind === 'youtube' ? `<img class="vid-thumb" src="https://i.ytimg.com/vi/${encodeURIComponent(info.id)}/hqdefault.jpg" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
+    return `
+      <li class="vid" data-v="${esc(v.id)}">
+        ${embed ? `<div class="vid-frame">
+          <button type="button" class="vid-play" data-play aria-label="Guarda ${esc(v.title || 'il video')}">${thumb}<span class="vid-play-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg></span></button>
+        </div>` : ''}
+        <div class="vid-meta">
+          <div class="vid-top">
+            <input class="input vid-title" value="${esc(v.title || '')}" placeholder="Titolo del video" aria-label="Titolo del video" data-f="title">
+            <span class="vid-kind">${videoKindName(info.kind)}${v.start ? ` · da ${fmtVideoTime(v.start)}` : ''}</span>
+          </div>
+          <div class="vid-note-view" ${v.note ? '' : 'hidden'}>${videoNoteHtml(v.note)}</div>
+          <textarea class="input vid-note" rows="2" placeholder="Note: cosa ricordare, minuti importanti (per esempio 12:30 valvole)" aria-label="Note sul video" data-f="note">${esc(v.note || '')}</textarea>
+          <div class="vid-acts">
+            <a class="btn sm ghost" href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">Apri ↗</a>
+            <button class="btn sm ghost" type="button" data-mv="-1" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">↑</button>
+            <button class="btn sm ghost" type="button" data-mv="1" ${i === list.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">↓</button>
+            <button class="btn sm ghost danger" type="button" data-del>Elimina</button>
+          </div>
+        </div>
+      </li>`;
+  };
+  const draw = () => {
+    body.innerHTML = `
+      <form class="vid-add" id="vidAdd">
+        <label class="field"><span>Aggiungi un video</span>
+          <div class="inline">
+            <input class="input" type="url" id="vidUrl" placeholder="Incolla il link (YouTube, Vimeo, Google Drive…)" autocomplete="off" spellcheck="false" required>
+            <button class="btn primary" type="submit">Aggiungi</button>
+          </div></label>
+      </form>
+      ${list.length ? `<ul class="vid-list">${list.map(card).join('')}</ul>`
+        : '<div class="empty"><p>Nessun video in questa sezione. Incolla il link di una lezione o di una spiegazione che ti è servita: lo guardi qui, con le tue note e i minuti importanti.</p></div>'}
+      <p class="hint">YouTube, Vimeo e Google Drive si guardano qui; gli altri link si aprono a parte. Nelle note, i minuti scritti come 12:30 diventano pulsanti per saltare a quel punto.</p>`;
+  };
+  draw();
+  const countTab = () => { const t = $('.tabs .tab.on'); if (t) t.textContent = list.length ? `Video (${list.length})` : 'Video'; };
+  let saveT = 0;
+  const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(() => saveSection(sec), 600); };
+  addCleanup(() => { if (saveT) { clearTimeout(saveT); saveSection(sec); } });
+  const vOf = el => list.find(x => x.id === el.closest('[data-v]')?.dataset.v);
+  body.addEventListener('submit', async e => {
+    if (e.target.id !== 'vidAdd') return;
+    e.preventDefault();
+    const inp = $('#vidUrl', body);
+    const url = inp.value.trim();
+    const info = videoInfo(url);
+    if (!info) { toast('Questo non sembra un link valido: deve iniziare con https://', 'err'); return; }
+    if (list.some(x => x.url === info.url)) { toast('Questo video c’è già'); return; }
+    const v = { id: uid(), url: info.url, title: '', note: '', start: info.start || 0, added: Date.now() };
+    list.push(v);
+    await saveSection(sec);
+    draw();
+    countTab();
+    toast('Video aggiunto');
+    const title = await videoTitleGuess(info.url);
+    if (title && !v.title) {
+      v.title = title;
+      await saveSection(sec);
+      const f = $(`[data-v="${v.id}"] .vid-title`, body);
+      if (f && !f.value) f.value = title;
+    }
+  });
+  body.addEventListener('input', e => {
+    const f = e.target.dataset.f;
+    const v = f && vOf(e.target);
+    if (!v) return;
+    v[f] = e.target.value;
+    if (f === 'note') {
+      const view = $('.vid-note-view', e.target.closest('.vid'));
+      view.innerHTML = videoNoteHtml(v.note);
+      view.hidden = !v.note.trim();
+    }
+    saveSoon();
+  });
+  body.addEventListener('click', async e => {
+    const li = e.target.closest('.vid');
+    if (!li) return;
+    const v = vOf(li);
+    if (!v) return;
+    const frame = $('.vid-frame', li);
+    const play = at => {
+      if (!frame) { window.open(v.url, '_blank', 'noopener'); return; }
+      const info = videoInfo(v.url);
+      if (info && info.kind === 'file') {
+        let vid = $('video', frame);
+        if (!vid) {
+          frame.innerHTML = `<video controls playsinline preload="metadata" src="${esc(v.url)}"></video>`;
+          vid = $('video', frame);
+        }
+        vid.currentTime = at !== null ? at : (v.start || 0);
+        vid.play().catch(() => {});
+        return;
+      }
+      const ifr = $('iframe', frame);
+      if (ifr && at !== null && info.kind === 'youtube') {
+        // salto senza ricaricare: il player di YouTube accetta comandi
+        ifr.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [at, true] }), '*');
+        ifr.contentWindow?.postMessage(JSON.stringify({ event: 'command', func: 'playVideo', args: [] }), '*');
+        return;
+      }
+      frame.innerHTML = `<iframe src="${esc(videoEmbedSrc(v, at))}" title="${esc(v.title || 'Video')}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>`;
+    };
+    if (e.target.closest('[data-play]')) { play(null); return; }
+    const ts = e.target.closest('[data-ts]');
+    if (ts) { play(+ts.dataset.ts); frame?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return; }
+    const mv = e.target.closest('[data-mv]');
+    if (mv) {
+      const i = list.indexOf(v), j = i + +mv.dataset.mv;
+      if (j < 0 || j >= list.length) return;
+      [list[i], list[j]] = [list[j], list[i]];
+      await saveSection(sec);
+      draw();
+      return;
+    }
+    if (e.target.closest('[data-del]')) {
+      if (!(await modal({ title: 'Eliminare il video?', text: `“${v.title || v.url}” e le sue note spariscono da questa sezione.`, confirm: 'Elimina', danger: true }))) return;
+      list.splice(list.indexOf(v), 1);
+      await saveSection(sec);
+      draw();
+      countTab();
+    }
+  });
+}
+
+/* ---------- Etichette da rimettere al loro posto ----------
+   Ritagli le scritte di uno schema; nell’esercizio restano dei riquadri vuoti
+   e le etichette, mescolate, vanno trascinate (o toccate) al posto giusto.
+   Dati nella sezione: sec.labels[imageId] = { masks:[{id,x,y,w,h}], best, log } */
+const labelSets = sec => (sec.labels && typeof sec.labels === 'object' && !Array.isArray(sec.labels) ? sec.labels : (sec.labels = {}));
+const labelImages = sec => Object.keys(labelSets(sec)).filter(id => imageById(id) && (labelSets(sec)[id].masks || []).length);
+function cropStyle(m) {
+  const px = m.w >= 1 ? 0 : (m.x / (1 - m.w)) * 100;
+  const py = m.h >= 1 ? 0 : (m.y / (1 - m.h)) * 100;
+  return `background-size:${(100 / m.w).toFixed(3)}% ${(100 / m.h).toFixed(3)}%;background-position:${px.toFixed(3)}% ${py.toFixed(3)}%`;
+}
+
+function openLabelEditor(sec, imageId) {
+  return new Promise(resolve => {
+    const im = imageById(imageId);
+    if (!im) { toast('Immagine non disponibile su questo dispositivo', 'err'); resolve(false); return; }
+    const set = labelSets(sec)[imageId] || {};
+    let masks = (set.masks || []).map(m => ({ ...m }));
+    const occ = sectionMasks(sec).get(imageId) || [];
+    let sel = null;
+    let mode = 'draw';
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="overlay full">
+        <div class="io-editor" role="dialog" aria-modal="true" aria-labelledby="lbTitle">
+          <header class="io-head">
+            <h2 id="lbTitle">Ritaglia le etichette</h2>
+            <p class="hint">Trascina sopra ogni scritta da staccare: ogni riquadro diventa un’etichetta da rimettere al suo posto. Tocca un riquadro per selezionarlo.</p>
+            <div class="inline">
+              <div class="seg sm" role="tablist" aria-label="Modalità">
+                <button role="tab" data-mode="draw" aria-selected="true">Disegna</button>
+                <button role="tab" data-mode="scroll" aria-selected="false">Scorri</button>
+              </div>
+              ${occ.length ? `<button class="btn sm ghost" type="button" data-lb="occ">Usa i ${occ.length} riquadri dell’occlusione</button>` : ''}
+            </div>
+          </header>
+          <div class="io-body">
+            <div class="io io-stage drawing" id="lbStage" style="aspect-ratio:${im.w}/${im.h}">
+              <img class="nb-img" data-img="${im.id}" alt="" draggable="false">
+              <div id="lbMasks"></div>
+              <div class="io-draft" id="lbDraft" hidden></div>
+            </div>
+          </div>
+          <div class="io-sel" id="lbSel" hidden>
+            <button class="btn sm ghost danger" data-lb="del" type="button">Elimina il riquadro</button>
+          </div>
+          <footer class="io-foot">
+            <span class="hint" id="lbCount"></span>
+            <button class="btn ghost" data-lb="cancel" type="button">Annulla</button>
+            <button class="btn" data-lb="save" type="button">Salva</button>
+            <button class="btn primary" data-lb="try" type="button">Salva e prova</button>
+          </footer>
+        </div>
+      </div>`;
+    const stage = $('#lbStage', root);
+    const draft = $('#lbDraft', root);
+    const draw = () => {
+      $('#lbMasks', root).innerHTML = masks.map((m, i) =>
+        `<div class="io-mask edit lb-cut ${sel === m.id ? 'sel' : ''}" data-m="${m.id}" style="${posStyle(m)}"><span>${i + 1}</span></div>`).join('');
+      $('#lbCount', root).textContent = masks.length ? `${masks.length} ${masks.length === 1 ? 'etichetta' : 'etichette'}` : '';
+      $('#lbSel', root).hidden = !sel;
+    };
+    stage.addEventListener('pointerdown', e => {
+      const el = e.target.closest('.io-mask');
+      if (!el) { if (sel) { sel = null; draw(); } return; }
+      e.preventDefault();
+      sel = el.dataset.m;
+      draw();
+    });
+    rectDrawing(stage, {
+      canDraw: () => mode === 'draw',
+      onDraft: b => { draft.hidden = !b; if (b) draft.setAttribute('style', posStyle(b)); },
+      onDone: b => { const m = { id: uid(), ...b }; masks.push(m); sel = m.id; draw(); }
+    });
+    $$('[data-mode]', root).forEach(b => b.addEventListener('click', () => {
+      mode = b.dataset.mode;
+      $$('[data-mode]', root).forEach(x => x.setAttribute('aria-selected', x.dataset.mode === mode));
+      stage.classList.toggle('drawing', mode === 'draw');
+    }));
+    const close = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); close(false); }
+      else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); masks = masks.filter(m => m.id !== sel); sel = null; draw(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    const occBtn = $('[data-lb="occ"]', root);
+    if (occBtn) occBtn.onclick = () => {
+      const have = new Set(masks.map(m => `${m.x.toFixed(3)}:${m.y.toFixed(3)}`));
+      occ.forEach(m => { if (!have.has(`${m.x.toFixed(3)}:${m.y.toFixed(3)}`)) masks.push({ id: uid(), x: m.x, y: m.y, w: m.w, h: m.h }); });
+      draw();
+    };
+    $('[data-lb="del"]', root).onclick = () => { masks = masks.filter(m => m.id !== sel); sel = null; draw(); };
+    $('[data-lb="cancel"]', root).onclick = () => close(false);
+    const save = async () => {
+      const sets = labelSets(sec);
+      if (!masks.length) {
+        if (sets[imageId]) { delete sets[imageId]; await saveSection(sec); toast('Etichette tolte da questa immagine'); }
+        return false;
+      }
+      if (masks.length < 2) { toast('Servono almeno due etichette da scambiare'); return null; }
+      sets[imageId] = {
+        ...(sets[imageId] || {}),
+        masks: masks.map(m => ({ id: m.id, x: +m.x.toFixed(4), y: +m.y.toFixed(4), w: +m.w.toFixed(4), h: +m.h.toFixed(4) })),
+        edited: Date.now()
+      };
+      await saveSection(sec);
+      return true;
+    };
+    $('[data-lb="save"]', root).onclick = async () => {
+      const ok = await save();
+      if (ok === null) return;
+      close(ok);
+      if (ok) toast(`${masks.length} etichette salvate`);
+      route();
+    };
+    $('[data-lb="try"]', root).onclick = async () => {
+      const ok = await save();
+      if (ok === null) return;
+      close(ok);
+      if (ok) openLabelQuiz(sec, imageId);
+      else route();
+    };
+    draw();
+  });
+}
+
+function openLabelQuiz(sec, imageId) {
+  const im = imageById(imageId);
+  const set = labelSets(sec)[imageId];
+  if (!im || !set || !(set.masks || []).length) { toast('Ritaglia prima le etichette di questa immagine'); return; }
+  const masks = set.masks;
+  const url = imageUrl(imageId);
+  const shuffle = a => { const b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
+  let order = shuffle(masks.map(m => m.id));
+  if (masks.length > 1 && order.every((id, i) => id === masks[i].id)) order.push(order.shift());
+  const placed = {};          // slot -> piece
+  let picked = null;          // etichetta toccata, in attesa del riquadro
+  let checked = false;
+  let firstScore = null;
+  let zoom = 1;
+  const started = Date.now();
+  const root = $('#modalRoot');
+  root.innerHTML = `
+    <div class="overlay full">
+      <div class="io-editor lq" role="dialog" aria-modal="true" aria-labelledby="lqTitle">
+        <header class="io-head">
+          <h2 id="lqTitle">Rimetti le etichette</h2>
+          <p class="hint">Trascina ogni etichetta nel riquadro giusto, oppure toccala e poi tocca il riquadro. Quando hai finito, controlla.</p>
+        </header>
+        <div class="io-body lq-body" id="lqBody">
+          <div class="io lq-stage" id="lqStage" style="aspect-ratio:${im.w}/${im.h}">
+            <img class="nb-img" data-img="${im.id}" alt="Schema con le etichette tolte" draggable="false">
+            ${masks.map((m, i) => `<button type="button" class="lq-slot" data-s="${m.id}" style="${posStyle(m)}" aria-label="Riquadro ${i + 1}, vuoto"></button>`).join('')}
+          </div>
+        </div>
+        <div class="lq-tray" id="lqTray" aria-label="Etichette da sistemare"></div>
+        <footer class="io-foot">
+          <span class="hint" id="lqMsg" aria-live="polite"></span>
+          <button class="btn sm ghost" type="button" data-q="zoom" aria-label="Ingrandisci lo schema">Zoom 1×</button>
+          <button class="btn ghost" type="button" data-q="edit">Ritagli</button>
+          <button class="btn ghost" type="button" data-q="show">Soluzione</button>
+          <button class="btn ghost" type="button" data-q="again">Ricomincia</button>
+          <button class="btn primary" type="button" data-q="check">Controlla</button>
+          <button class="btn ghost" type="button" data-q="close">Chiudi</button>
+        </footer>
+      </div>
+    </div>`;
+  const stage = $('#lqStage', root);
+  const tray = $('#lqTray', root);
+  const bodyEl = $('#lqBody', root);
+  const msg = $('#lqMsg', root);
+  const byId = id => masks.find(m => m.id === id);
+  // nel riquadro l’etichetta resta della sua misura, centrata: niente deformazioni che suggeriscano la risposta
+  const pieceHtml = (id, where, slotId) => {
+    const m = byId(id);
+    const sl = slotId ? byId(slotId) : null;
+    const fit = sl ? ` style="width:${((m.w / sl.w) * 100).toFixed(2)}%;height:${((m.h / sl.h) * 100).toFixed(2)}%"` : '';
+    return `<span class="lq-piece ${picked === id ? 'picked' : ''}" data-p="${id}" data-where="${where}"${fit} role="button" tabindex="0" aria-label="Etichetta${where === 'tray' ? '' : ' nel riquadro'}"><span class="lq-crop" style="background-image:url('${url}');${cropStyle(m)}"></span></span>`;
+  };
+  const sizeTray = () => {
+    const w = stage.getBoundingClientRect().width;
+    $$('.lq-piece', tray).forEach(p => {
+      const m = byId(p.dataset.p);
+      p.style.width = `${Math.max(36, m.w * w)}px`;
+      p.style.height = `${Math.max(18, m.h * w * (im.h / im.w))}px`;
+    });
+  };
+  const draw = () => {
+    const inSlots = new Set(Object.values(placed));
+    tray.innerHTML = order.filter(id => !inSlots.has(id)).map(id => pieceHtml(id, 'tray')).join('') || '<p class="hint lq-done">Tutte le etichette sono al loro posto.</p>';
+    $$('.lq-slot', stage).forEach((s, i) => {
+      const p = placed[s.dataset.s];
+      s.innerHTML = p ? pieceHtml(p, 'slot', s.dataset.s) : '';
+      s.classList.toggle('filled', !!p);
+      s.classList.toggle('target', !!picked && !p);
+      s.classList.remove('ok', 'bad');
+      if (checked && p) s.classList.add(p === s.dataset.s ? 'ok' : 'bad');
+      s.setAttribute('aria-label', `Riquadro ${i + 1}${p ? (checked ? (p === s.dataset.s ? ', giusto' : ', sbagliato') : ', occupato') : ', vuoto'}`);
+    });
+    sizeTray();
+    const n = Object.keys(placed).length;
+    if (!checked) msg.textContent = `${n} di ${masks.length} sistemate`;
+  };
+  const place = (pid, sid) => {
+    checked = false;
+    for (const k of Object.keys(placed)) if (placed[k] === pid) delete placed[k];
+    if (sid) placed[sid] = pid;   // chi c’era torna tra le etichette
+    picked = null;
+    draw();
+  };
+  const unplace = pid => { for (const k of Object.keys(placed)) if (placed[k] === pid) delete placed[k]; checked = false; };
+
+  /* trascinamento con dito o mouse; un tocco senza movimento seleziona */
+  let drag = null;
+  root.addEventListener('pointerdown', e => {
+    const p = e.target.closest('.lq-piece');
+    if (!p || e.button > 0) return;
+    e.preventDefault();
+    const r = p.getBoundingClientRect();
+    drag = { id: e.pointerId, pid: p.dataset.p, el: p, x0: e.clientX, y0: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height, ghost: null };
+    try { p.setPointerCapture(e.pointerId); } catch { /* va bene lo stesso */ }
+  });
+  root.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.ghost) {
+      if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
+      const g = drag.el.cloneNode(true);
+      g.className = 'lq-piece lq-ghost';
+      g.style.width = `${drag.w}px`;
+      g.style.height = `${drag.h}px`;
+      document.body.append(g);
+      drag.ghost = g;
+      drag.el.classList.add('lifting');
+    }
+    drag.ghost.style.transform = `translate(${e.clientX - drag.dx}px, ${e.clientY - drag.dy}px)`;
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('.lq-slot');
+    $$('.lq-slot.hover', stage).forEach(s => { if (s !== over) s.classList.remove('hover'); });
+    if (over) over.classList.add('hover');
+    // vicino ai bordi lo schema scorre da solo
+    const br = bodyEl.getBoundingClientRect();
+    if (e.clientY < br.top + 40) bodyEl.scrollBy(0, -14);
+    else if (e.clientY > br.bottom - 40 && e.clientY < br.bottom + 10) bodyEl.scrollBy(0, 14);
+    if (e.clientX < br.left + 30) bodyEl.scrollBy(-14, 0);
+    else if (e.clientX > br.right - 30) bodyEl.scrollBy(14, 0);
+  });
+  const endDrag = e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag;
+    drag = null;
+    $$('.lq-slot.hover', stage).forEach(s => s.classList.remove('hover'));
+    if (!d.ghost) {   // tocco: seleziona o deseleziona
+      picked = picked === d.pid ? null : d.pid;
+      draw();
+      return;
+    }
+    d.ghost.remove();
+    d.el.classList.remove('lifting');
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('.lq-slot');
+    if (over) place(d.pid, over.dataset.s);
+    else { unplace(d.pid); picked = null; draw(); }
+  };
+  root.addEventListener('pointerup', endDrag);
+  root.addEventListener('pointercancel', e => { if (drag && drag.ghost) drag.ghost.remove(); if (drag) drag.el.classList.remove('lifting'); drag = null; draw(); });
+  root.addEventListener('click', e => {
+    const s = e.target.closest('.lq-slot');
+    if (s && picked && !e.target.closest('.lq-piece')) { place(picked, s.dataset.s); return; }
+  });
+  root.addEventListener('keydown', e => {
+    const p = e.target.closest('.lq-piece');
+    if (p && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); picked = picked === p.dataset.p ? null : p.dataset.p; draw(); $(`.lq-piece[data-p="${p.dataset.p}"]`, root)?.focus(); }
+  });
+
+  let logged = false;
+  const finish = async ok => {
+    if (firstScore === null) firstScore = ok;
+    if (ok < masks.length || logged) return;
+    logged = true;
+    const sets = labelSets(sec);
+    const st = sets[imageId] || (sets[imageId] = { masks });
+    const log = Array.isArray(st.log) ? st.log : [];
+    log.push({ d: todayStr(), ok: firstScore, n: masks.length, s: Math.round((Date.now() - started) / 1000) });
+    st.log = log.slice(-20);
+    st.best = Math.max(st.best || 0, firstScore / masks.length);
+    await saveSection(sec);
+  };
+  const close = () => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', sizeTray); route(); };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', sizeTray);
+  root.addEventListener('click', async e => {
+    const b = e.target.closest('[data-q]');
+    if (!b) return;
+    const q = b.dataset.q;
+    if (q === 'close') close();
+    else if (q === 'edit') { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', sizeTray); openLabelEditor(sec, imageId); }
+    else if (q === 'zoom') {
+      zoom = zoom === 1 ? 1.5 : zoom === 1.5 ? 2 : 1;
+      stage.style.width = `${zoom * 100}%`;
+      stage.style.maxWidth = zoom === 1 ? '' : 'none';
+      b.textContent = `Zoom ${zoom}×`;
+      requestAnimationFrame(sizeTray);
+    } else if (q === 'again') {
+      Object.keys(placed).forEach(k => delete placed[k]);
+      order = shuffle(masks.map(m => m.id));
+      checked = false;
+      picked = null;
+      firstScore = null;
+      logged = false;
+      draw();
+    } else if (q === 'show') {
+      masks.forEach(m => { placed[m.id] = m.id; });
+      checked = true;
+      picked = null;
+      if (firstScore === null) firstScore = 0;
+      draw();
+      msg.textContent = 'Ecco la soluzione: Ricomincia per riprovare.';
+    } else if (q === 'check') {
+      const n = Object.keys(placed).length;
+      if (!n) { msg.textContent = 'Sistema almeno un’etichetta, poi controlla.'; return; }
+      checked = true;
+      picked = null;
+      const ok = masks.filter(m => placed[m.id] === m.id).length;
+      draw();
+      if (ok === masks.length) {
+        msg.textContent = firstScore === null || firstScore === masks.length ? 'Tutte giuste al primo colpo!' : `Tutte giuste! Al primo controllo erano ${firstScore} su ${masks.length}.`;
+        await finish(ok);
+        return;
+      }
+      if (firstScore === null && n === masks.length) firstScore = ok;
+      msg.textContent = `${ok} giuste su ${masks.length}${n < masks.length ? ` (${masks.length - n} ancora da sistemare)` : ''}. Le rosse tornano tra le etichette.`;
+      setTimeout(() => {
+        if (!checked) return;
+        for (const k of Object.keys(placed)) if (placed[k] !== k) delete placed[k];
+        checked = false;
+        draw();
+        msg.textContent = `${ok} giuste su ${masks.length}: sistema le altre.`;
+      }, 1400);
+    }
+  });
+  hydrateImages(root);
+  draw();
+  // la prima misura arriva quando l’immagine ha preso posto
+  requestAnimationFrame(sizeTray);
+}
+
+// Dal pulsante della sezione o dall’immagine a schermo intero
+async function startLabels(sec, imageId = null) {
+  let id = imageId;
+  if (!id) {
+    const ids = labelImages(sec);
+    if (!ids.length) {
+      const all = imageRefs(sec.md).filter(x => imageById(x));
+      if (!all.length) { toast('In questa sezione non ci sono immagini'); return; }
+      id = all.length === 1 ? all[0] : await pickImage(all, sec.notebookId);
+      if (id) openLabelEditor(sec, id);
+      return;
+    }
+    id = ids.length === 1 ? ids[0] : await pickImage(ids, sec.notebookId);
+  }
+  if (!id) return;
+  if ((labelSets(sec)[id]?.masks || []).length) openLabelQuiz(sec, id); else openLabelEditor(sec, id);
+}
 
 /* ---------- Scelta di materia e posizione in StudyHub ----------
    StudyHub sta sullo stesso sito: i suoi dati si leggono dal localStorage. */
