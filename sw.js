@@ -2,7 +2,7 @@
    - file dell'app: prima la rete (così vedi subito gli aggiornamenti), poi la copia salvata se sei offline
    - librerie e font dai CDN: prima la copia salvata (hanno versioni fisse)
    - chiamate all'AI e a Drive: mai toccate */
-const VERSION = 'nb-3.23';
+const VERSION = 'nb-3.25';
 const APP_CACHE = `${VERSION}-app`;
 const CDN_CACHE = 'nb-cdn-1';
 const SHARE_CACHE = 'nb-share';

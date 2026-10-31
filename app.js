@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.23';
+const APP_VERSION = '3.25';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -165,7 +165,8 @@ const Settings = {
     boardOpen: false,
     keepPdfImages: false,
     showImages: true,
-    xmCards: true
+    xmCards: true,
+    studyhubUrl: ''
   },
   data: null,
   load() {
@@ -965,6 +966,7 @@ function route() {
     case 'deck': return viewDeck(p1);
     case 'card': return viewCardEditor(p1);
     case 'study': return viewStudy(p1);
+    case 'studyhub': ShDock.open(); location.replace('#/notebooks'); return;
     default: return viewNotebooks();
   }
 }
@@ -1603,7 +1605,10 @@ function modeRead(sec, body) {
     ${sec.studyhub ? `
       <div class="callout end">
         <p>${esc(studyhubStatusText(sec))}</p>
-        <button class="btn ghost sm" data-act="unlink">Riporta i ripassi nel Notebook</button>
+        <div class="inline">
+          ${sec.studyhub.status !== 'received' ? '<a class="btn sm" href="#/studyhub" data-sh-open>Apri StudyHub qui accanto</a>' : ''}
+          <button class="btn ghost sm" data-act="unlink">Riporta i ripassi nel Notebook</button>
+        </div>
       </div>` : !sec.srs?.due && sec.md.trim() ? `
       <div class="callout end">
         <p>Quando hai finito di studiarla, segnala a StudyHub che pianificherà i ripassi, oppure ripassala qui.</p>
@@ -1627,7 +1632,7 @@ function modeRead(sec, body) {
     const bl = backlinksOf(sec);
     if (bl.length) notesEl.insertAdjacentHTML('afterend', `<h2 class="sub backlinks">Pagine che rimandano qui</h2><ul class="list">${bl.map(s => sectionRow(s, { showNb: true })).join('')}</ul>`);
   }
-  on('[data-act="studied"]', 'click', async () => { await markStudiedInStudyHub(sec); route(); }, body);
+  on('[data-act="studied"]', 'click', async () => { if (await markStudiedInStudyHub(sec)) route(); }, body);
   on('[data-act="unlink"]', 'click', async () => {
     const ok = await modal({ title: 'Riportare i ripassi nel Notebook?', text: 'StudyHub riceverà la richiesta di togliere l’argomento e il Notebook lo pianificherà per domani.', confirm: 'Riporta' });
     if (!ok) return;
@@ -1681,7 +1686,7 @@ function modeCloze(sec, body) {
       <button class="btn sm ghost" data-act="fold-all" hidden></button>
       <button class="btn sm ghost" data-act="imgs" hidden></button>
     </div>
-    <p class="hint">Prova a ricordare ogni termine, poi toccalo per controllare.<span class="kbd-hint"> Con la tastiera: Spazio rivela il successivo, 1-4 per valutare.</span></p>
+    <p class="hint">Prova a ricordare ogni termine, poi toccalo per controllare. Segna com’è andata col pallino accanto ai titoli o toccando il margine sinistro; trascina le estremità di una linea per allungarla o accorciarla.<span class="kbd-hint"> Con la tastiera: Spazio rivela il successivo, 1-4 per valutare.</span></p>
     <article class="notes cloze-mode">${renderMd(sec.md)}</article>
     <div id="gradeSlot"></div>`;
   const folds = setupFolds($('.notes', body), sec.id);
@@ -1893,8 +1898,22 @@ function modeBlank(sec, body, { oral = false } = {}) {
     <textarea id="recall" class="input recall ${oral ? 'oral' : ''}" placeholder="${oral ? 'La trascrizione comparirà qui' : 'Inizia a scrivere quello che ricordi'}">${esc(drafts[dk] || '')}</textarea>
     <div class="row-actions"><button class="btn primary" data-act="compare">Confronta con gli appunti</button></div>
     <div id="cmp"></div>
+    <div id="rlSum"></div>
     <div id="gradeSlot"></div>`;
   const ta = $('#recall', body);
+  // segni a semaforo sugli appunti del confronto, come nel Cloze
+  let rl = null;
+  let aiSug = null;
+  const refreshSum = () => {
+    if (!rl) return;
+    const s = rl.summary();
+    $('#rlSum', body).innerHTML = rlSummaryHtml(s);
+    if (aiSug) return;
+    const k = s.lines && s.cover >= 0.5 ? s.suggest : null;
+    $$('#gradeSlot .gbtn', body).forEach(b => b.classList.toggle('suggested', !!k && b.classList.contains(`g-${k}`)));
+    const q = $('#gradeSlot .grade-q', body);
+    if (q) q.textContent = k ? 'Voto suggerito dai segni evidenziato. Quanto ricordavi?' : 'Quanto ricordavi?';
+  };
   ta.addEventListener('input', () => { drafts[dk] = ta.value; });
   let dict = null;
   const micBtn = $('[data-act="mic"]', body);
@@ -1928,8 +1947,13 @@ function modeBlank(sec, body, { oral = false } = {}) {
         </div>
       </div>
       ${AI.ready() ? `<div class="row-actions"><button class="btn" data-act="ai-eval">Fatti valutare da ${AI.name()}</button></div><div id="evalOut"></div>` : ''}`;
-    setupFolds($('#cmp .pane .notes', body), sec.id);
+    const cmpNotes = $('#cmp .pane .notes', body);
+    setupFolds(cmpNotes, sec.id);
     gradeBar(sec, $('#gradeSlot', body), { mode: oral ? 'oral' : 'blank' });
+    if (rl) rl.destroy();
+    aiSug = null;
+    rl = setupRateLines(cmpNotes, sec, { kind: 'recall', onChange: refreshSum });
+    refreshSum();
     $('#cmp', body).scrollIntoView({ block: 'start', behavior: 'auto' });
     const evalBtn = $('[data-act="ai-eval"]', body);
     if (evalBtn) evalBtn.addEventListener('click', async () => {
@@ -1950,7 +1974,9 @@ function modeBlank(sec, body, { oral = false } = {}) {
           const sc = Math.min(100, +m[1]);
           suggested = sc < 40 ? 'again' : sc < 65 ? 'hard' : sc < 90 ? 'good' : 'easy';
         }
+        aiSug = suggested || null;
         gradeBar(sec, $('#gradeSlot', body), { mode: oral ? 'oral' : 'blank', suggested });
+        refreshSum();
         evalBtn.remove();
       } catch (err) {
         toast(err.message, 'err');
@@ -2882,6 +2908,10 @@ function viewSettings() {
     <section class="block">
       <h2>StudyHub</h2>
       <p class="hint" id="bridgeInfo">${Bridge.pending() ? `${Bridge.pending()} ${Bridge.pending() === 1 ? 'aggiornamento attende' : 'aggiornamenti attendono'} che StudyHub li legga su questo dispositivo.` : 'Nessun aggiornamento in attesa per StudyHub.'}</p>
+      <label class="field"><span>Indirizzo di StudyHub</span>
+        <input class="input" type="url" id="stShUrl" value="${esc(st.studyhubUrl || '')}" placeholder="${SH_URL}" spellcheck="false" autocomplete="off"></label>
+      <p class="hint">StudyHub si apre accanto al Notebook (sul telefono in basso) dal menu o da Altro. Gli argomenti studiati gli arrivano da soli se sta sullo stesso sito del Notebook, come metallia13-ctrl.github.io. Lascia vuoto per l’indirizzo di sempre.</p>
+      <a class="btn sm" href="#/studyhub" data-sh-open>Apri StudyHub qui accanto</a>
     </section>
 
     <section class="block">
@@ -3087,6 +3117,14 @@ function viewSettings() {
     } catch (err) {
       msg.textContent = err.message;
     }
+  });
+  $('#stShUrl').addEventListener('change', e => {
+    const v = e.target.value.trim();
+    if (v && !/^https?:\/\/\S+$/i.test(v)) { toast('Scrivi l’indirizzo completo, che inizia con https://', 'err'); return; }
+    st.studyhubUrl = v;
+    Settings.save();
+    ShDock.reset();
+    toast(v ? 'Indirizzo di StudyHub salvato' : 'Uso l’indirizzo di sempre di StudyHub');
   });
   $('#stPer').addEventListener('change', e => {
     const v = Math.min(30, Math.max(1, parseInt(e.target.value, 10) || 5));
@@ -3417,6 +3455,7 @@ const Bridge = {
     out.push({ id: uid(), at: new Date().toISOString(), source: 'notebook', version: 1, ...ev });
     try { localStorage.setItem(this.OUT, JSON.stringify(out)); }
     catch { toast('Impossibile salvare l’evento per StudyHub', 'err'); }
+    ShDock.refresh();
   },
   pending() { return this.read(this.OUT).length; },
   async prune() {
@@ -3426,13 +3465,22 @@ const Bridge = {
     const done = out.filter(e => acks.has(e.id));
     if (!done.length) return;
     localStorage.setItem(this.OUT, JSON.stringify(out.filter(e => !acks.has(e.id))));
+    ShDock.refresh();
+    const changed = [];
     for (const ev of done) {
       if (ev.type !== 'topic-studied') continue;
       const sec = secById(ev.sectionId);
       if (sec && sec.studyhub && sec.studyhub.status !== 'received') {
         sec.studyhub = { ...sec.studyhub, status: 'received', receivedOn: todayStr() };
         await saveSection(sec);
+        changed.push(sec.id);
       }
+    }
+    // la sezione aperta mostra subito che StudyHub l’ha ricevuta
+    const h = location.hash;
+    if (changed.some(id => h.startsWith(`#/sec/${id}`)) && !/\/edit/.test(h) && !$('#modalRoot').children.length) {
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+      if (!typing) { const y = window.scrollY; route(); window.scrollTo(0, y); }
     }
   }
 };
@@ -3440,8 +3488,11 @@ const Bridge = {
 function deepLink(sec, mode = defaultMode(sec)) {
   return `${location.origin}${location.pathname}#/sec/${sec.id}/${mode}`;
 }
+// Ritorna false se scegli Annulla nella finestra di StudyHub
 async function markStudiedInStudyHub(sec) {
   const nb = nbById(sec.notebookId);
+  const place = await shPlaceSheet(sec);
+  if (place === false) return false;
   Bridge.send({
     type: 'topic-studied',
     sectionId: sec.id,
@@ -3450,11 +3501,14 @@ async function markStudiedInStudyHub(sec) {
     macro: groupOf(sec)?.name || '',
     topic: sec.title,
     studiedOn: todayStr(),
-    url: deepLink(sec)
+    url: deepLink(sec),
+    ...(place || {})
   });
   sec.studyhub = { status: 'pending', since: todayStr() };
   await saveSection(sec);
-  toast('Segnata come studiata: StudyHub pianificherà i ripassi');
+  if (ShDock.isOpen()) toast('Segnata come studiata: StudyHub pianificherà i ripassi');
+  else toast('Segnata come studiata: StudyHub pianificherà i ripassi', '', { label: 'Apri StudyHub', fn: () => ShDock.open() });
+  return true;
 }
 async function unlinkFromStudyHub(sec) {
   Bridge.send({ type: 'topic-unlinked', sectionId: sec.id, notebookId: sec.notebookId, subject: nbById(sec.notebookId)?.name || '', topic: sec.title });
@@ -3465,9 +3519,16 @@ async function unlinkFromStudyHub(sec) {
 }
 function studyhubStatusText(sec) {
   if (!sec.studyhub) return '';
+  const hit = sec.studyhub.status === 'received' ? shTopicOf(sec) : null;
+  if (hit) {
+    const t = hit.t;
+    const when = t.learn && typeof t.learn.due === 'number' ? 'in apprendimento, ripetizioni nel corso della giornata'
+      : t.next ? `prossimo ripasso ${fmtDue(t.next)}` : 'ripassi pianificati';
+    return `In StudyHub, ${hit.name}: ${when}.`;
+  }
   return sec.studyhub.status === 'received'
     ? 'StudyHub ha ricevuto l’argomento e ne pianifica i ripassi.'
-    : 'In attesa che StudyHub la riceva: apri StudyHub su questo dispositivo.';
+    : 'In attesa che StudyHub la riceva: aprilo su questo dispositivo, anche qui accanto.';
 }
 
 /* ---------------------------------------------------------------------
@@ -4346,7 +4407,7 @@ function renderStudyDone() {
     const id = btn.dataset.sh;
     btn.disabled = true;
     const s = secById(id);
-    if (s) await markStudiedInStudyHub(s);
+    if (s && !(await markStudiedInStudyHub(s))) { btn.disabled = false; return; }
     session.learned = session.learned.filter(x => x !== id);
     btn.closest('.learned')?.remove();
   });
@@ -4726,6 +4787,23 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.25: StudyHub collegato davvero', `
+      <ul>
+        <li><strong>Segna come studiata in StudyHub</strong> ora chiede in quale materia e dove: dentro un argomento (per esempio un macro-argomento) oppure collegata a un argomento che hai già, come quelli importati dal programma. La materia scelta resta come proposta per le altre sezioni dello stesso notebook.</li>
+        <li>StudyHub riceve l’argomento appena è aperto su questo dispositivo, anche nel pannello qui accanto, e lo mette in apprendimento. Nella sezione vedi la materia e il prossimo ripasso deciso da StudyHub.</li>
+        <li>Nel pannello StudyHub parte in <strong>modalità mini</strong>, con i ripassi del giorno. “Appunti nel Notebook” apre la sezione qui a fianco: la ripassi col Cloze o a voce, la valuti e il voto arriva a StudyHub.</li>
+        <li>Se ripassi in anticipo e va bene, StudyHub lo annota senza spostare il ripasso; se va male, lo anticipa.</li>
+        <li>“Riporta i ripassi nel Notebook” toglie da StudyHub l’argomento creato dal Notebook; uno che c’era già resta, scollegato, con una nota.</li>
+      </ul>`)}
+    ${sec('Novità della 3.24: semaforo nell’orale e StudyHub qui accanto', `
+      <ul>
+        <li><strong>Orale e Pagina bianca</strong>: dopo “Confronta con gli appunti” segni com’è andata come nel Cloze. Il pallino accanto a ogni titolo cambia colore (verde, giallo, arancio, rosso) e colora la linea a sinistra di quel paragrafo.</li>
+        <li><strong>Margini trascinabili</strong>, anche nel Cloze: trascina il pallino in cima o in fondo a una linea per allungarla o accorciarla; si aggancia al paragrafo o alla voce di elenco più vicini. Sul PC puoi anche usare le frecce su e giù.</li>
+        <li>Per segnare un <strong>punto preciso</strong>, tocca il margine sinistro accanto al paragrafo e scegli il colore. Toccando una linea la ricolori o la togli; “Tutto il paragrafo” la riporta alla misura di partenza.</li>
+        <li>Sotto il confronto vedi il <strong>riepilogo</strong> dei colori e, se hai segnato almeno metà degli appunti, il voto suggerito tra i quattro pulsanti. La valutazione dell’AI, se la chiedi, ha la precedenza.</li>
+        <li>Le parti che restano rosse o arancio più volte finiscono nei <strong>punti deboli</strong>, insieme a quelle del Cloze.</li>
+        <li><strong>StudyHub qui accanto</strong>: dal menu (sul telefono da Altro) si apre a destra, o in basso sul telefono. Trascina il bordo per allargarlo o stringerlo; con le icone in alto lo ingrandisci, lo ricarichi o lo apri a parte. Mentre è aperto qui, StudyHub è attivo su questo dispositivo: non serve aprirlo a parte perché legga gli argomenti che segni come studiati. Il numero sull’icona dice quanti aspettano.</li>
+      </ul>`)}
     ${sec('Importare testo, PDF e mappe', `
       <ul>
         <li><strong>Testo</strong>: incollalo; se è lungo viene diviso in più sezioni.</li>
@@ -6138,6 +6216,7 @@ function takeSharedText() {
    ===================================================================== */
 
 const ICONS = {
+  studyhub: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/><path d="m16.2 12 1.3 1.3 2-2.6"/></svg>',
   calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>',
   clinic: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M10 13v2a5 5 0 0 0 10 0v-2"/><circle cx="20" cy="11" r="2"/></svg>',
   glossary: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M9 9h6M9 13h4"/></svg>',
@@ -6179,6 +6258,7 @@ function openSheet(inner, { label = '', onClose = () => {} } = {}) {
 /* ---------- Pagina "Altro" ---------- */
 const MORE_ITEMS = [
   ['search', 'Cerca ovunque', 'Appunti, flashcard, testo dei PDF, glossario, note cliniche'],
+  ['studyhub', 'StudyHub', 'Il tuo planner, aperto qui accanto senza lasciare il Notebook'],
   ['calendar', 'Calendario', 'Ripassi in programma, tempo di studio, punti deboli'],
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
   ['glossary', 'Glossario', 'Parole particolari e il loro significato'],
@@ -8718,43 +8798,9 @@ function setupNotesInk(article, sec, btn) {
 /* ---------- Cloze: riga colorata per ricordare com’è andata ---------- */
 const CZ_MARKS = ['g', 'y', 'o', 'r'];
 const CZ_MARK_NAMES = { g: 'andata bene', y: 'qualche dubbio', o: 'da rivedere', r: 'non la sapevo' };
+// v3.24: le linee hanno i margini trascinabili (vedi setupRateLines)
 function setupClozeMarks(article, sec) {
-  if (!article) return;
-  const folds = $$('.fold', article);
-  const targets = folds.length
-    ? folds.map(f => ({ el: f, host: f.querySelector(':scope > .fold-h'), key: f.dataset.fold, label: f.querySelector(':scope > .fold-h')?.textContent.trim() }))
-    : [...article.children].filter(el => el.textContent.trim()).map((el, i) => ({ el, host: el, key: `b${i}:${el.textContent.trim().slice(0, 24)}`, label: el.textContent.trim().slice(0, 60) }));
-  const marks = () => (sec.czMarks && typeof sec.czMarks === 'object' ? sec.czMarks : (sec.czMarks = {}));
-  const paint = t => {
-    const v = marks()[t.key] || '';
-    CZ_MARKS.forEach(c => t.el.classList.toggle(`czm-${c}`, v === c));
-    const b = t.btn;
-    b.dataset.v = v;
-    b.setAttribute('aria-label', v ? `Segnata: ${CZ_MARK_NAMES[v]}. Tocca per cambiare` : 'Segna com’è andata');
-    b.title = v ? CZ_MARK_NAMES[v] : 'Segna com’è andata: verde, giallo, arancio, rosso';
-  };
-  targets.forEach(t => {
-    if (!t.host) return;
-    t.el.classList.add('czm-block');
-    t.host.classList.add('czm-host');
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'czm-btn';
-    t.btn = b;
-    t.host.append(b);
-    paint(t);
-    b.addEventListener('click', e => {
-      e.stopPropagation();
-      const m = marks();
-      const i = CZ_MARKS.indexOf(m[t.key] || '');
-      const next = i === CZ_MARKS.length - 1 ? '' : CZ_MARKS[i + 1];
-      if (next) m[t.key] = next; else delete m[t.key];
-      recordCzMark(sec, t.key, next, t.label, t.el.textContent.replace(/\s+/g, ' ').trim());
-      paint(t);
-      clearTimeout(setupClozeMarks.t);
-      setupClozeMarks.t = setTimeout(() => saveSection(sec), 800);
-    });
-  });
+  return setupRateLines(article, sec, { kind: 'cloze' });
 }
 
 /* ---------- Libreria dei PDF ---------- */
@@ -8926,9 +8972,10 @@ async function boostSection(sec) {
 }
 
 /* ---------- Cloze: storico dei segni e punti deboli ---------- */
-function recordCzMark(sec, key, color, label, text) {
-  if (!sec.czHist || typeof sec.czHist !== 'object') sec.czHist = {};
-  const e = sec.czHist[key] || (sec.czHist[key] = { label: '', text: '', h: [] });
+function recordCzMark(sec, key, color, label, text, histKey = 'czHist') {
+  if (!sec[histKey] || typeof sec[histKey] !== 'object') sec[histKey] = {};
+  const all = sec[histKey];
+  const e = all[key] || (all[key] = { label: '', text: '', h: [] });
   e.label = String(label || '').slice(0, 120);
   e.text = String(text || '').slice(0, 800);
   const d = todayStr();
@@ -8936,24 +8983,36 @@ function recordCzMark(sec, key, color, label, text) {
   if (last && last.d === d) last.c = color || '';
   else e.h.push({ d, c: color || '' });
   e.h = e.h.slice(-20);
+  // le linee tolte da tempo non servono più: tengo lo storico leggero
+  const keys = Object.keys(all);
+  if (keys.length > 200) {
+    keys.filter(k => k !== key && !(all[k].h || []).slice(-1)[0]?.c)
+      .sort((a, b) => String((all[a].h || []).slice(-1)[0]?.d || '').localeCompare(String((all[b].h || []).slice(-1)[0]?.d || '')))
+      .slice(0, keys.length - 200).forEach(k => { delete all[k]; });
+  }
 }
 // parti rimaste rosse o arancio in almeno due letture recenti, e ancora segnate così
+// v3.24: contano anche i segni della ripetizione a voce e della pagina bianca
 function czWeakOf(sec) {
-  const hist = sec.czHist && typeof sec.czHist === 'object' ? sec.czHist : {};
-  const now = sec.czMarks || {};
-  return Object.entries(hist).map(([key, e]) => {
-    const bad = (e.h || []).slice(-6).filter(x => x.c === 'r' || x.c === 'o').length;
-    const cur = now[key] || (e.h || []).slice(-1)[0]?.c || '';
-    return { key, label: e.label, text: e.text, bad, cur };
-  }).filter(x => x.bad >= 2 && (x.cur === 'r' || x.cur === 'o')).sort((a, b) => b.bad - a.bad);
+  const out = [];
+  [['cloze', 'czHist', 'czMarks', ''], ['recall', 'rcHist', 'rcMarks', 'rc|']].forEach(([kind, hk, mk, pre]) => {
+    const hist = sec[hk] && typeof sec[hk] === 'object' ? sec[hk] : {};
+    const now = sec[mk] && typeof sec[mk] === 'object' ? sec[mk] : {};
+    Object.entries(hist).forEach(([key, e]) => {
+      const bad = (e.h || []).slice(-6).filter(x => x.c === 'r' || x.c === 'o').length;
+      const cur = now[key] || (e.h || []).slice(-1)[0]?.c || '';
+      out.push({ key: pre + key, kind, label: e.label, text: e.text, bad, cur });
+    });
+  });
+  return out.filter(x => x.bad >= 2 && (x.cur === 'r' || x.cur === 'o')).sort((a, b) => b.bad - a.bad);
 }
 function czWeakItemHtml(sec, w, { showSec = false } = {}) {
   return `
     <li class="czw-item" data-czw="${sec.id}" data-key="${esc(w.key)}">
       <span class="czw-dot ${w.cur}" aria-hidden="true"></span>
       <span class="czw-main">
-        <span class="czw-label">${showSec ? `<a href="#/sec/${sec.id}/cloze">${esc(sec.title)}</a> › ` : ''}${esc(w.label || 'Paragrafo')}</span>
-        <span class="czw-sub">${w.bad} ${w.bad === 1 ? 'volta' : 'volte'} in rosso o arancio nelle ultime letture</span>
+        <span class="czw-label">${showSec ? `<a href="#/sec/${sec.id}/${w.kind === 'recall' ? 'oral' : 'cloze'}">${esc(sec.title)}</a> › ` : ''}${esc(w.label || 'Paragrafo')}</span>
+        <span class="czw-sub">${w.bad} ${w.bad === 1 ? 'volta' : 'volte'} in rosso o arancio ${w.kind === 'recall' ? 'nelle ultime ripetizioni' : 'nelle ultime letture'}</span>
       </span>
       <span class="czw-acts">
         <button type="button" class="btn sm" data-czw-act="card">Crea flashcard</button>
@@ -10163,6 +10222,7 @@ async function init() {
   });
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
   setupPwa();
+  ShDock.init();
   Tracker.start();
   applyBlueLight();
   watchKeyboard();
@@ -10174,5 +10234,689 @@ async function init() {
   else if (shared) toast('Testo ricevuto: scegli il notebook e crea le sezioni');
   if (Sync.configured()) Sync.run({ silent: true });
 }
+
+/* =====================================================================
+   v3.24: segni a semaforo con i margini delle linee trascinabili
+   (Cloze, Orale e Pagina bianca) e StudyHub aperto accanto al Notebook
+   ===================================================================== */
+const RL_STORES = {
+  cloze: { marks: 'czMarks', spans: 'czSpans', hist: 'czHist' },
+  recall: { marks: 'rcMarks', spans: 'rcSpans', hist: 'rcHist' }
+};
+const RL_WEIGHT = { g: 1, y: 0.65, o: 0.35, r: 0 };
+const RL_UNIT_SEL = 'h1,h2,h3,h4,h5,h6,p,li,tr,pre,hr,.html-embed';
+const rlObj = (sec, k) => (sec[k] && typeof sec[k] === 'object' && !Array.isArray(sec[k]) ? sec[k] : (sec[k] = {}));
+function rlOwnText(el) {
+  if (el.tagName !== 'LI') return el.textContent.replace(/\s+/g, ' ').trim();
+  let t = '';
+  el.childNodes.forEach(n => { if (!(n.nodeType === 1 && /^(UL|OL)$/.test(n.tagName))) t += n.textContent; });
+  return t.replace(/\s+/g, ' ').trim();
+}
+// I pezzi su cui si appoggiano le linee: titoli, paragrafi, voci di elenco, righe di tabella…
+function rlUnits(article) {
+  const skip = el => {
+    if (el.closest('.rl-layer')) return true;
+    const cell = el.tagName === 'P' && el.parentElement && el.parentElement.closest('li, td, th');
+    if (cell && article.contains(cell)) return true;
+    const emb = el.parentElement && el.parentElement.closest('.html-embed');
+    return !!(emb && article.contains(emb));
+  };
+  const list = [...article.querySelectorAll(RL_UNIT_SEL)].filter(el => !skip(el));
+  const set = new Set(list);
+  // blocchi senza pezzi riconosciuti dentro (immagini con occlusioni, riquadri…)
+  for (const box of [article, ...article.querySelectorAll('.fold-body')]) {
+    for (const ch of box.children) {
+      if (set.has(ch) || ch.classList.contains('fold') || ch.classList.contains('rl-layer')) continue;
+      if (!ch.querySelector(RL_UNIT_SEL)) { list.push(ch); set.add(ch); }
+    }
+  }
+  list.sort((a, b) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+  const seen = {};
+  return list.map(el => {
+    const own = rlOwnText(el);
+    const base = `${el.tagName.toLowerCase()}|${own.slice(0, 48) || el.querySelector('img')?.dataset.img || ''}`;
+    seen[base] = (seen[base] || 0) + 1;
+    return { el, sig: `${base}#${seen[base]}`, text: own, len: Math.max(own.length, 20) };
+  });
+}
+
+function setupRateLines(article, sec, { kind = 'cloze', onChange = () => {} } = {}) {
+  if (!article) return null;
+  const st = RL_STORES[kind] || RL_STORES.cloze;
+  const marks = () => rlObj(sec, st.marks);
+  const spans = () => rlObj(sec, st.spans);
+
+  // pallino accanto a ogni titolo (o a ogni blocco, se gli appunti non hanno titoli)
+  const folds = $$('.fold', article);
+  const targets = folds.length
+    ? folds.map(f => ({ el: f, host: f.querySelector(':scope > .fold-h'), key: f.dataset.fold, label: f.querySelector(':scope > .fold-h')?.textContent.trim() }))
+    : [...article.children].filter(el => el.textContent.trim() && !el.classList.contains('rl-layer')).map((el, i) => ({ el, host: el, key: `b${i}:${el.textContent.trim().slice(0, 24)}`, label: el.textContent.trim().slice(0, 60) }));
+  const tByKey = new Map(targets.map(t => [t.key, t]));
+  targets.forEach(t => {
+    if (!t.host) return;
+    t.host.classList.add('czm-host');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'czm-btn';
+    t.btn = b;
+    t.host.append(b);
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const i = CZ_MARKS.indexOf(marks()[t.key] || '');
+      setColor(t.key, i === CZ_MARKS.length - 1 ? '' : CZ_MARKS[i + 1]);
+    });
+  });
+
+  const units = rlUnits(article);
+  const bySig = new Map(units.map((u, i) => [u.sig, i]));
+  const defCache = new Map();
+  const defSpan = t => {
+    if (defCache.has(t.key)) return defCache.get(t.key);
+    let a = Infinity, b = -1;
+    units.forEach((u, i) => { if (t.el === u.el || t.el.contains(u.el)) { if (i < a) a = i; if (i > b) b = i; } });
+    const r = a <= b ? [a, b] : null;
+    defCache.set(t.key, r);
+    return r;
+  };
+  let drag = null;
+  const lineList = () => Object.entries(marks()).filter(([, c]) => RL_WEIGHT[c] !== undefined).map(([key, c]) => {
+    const t = tByKey.get(key);
+    const sp = spans()[key];
+    let a, b;
+    if (drag && drag.key === key) ({ a, b } = drag);
+    else if (sp && bySig.has(sp.a) && bySig.has(sp.b)) { a = bySig.get(sp.a); b = bySig.get(sp.b); }
+    else if (t && defSpan(t)) [a, b] = defSpan(t);
+    else return null;
+    if (a > b) [a, b] = [b, a];
+    return { key, c, a, b, t };
+  }).filter(Boolean);
+
+  article.classList.add('rl-host');
+  const layer = document.createElement('div');
+  layer.className = 'rl-layer';
+  layer.innerHTML = '<div class="rl-gutter" title="Tocca per segnare com’è andato questo punto"></div>';
+  article.append(layer);
+  const lineEls = new Map();
+
+  const geo = () => {
+    const base = article.getBoundingClientRect().top;
+    return units.map(u => {
+      if (!u.el.getClientRects().length) return null;
+      const r = u.el.getBoundingClientRect();
+      let bottom = r.bottom;
+      if (u.el.tagName === 'LI') {
+        const sub = u.el.querySelector(':scope > ul, :scope > ol');
+        const sr = sub && sub.getBoundingClientRect();
+        if (sr && sr.height) bottom = sr.top;
+      }
+      return { top: r.top - base, bottom: Math.max(bottom - base, r.top - base + 8) };
+    });
+  };
+  const nameOf = ln => (ln.t ? ln.t.label : units[ln.a]?.text.slice(0, 60)) || 'questo punto';
+
+  const draw = () => {
+    if (!article.isConnected) return;
+    const g = geo();
+    const segs = [];
+    for (const ln of lineList()) {
+      let top = Infinity, bot = -Infinity;
+      for (let i = ln.a; i <= ln.b; i++) { const q = g[i]; if (!q) continue; if (q.top < top) top = q.top; if (q.bottom > bot) bot = q.bottom; }
+      if (top !== Infinity) segs.push({ ...ln, top, bot });
+    }
+    // corsie: le linee corte vicino al testo, quelle che le contengono più fuori
+    segs.sort((x, y) => (x.bot - x.top) - (y.bot - y.top));
+    const lanes = [[], []];
+    segs.forEach(s => {
+      let l = lanes.findIndex(L => L.every(o => o.bot <= s.top + 2 || o.top >= s.bot - 2));
+      if (l < 0) l = 1;
+      lanes[l].push(s);
+      s.lane = l;
+    });
+    const keep = new Set();
+    segs.forEach(s => {
+      keep.add(s.key);
+      let el = lineEls.get(s.key);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'rl-line';
+        el.dataset.key = s.key;
+        el.innerHTML = '<button type="button" class="rl-knob rl-top"></button><button type="button" class="rl-knob rl-bot"></button>';
+        layer.append(el);
+        lineEls.set(s.key, el);
+      }
+      el.dataset.c = s.c;
+      el.style.top = `${s.top}px`;
+      el.style.height = `${Math.max(8, s.bot - s.top)}px`;
+      el.style.setProperty('--lane', s.lane);
+      const nm = nameOf(s);
+      el.firstElementChild.setAttribute('aria-label', `Inizio della linea ${CZ_MARK_NAMES[s.c]} su ${nm}: trascina o usa le frecce per spostarlo, tocca per cambiare colore`);
+      el.lastElementChild.setAttribute('aria-label', `Fine della linea ${CZ_MARK_NAMES[s.c]} su ${nm}: trascina o usa le frecce per spostarla`);
+    });
+    for (const [k, el] of lineEls) if (!keep.has(k) && !(drag && drag.key === k)) { el.remove(); lineEls.delete(k); }
+    targets.forEach(paintDot);
+  };
+  const paintDot = t => {
+    if (!t.btn) return;
+    const v = marks()[t.key] || '';
+    t.btn.dataset.v = v;
+    t.btn.setAttribute('aria-label', v ? `Segnata: ${CZ_MARK_NAMES[v]}. Tocca per cambiare` : 'Segna com’è andata');
+    t.btn.title = v ? CZ_MARK_NAMES[v] : 'Segna com’è andata: verde, giallo, arancio, rosso';
+  };
+  let raf = 0;
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+
+  let saveT = 0;
+  const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(() => saveSection(sec), 800); };
+  const changed = () => { draw(); saveSoon(); try { onChange(); } catch { /* il riepilogo non deve bloccare i segni */ } };
+  const textOf = (a, b) => units.slice(a, b + 1).map(u => u.text).filter(Boolean).join(' ').slice(0, 800);
+  const setColor = (key, c) => {
+    const m = marks();
+    const before = lineList().find(l => l.key === key);
+    if (c) m[key] = c; else { delete m[key]; delete spans()[key]; }
+    const ln = lineList().find(l => l.key === key) || before;
+    const t = tByKey.get(key);
+    if (ln || t) recordCzMark(sec, key, c, t ? t.label : (ln ? units[ln.a]?.text.slice(0, 80) : ''), ln ? textOf(ln.a, ln.b) : (t ? t.el.textContent.replace(/\s+/g, ' ').trim() : ''), st.hist);
+    changed();
+  };
+  const setSpan = (key, a, b) => {
+    const t = tByKey.get(key);
+    const d = t && defSpan(t);
+    if (d && d[0] === a && d[1] === b) delete spans()[key];
+    else spans()[key] = { a: units[a].sig, b: units[b].sig };
+    const e = rlObj(sec, st.hist)[key];
+    if (e) e.text = textOf(a, b);
+    changed();
+  };
+
+  /* menu dei colori, sotto il punto toccato */
+  let pop = null;
+  const closePop = () => {
+    if (!pop) return;
+    pop.remove();
+    pop = null;
+    document.removeEventListener('pointerdown', outside, true);
+    document.removeEventListener('keydown', popKey, true);
+  };
+  const outside = e => { if (pop && !pop.contains(e.target)) closePop(); };
+  const popKey = e => { if (e.key === 'Escape') { e.stopPropagation(); closePop(); } };
+  // una riga per ricolorare la linea toccata, una per segnare solo il punto toccato
+  const openPop = ({ key = null, unit = -1, y }) => {
+    closePop();
+    const ln = key ? lineList().find(l => l.key === key) : null;
+    if (key && !ln) return;
+    const point = unit >= 0 && (!ln || ln.a !== unit || ln.b !== unit);
+    if (!ln && !point) return;
+    const sw = (row, cur) => CZ_MARKS.map(c => `<button type="button" class="rl-sw" data-row="${row}" data-c="${c}" aria-label="${CZ_MARK_NAMES[c]}" title="${CZ_MARK_NAMES[c]}"${cur !== undefined ? ` aria-pressed="${cur === c}"` : ''}></button>`).join('');
+    pop = document.createElement('div');
+    pop.className = 'rl-pop';
+    pop.setAttribute('role', 'group');
+    pop.setAttribute('aria-label', 'Com’è andata?');
+    pop.innerHTML = `
+      ${ln ? `<div class="rl-row">${point ? '<span class="rl-lbl">Tutta la linea</span>' : ''}${sw('line', ln.c)}
+        <button type="button" class="rl-pop-t" data-x="del">Togli</button>
+        ${ln.t && spans()[key] ? '<button type="button" class="rl-pop-t" data-x="reset">Tutto il paragrafo</button>' : ''}</div>` : ''}
+      ${point ? `<div class="rl-row">${ln ? '<span class="rl-lbl">Solo questo punto</span>' : ''}${sw('point')}</div>` : ''}`;
+    pop.style.top = `${Math.max(0, y)}px`;
+    layer.append(pop);
+    pop.addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.c && b.dataset.row === 'line') setColor(key, b.dataset.c);
+      else if (b.dataset.c && b.dataset.row === 'point') {
+        const k = `u:${uid()}`;
+        spans()[k] = { a: units[unit].sig, b: units[unit].sig };
+        setColor(k, b.dataset.c);
+      } else if (b.dataset.x === 'del') setColor(key, '');
+      else if (b.dataset.x === 'reset') { delete spans()[key]; changed(); }
+      closePop();
+    });
+    setTimeout(() => { if (!pop) return; document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', popKey, true); });
+    $('.rl-sw', pop).focus({ preventScroll: true });
+  };
+
+  /* trascinare le estremità: la linea si aggancia al paragrafo o alla voce più vicini */
+  let justDragged = false;
+  const nearest = (g, y, end, a, b) => {
+    let best = -1, dist = Infinity;
+    for (let i = 0; i < g.length; i++) {
+      const q = g[i];
+      if (!q || (end === 'a' ? i > b : i < a)) continue;
+      const d = Math.abs((end === 'a' ? q.top : q.bottom) - y);
+      if (d < dist) { dist = d; best = i; }
+    }
+    return best;
+  };
+  layer.addEventListener('pointerdown', e => {
+    const k = e.target.closest('.rl-knob');
+    if (!k || e.button > 0) return;
+    const key = k.parentElement.dataset.key;
+    const ln = lineList().find(l => l.key === key);
+    if (!ln) return;
+    e.preventDefault();
+    closePop();
+    try { k.setPointerCapture(e.pointerId); } catch { /* va bene lo stesso */ }
+    drag = { id: e.pointerId, key, end: k.classList.contains('rl-top') ? 'a' : 'b', a: ln.a, b: ln.b, a0: ln.a, b0: ln.b, y0: e.clientY, moved: false, g: geo(), el: k.parentElement };
+  });
+  layer.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (!drag.moved && Math.abs(e.clientY - drag.y0) < 6) return;
+    if (!drag.moved) { drag.moved = true; drag.el.classList.add('dragging'); }
+    if (e.clientY < 70) window.scrollBy(0, -12);
+    else if (e.clientY > window.innerHeight - 90) window.scrollBy(0, 12);
+    const y = e.clientY - article.getBoundingClientRect().top;
+    const i = nearest(drag.g, y, drag.end, drag.a, drag.b);
+    if (i >= 0 && i !== drag[drag.end]) { drag[drag.end] = i; draw(); }
+  });
+  const endDrag = e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag;
+    drag = null;
+    d.el.classList.remove('dragging');
+    if (!d.moved) { draw(); return; }
+    justDragged = true;
+    setTimeout(() => { justDragged = false; }, 0);
+    if (d.a !== d.a0 || d.b !== d.b0) setSpan(d.key, d.a, d.b); else draw();
+  };
+  layer.addEventListener('pointerup', endDrag);
+  layer.addEventListener('pointercancel', endDrag);
+  // il pezzo all’altezza toccata (il più piccolo, se più d’uno)
+  const unitAt = (g, y, lo = 0, hi = units.length - 1) => {
+    let best = -1, dist = Infinity;
+    for (let i = lo; i <= hi; i++) {
+      const q = g[i];
+      if (!q) continue;
+      const d = y < q.top ? q.top - y : y > q.bottom ? y - q.bottom : 0;
+      if (d < dist || (d === 0 && dist === 0 && q.bottom - q.top < g[best].bottom - g[best].top)) { dist = d; best = i; }
+    }
+    return best;
+  };
+  layer.addEventListener('click', e => {
+    if (justDragged) return;
+    const line = e.target.closest('.rl-line');
+    const onGutter = e.target.closest('.rl-gutter');
+    if (!line && !onGutter) return;
+    e.stopPropagation();
+    const g = geo();
+    const y = e.clientY - article.getBoundingClientRect().top;
+    if (line) {
+      const k = e.target.closest('.rl-knob');
+      const ln = lineList().find(l => l.key === line.dataset.key);
+      if (!ln) return;
+      if (k || !e.clientY) {
+        const below = k && k.classList.contains('rl-bot');
+        openPop({ key: ln.key, y: below ? line.offsetTop + line.offsetHeight + 10 : line.offsetTop + 12 });
+        return;
+      }
+      const u = unitAt(g, y, ln.a, ln.b);
+      openPop({ key: ln.key, unit: u, y: (u >= 0 ? g[u].bottom : y) + 6 });
+      return;
+    }
+    const u = unitAt(g, y);
+    if (u >= 0) openPop({ unit: u, y: g[u].bottom + 6 });
+  });
+  // con la tastiera: frecce su e giù spostano l’estremità di un paragrafo
+  layer.addEventListener('keydown', e => {
+    const k = e.target.closest('.rl-knob');
+    if (!k || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    const key = k.parentElement.dataset.key;
+    const ln = lineList().find(l => l.key === key);
+    if (!ln) return;
+    e.preventDefault();
+    const g = geo();
+    const end = k.classList.contains('rl-top') ? 'a' : 'b';
+    const step = e.key === 'ArrowUp' ? -1 : 1;
+    let i = ln[end] + step;
+    while (i >= 0 && i < units.length && !g[i]) i += step;
+    if (i < 0 || i >= units.length || (end === 'a' && i > ln.b) || (end === 'b' && i < ln.a)) return;
+    setSpan(key, end === 'a' ? i : ln.a, end === 'b' ? i : ln.b);
+    lineEls.get(key)?.querySelector(end === 'a' ? '.rl-top' : '.rl-bot')?.focus({ preventScroll: true });
+  });
+
+  // le linee seguono il testo quando cambia (paragrafi chiusi, immagini, larghezza)
+  const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null;
+  if (ro) ro.observe(article);
+  window.addEventListener('resize', schedule);
+  article.addEventListener('click', schedule);
+  draw();
+  if (document.fonts && document.fonts.status !== 'loaded') document.fonts.ready.then(schedule).catch(() => {});
+
+  const summary = () => {
+    const lines = lineList();
+    const per = new Array(units.length).fill(null);
+    for (const ln of lines) {
+      const size = ln.b - ln.a;
+      for (let i = ln.a; i <= ln.b; i++) if (!per[i] || per[i][1] > size) per[i] = [ln.c, size];
+    }
+    let tot = 0, cov = 0, sc = 0;
+    units.forEach((u, i) => { tot += u.len; if (per[i]) { cov += u.len; sc += u.len * RL_WEIGHT[per[i][0]]; } });
+    const counts = { g: 0, y: 0, o: 0, r: 0 };
+    lines.forEach(l => { counts[l.c]++; });
+    const pct = cov ? Math.round((sc / cov) * 100) : null;
+    return {
+      lines: lines.length, counts, pct, cover: tot ? cov / tot : 0,
+      suggest: pct === null ? null : pct < 35 ? 'again' : pct < 60 ? 'hard' : pct < 95 ? 'good' : 'easy'
+    };
+  };
+  const destroy = () => {
+    closePop();
+    if (ro) ro.disconnect();
+    window.removeEventListener('resize', schedule);
+    cancelAnimationFrame(raf);
+    layer.remove();
+  };
+  addCleanup(destroy);
+  return { summary, destroy, redraw: schedule };
+}
+
+function rlSummaryHtml(s) {
+  if (!s || !s.lines) return '<p class="hint rl-help">Segna com’è andata: tocca il pallino accanto a un titolo, oppure il margine sinistro accanto a un punto preciso. Trascina i pallini alle estremità di una linea per allungarla o accorciarla.</p>';
+  const chips = CZ_MARKS.filter(c => s.counts[c]).map(c => `<span class="rl-chip" title="${CZ_MARK_NAMES[c]}"><i class="rl-dot" data-c="${c}" aria-hidden="true"></i>${s.counts[c]}<span class="sr-only"> ${CZ_MARK_NAMES[c]}</span></span>`).join('');
+  const g = GRADES.find(x => x.key === s.suggest);
+  const tail = s.cover < 0.5
+    ? `Hai segnato il ${Math.round(s.cover * 100)}% degli appunti: segna anche il resto per avere un voto suggerito.`
+    : `Dai segni: ${s.pct}%, voto suggerito “${g ? g.label : ''}”.`;
+  return `<div class="rl-sum">${chips}<span class="rl-sum-t">${tail}</span></div>`;
+}
+
+
+/* ---------- Scelta di materia e posizione in StudyHub ----------
+   StudyHub sta sullo stesso sito: i suoi dati si leggono dal localStorage. */
+const SH_DATA_KEY = 'multiSubjectDataV6';
+function shData() {
+  try {
+    const d = JSON.parse(localStorage.getItem(SH_DATA_KEY) || 'null');
+    return d && d.subjects && typeof d.subjects === 'object' ? d : null;
+  } catch { return null; }
+}
+const shNorm = x => foldAccents(String(x || '')).trim();
+function shTopicOf(sec) {
+  const d = shData();
+  if (!d) return null;
+  for (const [name, sub] of Object.entries(d.subjects)) {
+    const t = (sub && Array.isArray(sub.topics) ? sub.topics : []).find(x => x && x.nb && x.nb.sec === sec.id);
+    if (t) return { t, name };
+  }
+  return null;
+}
+// argomenti in ordine di albero, con la profondità
+function shTree(sub) {
+  const list = (sub && Array.isArray(sub.topics) ? sub.topics : []).filter(t => t && t.id && t.name);
+  const ids = new Set(list.map(t => t.id));
+  const kids = {};
+  list.forEach(t => { const p = t.parent && ids.has(t.parent) && t.parent !== t.id ? t.parent : ''; (kids[p] = kids[p] || []).push(t); });
+  const out = [];
+  const seen = new Set();
+  const walk = (p, depth) => (kids[p] || []).forEach(t => { if (seen.has(t.id)) return; seen.add(t.id); out.push({ t, depth, kids: !!(kids[t.id] || []).length }); walk(t.id, depth + 1); });
+  walk('', 0);
+  return out;
+}
+function shPlaceSheet(sec) {
+  return new Promise(resolve => {
+    const d = shData();
+    const subs = d ? Object.keys(d.subjects) : [];
+    if (!subs.length) { resolve(null); return; }   // StudyHub non ancora aperto qui: decide lui dal nome
+    const nb = nbById(sec.notebookId);
+    const macro = groupOf(sec)?.name || '';
+    const remembered = nb && nb.shSubject && subs.includes(nb.shSubject) ? nb.shSubject : null;
+    let subName = remembered || subs.find(n => shNorm(n) === shNorm(nb?.name)) || (nb ? '' : subs[0]);
+    const newName = (nb?.name || 'Notebook').trim();
+    const ind = n => '\u00a0\u00a0\u00a0'.repeat(n);
+    const sh = openSheet(`
+      <h2>Segna come studiata in StudyHub</h2>
+      <p class="hint">“${esc(sec.title)}” entra in StudyHub, che da oggi ne pianifica i ripassi.</p>
+      <label class="field"><span>Materia in StudyHub</span>
+        <select class="input" id="shSub">
+          ${subs.map(n => `<option value="${esc(n)}" ${n === subName ? 'selected' : ''}>${esc(n)}</option>`).join('')}
+          ${subs.some(n => shNorm(n) === shNorm(newName)) ? '' : `<option value="" ${subName ? '' : 'selected'}>Nuova materia: ${esc(newName)}</option>`}
+        </select></label>
+      <label class="field"><span>Dove</span><select class="input" id="shPos"></select></label>
+      <p class="hint" id="shPosHint"></p>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-sh-pick="no">Annulla</button>
+        <button class="btn primary" type="button" data-sh-pick="ok">Segna come studiata</button>
+      </div>`, { label: 'Segna come studiata in StudyHub', onClose: v => resolve(v === undefined || v === null ? false : v) });
+    const pos = $('#shPos', sh.el);
+    const hint = $('#shPosHint', sh.el);
+    const draw = () => {
+      const sub = subName ? d.subjects[subName] : null;
+      const tree = shTree(sub);
+      const free = tree.filter(x => !x.kids && !(x.t.nb && x.t.nb.sec && x.t.nb.sec !== sec.id));
+      const same = free.find(x => shNorm(x.t.name) === shNorm(sec.title));
+      const macroHit = tree.find(x => shNorm(x.t.name) === shNorm(macro));
+      const pick = same ? `link:${same.t.id}` : macroHit ? `new:${macroHit.t.id}` : 'new:';
+      pos.innerHTML = `
+        <optgroup label="Argomento nuovo">
+          <option value="new:">Tra gli argomenti principali</option>
+          ${tree.map(x => `<option value="new:${esc(x.t.id)}">${ind(x.depth)}Dentro “${esc(x.t.name)}”</option>`).join('')}
+        </optgroup>
+        ${free.length ? `<optgroup label="Argomento che c’è già">
+          ${free.map(x => `<option value="link:${esc(x.t.id)}">${ind(x.depth)}${esc(x.t.name)}${x.t.status === 'todo' ? ' (da studiare)' : ''}</option>`).join('')}
+        </optgroup>` : ''}`;
+      pos.value = pick;
+      showHint();
+    };
+    const showHint = () => {
+      hint.textContent = pos.value.startsWith('link:')
+        ? 'Lo colleghi a un argomento che hai già: se era da studiare parte oggi, se lo ripassi già resta com’è.'
+        : `Crea in StudyHub l’argomento “${sec.title}”.`;
+    };
+    draw();
+    $('#shSub', sh.el).addEventListener('change', e => { subName = e.target.value; draw(); });
+    pos.addEventListener('change', showHint);
+    $('[data-sh-pick="no"]', sh.el).onclick = () => sh.close(false);
+    $('[data-sh-pick="ok"]', sh.el).onclick = async () => {
+      const [kind, id] = pos.value.split(':');
+      const chosen = subName || newName;
+      if (nb && nb.shSubject !== chosen) { nb.shSubject = chosen; await saveNotebook(nb); }
+      sh.close(kind === 'link'
+        ? { shSubject: chosen, shPlace: 'link', shTopicId: id }
+        : { shSubject: chosen, shPlace: 'new', shParentId: id || '' });
+    };
+  });
+}
+
+/* ---------- StudyHub accanto al Notebook ---------- */
+const SH_URL = 'https://metallia13-ctrl.github.io/Study-hub/';
+const SH_ICONS = {
+  size: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>',
+  small: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7"/></svg>',
+  reload: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>',
+  ext: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
+  close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>'
+};
+const ShDock = {
+  KEY: 'nb-sh-dock',
+  el: null,
+  frame: null,
+  src: '',
+  prefs() {
+    let p = {};
+    try { p = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { p = {}; }
+    return { w: 420, h: 0.55, open: false, ...p };
+  },
+  setPrefs(ch) {
+    const p = { ...this.prefs(), ...ch };
+    try { localStorage.setItem(this.KEY, JSON.stringify(p)); } catch { /* solo una preferenza */ }
+    return p;
+  },
+  url() { const u = String(S().studyhubUrl || '').trim(); return /^https?:\/\/\S+$/i.test(u) ? u : SH_URL; },
+  wide: () => matchMedia('(min-width: 900px)').matches,
+  isOpen() { return document.body.classList.contains('sh-open'); },
+  sameOrigin() { try { return new URL(this.url(), location.href).origin === location.origin; } catch { return false; } },
+  maxW() { return Math.max(300, Math.min(1000, window.innerWidth - 232 - 380)); },
+  maxH() { return Math.max(240, window.innerHeight - 96 - 24); },
+  build() {
+    if (this.el) return this.el;
+    const el = document.createElement('aside');
+    el.className = 'sh-dock';
+    el.id = 'shDock';
+    el.setAttribute('aria-label', 'StudyHub');
+    el.hidden = true;
+    el.innerHTML = `
+      <div class="sh-grip" role="separator" tabindex="0" aria-label="Trascina per cambiare la dimensione di StudyHub; anche con le frecce"></div>
+      <header class="sh-head">
+        <span class="sh-title">StudyHub</span>
+        <span class="sh-pend" hidden></span>
+        <span class="sh-acts">
+          <button type="button" class="sh-ic" data-sh="size"></button>
+          <button type="button" class="sh-ic" data-sh="reload" aria-label="Ricarica StudyHub" title="Ricarica">${SH_ICONS.reload}</button>
+          <a class="sh-ic" data-sh="ext" target="_blank" rel="noopener" aria-label="Apri StudyHub in una scheda a parte" title="Apri a parte">${SH_ICONS.ext}</a>
+          <button type="button" class="sh-ic" data-sh="close" aria-label="Chiudi StudyHub" title="Chiudi">${SH_ICONS.close}</button>
+        </span>
+      </header>
+      <div class="sh-body"><p class="sh-msg">Apro StudyHub…</p></div>`;
+    document.body.append(el);
+    this.el = el;
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-sh]');
+      if (!b) return;
+      const act = b.dataset.sh;
+      if (act === 'close') this.close();
+      else if (act === 'reload') this.load(true);
+      else if (act === 'size') this.toggleSize();
+    });
+    this.bindGrip($('.sh-grip', el));
+    return el;
+  },
+  bindGrip(grip) {
+    let d = null;
+    grip.addEventListener('pointerdown', e => {
+      if (e.button > 0) return;
+      e.preventDefault();
+      try { grip.setPointerCapture(e.pointerId); } catch { /* va bene lo stesso */ }
+      const p = this.prefs();
+      d = { id: e.pointerId, x: e.clientX, y: e.clientY, w: this.curW(p), h: this.curH(p) };
+      this.el.classList.add('resizing');
+    });
+    grip.addEventListener('pointermove', e => {
+      if (!d || e.pointerId !== d.id) return;
+      if (this.wide()) this.apply({ w: d.w - (e.clientX - d.x) });
+      else this.apply({ hPx: d.h - (e.clientY - d.y) });
+    });
+    const end = e => {
+      if (!d || e.pointerId !== d.id) return;
+      d = null;
+      this.el.classList.remove('resizing');
+      this.savePos();
+    };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+    grip.addEventListener('keydown', e => {
+      const p = this.prefs();
+      const wide = this.wide();
+      const dir = { ArrowLeft: 1, ArrowRight: -1, ArrowUp: 1, ArrowDown: -1 }[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      if (wide) this.apply({ w: this.curW(p) + dir * 32 }); else this.apply({ hPx: this.curH(p) + dir * 40 });
+      this.savePos();
+    });
+  },
+  curW(p = this.prefs()) { return Math.round(Math.min(this.maxW(), Math.max(300, +p.w || 420))); },
+  curH(p = this.prefs()) { return Math.round(Math.min(this.maxH(), Math.max(220, (+p.h || 0.55) * this.maxH()))); },
+  apply({ w, hPx } = {}) {
+    const p = this.prefs();
+    const ww = w === undefined ? this.curW(p) : Math.round(Math.min(this.maxW(), Math.max(300, w)));
+    const hh = hPx === undefined ? this.curH(p) : Math.round(Math.min(this.maxH(), Math.max(220, hPx)));
+    const root = document.documentElement.style;
+    root.setProperty('--sh-w', `${ww}px`);
+    root.setProperty('--sh-h', `${hh}px`);
+    this._w = ww;
+    this._h = hh;
+    if (this.el) {
+      const big = this.wide() ? ww >= this.maxW() - 4 : hh >= this.maxH() - 4;
+      const b = $('[data-sh="size"]', this.el);
+      b.innerHTML = big ? SH_ICONS.small : SH_ICONS.size;
+      b.setAttribute('aria-label', big ? 'Rimpicciolisci StudyHub' : 'Ingrandisci StudyHub');
+      b.title = big ? 'Più piccolo' : 'Più grande';
+    }
+  },
+  savePos() {
+    if (this.wide()) this.setPrefs({ w: this._w }); else this.setPrefs({ h: +(this._h / this.maxH()).toFixed(3) });
+  },
+  toggleSize() {
+    const p = this.prefs();
+    if (this.wide()) {
+      const big = this.curW(p) >= this.maxW() - 4;
+      this.apply({ w: big ? 380 : this.maxW() });
+    } else {
+      const big = this.curH(p) >= this.maxH() - 4;
+      this.apply({ hPx: big ? this.maxH() * 0.5 : this.maxH() });
+    }
+    this.savePos();
+  },
+  load(force = false) {
+    const body = $('.sh-body', this.el);
+    const url = this.url();
+    $('[data-sh="ext"]', this.el).href = url;
+    if (this.frame && this.src === url && !force) return;
+    const msg = $('.sh-msg', body);
+    msg.hidden = false;
+    msg.textContent = 'Apro StudyHub…';
+    if (!this.frame) {
+      this.frame = document.createElement('iframe');
+      this.frame.className = 'sh-frame';
+      this.frame.title = 'StudyHub';
+      this.frame.setAttribute('allow', 'autoplay; fullscreen; clipboard-read; clipboard-write; screen-wake-lock');
+      body.append(this.frame);
+    }
+    this.src = url;
+    let ok = false;
+    clearTimeout(this.slowT);
+    this.frame.onload = () => { ok = true; msg.hidden = true; };
+    this.slowT = setTimeout(() => {
+      if (ok) return;
+      msg.innerHTML = `StudyHub non risponde. Controlla la connessione, poi tocca Ricarica, oppure <a href="${esc(url)}" target="_blank" rel="noopener">aprilo a parte</a>.`;
+    }, 15000);
+    this.frame.src = url;
+  },
+  open() {
+    this.build();
+    this.el.hidden = false;
+    document.body.classList.add('sh-open');
+    this.apply();
+    this.load();
+    this.setPrefs({ open: true });
+    this.refresh();
+    if (!this.sameOrigin() && !this.warned) { this.warned = true; toast('StudyHub è su un altro sito: lo vedi qui, ma gli argomenti studiati non gli arrivano in automatico', 'err'); }
+  },
+  close() {
+    if (!this.el) return;
+    this.el.hidden = true;
+    document.body.classList.remove('sh-open');
+    this.setPrefs({ open: false });
+    this.refresh();
+  },
+  toggle() { if (this.isOpen()) this.close(); else this.open(); },
+  reset() {
+    if (this.frame) { this.frame.remove(); this.frame = null; this.src = ''; }
+    if (this.isOpen()) this.load();
+  },
+  // numero di argomenti che StudyHub non ha ancora letto, nel menu e nel pannello
+  refresh() {
+    const n = Bridge.pending();
+    const badge = $('#shBadge');
+    if (badge) { badge.hidden = !n; badge.textContent = n; }
+    $$('[data-sh-toggle]').forEach(a => { a.classList.toggle('sh-on', this.isOpen()); a.setAttribute('aria-pressed', String(this.isOpen())); });
+    if (this.el) {
+      const p = $('.sh-pend', this.el);
+      p.hidden = !n;
+      p.textContent = n ? `${n} da leggere` : '';
+      p.title = n ? `${n} ${n === 1 ? 'aggiornamento attende' : 'aggiornamenti attendono'} che StudyHub li legga` : '';
+    }
+  },
+  init() {
+    document.addEventListener('click', e => {
+      const a = e.target.closest('a[href="#/studyhub"]');
+      if (!a || e.ctrlKey || e.metaKey || e.shiftKey) return;
+      e.preventDefault();
+      if (a.hasAttribute('data-sh-open')) this.open(); else this.toggle();
+    });
+    window.addEventListener('resize', () => { if (this.isOpen()) this.apply(); });
+    window.addEventListener('storage', e => { if (e.key === Bridge.OUT || e.key === Bridge.ACK) this.refresh(); });
+    this.refresh();
+    // sul PC riapre il pannello se l’avevi lasciato aperto
+    if (this.prefs().open && this.wide()) this.open();
+  }
+};
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') init();
