@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.26';
+const APP_VERSION = '3.27';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -188,7 +188,7 @@ const state = { notebooks: [], sections: [], cards: [], images: [], links: [], p
 const drafts = {};              // richiami "pagina bianca" non ancora valutati
 let orderSeq = 0;
 let importJob = null;
-const importDraft = { nbId: '', groupId: '', src: 'text', text: '', title: '', pdf: null, split: 'every', rangesText: '', xmind: null };
+const importDraft = { nbId: '', groupId: '', src: 'text', text: '', title: '', pdf: null, split: 'every', rangesText: '', xmind: null, topicLevel: 0, topicOff: new Set(), topicTitles: {}, topicGroups: true };
 let cleanups = [];
 
 const nbById = id => state.notebooks.find(n => n.id === id);
@@ -2605,7 +2605,7 @@ function viewImport(nbParam, groupParam) {
 
   const syncOpts = () => {
     const ai = $('#optAi').checked && aiOk;
-    const pdfAi = importDraft.src === 'pdf' && document.querySelector('input[name="pdfMode"]:checked')?.value === 'ai';
+    const pdfAi = importDraft.src === 'pdf' && importDraft.split !== 'topics' && document.querySelector('input[name="pdfMode"]:checked')?.value === 'ai';
     const aiOn = ai || pdfAi;
     $('#optCloze').disabled = !aiOn;
     $('#optQs').disabled = !aiOn;
@@ -2661,8 +2661,9 @@ function viewImport(nbParam, groupParam) {
       <div class="seg sm split-seg" role="tablist" aria-label="Come dividere il PDF">
         <button type="button" role="tab" data-split="every" aria-selected="${importDraft.split !== 'ranges'}">Ogni tot pagine</button>
         <button type="button" role="tab" data-split="ranges" aria-selected="${importDraft.split === 'ranges'}">Intervalli scelti</button>
+        <button type="button" role="tab" data-split="topics" aria-selected="${importDraft.split === 'topics'}">Per argomenti</button>
       </div>
-      <div id="splitEvery" ${importDraft.split === 'ranges' ? 'hidden' : ''}>
+      <div id="splitEvery" ${importDraft.split !== 'every' ? 'hidden' : ''}>
         <div class="grid3">
           <label class="field"><span>Da pagina</span><input class="input" type="number" id="pFrom" min="1" max="${p.pages}" value="1" inputmode="numeric"></label>
           <label class="field"><span>A pagina</span><input class="input" type="number" id="pTo" min="1" max="${p.pages}" value="${p.pages}" inputmode="numeric"></label>
@@ -2674,7 +2675,8 @@ function viewImport(nbParam, groupParam) {
           <textarea class="input ranges-ta" id="pRanges" spellcheck="false" placeholder="1-12 Introduzione&#10;13-30 Il cuore&#10;31-45">${esc(importDraft.rangesText)}</textarea></label>
         <button class="btn sm" type="button" data-act="chapters" ${p.chapters && p.chapters.length > 1 ? '' : 'hidden'}>Usa i capitoli del PDF (${p.chapters ? p.chapters.length : 0})</button>
       </div>
-      <div class="radio">
+      <div id="splitTopics" ${importDraft.split === 'topics' ? '' : 'hidden'}></div>
+      <div class="radio" id="pdfModeBox" ${importDraft.split === 'topics' ? 'hidden' : ''}>
         <label class="check"><input type="radio" name="pdfMode" value="text" ${preferAi ? '' : 'checked'}>
           <span>Estrai il testo dal PDF</span></label>
         <label class="check"><input type="radio" name="pdfMode" value="ai" ${preferAi ? 'checked' : ''} ${aiOk ? '' : 'disabled'}>
@@ -2692,10 +2694,72 @@ function viewImport(nbParam, groupParam) {
     $$('[data-split]').forEach(b => b.addEventListener('click', () => {
       importDraft.split = b.dataset.split;
       $$('[data-split]').forEach(x => x.setAttribute('aria-selected', x === b));
-      $('#splitEvery').hidden = importDraft.split === 'ranges';
+      $('#splitEvery').hidden = importDraft.split !== 'every';
       $('#splitRanges').hidden = importDraft.split !== 'ranges';
+      $('#splitTopics').hidden = importDraft.split !== 'topics';
+      $('#pdfModeBox').hidden = importDraft.split === 'topics';
+      if (importDraft.split === 'topics') showTopics();
       est();
+      syncOpts();
     }));
+    // Per argomenti: analisi dei titoli (una volta per PDF), poi l’elenco delle sezioni da scegliere
+    const showTopics = async () => {
+      const box = $('#splitTopics');
+      if (p.scanned) {
+        box.innerHTML = '<p class="hint">Questo PDF non ha il testo selezionabile: per dividerlo per argomenti serve un PDF con l’OCR già fatto. Puoi farlo leggere all’AI con “Ogni tot pagine” o “Intervalli scelti”.</p>';
+        est();
+        return;
+      }
+      if (!p.outline) {
+        box.innerHTML = '<p class="hint" id="tpProg">Leggo i titoli del PDF…</p>';
+        if (!p.outlineTask) p.outlineTask = pdfOutline(p.doc, (n, tot) => { const el = $('#tpProg'); if (el && importDraft.pdf === p) el.textContent = `Leggo i titoli del PDF: pagina ${n} di ${tot}…`; });
+        try { p.outline = await p.outlineTask; } catch (err) { box.innerHTML = `<p class="hint">Non riesco a leggere il testo del PDF: ${esc(err.message)}</p>`; return; }
+        if (importDraft.pdf !== p || importDraft.split !== 'topics') return;
+        if (!p.outline.levels.includes(importDraft.topicLevel)) { importDraft.topicLevel = topicAutoLevel(p.outline); importDraft.topicOff = new Set(); importDraft.topicTitles = {}; }
+      }
+      drawTopics();
+    };
+    const topicList = () => (p.outline && p.outline.headings ? topicSections(p.outline, importDraft.topicLevel || 1) : []);
+    const drawTopics = () => {
+      const box = $('#splitTopics');
+      const o = p.outline;
+      if (!o.headings) {
+        box.innerHTML = `<p class="hint">Non trovo titoli in questo PDF: il testo ha tutto la stessa misura, senza numeri come 3.1 né righe in maiuscolo. Prova “Usa i capitoli del PDF” in Intervalli scelti, oppure Ogni tot pagine.</p>`;
+        est();
+        return;
+      }
+      const L = importDraft.topicLevel || 1;
+      const list = topicList();
+      const names = { 1: 'titoli principali (capitoli)', 2: 'titoli di 2° livello (paragrafi)', 3: 'titoli di 3° livello (sottoparagrafi)' };
+      const fmt = n => n.toLocaleString('it-IT');
+      box.innerHTML = `
+        <p class="hint">Ho pulito il testo${o.removed ? ` (tolte ${fmt(o.removed)} righe tra intestazioni, numeri di pagina e indice)` : ''} e trovato ${fmt(o.headings)} titoli. Scegli a che livello dividere: i titoli più piccoli restano dentro la sezione.</p>
+        <label class="field"><span>Una sezione per ogni</span>
+          <select class="input" id="tpLevel">${o.levels.map(x => `<option value="${x}" ${x === L ? 'selected' : ''}>${names[x]}: ${topicSections(o, x).length} sezioni</option>`).join('')}</select></label>
+        ${L > 1 ? `<label class="check"><input type="checkbox" id="tpGroups" ${importDraft.topicGroups ? 'checked' : ''}>
+          <span>Metti le sezioni nei macro-argomenti${L > 2 ? ' e sottoargomenti' : ''} presi dai titoli più grandi</span></label>` : ''}
+        <div class="inline tp-bulk"><button class="btn sm ghost" type="button" data-tp-all="1">Seleziona tutte</button><button class="btn sm ghost" type="button" data-tp-all="0">Nessuna</button></div>
+        <ul class="cand tp-list">${list.map((sct, i) => `
+          <li><label class="check"><input type="checkbox" data-tp="${i}" ${importDraft.topicOff.has(i) ? '' : 'checked'}>
+            <span>
+              <input class="input tp-title" data-tpt="${i}" value="${esc(importDraft.topicTitles[i] ?? sct.title)}" aria-label="Titolo della sezione ${i + 1}">
+              <span class="cand-b">${sct.from === sct.to ? `p. ${sct.from}` : `pp. ${sct.from}–${sct.to}`} · ${fmt(sct.chars)} caratteri${sct.path.length && (importDraft.topicGroups || L === 1) ? ` · in ${esc(sct.path.join(' › '))}` : ''}${sct.chars > TOPIC_BIG_CHARS ? ' · <span class="cand-dup">molto lunga: con l’AI potrebbe essere tagliata</span>' : ''}</span>
+              <details class="tp-peek"><summary>Anteprima del testo</summary><div class="tp-peek-t">${esc(sct.text.slice(0, 700))}${sct.text.length > 700 ? '…' : ''}</div></details>
+            </span></label></li>`).join('')}</ul>`;
+      $('#tpLevel').addEventListener('change', e => { importDraft.topicLevel = +e.target.value; importDraft.topicOff = new Set(); importDraft.topicTitles = {}; drawTopics(); });
+      $('#tpGroups')?.addEventListener('change', e => { importDraft.topicGroups = e.target.checked; drawTopics(); });
+      $$('[data-tp]', box).forEach(c => c.addEventListener('change', () => { if (c.checked) importDraft.topicOff.delete(+c.dataset.tp); else importDraft.topicOff.add(+c.dataset.tp); est(); }));
+      $$('[data-tpt]', box).forEach(inp => {
+        inp.addEventListener('input', () => { importDraft.topicTitles[+inp.dataset.tpt] = inp.value; });
+        inp.addEventListener('click', e => e.preventDefault());   // scrivere nel titolo non spunta la casella
+      });
+      $$('[data-tp-all]', box).forEach(b => b.addEventListener('click', () => {
+        importDraft.topicOff = b.dataset.tpAll === '1' ? new Set() : new Set(list.map((_, i) => i));
+        drawTopics();
+      }));
+      est();
+    };
+    if (importDraft.split === 'topics') showTopics();
     const chBtn = $('[data-act="chapters"]');
     chBtn.addEventListener('click', () => {
       const t = p.chapters.map(c => `${c.from === c.to ? c.from : `${c.from}-${c.to}`} ${c.title}`).join('\n');
@@ -2728,6 +2792,16 @@ function viewImport(nbParam, groupParam) {
   };
   const readRange = () => {
     const p = importDraft.pdf;
+    if (p && importDraft.split === 'topics') {
+      if (!p.outline) return { error: p.scanned ? 'Serve un PDF con il testo selezionabile (OCR).' : 'Sto ancora leggendo i titoli del PDF…' };
+      if (!p.outline.headings) return { error: 'Senza titoli non posso dividere per argomenti: scegli un altro modo.' };
+      const groups = importDraft.topicGroups || (importDraft.topicLevel || 1) === 1;
+      const topics = topicSections(p.outline, importDraft.topicLevel || 1)
+        .map((t, i) => ({ ...t, i, title: String(importDraft.topicTitles[i] ?? t.title).trim() || t.title, path: groups ? t.path : [] }))
+        .filter(t => !importDraft.topicOff.has(t.i));
+      if (!topics.length) return { error: 'Scegli almeno una sezione.' };
+      return { topics, count: topics.length };
+    }
     if (p && importDraft.split === 'ranges') {
       const { ranges, errors } = parseRanges($('#pRanges')?.value, p.pages);
       if (errors.length || !ranges.length) return errors.length ? { error: `Non capisco: ${errors.slice(0, 3).join(', ')}. Usa righe come “13-30 Il cuore”, con pagine tra 1 e ${p.pages}.` } : null;
@@ -2820,7 +2894,12 @@ function viewImport(nbParam, groupParam) {
       job.keepImgs = $('#optImgs').checked;
       if (job.pdfMode === 'ai') job.opts.ai = true;
       const pagesLabel = (a, b) => (a === b ? `Pagina ${a}` : `Pagine ${a}–${b}`);
-      if (r.ranges) {
+      if (r.topics) {
+        job.topics = true;
+        job.pdfMode = 'text';     // l’AI riceve il testo pulito della sezione, non le pagine
+        job.opts.ai = $('#optAi').checked && aiOk;
+        r.topics.forEach(t => job.items.push({ label: `${t.title}, ${pagesLabel(t.from, t.to).toLowerCase()}`, pages: pagesLabel(t.from, t.to), title: t.title, from: t.from, to: t.to, text: t.text, path: t.path, status: 'wait' }));
+      } else if (r.ranges) {
         r.ranges.forEach(g => job.items.push({ label: g.title ? `${g.title}, ${pagesLabel(g.from, g.to).toLowerCase()}` : pagesLabel(g.from, g.to), pages: pagesLabel(g.from, g.to), title: g.title, from: g.from, to: g.to, status: 'wait' }));
       } else {
         S().pagesPerSection = r.per;
@@ -2905,11 +2984,13 @@ async function runImport(job) {
     } else if (job.title) {
       baseTitle = job.items.length > 1 ? `${job.title} (${i + 1})` : job.title;
     }
+    let groupId = job.groupId;
     try {
+      if (it.path && it.path.length) groupId = await ensureTopicGroup(job, it.path);
       let pdfB64 = null;
       if (job.kind === 'pdf') {
         if (job.pdfMode === 'ai') pdfB64 = await subsetPdfBase64(job, it.from, it.to);
-        else text = await extractRange(job.pdf.doc, it.from, it.to);
+        else if (!it.text) text = await extractRange(job.pdf.doc, it.from, it.to);
       }
       if (signal.aborted) throw abortError();
       let sec;
@@ -2920,17 +3001,20 @@ async function runImport(job) {
         });
         it.wait = '';
         const title = (job.kind === 'text' && job.title) || it.title ? baseTitle : (r.title || baseTitle || firstLineTitle(r.md));
-        sec = newSection(job.nbId, { groupId: job.groupId, title, md: r.md, questions: r.questions, source });
+        sec = newSection(job.nbId, { groupId, title, md: r.md, questions: r.questions, source });
         if (r.truncated) it.note = 'Risposta troncata: controlla la fine della sezione o usa meno pagine.';
       } else {
         if (!text.trim()) throw new Error('Nessun testo trovato in queste pagine: forse è una scansione.');
-        sec = newSection(job.nbId, { groupId: job.groupId, title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
+        sec = newSection(job.nbId, { groupId, title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
       }
-      if (job.kind === 'pdf' && job.keepImgs) {
+      // per argomenti due sezioni possono condividere una pagina: le sue immagini vanno solo nella prima
+      const imgFrom = job.topics ? Math.max(it.from, (job.imgUpTo || 0) + 1) : it.from;
+      if (job.kind === 'pdf' && job.keepImgs && imgFrom <= it.to) {
         it.wait = 'Ritaglio le immagini…';
         renderProgress();
         try {
-          const extra = await pdfImagesMd(job, it.from, it.to, signal);
+          job.imgUpTo = it.to;
+          const extra = await pdfImagesMd(job, imgFrom, it.to, signal);
           sec.md += extra;
           const n = (extra.match(/\(img:/g) || []).length;
           if (n) it.note = [it.note, `${n} ${n === 1 ? 'immagine aggiunta' : 'immagini aggiunte'}`].filter(Boolean).join('. ');
@@ -2949,7 +3033,7 @@ async function runImport(job) {
       try {
         if (!text.trim() && job.kind === 'pdf') text = await extractRange(job.pdf.doc, it.from, it.to);
         if (text.trim()) {
-          const sec = newSection(job.nbId, { groupId: job.groupId, title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
+          const sec = newSection(job.nbId, { groupId, title: baseTitle || firstLineTitle(text), md: basicFormat(text), source });
           sec.needsFormat = true;
           await saveSection(sec);
           it.secId = sec.id;
@@ -4948,6 +5032,15 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.27: PDF divisi per argomenti', `
+      <ul>
+        <li>In Importa, con un PDF che ha il testo selezionabile (anche con l’OCR fatto da te), scegli <strong>Per argomenti</strong>. L’app legge i titoli: quelli più grandi del testo, quelli numerati come 3.1 o 3.1.2 e le righe in maiuscolo.</li>
+        <li>Il testo viene pulito come se l’avessi incollato tu: niente intestazioni e piè di pagina ripetuti, numeri di pagina o pagine dell’indice, e le parole spezzate a capo tornano intere.</li>
+        <li>Scegli il livello (capitoli, paragrafi o sottoparagrafi): ogni titolo di quel livello diventa una sezione, i titoli più piccoli restano dentro come sottotitoli. Le parti troppo brevi si uniscono alla sezione vicina.</li>
+        <li>I titoli più grandi possono diventare macro-argomenti e sottoargomenti, creati da soli (o ritrovati, se esistono già).</li>
+        <li>Prima di importare vedi l’elenco: togli le sezioni che non vuoi, correggi i titoli, guarda l’anteprima del testo.</li>
+        <li>Con la formattazione AI, ogni sezione manda solo il suo testo e non le pagine: richieste più leggere, che fanno scattare molto meno i limiti di Gemini.</li>
+      </ul>`)}
     ${sec('Novità della 3.26: video, etichette e tasto Torna', `
       <ul>
         <li><strong>Video</strong>: ogni sezione ha la scheda Video. Incolli il link (YouTube, Vimeo, Google Drive o un file video) e lo guardi lì, con titolo e note. Nelle note i minuti scritti come 12:30 diventano pulsanti che portano a quel punto del video.</li>
@@ -11435,6 +11528,242 @@ async function startLabels(sec, imageId = null) {
   }
   if (!id) return;
   if ((labelSets(sec)[id]?.masks || []).length) openLabelQuiz(sec, id); else openLabelEditor(sec, id);
+}
+
+/* =====================================================================
+   v3.27: PDF con OCR in testo pulito, diviso per argomenti
+   Dal livello di testo del PDF ricostruisco le righe con la loro misura:
+   i titoli sono più grandi del testo, numerati (3.1, 3.1.2) o in maiuscolo.
+   Tolgo intestazioni e piè di pagina ripetuti, numeri di pagina e indice,
+   riunisco le parole spezzate a capo; poi divido ai titoli del livello scelto.
+   ===================================================================== */
+const TOPIC_MIN_CHARS = 500;
+const TOPIC_BIG_CHARS = 60000;
+
+async function pdfPageLines(doc, n) {
+  const page = await doc.getPage(n);
+  const vp = page.getViewport({ scale: 1 });
+  const tc = await page.getTextContent();
+  const lines = [];
+  let cur = null;
+  const close = () => { if (cur && cur.text.trim()) lines.push(cur); cur = null; };
+  for (const it of tc.items) {
+    if (!('str' in it)) continue;
+    const tr = it.transform || [1, 0, 0, 1, 0, 0];
+    const size = Math.hypot(tr[2], tr[3]) || it.height || 0;
+    const y = vp.height - tr[5];
+    const x = tr[4];
+    if (cur && Math.abs(y - cur.y) > Math.max(2, Math.min(size, cur.max) * 0.45)) close();
+    if (!it.str.trim()) { if (it.hasEOL) close(); else if (cur && !cur.text.endsWith(' ')) cur.text += ' '; continue; }
+    if (!cur) cur = { text: '', y, x, page: n, ph: vp.height, w: [], max: size, endX: null };
+    else if (cur.endX !== null && x - cur.endX > size * 0.18 && !cur.text.endsWith(' ')) cur.text += ' ';
+    cur.text += it.str;
+    cur.w.push([size, it.str.replace(/\s/g, '').length]);
+    cur.max = Math.max(cur.max, size);
+    cur.endX = x + (it.width || 0);
+    if (it.hasEOL) close();
+  }
+  close();
+  return lines.map(l => {
+    // misura “di riga”: quella che copre più caratteri
+    const by = new Map();
+    l.w.forEach(([s, c]) => { const k = Math.round(s * 2) / 2; by.set(k, (by.get(k) || 0) + c); });
+    const size = [...by.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 0;
+    return { text: l.text.replace(/\s+/g, ' ').trim(), y: l.y, x: l.x, page: n, ph: l.ph, size };
+  }).filter(l => l.text);
+}
+
+const TOPIC_NUM_RE = /^((?:\d{1,2}|[IVXLC]{1,6})(?:\.\d{1,2}){0,3})[.)]?\s+(.+)$/;
+const TOPIC_SKIP_RE = /^(fig(ura)?|tab(ella)?|box|grafico|schema|nota|immagine)\b[\s.\d:]/i;
+
+async function pdfOutline(doc, onProgress = () => {}) {
+  const pages = doc.numPages;
+  const all = [];
+  for (let n = 1; n <= pages; n++) {
+    try { all.push(await pdfPageLines(doc, n)); } catch { all.push([]); }
+    if (n % 5 === 0 || n === pages) onProgress(n, pages);
+  }
+  // indice: pagine dove molte righe finiscono con un numero di pagina
+  const tocPages = new Set();
+  all.forEach((ls, i) => {
+    if (ls.length < 6) return;
+    const withNum = ls.filter(l => /(\.{2,}|…|\s)\s*\d{1,4}$/.test(l.text) && /[a-zà-ÿ]/i.test(l.text)).length;
+    if (withNum / ls.length > 0.4) tocPages.add(i + 1);
+  });
+  // intestazioni e piè di pagina ripetuti
+  const norm = t => foldAccents(t).replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+  const edge = l => l.y < l.ph * 0.1 || l.y > l.ph * 0.9;
+  const counts = new Map();
+  all.forEach(ls => {
+    const seen = new Set();
+    ls.filter(edge).forEach(l => { const k = norm(l.text); if (!seen.has(k)) { seen.add(k); counts.set(k, (counts.get(k) || 0) + 1); } });
+  });
+  const minRep = Math.max(3, Math.ceil(pages * 0.3));
+  const running = new Set([...counts.entries()].filter(([, c]) => c >= minRep).map(([k]) => k));
+  let removed = 0;
+  const lines = [];
+  all.forEach((ls, i) => {
+    if (tocPages.has(i + 1)) { removed += ls.length; return; }
+    ls.forEach(l => {
+      if (edge(l) && (running.has(norm(l.text)) || /^(pag(ina|\.)?\s*)?\d{1,4}(\s*(di|\/)\s*\d{1,4})?$/i.test(l.text))) { removed++; return; }
+      lines.push(l);
+    });
+  });
+  // misura del testo normale: la più frequente sulle righe lunghe
+  const by = new Map();
+  lines.filter(l => l.text.length > 30).forEach(l => by.set(l.size, (by.get(l.size) || 0) + l.text.length));
+  const body = [...by.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || 10;
+  // candidati titolo
+  const letters = t => (t.match(/[a-zà-ÿ]/gi) || []).length;
+  lines.forEach(l => {
+    const t = l.text;
+    if (t.length < 2 || t.length > 140 || letters(t) < 2 || TOPIC_SKIP_RE.test(t) || /^[\d\s.,;:%()+\-–/]+$/.test(t)) return;
+    const num = t.match(TOPIC_NUM_RE);
+    if (l.size >= body * 1.15 && !/[,;]$/.test(t) && t.length <= 120) { l.kind = 'size'; return; }
+    if (num && t.length < 110 && !/[.;:,]$/.test(t) && l.size >= body * 0.95 && /^[A-ZÀ-Ý«"“(]/.test(num[2])) {
+      l.kind = 'num';
+      l.depth = num[1].split('.').filter(Boolean).length;
+      return;
+    }
+    const lt = letters(t);
+    if (lt >= 6 && t.length <= 90 && t === t.toUpperCase() && /[A-ZÀ-Ý]{3}/.test(t) && (t.split(/\s+/).length >= 2 || lt >= 8) && !/[.;,]$/.test(t)) l.kind = 'caps';
+  });
+  // titoli su due righe: stessa misura, uno sotto l’altro
+  for (let i = lines.length - 1; i > 0; i--) {
+    const a = lines[i - 1], b = lines[i];
+    if (a.kind && b.kind === a.kind && a.kind !== 'num' && b.page === a.page && Math.abs(a.size - b.size) < 0.6 && b.y - a.y < a.size * 1.9 && (a.text + b.text).length < 160) {
+      a.text = `${a.text} ${b.text}`;
+      lines.splice(i, 1);
+    }
+  }
+  // livelli: misure dei titoli raggruppate dalla più grande; poi numeri e maiuscolo
+  const sizes = [...new Set(lines.filter(l => l.kind === 'size').map(l => l.size))].sort((a, b) => b - a);
+  const clusters = [];
+  sizes.forEach(s => { const c = clusters[clusters.length - 1]; if (c && s >= c[0] * 0.92) c.push(s); else clusters.push([s]); });
+  // una misura usata una volta sola (copertina, titolo del libro) non fa livello se ce ne sono altre
+  const useCount = s => lines.filter(l => l.kind === 'size' && l.size === s).length;
+  while (clusters.length > 1 && clusters[0].reduce((a, s) => a + useCount(s), 0) === 1) {
+    const [only] = clusters.shift();
+    lines.forEach(l => { if (l.kind === 'size' && l.size === only) l.kind = 'cover'; });
+  }
+  const sizeLevel = s => { const i = clusters.findIndex(c => c.includes(s)); return i < 0 ? 3 : Math.min(3, i + 1); };
+  const k = Math.min(3, clusters.length);
+  lines.forEach(l => {
+    if (l.kind === 'size') l.level = sizeLevel(l.size);
+    else if (l.kind === 'num') l.level = Math.min(3, k ? Math.max(l.depth, k + 1) : l.depth);
+    else if (l.kind === 'caps') l.level = Math.min(3, k + 1);
+  });
+  const levels = [1, 2, 3].filter(L => lines.some(l => l.level === L));
+  return { lines, body, levels, removed, tocPages: [...tocPages], headings: lines.filter(l => l.level).length };
+}
+
+// Le sezioni al livello scelto; `path` sono i titoli sopra (macro-argomento, sottoargomento)
+function topicSections(outline, S) {
+  const out = [];
+  const parents = {};
+  let cur = null;
+  let last = null;
+  const open = (title, path, line, intro = false) => {
+    cur = { title: title.slice(0, 140), path: path.filter(Boolean), text: '', from: line.page, to: line.page, intro };
+    out.push(cur);
+    last = null;
+  };
+  const add = l => {
+    if (!cur) open(out.length ? 'Senza titolo' : 'Inizio', [], l);
+    let sep = '';
+    if (last) {
+      const gap = l.page !== last.page || l.y - last.y > Math.max(last.size, l.size) * 1.55 || l.y < last.y;
+      if (/[a-zà-ÿ]-$/.test(cur.text) && /^[a-zà-ÿ]/.test(l.text) && !gap) { cur.text = cur.text.slice(0, -1); sep = ''; }
+      else sep = gap ? '\n\n' : '\n';
+    }
+    cur.text += sep + l.text;
+    cur.to = l.page;
+    last = l;
+  };
+  for (const l of outline.lines) {
+    if (!l.level) { if (l.kind !== 'cover') add(l); continue; }
+    const title = l.text.replace(/\s+/g, ' ').trim();
+    if (l.level < S) {
+      parents[l.level] = title;
+      for (let L = l.level + 1; L <= 3; L++) delete parents[L];
+      open(title, [1, 2].filter(L => L <= l.level && L < S).map(L => parents[L]), l, true);
+    } else if (l.level === S) {
+      open(title, [1, 2].filter(L => L < S).map(L => parents[L]), l);
+    } else {
+      if (!cur) open(title, [1, 2].filter(L => L < S).map(L => parents[L]), l);
+      else { cur.text += `${cur.text ? '\n\n' : ''}${'#'.repeat(Math.min(4, 2 + l.level - S))} ${title}\n\n`; last = null; cur.to = l.page; }
+    }
+  }
+  out.forEach(s => {
+    s.text = s.text.replace(/\n{3,}/g, '\n\n').trim();
+    s.chars = s.text.replace(/\s/g, '').length;
+  });
+  // introduzioni vuote via; quelle brevi si uniscono alla sezione accanto dello stesso gruppo
+  let list = out.filter(s => s.chars >= 40 || !s.intro);
+  const same = (a, b) => a && b && a.path.join('\u0001') === b.path.join('\u0001');
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i];
+    if (s.chars >= TOPIC_MIN_CHARS || list.length < 2) continue;
+    const prev = list[i - 1], next = list[i + 1];
+    if (same(prev, s) && !s.intro) {
+      prev.text += `\n\n### ${s.title}\n\n${s.text}`; prev.to = s.to; prev.chars += s.chars;
+      list.splice(i--, 1);
+    } else if (same(next, s) || (s.intro && next)) {
+      next.text = `${s.intro ? '' : `### ${s.title}\n\n`}${s.text}\n\n${next.text}`.trim(); next.from = s.from; next.chars += s.chars;
+      list.splice(i--, 1);
+    }
+  }
+  // titolo grande con il suo testo: se sotto ha altre sezioni è la loro introduzione,
+  // altrimenti un gruppo con una sola sezione omonima non serve e la sezione sale di un livello
+  const key = p => p.join('\u0001');
+  list.forEach(s => {
+    if (!s.intro || !s.path.length || s.path[s.path.length - 1] !== s.title) return;
+    const kids = list.some(o => o !== s && key(o.path) === key(s.path));
+    if (kids) s.title = `${s.title}: introduzione`;
+    else s.path = s.path.slice(0, -1);
+  });
+  return list.filter(s => s.chars > 0);
+}
+
+// il livello che dà sezioni né troppo corte né troppe
+// scende di livello solo se divide davvero di più (almeno una volta e mezzo le sezioni)
+function topicAutoLevel(outline) {
+  let pick = outline.levels[0] || 1;
+  let n = topicSections(outline, pick).length;
+  for (const L of outline.levels.slice(1)) {
+    const secs = topicSections(outline, L);
+    const med = secs.map(s => s.chars).sort((a, b) => a - b)[Math.floor(secs.length / 2)] || 0;
+    if (secs.length <= 80 && med >= 1200 && secs.length >= n * 1.5) { pick = L; n = secs.length; }
+  }
+  return pick;
+}
+
+// Crea (o ritrova) macro-argomento e sottoargomento per una sezione
+async function ensureTopicGroup(job, path) {
+  if (!path || !path.length) return job.groupId;
+  const nb = nbById(job.nbId);
+  if (!nb) return job.groupId;
+  const base = job.groupId ? groupsOf(nb).find(g => g.id === job.groupId) : null;
+  if (base && groupParent(nb, base)) return base.id;          // dentro un sottoargomento non si scende oltre
+  const same = (a, b) => foldAccents(a).trim() === foldAccents(b).trim();
+  const find = (name, parentId) => groupsOf(nb).find(g => same(g.name, name) && (g.parentId || null) === (parentId || null));
+  const make = (name, parentId) => {
+    const g = { id: uid(), name: name.slice(0, 120) };
+    if (parentId) g.parentId = parentId;
+    nb.groups = [...groupsOf(nb), g];
+    job.groupsChanged = true;
+    return g;
+  };
+  let target;
+  if (base) {
+    const name = path[path.length - 1];
+    target = find(name, base.id) || make(name, base.id);
+  } else {
+    const macro = find(path[0], null) || make(path[0], null);
+    target = path[1] ? (find(path[1], macro.id) || make(path[1], macro.id)) : macro;
+  }
+  if (job.groupsChanged) { await saveNotebook(nb); job.groupsChanged = false; }
+  return target.id;
 }
 
 /* ---------- Scelta di materia e posizione in StudyHub ----------

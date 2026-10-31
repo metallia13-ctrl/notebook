@@ -2834,3 +2834,16 @@ html.bluelight::after {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   opacity: 0.95;
 }
+
+/* v3.27: PDF per argomenti */
+.tp-bulk { margin: 6px 0 0; }
+.tp-list { max-height: 60vh; overflow: auto; }
+.tp-list li { padding: 8px 14px; }
+.tp-list .check { align-items: flex-start; }
+.tp-list .check > input { margin-top: 12px; }
+.tp-title { width: 100%; font-weight: 650; padding-top: 6px; padding-bottom: 6px; }
+.tp-peek { margin-top: 2px; }
+.tp-peek summary { cursor: pointer; color: var(--accent); font-size: 0.85rem; font-weight: 650; }
+.tp-peek-t { margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 0.85rem; line-height: 1.5; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+.tp-list .check > span { flex: 1; }
+.tp-list .check input.tp-title { width: 100%; height: auto; margin: 0; flex: initial; accent-color: auto; }
