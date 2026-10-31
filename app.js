@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.20';
+const APP_VERSION = '3.23';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -248,12 +248,15 @@ function repairClozeLine(line) {
   const wraps = [];     // evidenziature aperte {{x|
   let dropWrap = 0;     // chiusure }} già fatte in anticipo, da saltare più avanti
   let dropBold = false;
+  let inHint = false;
+  const isTable = /^\s*\|/.test(line);
   // chiude il cloze; prima chiude ciò che si era aperto dentro, così niente si accavalla
   const closeCloze = () => {
     while (wraps.length && wraps[wraps.length - 1] > open) { wraps.pop(); out += '}}'; dropWrap++; }
     if (boldAt > open) { out += '**'; boldAt = -1; dropBold = true; }
     out += '==';
     open = -1;
+    inHint = false;
   };
   let i = 0;
   while (i < line.length) {
@@ -285,6 +288,22 @@ function repairClozeLine(line) {
       i += 2;
       continue;
     }
+    // inizio del suggerimento: ciò che si era aperto dentro il cloze si chiude prima
+    if (open >= 0 && !inHint && line.startsWith('::', i)) {
+      while (wraps.length && wraps[wraps.length - 1] > open) { wraps.pop(); out += '}}'; dropWrap++; }
+      inHint = true;
+      out += '::';
+      i += 2;
+      continue;
+    }
+    // separatore di cella: cloze ed evidenziature non passano da una cella all’altra
+    if (isTable && ch === '|') {
+      if (open >= 0) closeCloze();
+      while (wraps.length) { wraps.pop(); out += '}}'; dropWrap++; }
+      out += '|';
+      i++;
+      continue;
+    }
     if (line.startsWith('**', i)) {
       if (boldAt < 0) {
         if (dropBold) { dropBold = false; i += 2; continue; }
@@ -301,18 +320,20 @@ function repairClozeLine(line) {
     const w = /^\{\{[uygbpovrtl]\|/.exec(line.slice(i, i + 4));
     if (w) { wraps.push(out.length); out += w[0]; i += 4; continue; }
     if (line.startsWith('}}', i)) {
-      if (dropWrap > 0) { dropWrap--; i += 2; continue; }
       if (wraps.length) {
         const at = wraps.pop();
         if (open >= 0 && at < open) closeCloze();
-      }
-      out += '}}';
+        out += '}}';
+      } else if (dropWrap > 0) dropWrap--;
+      // altrimenti è una chiusura senza apertura: la tolgo
       i += 2;
       continue;
     }
     out += ch;
     i++;
   }
+  // evidenziature rimaste aperte a fine riga
+  while (wraps.length) { wraps.pop(); out += '}}'; }
   return out;
 }
 function repairClozes(md) {
@@ -391,6 +412,8 @@ function nextSrs(srs, q, mode = '') {
 const clozeRe = () => /==(?![=\s])([^\n]*?[^\s=])==/g;
 const countCloze = md => ((md || '').match(clozeRe()) || []).length;
 // ==termine::suggerimento==: il suggerimento è facoltativo
+// nel suggerimento niente segni che romperebbero cloze, evidenziature o tabelle
+const cleanHint = v => String(v || '').replace(/\s+/g, ' ').trim().replace(/==/g, '=').replace(/\{\{/g, '(').replace(/\}\}/g, ')').replace(/\|/g, '/').replace(/\*\*/g, '');
 const splitHint = t => { const i = t.indexOf('::'); return i > 0 ? [t.slice(0, i), t.slice(i + 2).trim()] : [t, '']; };
 const stripCloze = md => (md || '').replace(clozeRe(), (m, t) => splitHint(t)[0]);
 
@@ -1348,7 +1371,7 @@ function pickSectionsSheet(nb, g) {
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
+const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
   if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
@@ -1398,7 +1421,7 @@ function viewSection(id, mode) {
     tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
   }
   const body = $('#modeBody');
-  ({ read: modeRead, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
+  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, edit: modeEdit }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -1731,7 +1754,7 @@ function modeCloze(sec, body) {
     const [term, old] = splitHint(r.inner);
     const v = await modal({ title: 'Suggerimento', text: `Per “${term}”. Compare come “?” accanto al termine nascosto, e al posto dei puntini nelle flashcard. Lascia vuoto per toglierlo.`, input: true, value: old, placeholder: 'Es. ormone che abbassa la glicemia', confirm: 'Salva', allowEmpty: true });
     if (v === null) return;
-    const clean = v.trim().replace(/==/g, '=').replace(/\n/g, ' ');
+    const clean = cleanHint(v);
     sec.md = sec.md.slice(0, r.start) + `==${term}${clean ? `::${clean}` : ''}==` + sec.md.slice(r.end);
     await saveSection(sec);
     const y = window.scrollY;
@@ -1774,6 +1797,7 @@ const SpeechRec = typeof window !== 'undefined' ? (window.SpeechRecognition || w
 const canSpeak = typeof window !== 'undefined' && 'speechSynthesis' in window;
 const MIC_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>';
 function speak(text) {
+  if (Voice.useGemini()) { Voice.play(text, +(S().ttsRate || 1)).catch(err => toast(err.message, 'err')); return; }
   if (!canSpeak) return;
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
@@ -2123,7 +2147,7 @@ function modeEdit(sec, body) {
     }
     const v = await modal({ title: 'Suggerimento', text: `Per “${term}”: una domanda o un indizio che compare come “?” accanto al termine nascosto. Lascia vuoto per toglierlo.`, input: true, value: old, placeholder: 'Es. ormone che abbassa la glicemia', confirm: 'Salva', allowEmpty: true });
     if (v === null) return;
-    const clean = v.trim().replace(/==/g, '=').replace(/\n/g, ' ');
+    const clean = cleanHint(v);
     ta.focus();
     ta.setRangeText(`==${term}${clean ? `::${clean}` : ''}==`, r.start, r.end, 'end');
     refresh();
@@ -2868,6 +2892,23 @@ function viewSettings() {
 
     <section class="block">
       <h2>Lettura e aspetto</h2>
+      <div class="field"><span class="lbl">Filtro luce blu</span>
+        <label class="check"><input type="checkbox" id="stBlue" ${st.blueOn ? 'checked' : ''}><span>Attivo, colori più caldi per la sera</span></label>
+        <label class="check"><input type="checkbox" id="stBlueAuto" ${st.blueAuto ? 'checked' : ''}><span>Automatico dalle 21 alle 7</span></label>
+        <label class="field narrow"><span>Intensità</span><input type="range" id="stBlueLevel" min="10" max="70" step="5" value="${+st.blueLevel || 35}"></label>
+      </div>
+      <div class="field"><span class="lbl">Voce per l’ascolto</span>
+        <select class="input" id="stTtsEngine">
+          <option value="system" ${st.ttsEngine !== 'gemini' ? 'selected' : ''}>Voce del telefono</option>
+          <option value="gemini" ${st.ttsEngine === 'gemini' ? 'selected' : ''}>Voce di Google (Gemini), più naturale</option>
+        </select>
+        <div class="grid2 tts-opts">
+          <label class="field" id="ttsGemBox" ${st.ttsEngine === 'gemini' ? '' : 'hidden'}><span>Voce di Google</span><select class="input" id="stTtsVoice">${GEMINI_VOICES.map(([v, l]) => `<option value="${v}" ${(st.ttsVoice || 'Kore') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field" id="ttsSysBox" ${st.ttsEngine === 'gemini' ? 'hidden' : ''}><span>Voce del telefono</span><select class="input" id="stTtsSys"><option value="">Automatica</option></select></label>
+          <div class="field"><span class="lbl">&nbsp;</span><button class="btn" type="button" data-act="tts-test">Prova la voce</button></div>
+        </div>
+        <p class="hint">La voce di Google usa la tua chiave di Gemini (la stessa dell’AI) e internet; ogni paragrafo viene preparato mentre ascolti il precedente. Se la chiave manca o finisce la quota gratuita, l’app torna alla voce del telefono. Per migliorare la voce del telefono: Impostazioni di Android → Sintesi vocale → “Servizi Google” e scarica la voce italiana di qualità alta.</p>
+      </div>
       <div class="grid2">
         <label class="field"><span>Tema</span>
           <select class="input" id="stTheme">
@@ -2921,6 +2962,36 @@ function viewSettings() {
   `);
 
   bindSettingsPrompts($('#view'));
+  const blueSave = () => { st.blueOn = $('#stBlue').checked; st.blueAuto = $('#stBlueAuto').checked; st.blueLevel = +$('#stBlueLevel').value; Settings.save(); applyBlueLight(); };
+  ['#stBlue', '#stBlueAuto'].forEach(id => $(id).addEventListener('change', blueSave));
+  $('#stBlueLevel').addEventListener('input', blueSave);
+  const fillSys = () => {
+    const sel = $('#stTtsSys');
+    if (!sel || !canSpeak) return;
+    const vs = speechSynthesis.getVoices().filter(v => /^it/i.test(v.lang));
+    sel.innerHTML = `<option value="">Automatica</option>${vs.map(v => `<option value="${esc(v.name)}" ${st.ttsSystemVoice === v.name ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}`;
+  };
+  fillSys();
+  if (canSpeak) speechSynthesis.addEventListener?.('voiceschanged', fillSys, { once: true });
+  $('#stTtsEngine').addEventListener('change', e => {
+    if (e.target.value === 'gemini' && !st.geminiKey.trim()) { toast('Per la voce di Google serve la chiave di Gemini, qui sopra', 'err'); e.target.value = 'system'; return; }
+    st.ttsEngine = e.target.value; Settings.save();
+    $('#ttsGemBox').hidden = st.ttsEngine !== 'gemini';
+    $('#ttsSysBox').hidden = st.ttsEngine === 'gemini';
+  });
+  $('#stTtsVoice').addEventListener('change', e => { st.ttsVoice = e.target.value; Settings.save(); });
+  $('#stTtsSys')?.addEventListener('change', e => { st.ttsSystemVoice = e.target.value; Settings.save(); });
+  on('[data-act="tts-test"]', 'click', async e => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.textContent = 'Preparo…';
+    try {
+      if (Voice.useGemini()) await Voice.play('Ciao! Questa è la voce che leggerà i tuoi appunti. La gittata cardiaca è il prodotto della frequenza per il volume sistolico.', +(st.ttsRate || 1));
+      else speak('Ciao! Questa è la voce che leggerà i tuoi appunti. La gittata cardiaca è il prodotto della frequenza per il volume sistolico.');
+    } catch (err) { toast(err.message, 'err'); }
+    b.disabled = false;
+    b.textContent = 'Prova la voce';
+  });
   $('#stProv').addEventListener('change', e => { st.provider = e.target.value; Settings.save(); toast(`Uso ${AI.name()}`); });
   $('#syUrl').addEventListener('change', e => {
     st.syncUrl = e.target.value.trim();
@@ -3297,7 +3368,8 @@ function sectionLearned(secId) {
 function clozeCardsFromMd(md) {
   const lines = (md || '').split('\n');
   const out = [];
-  const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(x => x.trim());
+  // le | delle evidenziature {{y|…}} non separano le celle
+  const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').replace(/\{\{([uygbpovrtl])\|/g, '{{$1\u0001').split('|').map(x => x.replace(/\u0001/g, '|').trim());
   const isSep = l => /^[\s|:-]+$/.test(l) && /-{2,}/.test(l);
   let heading = '';
   let header = null;
@@ -4686,6 +4758,8 @@ function viewGuide() {
         <li><strong>Immagini</strong>: in Leggi e Cloze “Nascondi le immagini” le riduce a un riquadro da toccare. In Cloze, gli schemi con image occlusion hanno i riquadri coperti come i termini: toccali per scoprirli.</li>
         <li><strong>Link utili</strong> sono icone: “Modifica” per cambiarli.</li>
       </ul>`)}
+    ${sec('Mappe XMind', `
+      <p>Ogni sezione ha la scheda <strong>Mappe</strong>: carichi un file .xmind e lo leggi come <strong>mappa</strong> (rami colorati, zoom con due dita o Ctrl + rotellina, tocchi un nodo per chiuderne o aprirne i rami) o come <strong>elenco</strong>. <strong>Ripassa</strong> copre tutti i rami: prova a ricordarli e toccali per scoprirli. Da <strong>Altro</strong> crei le flashcard della mappa, la aggiungi agli appunti come elenco, carichi altre mappe, la rinomini o la elimini. Si salva la struttura della mappa (titoli e note, non le immagini) e si sincronizza con la sezione.</p>`)}
     ${sec('Suggerimenti nei cloze', `
       <p>Un cloze può avere un suggerimento: una domanda o un indizio che compare come <strong>?</strong> accanto al termine nascosto; toccandolo lo leggi. In Cloze tocca <strong>Suggerimenti</strong> e poi un termine per scriverlo; in Modifica metti il cursore dentro il cloze e tocca <strong>Suggerimento</strong> (nel testo diventa <code>==termine::suggerimento==</code>). Nelle flashcard create dai cloze il suggerimento compare al posto dei puntini.</p>`)}
     ${sec('Modalità esame, zoom e modalità notte', `
@@ -4808,15 +4882,17 @@ const HL_COLORS = [
 const MARK_RE = /\{\{([uygbpovrtl])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
 function renderMarks(src) {
   let out = src;
-  // due passaggi: gestisce anche un sottolineato dentro un’evidenziatura
-  for (let i = 0; i < 2; i++) {
-    out = out.replace(MARK_RE, (m, k, t) => k === 'u' ? `<u class="ul">${t}</u>` : `<mark class="hl hl-${k}">${t}</mark>`);
+  // dall’interno verso l’esterno, finché ce ne sono: regge anche più livelli uno dentro l’altro
+  for (let i = 0; i < 8; i++) {
+    const next = out.replace(MARK_RE, (m, k, t) => k === 'u' ? `<u class="ul">${t}</u>` : `<mark class="hl hl-${k}">${t}</mark>`);
+    if (next === out) break;
+    out = next;
   }
   return out;
 }
 const stripMarks = md => {
   let out = md || '';
-  for (let i = 0; i < 2; i++) out = out.replace(MARK_RE, '$2');
+  for (let i = 0; i < 8; i++) { const next = out.replace(MARK_RE, '$2'); if (next === out) break; out = next; }
   return out;
 };
 
@@ -4824,7 +4900,7 @@ const stripMarks = md => {
 // Tutto ciò che nel Markdown c’è ma nel testo mostrato non si vede: grassetti, cloze (con suggerimento),
 // evidenziature, tag HTML, link [testo](indirizzo), collegamenti [[Titolo|testo]], escape \*, segni di
 // elenco, titoli e citazioni a inizio riga, separatori delle tabelle
-const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpovrtl]\\||\\}\\}|<[^>\\n]{1,80}>|::[^=\\n]*(?===)|\\]\\([^)\\n]*\\)|\\[\\[(?:[^\\]|\\n]*\\|)?|\\]\\]|\\[|\\\\(?=[!-/:-@\\[-`{-~])|(?:^|(?<=\\n))[ \\t]*(?:[-*+]|\\d{1,3}[.)]|#{1,6}|>)[ \\t]+|[ \\t]*\\|[ \\t]*)*';
+const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpovrtl]\\||\\}\\}|<[^>\\n]{1,80}>|::(?:(?!==)[^\\n])*(?===)|\\]\\([^)\\n]*\\)|\\[\\[(?:[^\\]|\\n]*\\|)?|\\]\\]|\\[|\\\\(?=[!-/:-@\\[-`{-~])|(?:^|(?<=\\n))[ \\t]*(?:[-*+]|\\d{1,3}[.)]|#{1,6}|>)[ \\t]+|[ \\t]*\\|[ \\t]*)*';
 // caratteri che nel Markdown possono essere scritti come entità HTML
 const CHAR_ALT = { '&': '(?:&|&amp;)', '<': '(?:<|&lt;)', '>': '(?:>|&gt;)', '"': '(?:"|&quot;)', '\u00a0': '(?:\u00a0|&nbsp;| )', '’': '(?:’|\')', '‘': '(?:‘|\')', '“': '(?:“|")', '”': '(?:”|")' };
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -4875,16 +4951,82 @@ function findSourceRange(md, selText, occurrence) {
 }
 
 // Applica (o toglie) cloze, colore o sottolineatura a un intervallo del Markdown
-function applyMarkToMd(md, r, kind) {
+// Intervalli dei segni (grassetti, evidenziature, cloze, link) per non accavallarli
+function markupSpans(md) {
+  const spans = [];
+  let off = 0;
+  for (const line of md.split('\n')) {
+    const bolds = [];
+    const wraps = [];
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '`') { const k = line.indexOf('`', i + 1); if (k > i) { i = k; continue; } }
+      if (line.startsWith('**', i)) { if (bolds.length) spans.push([off + bolds.pop(), off + i + 2]); else bolds.push(i); i++; continue; }
+      if (/^\{\{[uygbpovrtl]\|/.test(line.slice(i, i + 4))) { wraps.push(i); i += 3; continue; }
+      if (line.startsWith('}}', i) && wraps.length) { spans.push([off + wraps.pop(), off + i + 2]); i++; continue; }
+    }
+    for (const m of line.matchAll(/\[\[[^\]\n]*\]\]|\[[^\]\n]*\]\([^)\n]*\)/g)) spans.push([off + m.index, off + m.index + m[0].length]);
+    off += line.length + 1;
+  }
+  clozeMatches(md).forEach(m => spans.push([m.start, m.end]));
+  return spans;
+}
+// allarga la selezione finché non taglia a metà nessun segno
+function expandToBalanced(md, r0) {
+  const r = { ...r0 };
+  const spans = markupSpans(md);
+  let changed = true;
+  let guard = 0;
+  while (changed && guard++ < 50) {
+    changed = false;
+    for (const [a, b] of spans) {
+      const cutsStart = a < r.start && b > r.start && b < r.end;
+      const cutsEnd = a > r.start && a < r.end && b > r.end;
+      if (cutsStart || cutsEnd) { r.start = Math.min(r.start, a); r.end = Math.max(r.end, b); changed = true; }
+    }
+  }
+  return r;
+}
+// Applica (o toglie) cloze, colore o sottolineatura a un intervallo del Markdown
+function applyMarkToMd(md, r0, kind) {
+  // selezione su più celle di una tabella: il segno si mette cella per cella, così la tabella resta intera
+  const lineStart = md.lastIndexOf('\n', r0.start - 1) + 1;
+  if (/^\s*\|/.test(md.slice(lineStart, lineStart + 8)) && md.slice(r0.start, r0.end).indexOf('\n') < 0) {
+    const segs = [];
+    let s0 = r0.start;
+    for (let i = r0.start; i < r0.end; i++) {
+      if (md[i] === '|' && !/\{\{[uygbpovrtl]$/.test(md.slice(Math.max(0, i - 3), i))) { segs.push([s0, i]); s0 = i + 1; }
+    }
+    if (segs.length) {
+      segs.push([s0, r0.end]);
+      let out = md;
+      for (const [a, b] of segs.reverse()) {
+        let x = a;
+        let y = b;
+        while (x < y && /\s/.test(out[x])) x++;
+        while (y > x && /\s/.test(out[y - 1])) y--;
+        if (y > x) out = applyMarkToMd(out, { start: x, end: y }, kind);
+      }
+      return out;
+    }
+  }
+  let r = r0;
+  if (kind === 'cloze') {
+    const cz = clozeMatches(md);
+    // la selezione sta dentro un cloze: lo tolgo (suggerimento compreso)
+    const host = cz.find(m => m.start <= r.start && r.end <= m.end);
+    if (host) return md.slice(0, host.start) + splitHint(host.inner)[0] + md.slice(host.end);
+    r = expandToBalanced(md, r);
+    // i cloze rimasti dentro la selezione si fondono nel nuovo
+    let inner = md.slice(r.start, r.end);
+    cz.filter(m => m.start >= r.start && m.end <= r.end).sort((a, b) => b.start - a.start).forEach(m => {
+      inner = inner.slice(0, m.start - r.start) + splitHint(m.inner)[0] + inner.slice(m.end - r.start);
+    });
+    return `${md.slice(0, r.start)}==${inner}==${md.slice(r.end)}`;
+  }
+  if (kind !== 'none') r = expandToBalanced(md, r);
   const inner = md.slice(r.start, r.end);
   const before = md.slice(0, r.start);
   const after = md.slice(r.end);
-  if (kind === 'cloze') {
-    if (before.endsWith('==') && after.startsWith('==')) return before.slice(0, -2) + inner + after.slice(2);
-    const hm = after.match(/^::[^\n=]*==/);
-    if (before.endsWith('==') && hm) return before.slice(0, -2) + inner + after.slice(hm[0].length);
-    return `${before}==${inner}==${after}`;
-  }
   const wrap = before.match(/\{\{([uygbpovrtl])\|$/);
   if (wrap && after.startsWith('}}')) {
     // stesso tipo: toglie; colore diverso: cambia colore
@@ -6047,7 +6189,9 @@ const MORE_ITEMS = [
 ];
 function viewMore() {
   setView(`
-    <header class="page-head"><h1>Altro</h1></header>
+    <header class="page-head"><h1>Altro</h1>
+      <label class="check blue-quick"><input type="checkbox" id="blueQuick" ${document.documentElement.classList.contains('bluelight') ? 'checked' : ''}><span>Filtro luce blu</span></label>
+    </header>
     <div class="tile-grid wide-grid">
       ${MORE_ITEMS.map(([k, label, sub]) => `
         <a class="tile wide" href="#/${k}">
@@ -6055,6 +6199,7 @@ function viewMore() {
           <span class="tile-text"><span class="tile-name">${label}</span><span class="tile-sub">${sub}</span></span>
         </a>`).join('')}
     </div>`);
+  $('#blueQuick').addEventListener('change', e => { S().blueOn = e.target.checked; S().blueAuto = false; Settings.save(); applyBlueLight(); });
 }
 
 /* ---------- Link utili come icone ---------- */
@@ -6092,6 +6237,7 @@ const Stats = {
     return all[d];
   },
   addTime(sec, nbId) {
+    pushStatsSoon();
     const x = this.day();
     x.t += sec;
     if (nbId) x.nb[nbId] = (x.nb[nbId] || 0) + sec;
@@ -6099,7 +6245,7 @@ const Stats = {
     if (keys.length > 420) keys.sort().slice(0, keys.length - 400).forEach(k => delete this.data.d[k]);
     this.save();
   },
-  addReview() { this.day().r += 1; this.save(); }
+  addReview() { this.day().r += 1; this.save(); pushStatsSoon(); }
 };
 // Conta il tempo passato su sezioni (tranne Modifica) e flashcard, solo se stai usando l’app
 const Tracker = {
@@ -6175,7 +6321,7 @@ function viewCalendar() {
   const pad = (first.getDay() + 6) % 7;
   const days = new Date(y, m, 0).getDate();
   const idx = dueIndex();
-  const st = Stats.load().d;
+  const st = statsMerged().d;
   const monthName = first.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
   const cells = [];
   for (let i = 0; i < pad; i++) cells.push('<span class="cal-cell pad" aria-hidden="true"></span>');
@@ -6231,7 +6377,7 @@ function viewCalendar() {
   const wc = weakCards();
   const leeches = state.cards.filter(c => !c.suspended && isLeech(c)).sort((a, b) => (b.srs?.lapses || 0) - (a.srs?.lapses || 0));
   const czAll = state.sections.flatMap(s => czWeakOf(s).map(w => ({ s, w }))).sort((a, b) => b.w.bad - a.w.bad);
-  const exams = (Stats.load().exams || []).slice(-5).reverse();
+  const exams = (statsMerged().exams || []).slice(-5).reverse();
 
   setView(`
     <header class="page-head"><div><h1>Calendario</h1>
@@ -6267,7 +6413,7 @@ function viewCalendar() {
       <ul class="nb-time">${nbList.map(([id, t]) => `
         <li><span class="nb-time-name">${esc(nbById(id).name)}</span><span class="nb-time-bar" style="--v:${(t / nbMax).toFixed(3)}"><i></i></span><span class="nb-time-v">${fmtMin(t)}</span></li>`).join('')}
       </ul>` : ''}
-    <p class="hint">Il tempo si conta mentre studi sezioni e flashcard e resta su questo dispositivo.</p>
+    <p class="hint">Il tempo si conta mentre studi sezioni, flashcard e PDF, e si somma tra i tuoi dispositivi sincronizzati.</p>
 
     <h2 class="sub">Punti deboli</h2>
     ${ws.length || wc.length ? `
@@ -6737,6 +6883,35 @@ const PDF_COLORS = [
   ['t', '#5eead4', '#0f766e', 'Turchese'],
   ['l', '#c6f36b', '#4d7c0f', 'Lime']
 ];
+const PDF_TOOLS = [
+  ['select', 'Seleziona', '<svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z"/></svg>', 'Seleziona il testo'],
+  ['hl', 'Evidenzia', '<svg viewBox="0 0 24 24"><path d="M4 20h7M14 4l6 6-8 8H6v-6z"/></svg>', 'Evidenzia: seleziona il testo e si colora da solo'],
+  ['ul', 'Sottolinea', '<svg viewBox="0 0 24 24"><path d="M7 4v6a5 5 0 0 0 10 0V4M5 20h14"/></svg>', 'Sottolinea il testo che selezioni'],
+  ['st', 'Barra', '<svg viewBox="0 0 24 24"><path d="M4 12h16M8 6a4 3 0 0 1 8 0M16 18a4 3 0 0 1-8 0"/></svg>', 'Barra il testo che selezioni'],
+  ['pen', 'Penna', '<svg viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16z"/></svg>', 'Scrivi e disegna a mano'],
+  ['shape', 'Forme', '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="10" height="10" rx="1"/><circle cx="16" cy="16" r="5"/></svg>', 'Rettangoli, cerchi, frecce e linee'],
+  ['text', 'Testo', '<svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M9 19h6"/></svg>', 'Scrivi un testo sulla pagina'],
+  ['note', 'Nota', '<svg viewBox="0 0 24 24"><path d="M5 4h14v12l-5 5H5z"/><path d="M14 21v-5h5"/></svg>', 'Una nota dove tocchi'],
+  ['occ', 'Occludi', '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M8 12h8"/></svg>', 'Copri etichette e valori per ripassarli'],
+  ['eraser', 'Gomma', '<svg viewBox="0 0 24 24"><path d="M16 3l5 5-11 11H5l-2-2z"/><path d="M9 21h12"/></svg>', 'Cancella annotazioni']
+];
+function shapeSvg(a, live = false) {
+  const [x1, y1, x2, y2] = a.box;
+  const st = `stroke="${esc(a.color)}" stroke-width="${a.w}" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
+  const id = live ? '' : ` data-id="${a.id}"`;
+  if (a.kind === 'ellipse') return `<ellipse class="ann-shape"${id} cx="${(x1 + x2) / 2}" cy="${(y1 + y2) / 2}" rx="${Math.abs(x2 - x1) / 2}" ry="${Math.abs(y2 - y1) / 2}" ${st}/>`;
+  if (a.kind === 'line' || a.kind === 'arrow') {
+    let head = '';
+    if (a.kind === 'arrow') {
+      const ang = Math.atan2(y2 - y1, x2 - x1);
+      const L = 6 + a.w * 2;
+      const p = k => `${(x2 - L * Math.cos(ang + k)).toFixed(2)} ${(y2 - L * Math.sin(ang + k)).toFixed(2)}`;
+      head = ` M${p(0.45)} L${x2} ${y2} L${p(-0.45)}`;
+    }
+    return `<path class="ann-shape"${id} d="M${x1} ${y1} L${x2} ${y2}${head}" ${st}/>`;
+  }
+  return `<rect class="ann-shape"${id} x="${Math.min(x1, x2)}" y="${Math.min(y1, y2)}" width="${Math.abs(x2 - x1)}" height="${Math.abs(y2 - y1)}" rx="2" ${st}/>`;
+}
 const PEN_INKS = [['#111111', 'Nero'], ['#1d4ed8', 'Blu'], ['#dc2626', 'Rosso'], ['#15803d', 'Verde']];
 const pdfCol = (k, i = 1) => (PDF_COLORS.find(c => c[0] === k) || PDF_COLORS[0])[i];
 const pdfById = id => state.pdfs.find(p => p.id === id);
@@ -6864,21 +7039,20 @@ function viewPdf(id, pageParam) {
         <button class="btn sm ghost pdf-panel-btn" type="button" data-pdf="panel" aria-expanded="false" title="Pannello laterale">${ICON_PANEL}<span>Pannello</span></button>
       </header>
       <div class="pdf-tools" role="toolbar" aria-label="Strumenti">
-        <div class="seg sm pdf-seg" role="radiogroup" aria-label="Strumento">
-          <button type="button" data-tool="select" role="radio">Seleziona</button>
-          <button type="button" data-tool="pen" role="radio">Penna</button>
-          <button type="button" data-tool="eraser" role="radio">Gomma</button>
-          <button type="button" data-tool="note" role="radio">Nota</button>
-          <button type="button" data-tool="occ" role="radio" title="Disegna riquadri che coprono etichette e valori">Occlusione</button>
+        <div class="pdf-toolset" role="radiogroup" aria-label="Strumento">
+          ${PDF_TOOLS.map(([k, label, icon, tip]) => `<button type="button" class="pdf-tool" data-tool="${k}" role="radio" title="${esc(tip)}">${icon}<span>${label}</span></button>`).join('')}
         </div>
         <span class="pdf-pen-opts" hidden>
-          ${PEN_INKS.map(([c, n]) => `<button type="button" class="rt-dot ink-dot" data-ink="${c}" style="--ink:${c}" aria-label="Penna ${n.toLowerCase()}" title="${n}"></button>`).join('')}
+          <span class="pdf-hl-colors">${PDF_COLORS.map(([k, , , n]) => `<button type="button" class="rt-dot pdf-hl-dot" data-hlc="${k}" style="--dot:${pdfCol(k)}" aria-label="${n}" title="${n}"></button>`).join('')}</span>
+          <span class="pdf-ink-colors">${PEN_INKS.map(([c, n]) => `<button type="button" class="rt-dot ink-dot" data-ink="${c}" style="--ink:${c}" aria-label="Colore ${n.toLowerCase()}" title="${n}"></button>`).join('')}</span>
+          <span class="pdf-shape-kinds">${[['rect', '▭', 'Rettangolo'], ['ellipse', '◯', 'Ellisse'], ['arrow', '➝', 'Freccia'], ['line', '╱', 'Linea']].map(([k, s, n]) => `<button type="button" class="btn sm ghost" data-shape="${k}" aria-label="${n}" title="${n}">${s}</button>`).join('')}</span>
           <select class="input pdf-pen-size" aria-label="Spessore"><option value="1.2">Fine</option><option value="2">Media</option><option value="3.4">Spessa</option><option value="9">Evidenziatore</option></select>
         </span>
         <span class="pdf-zoom">
           <button type="button" class="btn sm ghost" data-pdf="zoom-" aria-label="Riduci">−</button>
           <button type="button" class="btn sm ghost" data-pdf="zoom-fit" id="pdfZoom" title="Adatta alla larghezza">100%</button>
           <button type="button" class="btn sm ghost" data-pdf="zoom+" aria-label="Ingrandisci">+</button>
+          <button type="button" class="btn sm ghost" data-pdf="fit-page" title="Pagina intera">⤢</button>
         </span>
         <button type="button" class="btn sm ghost pdf-night-btn" data-pdf="night" aria-pressed="false" title="Pagine scure per leggere la sera">Notte</button>
         <button type="button" class="btn sm occ-quiz-btn" data-pdf="occ-quiz" aria-pressed="false" hidden>Ripassa le occlusioni</button>
@@ -6904,7 +7078,7 @@ function viewPdf(id, pageParam) {
   document.documentElement.classList.add('pdf-open');
   const R = {
     doc: null, base: null, sizes: [], scale: 1, zoom: meta.zoom || 1, cur: 1,
-    occQuiz: false, occOpen: new Set(),
+    occQuiz: false, occOpen: new Set(), shape: S().pdfShape || 'rect',
     tool: 'select', color: S().pdfColor || 'y', ink: S().pdfInk || '#1d4ed8', inkW: +(S().pdfInkW || 2),
     undo: [], rendered: new Map(), textCache: new Map(), hit: null, penSeen: false,
     destroyed: false, tab: S().pdfPanel || '', searchToken: 0, outline: null, thumbIo: null
@@ -7032,6 +7206,9 @@ function viewPdf(id, pageParam) {
       if (a.type === 'hl') return `<g class="ann-hl" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="1.5" fill="${pdfCol(a.color)}"/>`).join('')}</g>`;
       if (a.type === 'ul') return `<g class="ann-ul" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] - 1.6).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
       if (a.type === 'ink') return `<path class="ann-ink ${a.w >= 6 ? 'marker' : ''}" data-id="${a.id}" d="${inkPath(a.pts)}" stroke="${esc(a.color)}" stroke-width="${a.w}"/>`;
+      if (a.type === 'st') return `<g class="ann-ul" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] * 0.52 - 0.8).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
+      if (a.type === 'shape') return shapeSvg(a);
+      if (a.type === 'text') return `<g class="ann-text" data-id="${a.id}">${String(a.text).split('\n').map((l, k) => `<text x="${a.x}" y="${(a.y + (k + 1) * a.fs * 1.25).toFixed(2)}" font-size="${a.fs}" fill="${esc(a.color)}">${esc(l)}</text>`).join('')}</g>`;
       return '';
     }).join('');
     let occ = el.querySelector('svg.pdf-occ');
@@ -7272,10 +7449,10 @@ function viewPdf(id, pageParam) {
     });
   }
   const annotSheet = a => {
-    const isMark = a.type === 'hl' || a.type === 'ul';
+    const isMark = a.type === 'hl' || a.type === 'ul' || a.type === 'st';
     const isOcc = a.type === 'occ';
     const sh = openSheet(`
-      <h2>${a.type === 'hl' ? 'Evidenziazione' : a.type === 'ul' ? 'Sottolineatura' : a.type === 'ink' ? 'Tratto a penna' : isOcc ? 'Occlusione' : 'Nota'}, pagina ${a.page}</h2>
+      <h2>${({ hl: 'Evidenziazione', ul: 'Sottolineatura', st: 'Barrato', ink: 'Tratto a penna', occ: 'Occlusione', shape: 'Forma', text: 'Testo' })[a.type] || 'Nota'}, pagina ${a.page}</h2>
       ${isOcc ? `<p class="sheet-sub">${a.card ? 'Ha già la sua flashcard.' : 'Puoi trasformare le occlusioni di questa pagina in flashcard da ripassare con le altre.'}</p>` : ''}
       ${a.text ? `<blockquote class="pdf-quote">${esc(a.text.slice(0, 500))}</blockquote>` : ''}
       ${isMark ? `
@@ -7283,14 +7460,18 @@ function viewPdf(id, pageParam) {
           ${PDF_COLORS.map(([k, , , n]) => `<button type="button" class="rt-dot pdf-hl-dot ${a.color === k ? 'on' : ''}" data-ac="${k}" style="--dot:${pdfCol(k)}" aria-label="${n}" aria-pressed="${a.color === k}"></button>`).join('')}
           <button type="button" class="btn sm ghost" data-aa="type">${a.type === 'hl' ? 'Trasforma in sottolineatura' : 'Trasforma in evidenziazione'}</button>
         </div>` : ''}
-      ${a.type !== 'ink' ? `<label class="field"><span>${isOcc ? 'Cosa c’è sotto (facoltativo, diventa la risposta della flashcard)' : 'Nota'}</span><textarea class="input card-ta" id="anNote" rows="3" placeholder="Facoltativa">${esc(a.note || '')}</textarea></label>` : ''}
+      ${a.type === 'text' ? `<label class="field"><span>Testo</span><textarea class="input card-ta" id="anText" rows="3">${esc(a.text || '')}</textarea></label>` : ''}
+      ${!['ink', 'shape', 'text'].includes(a.type) ? `<label class="field"><span>${isOcc ? 'Cosa c’è sotto (facoltativo, diventa la risposta della flashcard)' : 'Nota'}</span><textarea class="input card-ta" id="anNote" rows="3" placeholder="Facoltativa">${esc(a.note || '')}</textarea></label>` : ''}
       <div class="modal-actions">
         <button class="btn ghost danger" type="button" data-aa="del">Elimina</button>
         ${a.text ? '<button class="btn ghost" type="button" data-aa="drag">Trascina</button><button class="btn ghost" type="button" data-aa="card">Flashcard</button>' : ''}
         ${isOcc ? '<button class="btn ghost" type="button" data-aa="occcards">Flashcard dalla pagina</button>' : ''}
         <button class="btn primary" type="button" data-aa="ok">Fatto</button>
       </div>`, { label: 'Annotazione', onClose: () => keepNote() });
-    const keepNote = () => { const t = $('#anNote', sh.el); if (t && meta.annots.includes(a) && t.value.trim() !== (a.note || '')) { a.note = t.value.trim(); saveSoon(); drawAnnots(a.page); refreshPanel('notes'); } };
+    const keepNote = () => {
+      const tx = $('#anText', sh.el);
+      if (tx && meta.annots.includes(a) && tx.value.trim() && tx.value !== a.text) { a.text = tx.value.trim().slice(0, 1000); saveSoon(); drawAnnots(a.page); }
+      const t = $('#anNote', sh.el); if (t && meta.annots.includes(a) && t.value.trim() !== (a.note || '')) { a.note = t.value.trim(); saveSoon(); drawAnnots(a.page); refreshPanel('notes'); } };
     sh.el.addEventListener('click', async e => {
       const c = e.target.closest('[data-ac]');
       if (c) {
@@ -7319,6 +7500,15 @@ function viewPdf(id, pageParam) {
     const sz = sizeOf(+el.dataset.p);
     return [+((e.clientX - r.left) / r.width * sz.width).toFixed(2), +((e.clientY - r.top) / r.height * sz.height).toFixed(2)];
   };
+  const hitShapeText = (n, x, y) => meta.annots.filter(a => a.page === n && (a.type === 'shape' || a.type === 'text')).reverse().find(a => {
+    if (a.type === 'text') {
+      const lines = String(a.text).split('\n');
+      const w = Math.max(...lines.map(l => l.length)) * a.fs * 0.55;
+      return x >= a.x - 3 && x <= a.x + w + 3 && y >= a.y - 2 && y <= a.y + lines.length * a.fs * 1.25 + 4;
+    }
+    const [x1, y1, x2, y2] = a.box;
+    return x >= Math.min(x1, x2) - 4 && x <= Math.max(x1, x2) + 4 && y >= Math.min(y1, y2) - 4 && y <= Math.max(y1, y2) + 4;
+  });
   const hitAnnot = (n, x, y) => {
     const anns = meta.annots.filter(a => a.page === n && a.rects);
     for (let i = anns.length - 1; i >= 0; i--) {
@@ -7334,9 +7524,33 @@ function viewPdf(id, pageParam) {
     R.tool = t;
     app.dataset.tool = t;
     $$('button[data-tool]', app).forEach(b => { b.setAttribute('aria-checked', b.dataset.tool === t); b.setAttribute('aria-selected', b.dataset.tool === t); });
-    $('.pdf-pen-opts', app).hidden = t !== 'pen';
-    if (t !== 'select') { bar.hidden = true; document.getSelection()?.removeAllRanges(); }
+    const textTool = ['hl', 'ul', 'st'].includes(t);
+    const opts = $('.pdf-pen-opts', app);
+    opts.hidden = !(t === 'pen' || t === 'shape' || t === 'text' || textTool);
+    $('.pdf-hl-colors', opts).hidden = !textTool;
+    $('.pdf-ink-colors', opts).hidden = textTool;
+    $('.pdf-shape-kinds', opts).hidden = t !== 'shape';
+    $('.pdf-pen-size', opts).hidden = !(t === 'pen' || t === 'shape');
+    $$('[data-hlc]', opts).forEach(b => b.classList.toggle('on', b.dataset.hlc === R.color));
+    $$('[data-shape]', opts).forEach(b => b.classList.toggle('on', b.dataset.shape === R.shape));
+    if (t !== 'select') bar.hidden = true;
+    if (!textTool && t !== 'select') document.getSelection()?.removeAllRanges();
   };
+  // evidenziatore, sottolineatura e barrato: si applicano appena finisci di selezionare
+  let textToolTimer = null;
+  const applyTextTool = () => {
+    if (!['hl', 'ul', 'st'].includes(R.tool)) return;
+    const s = readSelection();
+    if (!s) return;
+    addAnnots(newAnnotsFromSel(s, R.tool, R.color));
+    document.getSelection()?.removeAllRanges();
+  };
+  pagesEl.addEventListener('mouseup', () => { clearTimeout(textToolTimer); textToolTimer = setTimeout(applyTextTool, 30); });
+  document.addEventListener('selectionchange', () => {
+    if (!['hl', 'ul', 'st'].includes(R.tool)) return;
+    clearTimeout(textToolTimer);
+    textToolTimer = setTimeout(applyTextTool, 1100);
+  });
   const eraseAt = e => {
     const hit = document.elementFromPoint(e.clientX, e.clientY);
     const g = hit && hit.closest && hit.closest('svg.pdf-ann [data-id], svg.pdf-occ [data-id]');
@@ -7346,6 +7560,18 @@ function viewPdf(id, pageParam) {
     const el = e.target.closest('.pdf-page');
     if (!el || e.target.closest('.pdf-pin')) return;
     if (e.pointerType === 'pen') R.penSeen = true;
+    if (R.tool === 'shape') {
+      if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
+      if (e.button > 0) return;
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      const svg = el.querySelector('svg.pdf-ann') || (drawAnnots(+el.dataset.p), el.querySelector('svg.pdf-ann'));
+      const g = document.createElementNS(SVG_NS, 'g');
+      svg.append(g);
+      const p0 = pointInPage(el, e);
+      ink = { id: e.pointerId, el, shape: g, p0, box: [...p0, ...p0] };
+      return;
+    }
     if (R.tool === 'occ') {
       if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
       if (e.button > 0) return;
@@ -7378,6 +7604,11 @@ function viewPdf(id, pageParam) {
     if (pan && e.pointerId === pan.id) { scroller.scrollBy(pan.x - e.clientX, pan.y - e.clientY); pan.x = e.clientX; pan.y = e.clientY; return; }
     if (!ink || e.pointerId !== ink.id) return;
     if (ink.eraser) { eraseAt(e); return; }
+    if (ink.shape) {
+      ink.box = [...ink.p0, ...pointInPage(ink.el, e)];
+      ink.shape.innerHTML = shapeSvg({ kind: R.shape, box: ink.box, color: R.ink, w: R.inkW, id: '' }, true);
+      return;
+    }
     if (ink.occ) {
       const [x, y] = pointInPage(ink.el, e);
       const [x0, y0] = ink.p0;
@@ -7399,6 +7630,12 @@ function viewPdf(id, pageParam) {
     const cur = ink;
     ink = null;
     if (cur.eraser) return;
+    if (cur.shape) {
+      cur.shape.remove();
+      const [x1, y1, x2, y2] = cur.box;
+      if (Math.hypot(x2 - x1, y2 - y1) > 6) addAnnots([{ id: uid(), type: 'shape', kind: R.shape, page: +cur.el.dataset.p, box: cur.box.map(v => +v.toFixed(2)), color: R.ink, w: Math.min(R.inkW, 4), created: Date.now() }]);
+      return;
+    }
     if (cur.occ) {
       cur.occ.remove();
       if (cur.box && cur.box[2] > 6 && cur.box[3] > 4) addAnnots([{ id: uid(), type: 'occ', page: +cur.el.dataset.p, rects: [cur.box], created: Date.now() }]);
@@ -7421,6 +7658,11 @@ function viewPdf(id, pageParam) {
       if (text) addAnnots([{ id: uid(), type: 'note', page: n, x, y, note: text, created: Date.now() }]);
       return;
     }
+    if (R.tool === 'text') {
+      const t = await modal({ title: 'Testo sulla pagina', input: true, multiline: true, placeholder: 'Scrivi il testo', confirm: 'Aggiungi' });
+      if (t) addAnnots([{ id: uid(), type: 'text', page: n, x, y: y - 8, text: t.slice(0, 1000), color: R.ink, fs: 11, created: Date.now() }]);
+      return;
+    }
     if (R.tool === 'select') {
       const sel = document.getSelection();
       if (sel && !sel.isCollapsed) return;
@@ -7429,7 +7671,7 @@ function viewPdf(id, pageParam) {
         if (occA) { if (R.occOpen.has(occA.id)) R.occOpen.delete(occA.id); else R.occOpen.add(occA.id); drawAnnots(n); }
         return;
       }
-      const a = occA || hitAnnot(n, x, y);
+      const a = occA || hitAnnot(n, x, y) || hitShapeText(n, x, y);
       if (a) annotSheet(a);
     }
   });
@@ -7470,12 +7712,15 @@ function viewPdf(id, pageParam) {
       toast(`Segnalibro di pagina ${n} tolto`, '', { label: 'Annulla', fn: () => { unGone(meta, [ex.id]); meta.bookmarks.push(ex); meta.bookmarks.sort((a, b) => a.page - b.page); saveSoon(); refreshBm(); } });
       return;
     }
-    const b = { id: uid(), page: n, title: await bookmarkTitle(n), created: Date.now() };
+    const guess = await bookmarkTitle(n);
+    const title = await modal({ title: `Segnalibro a pagina ${n}`, text: 'Dagli un titolo: lo ritrovi nel pannello e nella ricerca.', input: true, value: guess, confirm: 'Salva' });
+    if (!title) return;
+    const b = { id: uid(), page: n, title, created: Date.now() };
     meta.bookmarks.push(b);
     meta.bookmarks.sort((x, y) => x.page - y.page);
     saveSoon();
     refreshBm();
-    toast(`Segnalibro a pagina ${n}`, '', { label: 'Rinomina', fn: () => renameBookmark(b) });
+    toast(`Segnalibro “${title}” a pagina ${n}`);
   };
 
   // ---------- pannello laterale
@@ -7508,6 +7753,7 @@ function viewPdf(id, pageParam) {
 
   function drawMarks() {
     panelBody.innerHTML = `
+      ${meta.bookmarks.length > 3 ? `<input type="search" class="input search pdf-bm-q" id="bmQ" placeholder="Cerca tra i segnalibri e l’indice" aria-label="Cerca tra i segnalibri">` : ''}
       <button class="btn sm block" type="button" data-pm="add">${meta.bookmarks.some(b => b.page === R.cur) ? `Togli il segnalibro da pagina ${R.cur}` : `Segnalibro su pagina ${R.cur}`}</button>
       ${meta.bookmarks.length ? `<ul class="pdf-plist">${meta.bookmarks.map(b => `
         <li><button type="button" class="pdf-pitem ${b.page === R.cur ? 'cur' : ''}" data-go="${b.page}">
@@ -7518,6 +7764,10 @@ function viewPdf(id, pageParam) {
       <h3 class="sub3">Indice del PDF</h3>
       <div id="pdfOutline"><p class="hint">Carico l’indice…</p></div>`;
     drawOutline();
+    $('#bmQ', panelBody)?.addEventListener('input', e => {
+      const f = foldAccents(e.target.value.trim());
+      $$('.pdf-plist li', panelBody).forEach(li => { li.hidden = !!f && !foldAccents(li.textContent).includes(f); });
+    });
   }
   async function drawOutline() {
     const box = $('#pdfOutline', panelBody);
@@ -7908,6 +8158,10 @@ function viewPdf(id, pageParam) {
   app.addEventListener('click', e => {
     const t = e.target.closest('button[data-tool]');
     if (t) { setTool(t.dataset.tool); return; }
+    const hlc = e.target.closest('[data-hlc]');
+    if (hlc) { R.color = hlc.dataset.hlc; S().pdfColor = R.color; Settings.save(); $$('[data-hlc]', app).forEach(b => b.classList.toggle('on', b === hlc)); return; }
+    const shp = e.target.closest('[data-shape]');
+    if (shp) { R.shape = shp.dataset.shape; S().pdfShape = R.shape; Settings.save(); $$('[data-shape]', app).forEach(b => b.classList.toggle('on', b === shp)); return; }
     const inkB = e.target.closest('[data-ink]');
     if (inkB) { R.ink = inkB.dataset.ink; S().pdfInk = R.ink; Settings.save(); $$('[data-ink]', app).forEach(b => b.classList.toggle('on', b === inkB)); return; }
     const p = e.target.closest('[data-pdf]');
@@ -7918,6 +8172,7 @@ function viewPdf(id, pageParam) {
     else if (act === 'zoom+') zoomTo(R.zoom * 1.2);
     else if (act === 'zoom-') zoomTo(R.zoom / 1.2);
     else if (act === 'zoom-fit') zoomTo(1);
+    else if (act === 'fit-page') { const pageH = sizeOf(R.cur).height * fitScale(); zoomTo(Math.max(0.3, (scroller.clientHeight - 28) / pageH)); goTo(R.cur); }
     else if (act === 'undo') undo();
     else if (act === 'occ-quiz') setOccQuiz(!R.occQuiz);
     else if (act === 'night') setNight(!app.classList.contains('pdf-night'));
@@ -8763,7 +9018,7 @@ function viewExam(nbId, gid) {
   const pool = examPool(sc, { q: true, c: true, f: true });
   const counts = { q: 0, c: 0, f: 0 };
   pool.forEach(l => l.forEach(it => { counts[it.t]++; }));
-  const past = (Stats.load().exams || []).filter(x => x.key === sc.key).slice(-5).reverse();
+  const past = (statsMerged().exams || []).filter(x => x.key === sc.key).slice(-5).reverse();
   setView(`
     <a class="back" href="#/nb/${sc.nb.id}">${esc(sc.nb.name)}</a>
     <header class="page-head"><div><h1>Simulazione d’esame</h1>
@@ -8875,6 +9130,7 @@ function examFinish(sc) {
   const st = Stats.load();
   st.exams = [...(st.exams || []), { d: todayStr(), key: sc.key, name: sc.name, n, score }].slice(-60);
   Stats.save();
+  pushStatsSoon(2000);
   if (n) Stats.addReview();
   examResults(sc);
 }
@@ -8982,6 +9238,9 @@ function moreSearchHtml(q) {
       if (k >= 3 || !foldAccents(t).includes(f)) return;
       k++;
       pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${i + 1}" data-hitq="${esc(q)}" data-hitpdf="${p.id}" data-hitp="${i + 1}"><span class="pdf-ic sm" aria-hidden="true">${i + 1}</span><span class="row-main"><span class="row-title">${esc(p.name)}, pagina ${i + 1}</span><span class="row-sub">${foldSnippet(t, f)}</span></span></a></li>`);
+    });
+    (p.bookmarks || []).filter(b => foldAccents(b.title || '').includes(f)).slice(0, 5).forEach(b => {
+      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${b.page}"><span class="pdf-ic sm bm" aria-hidden="true">${ICON_BM}</span><span class="row-main"><span class="row-title">${foldSnippet(b.title, f)}</span><span class="row-sub">Segnalibro, ${esc(p.name)}, pagina ${b.page}</span></span></a></li>`);
     });
     (p.annots || []).filter(a => foldAccents(`${a.text || ''} ${a.note || ''}`).includes(f)).slice(0, 3).forEach(a => {
       pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${a.page}"><span class="pdf-ic sm note" aria-hidden="true">✎</span><span class="row-main"><span class="row-title">${esc(p.name)}, pagina ${a.page}: ${a.note ? 'nota' : 'evidenziazione'}</span><span class="row-sub">${foldSnippet(`${a.note || ''} ${a.text || ''}`, f)}</span></span></a></li>`);
@@ -9156,6 +9415,7 @@ const isLeech = c => (c.srs && c.srs.lapses >= LEECH) || tagsOf(c).includes(LEEC
 /* ---------- Ascolto: il telefono legge la sezione ---------- */
 function pickItalianVoice() {
   const vs = canSpeak ? speechSynthesis.getVoices() : [];
+  if (S().ttsSystemVoice) { const chosen = vs.find(v => v.name === S().ttsSystemVoice); if (chosen) return chosen; }
   return vs.find(v => /^it[-_]IT/i.test(v.lang) && /google/i.test(v.name)) || vs.find(v => /^it/i.test(v.lang)) || null;
 }
 function setupListen(article, btn, folds) {
@@ -9204,10 +9464,26 @@ function setupListen(article, btn, folds) {
   };
   const speakCur = () => {
     const my = ++token;
-    speechSynthesis.cancel();
+    Voice.stop();
     const el = list[i];
     if (!el) { stop(); toast('Fine della sezione'); return; }
     mark();
+    if (Voice.useGemini()) {
+      const nextEl = list[i + 1];
+      Voice.play(textOf(el), +(S().ttsRate || 1)).then(r => {
+        if (my !== token || !playing || r === 'stopped') return;
+        i++;
+        speakCur();
+      }).catch(err => {
+        if (my !== token) return;
+        toast(`${err.message} Continuo con la voce del telefono.`, 'err');
+        S().ttsEngine = 'system';
+        Settings.save();
+        if (playing) speakCur();
+      });
+      if (nextEl) Voice.fetch(textOf(nextEl)).catch(() => {});
+      return;
+    }
     const u = new SpeechSynthesisUtterance(textOf(el));
     u.lang = 'it-IT';
     const v = pickItalianVoice();
@@ -9227,7 +9503,7 @@ function setupListen(article, btn, folds) {
     playing = v;
     $('.tts-play', bar).textContent = v ? 'Pausa' : 'Riprendi';
     keepAwake(v);
-    if (v) speakCur(); else { token++; speechSynthesis.cancel(); }
+    if (v) speakCur(); else { token++; Voice.stop(); }
   };
   const start = from => {
     list = blocks();
@@ -9241,7 +9517,7 @@ function setupListen(article, btn, folds) {
   function stop() {
     playing = false;
     token++;
-    speechSynthesis.cancel();
+    Voice.stop();
     keepAwake(false);
     bar.hidden = true;
     btn.classList.remove('on');
@@ -9393,6 +9669,449 @@ function clozeAround(text, pos) {
   return clozeMatches(text).find(x => pos >= x.start && pos <= x.end) || null;
 }
 
+/* =====================================================================
+   v3.22: scheda Mappe (XMind) nelle sezioni
+   Le mappe caricate si leggono come mappa o come elenco; “Ripassa” copre
+   i nodi e si scoprono toccandoli. Si salva solo la struttura della
+   mappa (titoli e note), dentro la sezione, quindi si sincronizza.
+   ===================================================================== */
+const mapsOf = sec => (Array.isArray(sec.maps) ? sec.maps : []);
+const MAP_FONT = '600 14px "Bricolage Grotesque", system-ui, sans-serif';
+let mapMeasure = null;
+function mapWrap(text, maxW) {
+  if (!mapMeasure) mapMeasure = document.createElement('canvas').getContext('2d');
+  mapMeasure.font = MAP_FONT;
+  const words = String(text).split(' ');
+  const lines = [];
+  let cur = '';
+  words.forEach(w => {
+    const t = cur ? `${cur} ${w}` : w;
+    if (mapMeasure.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t;
+  });
+  if (cur) lines.push(cur);
+  const width = Math.max(...lines.map(l => mapMeasure.measureText(l).width), 20);
+  return { lines: lines.slice(0, 6), width };
+}
+function chooseXmindFile() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.xmind,application/vnd.xmind.workbook,application/zip';
+    inp.addEventListener('change', () => resolve(inp.files && inp.files[0] ? inp.files[0] : null), { once: true });
+    inp.click();
+  });
+}
+// toglie i campi vuoti per tenere leggero il record della sezione
+const slimTopic = t => {
+  const o = { t: t.title };
+  if (t.notes) o.n = t.notes.slice(0, 2000);
+  const kids = [...(t.children || []), ...(t.floating || [])].map(slimTopic);
+  if (kids.length) o.c = kids;
+  return o;
+};
+// ogni ramo principale ha il suo colore
+const branchHue = i => (i === undefined ? 205 : (200 + i * 67) % 360);
+function mapCountNodes(n) { return 1 + (n.c || []).reduce((a, c) => a + mapCountNodes(c), 0); }
+
+function modeMap(sec, body) {
+  let maps = mapsOf(sec);
+  const st = S();
+  let mi = Math.min(maps.length - 1, Math.max(0, maps.findIndex(m => m.id === st.mapLast)));
+  let si = 0;
+  let view = st.mapView || (window.innerWidth < 700 ? 'list' : 'map');
+  let quiz = false;
+  const shown = new Set();
+  const collapsed = new Set();
+  let zoom = 1;
+  const draw = () => {
+    maps = mapsOf(sec);
+    if (mi >= maps.length) mi = Math.max(0, maps.length - 1);
+    const m = maps[mi];
+    if (!m) {
+      body.innerHTML = `
+        <div class="empty">
+          <p>Carica una mappa di XMind (.xmind): la leggi qui come mappa o come elenco, la ripassi coprendo i rami e ne ricavi flashcard. Funziona con i file di XMind nuovi e con XMind 8.</p>
+          <button class="btn primary" data-act="map-add">Carica una mappa</button>
+        </div>`;
+      on('[data-act="map-add"]', 'click', addMap, body);
+      return;
+    }
+    const sheet = m.sheets[si] || m.sheets[0];
+    const total = mapCountNodes(sheet.root) - 1;
+    body.innerHTML = `
+      <div class="map-bar">
+        ${maps.length > 1 ? `<select class="input map-sel" data-map-sel aria-label="Mappa">${maps.map((x, k) => `<option value="${k}" ${k === mi ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : `<b class="map-name">${esc(m.name)}</b>`}
+        ${m.sheets.length > 1 ? `<select class="input map-sel" data-sheet-sel aria-label="Foglio">${m.sheets.map((x, k) => `<option value="${k}" ${k === si ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}</select>` : ''}
+        <div class="seg sm" role="tablist" aria-label="Vista">
+          <button type="button" data-view="map" aria-selected="${view === 'map'}">Mappa</button>
+          <button type="button" data-view="list" aria-selected="${view === 'list'}">Elenco</button>
+        </div>
+        <button class="btn sm ${quiz ? 'primary' : ''}" data-act="map-quiz" aria-pressed="${quiz}">${quiz ? `Fine ripasso (${shown.size}/${total})` : 'Ripassa'}</button>
+        ${quiz ? '<button class="btn sm ghost" data-act="map-reveal">Scopri tutto</button>' : ''}
+        <button class="btn sm ghost" data-act="map-more">Altro</button>
+      </div>
+      <p class="hint map-hint">${quiz ? 'Prova a ricordare ogni ramo, poi toccalo per scoprirlo; toccalo di nuovo per coprirlo.' : view === 'map' ? 'Tocca un nodo per chiudere o aprire i suoi rami; il pallino indica una nota. Zoom con due dita, Ctrl + rotellina o i pulsanti.' : 'Tocca la freccetta per chiudere o aprire un ramo.'}</p>
+      <div id="mapBox" class="map-box ${quiz ? 'quiz' : ''}"></div>`;
+    view === 'map' ? drawSvg(sheet) : drawList(sheet);
+  };
+  const keyOf = path => path.join('.');
+  const label = (n, key, isRoot) => (quiz && !isRoot && !shown.has(key) ? '' : n.t);
+  function drawList(sheet) {
+    const box = $('#mapBox', body);
+    const walk = (n, path, depth) => {
+      const key = keyOf(path);
+      const kids = n.c || [];
+      const isClosed = collapsed.has(key);
+      const hidden = quiz && depth > 0 && !shown.has(key);
+      return `<li class="ml-item d${Math.min(depth, 4)}" style="--h:${branchHue(path[1])}">
+        <div class="ml-row">
+          ${kids.length ? `<button type="button" class="fold-btn" data-mtoggle="${key}" aria-expanded="${!isClosed}" aria-label="${isClosed ? 'Espandi' : 'Riduci'}">${CHEVRON}</button>` : '<span class="ml-dot" aria-hidden="true"></span>'}
+          <span class="ml-t ${hidden ? 'covered' : ''}" data-mkey="${key}" ${hidden ? 'role="button" tabindex="0" aria-label="Ramo coperto: tocca per scoprirlo"' : ''}>${esc(n.t)}</span>
+          ${n.n && !hidden ? `<button type="button" class="ml-note" data-mnote="${key}" aria-label="Nota">i</button>` : ''}
+        </div>
+        ${kids.length && !isClosed ? `<ul>${kids.map((c, k) => walk(c, [...path, k], depth + 1)).join('')}</ul>` : ''}
+      </li>`;
+    };
+    box.innerHTML = `<ul class="map-list">${walk(sheet.root, [0], 0)}</ul>`;
+  }
+  function drawSvg(sheet) {
+    const box = $('#mapBox', body);
+    const GAPX = 46;
+    const GAPY = 12;
+    // misure dei nodi
+    const layout = (n, path, depth) => {
+      const key = keyOf(path);
+      const isRoot = depth === 0;
+      const w = mapWrap(n.t, isRoot ? 240 : 200);
+      const node = { n, key, depth, path, lines: w.lines, w: Math.ceil(w.width) + 24, h: w.lines.length * 19 + 14, kids: [] };
+      if (!collapsed.has(key)) node.kids = (n.c || []).map((c, k) => layout(c, [...path, k], depth + 1));
+      node.sub = node.kids.length ? Math.max(node.h, node.kids.reduce((a, k) => a + k.sub, 0) + GAPY * (node.kids.length - 1)) : node.h;
+      return node;
+    };
+    const root = layout(sheet.root, [0], 0);
+    const colW = [];
+    const measure = (nd) => { colW[nd.depth] = Math.max(colW[nd.depth] || 0, nd.w); nd.kids.forEach(measure); };
+    measure(root);
+    const colX = [20];
+    for (let d = 1; d < colW.length; d++) colX[d] = colX[d - 1] + colW[d - 1] + GAPX;
+    const place = (nd, top) => {
+      nd.x = colX[nd.depth];
+      nd.y = top + nd.sub / 2 - nd.h / 2;
+      let y = top + (nd.sub - (nd.kids.reduce((a, k) => a + k.sub, 0) + GAPY * Math.max(0, nd.kids.length - 1))) / 2;
+      nd.kids.forEach(k => { place(k, y); y += k.sub + GAPY; });
+    };
+    place(root, 20);
+    const W = colX[colX.length - 1] + colW[colW.length - 1] + 40;
+    const H = root.sub + 40;
+    const links = [];
+    const nodes = [];
+    const walk = nd => {
+      const hue = branchHue(nd.path[1]);
+      nd.kids.forEach(k => {
+        const x1 = nd.x + nd.w;
+        const y1 = nd.y + nd.h / 2;
+        const x2 = k.x;
+        const y2 = k.y + k.h / 2;
+        const mx = (x1 + x2) / 2;
+        links.push(`<path d="M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}" style="--h:${branchHue(k.path[1])}"/>`);
+        walk(k);
+      });
+      const isRoot = nd.depth === 0;
+      const covered = quiz && !isRoot && !shown.has(nd.key);
+      const kidsN = (nd.n.c || []).length;
+      nodes.push(`
+        <g class="mn ${isRoot ? 'root' : ''} d${Math.min(nd.depth, 3)} ${covered ? 'covered' : ''}" data-mkey="${nd.key}" style="--h:${hue}" transform="translate(${nd.x} ${nd.y})" role="button" tabindex="0" aria-label="${covered ? 'Ramo coperto' : esc(nd.n.t)}">
+          <rect width="${nd.w}" height="${nd.h}" rx="${isRoot ? 14 : 10}"/>
+          ${nd.lines.map((l, k) => `<text x="12" y="${21 + k * 19}">${esc(l)}</text>`).join('')}
+          ${nd.n.n && !covered ? `<circle class="mn-note" data-mnote="${nd.key}" cx="${nd.w - 2}" cy="2" r="6"/>` : ''}
+          ${kidsN && collapsed.has(nd.key) ? `<g class="mn-more" transform="translate(${nd.w + 6} ${nd.h / 2 - 9})"><rect width="${String(kidsN).length * 8 + 16}" height="18" rx="9"/><text x="8" y="13">+${kidsN}</text></g>` : ''}
+        </g>`);
+    };
+    walk(root);
+    box.innerHTML = `
+      <div class="map-zoom"><button class="btn sm ghost" data-mz="-">−</button><button class="btn sm ghost" data-mz="0">${Math.round(zoom * 100)}%</button><button class="btn sm ghost" data-mz="+">+</button></div>
+      <div class="map-scroll"><svg class="map-svg" viewBox="0 0 ${W} ${H}" width="${Math.round(W * zoom)}" height="${Math.round(H * zoom)}" role="img" aria-label="Mappa: ${esc(sheet.root.t)}"><g class="links">${links.join('')}</g>${nodes.join('')}</svg></div>`;
+    const sc = $('.map-scroll', box);
+    // zoom: pulsanti, Ctrl + rotellina e due dita
+    const setZoom = (z, cx, cy) => {
+      const svg = $('.map-svg', box);
+      const old = zoom;
+      zoom = Math.max(0.3, Math.min(2.5, z));
+      const r = sc.getBoundingClientRect();
+      const px = cx ?? r.width / 2;
+      const py = cy ?? r.height / 2;
+      const ax = (sc.scrollLeft + px) / old;
+      const ay = (sc.scrollTop + py) / old;
+      svg.setAttribute('width', Math.round(W * zoom));
+      svg.setAttribute('height', Math.round(H * zoom));
+      sc.scrollLeft = ax * zoom - px;
+      sc.scrollTop = ay * zoom - py;
+      $('[data-mz="0"]', box).textContent = `${Math.round(zoom * 100)}%`;
+    };
+    box.querySelector('.map-zoom').addEventListener('click', e => {
+      const b = e.target.closest('[data-mz]');
+      if (!b) return;
+      setZoom(b.dataset.mz === '+' ? zoom * 1.2 : b.dataset.mz === '-' ? zoom / 1.2 : 1);
+    });
+    sc.addEventListener('wheel', e => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const r = sc.getBoundingClientRect();
+      setZoom(zoom * Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top);
+    }, { passive: false });
+    let pinch = null;
+    const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    sc.addEventListener('touchstart', e => { if (e.touches.length === 2) { const r = sc.getBoundingClientRect(); pinch = { d: dist(e.touches[0], e.touches[1]), z: zoom, x: (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top }; } }, { passive: true });
+    sc.addEventListener('touchmove', e => { if (pinch && e.touches.length === 2) { e.preventDefault(); setZoom(pinch.z * dist(e.touches[0], e.touches[1]) / pinch.d, pinch.x, pinch.y); } }, { passive: false });
+    sc.addEventListener('touchend', () => { pinch = null; });
+  }
+  const findNode = (sheet, key) => key.split('.').slice(1).reduce((n, k) => (n && n.c ? n.c[+k] : null), sheet.root);
+  async function addMap() {
+    const file = await chooseXmindFile();
+    if (!file) return;
+    try {
+      toast('Leggo la mappa…');
+      const sheets = await parseXmind(file);
+      if (!sheets.length) throw new Error('La mappa è vuota.');
+      const rec = { id: uid(), name: file.name.replace(/\.xmind$/i, ''), sheets: sheets.map(s => ({ title: s.title, root: slimTopic(s.root) })), created: Date.now() };
+      sec.maps = [...mapsOf(sec), rec];
+      await saveSection(sec);
+      S().mapLast = rec.id;
+      Settings.save();
+      mi = sec.maps.length - 1;
+      si = 0;
+      toast(`Mappa caricata: ${rec.sheets.reduce((a, s) => a + mapCountNodes(s.root), 0)} nodi`);
+      draw();
+    } catch (err) {
+      toast(err.message || 'Non riesco a leggere la mappa', 'err');
+    }
+  }
+  body.addEventListener('change', e => {
+    if (e.target.matches('[data-map-sel]')) { mi = +e.target.value; si = 0; collapsed.clear(); shown.clear(); S().mapLast = maps[mi].id; Settings.save(); draw(); }
+    if (e.target.matches('[data-sheet-sel]')) { si = +e.target.value; collapsed.clear(); shown.clear(); draw(); }
+  });
+  body.addEventListener('click', async e => {
+    const m = maps[mi];
+    if (!m) return;
+    const sheet = m.sheets[si] || m.sheets[0];
+    const v = e.target.closest('[data-view]');
+    if (v) { view = v.dataset.view; S().mapView = view; Settings.save(); draw(); return; }
+    if (e.target.closest('[data-act="map-quiz"]')) { quiz = !quiz; shown.clear(); draw(); return; }
+    if (e.target.closest('[data-act="map-reveal"]')) {
+      const all = (n, p) => { shown.add(keyOf(p)); (n.c || []).forEach((c, k) => all(c, [...p, k])); };
+      all(sheet.root, [0]);
+      draw();
+      return;
+    }
+    const note = e.target.closest('[data-mnote]');
+    if (note) {
+      const n = findNode(sheet, note.dataset.mnote);
+      if (n) { const sh = openSheet(`<h2>${esc(n.t)}</h2><div class="notes">${renderMd(n.n)}</div><div class="modal-actions"><button class="btn primary" type="button" data-x>Chiudi</button></div>`, { label: n.t }); $('[data-x]', sh.el).onclick = () => sh.close(); }
+      return;
+    }
+    const tg = e.target.closest('[data-mtoggle]');
+    if (tg) { const k = tg.dataset.mtoggle; if (collapsed.has(k)) collapsed.delete(k); else collapsed.add(k); draw(); return; }
+    const node = e.target.closest('[data-mkey]');
+    if (node) {
+      const k = node.dataset.mkey;
+      if (quiz) {
+        if (k === '0') return;
+        if (shown.has(k)) shown.delete(k); else shown.add(k);
+        draw();
+        return;
+      }
+      if (view === 'map' && (findNode(sheet, k)?.c || []).length) { if (collapsed.has(k)) collapsed.delete(k); else collapsed.add(k); draw(); }
+      return;
+    }
+    if (e.target.closest('[data-act="map-more"]')) {
+      const choice = await actionSheet(m.name, [
+        { key: 'add', label: 'Carica un’altra mappa' },
+        { key: 'cards', label: 'Crea flashcard da questa mappa' },
+        { key: 'notes', label: 'Aggiungi la mappa agli appunti (elenco)' },
+        { key: 'fold', label: collapsed.size ? 'Apri tutti i rami' : 'Chiudi i rami dal secondo livello' },
+        { key: 'rename', label: 'Rinomina' },
+        { key: 'delete', label: 'Elimina la mappa', danger: true }
+      ]);
+      const full = t => ({ title: t.t, notes: t.n || '', children: (t.c || []).map(full), floating: [] });
+      if (choice === 'add') addMap();
+      if (choice === 'cards') {
+        const cards = xmindCards(full(sheet.root), sec.notebookId, sec.id);
+        if (!cards.length) { toast('La mappa non ha rami con sottopunti'); return; }
+        const ok = await modal({ title: `Creare ${cards.length} flashcard?`, text: 'Una per ogni nodo con sottopunti: sul fronte il percorso del nodo, sul retro i suoi sottopunti.', confirm: 'Crea' });
+        if (ok) { await saveCards(cards); toast(`${cards.length} flashcard create`); }
+      }
+      if (choice === 'notes') {
+        sec.md = `${sec.md.trim()}\n\n### Mappa: ${sheet.title}\n\n${xmindToMarkdown(full(sheet.root))}\n`.trimStart();
+        await saveSection(sec);
+        toast('Mappa aggiunta agli appunti: la trovi in Leggi');
+      }
+      if (choice === 'fold') {
+        if (collapsed.size) collapsed.clear();
+        else (sheet.root.c || []).forEach((c, k) => { if ((c.c || []).length) collapsed.add(`0.${k}`); });
+        draw();
+      }
+      if (choice === 'rename') {
+        const name = await modal({ title: 'Rinomina la mappa', input: true, value: m.name, confirm: 'Rinomina' });
+        if (name) { m.name = name; await saveSection(sec); draw(); }
+      }
+      if (choice === 'delete') {
+        const ok = await modal({ title: 'Eliminare la mappa?', text: 'Le flashcard e gli appunti già creati dalla mappa restano.', confirm: 'Elimina', danger: true });
+        if (ok) { sec.maps = mapsOf(sec).filter(x => x.id !== m.id); mi = 0; await saveSection(sec); draw(); }
+      }
+    }
+  });
+  body.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-mkey]')) { e.preventDefault(); e.target.closest('[data-mkey]').dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+  });
+  draw();
+}
+
+/* =====================================================================
+   v3.23: tempo di studio sommato tra i dispositivi, voce di Google
+   (Gemini), filtro luce blu, tastiera del telefono
+   ===================================================================== */
+
+/* ---------- Tempo di studio condiviso ---------- */
+const DEVICE_ID = (() => {
+  try {
+    let d = localStorage.getItem('nb-device');
+    if (!d) { d = `d${uid()}`; localStorage.setItem('nb-device', d); }
+    return d;
+  } catch { return 'd-local'; }
+})();
+const statsRecId = `_stats_${DEVICE_ID}`;
+let statsPushTimer = null;
+// ogni dispositivo salva i suoi numeri in un record sincronizzato; la somma si fa leggendo
+function pushStatsSoon(delay = 60000) {
+  clearTimeout(statsPushTimer);
+  statsPushTimer = setTimeout(pushStatsNow, delay);
+}
+async function pushStatsNow() {
+  clearTimeout(statsPushTimer);
+  statsPushTimer = null;
+  const data = Stats.load();
+  let rec = state.links.find(l => l.id === statsRecId);
+  if (!rec) rec = { id: statsRecId, kind: 'stats', notebookId: '_stats', created: Date.now() };
+  rec.d = data.d;
+  rec.exams = data.exams || [];
+  rec.device = navigator.userAgent.includes('Android') ? 'Android' : navigator.userAgent.includes('Windows') ? 'Windows' : 'Altro';
+  await saveLink(rec);
+}
+function statsMerged() {
+  const own = Stats.load();
+  const others = state.links.filter(l => l.kind === 'stats' && l.id !== statsRecId);
+  if (!others.length) return own;
+  const d = {};
+  const add = src => Object.entries(src || {}).forEach(([day, v]) => {
+    const x = d[day] || (d[day] = { t: 0, r: 0, nb: {} });
+    x.t += v.t || 0;
+    x.r += v.r || 0;
+    Object.entries(v.nb || {}).forEach(([id, t]) => { x.nb[id] = (x.nb[id] || 0) + t; });
+  });
+  add(own.d);
+  others.forEach(o => add(o.d));
+  const seen = new Set();
+  const exams = [...(own.exams || []), ...others.flatMap(o => o.exams || [])]
+    .filter(x => { const k = `${x.d}|${x.key}|${x.score}|${x.n}`; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => a.d.localeCompare(b.d));
+  return { d, exams };
+}
+
+/* ---------- Voce di Google (Gemini) ---------- */
+const GEMINI_VOICES = [['Kore', 'Kore, femminile e chiara'], ['Aoede', 'Aoede, femminile e calda'], ['Leda', 'Leda, femminile e giovane'], ['Zephyr', 'Zephyr, luminosa'], ['Charon', 'Charon, maschile e calma'], ['Puck', 'Puck, maschile e vivace'], ['Orus', 'Orus, maschile e decisa'], ['Fenrir', 'Fenrir, maschile e intensa']];
+const Voice = {
+  audio: null,
+  cache: new Map(),
+  useGemini() { return S().ttsEngine === 'gemini' && !!S().geminiKey.trim(); },
+  wav(b64, rate) {
+    const pcm = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const buf = new ArrayBuffer(44 + pcm.length);
+    const v = new DataView(buf);
+    const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, 'data'); v.setUint32(40, pcm.length, true);
+    new Uint8Array(buf, 44).set(pcm);
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  },
+  fetch(text) {
+    const voice = S().ttsVoice || 'Kore';
+    const key = `${voice}|${text}`;
+    if (this.cache.has(key)) return this.cache.get(key);
+    const model = (S().ttsModel || '').trim() || 'gemini-2.5-flash-preview-tts';
+    const p = (async () => {
+      let res;
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': S().geminiKey.trim() },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text }] }],
+            generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
+          })
+        });
+      } catch { throw new Error('Connessione alla voce di Google non riuscita.'); }
+      if (!res.ok) throw new Error(res.status === 429 ? 'Hai finito per oggi le letture gratuite della voce di Google.' : `La voce di Google ha risposto con un errore (${res.status}).`);
+      const data = await res.json();
+      const part = (data.candidates?.[0]?.content?.parts || []).find(x => x.inlineData || x.inline_data);
+      const inl = part && (part.inlineData || part.inline_data);
+      if (!inl) throw new Error('La voce di Google non ha restituito l’audio.');
+      const rate = +((inl.mimeType || inl.mime_type || '').match(/rate=(\d+)/) || [0, 24000])[1];
+      return this.wav(inl.data, rate);
+    })();
+    this.cache.set(key, p);
+    p.catch(() => this.cache.delete(key));
+    if (this.cache.size > 40) this.cache.delete(this.cache.keys().next().value);
+    return p;
+  },
+  async play(text, rate = 1) {
+    const url = await this.fetch(text);
+    this.stop();
+    const a = new Audio(url);
+    a.playbackRate = rate;
+    a.preservesPitch = true;
+    this.audio = a;
+    await new Promise((resolve, reject) => {
+      a.onended = resolve;
+      a.onerror = () => reject(new Error('Non riesco a riprodurre l’audio.'));
+      a.onpause = () => { if (!a.ended) resolve('stopped'); };
+      a.play().catch(reject);
+    });
+  },
+  stop() { if (this.audio) { try { this.audio.pause(); } catch { /* già fermo */ } this.audio = null; } if (canSpeak) speechSynthesis.cancel(); }
+};
+
+/* ---------- Filtro luce blu ---------- */
+function applyBlueLight() {
+  const st = S();
+  let on = !!st.blueOn;
+  if (st.blueAuto) {
+    const h = new Date().getHours();
+    on = h >= 21 || h < 7;
+  }
+  document.documentElement.classList.toggle('bluelight', on);
+  document.documentElement.style.setProperty('--blue-level', String((+st.blueLevel || 35) / 100));
+}
+setInterval(applyBlueLight, 60000);
+
+/* ---------- Tastiera del telefono: il menu in basso si nasconde ---------- */
+function watchKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  let base = window.innerHeight;
+  const check = () => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+    const open = typing && vv.height < base - 120;
+    document.documentElement.classList.toggle('kb-open', open);
+    if (!typing) base = Math.max(base, window.innerHeight);
+  };
+  vv.addEventListener('resize', check);
+  window.addEventListener('focusin', () => setTimeout(check, 350));
+  window.addEventListener('focusout', () => setTimeout(check, 200));
+  window.addEventListener('orientationchange', () => { setTimeout(() => { base = window.innerHeight; check(); }, 500); });
+}
+
 async function init() {
   Settings.load();
   applyTheme();
@@ -9445,6 +10164,9 @@ async function init() {
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
   setupPwa();
   Tracker.start();
+  applyBlueLight();
+  watchKeyboard();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && statsPushTimer) pushStatsNow(); });
   const sharedFile = await takeSharedFile();
   const shared = sharedFile || takeSharedText();
   route();
