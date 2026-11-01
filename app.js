@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.30';
+const APP_VERSION = '3.31';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1047,11 +1047,12 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
   const back = Nav.enter();
+  updateIncBadge();
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, '')) || 'notebooks';
   const [p0, p1, p2] = h.split('/');
   if (p0 !== 'sec') state.fromReview = false;
@@ -1092,6 +1093,7 @@ function route() {
     case 'studyhub': ShDock.open(); location.replace('#/notebooks'); return;
     case 'cases': return viewCases();
     case 'lab': return viewLab(p1, p2);
+    case 'semei': return viewSemei();
     case 'incomplete': return viewIncomplete();
     default: return viewNotebooks();
   }
@@ -1165,6 +1167,7 @@ function viewNotebook(id) {
   const nb = nbById(id);
   if (!nb) return notFound('Questo notebook');
   if (nb.kind === 'cases') { location.replace('#/cases'); return; }
+  if (nb.kind === 'semei') { location.replace('#/semei'); return; }
   const secs = secsOf(id);
   const due = secs.filter(isDue).length;
   const nbCards = cardsOf(id);
@@ -1521,16 +1524,18 @@ function viewSection(id, mode) {
     return;
   }
   const caseSec = isCase(sec);
+  const semSec = isSemei(sec);
   const modes = caseSec ? [['case', 'Risolvi'], ...MODES] : MODES;
   if (!modes.some(([m]) => m === mode)) mode = openMode(sec);
   const nb = nbById(sec.notebookId);
   const crumb = state.fromReview
     ? '<a class="back" href="#/review">Ripasso</a>'
     : caseSec ? '<a class="back" href="#/cases">Casi clinici</a>'
+    : semSec ? '<a class="back" href="#/semei">Semeiotica</a>'
     : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
   // “Torna a…”: la pagina da cui sei arrivato, se non è già quella del percorso
   const from = Nav.from();
-  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : `#/nb/${sec.notebookId}`;
+  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : semSec ? '#/semei' : `#/nb/${sec.notebookId}`;
   const prevLabel = from && Nav.key(from) !== Nav.key(location.hash) && Nav.key(from) !== Nav.key(crumbHref) ? Nav.label(from) : '';
   const back = `<div class="back-row">${prevLabel ? `<a class="back back-prev" href="${esc(from)}" data-nav-back title="Torna alla pagina di prima">${esc(prevLabel)}</a>` : ''}${crumb}</div>`;
   const order = nb ? nbReadingOrder(nb) : [];
@@ -1542,11 +1547,13 @@ function viewSection(id, mode) {
     <header class="sec-head">
       <h1>${esc(sec.title)}</h1>
       ${caseSec && caseMetaBits(sec).length ? `<p class="meta case-meta">${esc(caseMetaBits(sec).join(' · '))}</p>` : ''}
+      ${semSec && semeiMetaBits(sec).length ? `<p class="meta case-meta">${esc(semeiMetaBits(sec).join(' · '))}</p>` : ''}
       <p class="meta">${esc(srsLabel(sec))}</p>
       ${sec.incomplete ? `<button class="inc-chip" type="button" data-act="inc" title="Cosa manca">⚠ Incompleta${incompleteNote(sec) ? `: ${esc(incompleteNote(sec).slice(0, 60))}${incompleteNote(sec).length > 60 ? '…' : ''}` : ''}</button>` : ''}
       ${tagChips(tagsOf(sec))}
       <div class="sec-extra">
         ${caseSec ? '<button class="btn sm" type="button" data-act="case-meta">Dati del caso</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button><button class="btn sm" type="button" data-act="case-pdf">＋ PDF</button>' : ''}
+        ${semSec ? '<button class="btn sm" type="button" data-act="semei-meta">Dati della scheda</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>' : ''}
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length ? ` (${pdfsOf(sec.id).length})` : ''}</a>
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
@@ -1565,6 +1572,7 @@ function viewSection(id, mode) {
   on('[data-act="labels"]', 'click', () => startLabels(sec));
   on('[data-act="inc"]', 'click', async () => { if (await toggleIncomplete(sec, () => saveSection(sec), caseSec ? 'caso' : 'sezione')) route(); });
   on('[data-act="case-meta"]', 'click', async () => { if (await caseSheet(sec)) { toast('Dati del caso salvati'); route(); } });
+  on('[data-act="semei-meta"]', 'click', async () => { if (await semeiSheet(sec)) { toast('Dati della scheda salvati'); route(); } });
   on('[data-act="case-photo"]', 'click', async () => { if (await addPhotosTo(sec)) route(); });
   on('[data-act="case-pdf"]', 'click', async () => { if (await addPdfTo(sec)) route(); });
   // Cambiare scheda non riempie la cronologia: il tasto Indietro torna al notebook.
@@ -5049,11 +5057,18 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.31: semeiotica, dati di laboratorio e barra laterale', `
+      <ul>
+        <li><strong>Sul computer</strong> la barra a sinistra ha ora Casi clinici, Laboratorio, Semeiotica e Da completare, con il numero degli elementi incompleti. Sul telefono restano in Altro.</li>
+        <li><strong>Semeiotica</strong>: una scheda per ogni manovra, segno o punto di repere, con ambito (clinica o chirurgica) e distretto scelti da te. Parte vuota: la riempi tu, con i titoli già pronti per ogni tipo, foto (anche come etichette da rimettere al posto giusto) e video. “Esercitati” apre una scheda a caso in modalità Orale.</li>
+        <li><strong>Laboratorio</strong>: l’elenco di base ora arriva compilato da Claude, con range indicativi, valori critici, cause di aumento e diminuzione, unità SI e note, e Claude come fonte. Hai già aggiunto l’elenco vuoto? Nella pagina degli esami tocca “Completale con i dati di Claude”: riempie solo i campi vuoti.</li>
+        <li>Tutto è modificabile, anche le categorie: nella scheda di un esame scegli “Nuova categoria”.</li>
+      </ul>`)}
     ${sec('Novità della 3.30: Medicina di laboratorio', `
       <ul>
         <li>Da Altro → <strong>Medicina di laboratorio</strong>. Ogni esame ha la sua scheda: campione e preparazione, range (anche diversi per uomini, donne o età) con la loro fonte, valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, quando richiederlo, uso diagnostico, note, note cliniche collegate, fonti e “incompleto”.</li>
         <li><strong>Uso diagnostico</strong>: una riga per malattia e soglia con sensibilità e specificità; LR+ e LR− li calcola l’app.</li>
-        <li><strong>Elenco di base</strong>: oltre 110 esami in 16 categorie, con nome, sigla, campione e unità più usate in Italia. I range li aggiungi tu dalla tua fonte, perché cambiano da laboratorio a laboratorio.</li>
+        <li><strong>Elenco di base</strong>: oltre 110 esami in 15 categorie, già compilati da Claude (vedi le novità della 3.31).</li>
         <li><strong>Compila con l’AI</strong> riempie i campi vuoti di una scheda e la segna come incompleta, da verificare.</li>
         <li><strong>Leggi un referto</strong>: scrivi esami e valori e l’app segna quelli bassi, alti o critici secondo le tue schede.</li>
         <li><strong>Calcoli</strong>: gap anionico, calcio corretto, eGFR CKD-EPI 2021, LDL di Friedewald, osmolalità e gap osmolare, sodio corretto.</li>
@@ -6522,6 +6537,7 @@ function takeSharedText() {
    ===================================================================== */
 
 const ICONS = {
+  semei: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5a6.5 6.5 0 0 1-6.5 6.5h-.6a6 6 0 0 1-4.9-2.6l-2.7-3.9a1.5 1.5 0 0 1 2.4-1.8L8 15"/></svg>',
   lab: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6.5L4.8 18.3A1.8 1.8 0 0 0 6.4 21h11.2a1.8 1.8 0 0 0 1.6-2.7L14 9.5V3"/><path d="M7.2 15h9.6"/></svg>',
   cases: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9 3v3h6V3"/><path d="M12 10v6M9 13h6"/></svg>',
   incomplete: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19z"/><path d="M12 10v4.5M12 17.3v.2"/></svg>',
@@ -6572,6 +6588,7 @@ const MORE_ITEMS = [
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
   ['lab', 'Medicina di laboratorio', 'Esami con range, cause e uso diagnostico; referti, calcoli e allenamento'],
+  ['semei', 'Semeiotica', 'Manovre, segni e punti di repere, clinica e chirurgica, con foto e video'],
   ['incomplete', 'Da completare', 'Sezioni, casi e note che hai segnato come incompleti'],
   ['glossary', 'Glossario', 'Parole particolari e il loro significato'],
   ['tag', 'Tag', 'Appunti e flashcard per etichetta'],
@@ -10998,7 +11015,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {
@@ -11028,6 +11045,154 @@ function nbReadingOrder(nb) {
 }
 
 /* =====================================================================
+   v3.31: Semeiotica (vuota, la riempi tu)
+   Come i casi clinici, ogni scheda è una sezione del notebook “Semeiotica”:
+   ha Leggi, Cloze, Orale col semaforo, Flashcard, Video, foto con etichette
+   e image occlusion, fonti e “incompleta”. In più tipo, ambito e distretto.
+   ===================================================================== */
+const SEMEI_TYPES = {
+  manovra: { label: 'Manovra', parts: ['Come si esegue', 'Reperto normale', 'Reperto patologico e significato', 'Note'] },
+  segno: { label: 'Segno', parts: ['Come si evoca', 'Cosa significa', 'In quali malattie', 'Note'] },
+  repere: { label: 'Punto di repere', parts: ['Dove si trova', 'Come si trova', 'A cosa serve', 'Note'] }
+};
+const SEMEI_AREAS = { clinica: 'Clinica', chirurgica: 'Chirurgica' };
+const semeiNb = () => state.notebooks.find(n => n.kind === 'semei');
+async function ensureSemeiNb() {
+  let nb = semeiNb();
+  if (!nb) {
+    nb = { id: uid(), name: 'Semeiotica', kind: 'semei', created: Date.now() };
+    await saveNotebook(nb);
+  }
+  return nb;
+}
+const isSemei = sec => !!sec && !!semeiNb() && sec.notebookId === semeiNb().id;
+const semeiOf = sec => (sec.semei && typeof sec.semei === 'object' ? sec.semei : (sec.semei = {}));
+function semeiMetaBits(sec) {
+  const m = semeiOf(sec);
+  return [SEMEI_TYPES[m.type]?.label, SEMEI_AREAS[m.area], m.district].filter(Boolean);
+}
+let semeiQuery = '';
+let semeiArea = '';
+const semeiFilter = new Set();
+function semeiSheet(sec = null, preset = {}) {
+  return new Promise(resolve => {
+    const m = sec ? semeiOf(sec) : { type: 'manovra', area: preset.area || 'clinica', district: preset.district || '' };
+    const snb = semeiNb();
+    const districts = [...new Set((snb ? secsOf(snb.id) : []).map(s => s.semei?.district).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+    const sh = openSheet(`
+      <h2>${sec ? 'Dati della scheda' : 'Nuova scheda di semeiotica'}</h2>
+      <label class="field"><span>Nome</span><input class="input" id="smTitle" value="${esc(sec?.title || '')}" placeholder="Es. Manovra di Giordano"></label>
+      <div class="grid2">
+        <label class="field"><span>Tipo</span><select class="input" id="smType">${Object.entries(SEMEI_TYPES).map(([k, t]) => `<option value="${k}" ${m.type === k ? 'selected' : ''}>${t.label}</option>`).join('')}</select></label>
+        <label class="field"><span>Ambito</span><select class="input" id="smArea">${Object.entries(SEMEI_AREAS).map(([k, l]) => `<option value="${k}" ${m.area === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      </div>
+      <label class="field"><span>Distretto o apparato</span><input class="input" id="smDistrict" value="${esc(m.district || '')}" list="smDistricts" placeholder="Es. Addome"><datalist id="smDistricts">${districts.map(d => `<option value="${esc(d)}">`).join('')}</datalist></label>
+      ${sec ? '' : '<label class="check"><input type="checkbox" id="smTpl" checked><span id="smTplTxt"></span></label>'}
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-sm="no">Annulla</button>
+        <button class="btn primary" type="button" data-sm="ok">${sec ? 'Salva' : 'Crea la scheda'}</button>
+      </div>`, { label: sec ? 'Dati della scheda' : 'Nuova scheda di semeiotica', onClose: v => resolve(v || null) });
+    const tplTxt = () => { const t = $('#smTplTxt', sh.el); if (t) t.textContent = `Prepara i titoli: ${SEMEI_TYPES[$('#smType', sh.el).value].parts.join(', ')}`; };
+    tplTxt();
+    $('#smType', sh.el).addEventListener('change', tplTxt);
+    $('[data-sm="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-sm="ok"]', sh.el).onclick = async () => {
+      const title = $('#smTitle', sh.el).value.trim();
+      if (!title) { toast('Scrivi il nome'); $('#smTitle', sh.el).focus(); return; }
+      const data = { type: $('#smType', sh.el).value, area: $('#smArea', sh.el).value, district: $('#smDistrict', sh.el).value.trim() };
+      let s = sec;
+      if (!s) {
+        const nb = await ensureSemeiNb();
+        const tpl = $('#smTpl', sh.el)?.checked;
+        s = newSection(nb.id, { title, md: tpl ? SEMEI_TYPES[data.type].parts.map(p => `## ${p}\n\n`).join('') : '' });
+      } else s.title = title;
+      s.semei = { ...semeiOf(s), ...data };
+      await saveSection(s);
+      sh.close(s);
+    };
+    setTimeout(() => $('#smTitle', sh.el)?.focus(), 40);
+  });
+}
+async function newSemeiFlow(preset) {
+  const s = await semeiSheet(null, preset);
+  if (s) { toast('Scheda creata: scrivila o aggiungi foto e video'); go(`#/sec/${s.id}/edit`); }
+}
+function viewSemei() {
+  const snb = semeiNb();
+  const all = snb ? secsOf(snb.id) : [];
+  const inArea = all.filter(s => !semeiArea || s.semei?.area === semeiArea);
+  const facets = new Map();
+  inArea.forEach(s => {
+    const m = s.semei || {};
+    if (m.type && SEMEI_TYPES[m.type]) facets.set(`type:${m.type}`, SEMEI_TYPES[m.type].label);
+    if (m.district) facets.set(`dist:${m.district}`, m.district);
+  });
+  [...semeiFilter].forEach(k => { if (!facets.has(k)) semeiFilter.delete(k); });
+  const areaCount = k => all.filter(s => s.semei?.area === k).length;
+  setView(`
+    <header class="page-head">
+      <div><h1>Semeiotica</h1><p class="lede">Manovre, segni e punti di repere, divisi tra semeiotica clinica e chirurgica, con foto, video e descrizione dei passaggi.</p></div>
+      <button class="btn primary" type="button" data-act="new-semei">Nuova scheda</button>
+    </header>
+    <nav class="tabs" aria-label="Ambito">
+      <a href="#/semei" class="tab ${!semeiArea ? 'on' : ''}" data-area="">Tutte${all.length ? ` (${all.length})` : ''}</a>
+      ${Object.entries(SEMEI_AREAS).map(([k, l]) => `<a href="#/semei" class="tab ${semeiArea === k ? 'on' : ''}" data-area="${k}">${l}${areaCount(k) ? ` (${areaCount(k)})` : ''}</a>`).join('')}
+    </nav>
+    ${all.length ? `
+      <div class="inline semei-tools">
+        <input type="search" class="input search" id="smQ" placeholder="Cerca una manovra, un segno, un distretto…" aria-label="Cerca nella semeiotica" value="${esc(semeiQuery)}">
+        <button class="btn" type="button" data-act="semei-random" title="Apre una scheda a caso tra quelle filtrate, nella modalità Orale">Esercitati</button>
+      </div>
+      ${facets.size ? `<div class="tag-cloud" aria-label="Filtra">${[...facets.entries()].sort((a, b) => (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0) || a[1].localeCompare(b[1], 'it')).map(([k, l]) => `<button type="button" class="tag ${semeiFilter.has(k) ? 'on' : ''}" data-sf="${esc(k)}" aria-pressed="${semeiFilter.has(k)}">${esc(l)}</button>`).join('')}</div>` : ''}
+      <div id="smList"></div>` : `
+      <div class="empty"><p>Ancora nessuna scheda. Creane una per ogni manovra, segno o punto di repere: scegli tipo, ambito (clinica o chirurgica) e distretto, poi scrivi i passaggi e aggiungi foto e video.</p><button class="btn primary" type="button" data-act="new-semei">Nuova scheda</button></div>`}
+  `);
+  on('[data-act="new-semei"]', 'click', () => newSemeiFlow({ area: semeiArea || 'clinica' }));
+  on('[data-area]', 'click', e => { e.preventDefault(); semeiArea = e.currentTarget.dataset.area; route(); });
+  const filtered = () => {
+    const toks = foldAccents(semeiQuery).split(/\s+/).filter(Boolean);
+    return inArea.filter(s => {
+      const m = s.semei || {};
+      for (const k of semeiFilter) {
+        const t = k.slice(0, k.indexOf(':')), v = k.slice(k.indexOf(':') + 1);
+        if ((t === 'type' && m.type !== v) || (t === 'dist' && m.district !== v)) return false;
+      }
+      return !toks.length || toks.every(t => foldAccents(`${s.title} ${s.md} ${m.district || ''} ${tagsOf(s).join(' ')}`).includes(t));
+    });
+  };
+  const draw = () => {
+    const box = $('#smList');
+    if (!box) return;
+    const list = filtered().sort((a, b) => a.title.localeCompare(b.title, 'it'));
+    const byDist = new Map();
+    list.forEach(s => { const k = s.semei?.district || 'Senza distretto'; if (!byDist.has(k)) byDist.set(k, []); byDist.get(k).push(s); });
+    box.innerHTML = list.length ? [...byDist.entries()].sort((a, b) => (a[0] === 'Senza distretto') - (b[0] === 'Senza distretto') || a[0].localeCompare(b[0], 'it')).map(([d, secs]) => `
+      <h2 class="sub">${esc(d)}</h2>
+      <ul class="list">${secs.map(s => {
+        const m = s.semei || {};
+        const nImg = imageRefs(s.md).length, nVid = (s.videos || []).length;
+        const bits = [SEMEI_TYPES[m.type]?.label, !semeiArea ? SEMEI_AREAS[m.area] : '', nImg ? `${nImg} foto` : '', nVid ? `${nVid} video` : '', s.incomplete ? '⚠ incompleta' : ''].filter(Boolean);
+        return `<li><a class="row" href="#/sec/${s.id}/read"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(bits.join(' · '))}</span></span>${statusPill(s)}</a></li>`;
+      }).join('')}</ul>`).join('') : '<p class="hint">Nessuna scheda corrisponde.</p>';
+  };
+  draw();
+  $('#smQ')?.addEventListener('input', e => { semeiQuery = e.target.value; draw(); });
+  on('[data-sf]', 'click', e => {
+    const k = e.currentTarget.dataset.sf;
+    if (semeiFilter.has(k)) semeiFilter.delete(k); else semeiFilter.add(k);
+    e.currentTarget.classList.toggle('on', semeiFilter.has(k));
+    e.currentTarget.setAttribute('aria-pressed', semeiFilter.has(k));
+    draw();
+  });
+  on('[data-act="semei-random"]', 'click', () => {
+    const list = filtered().filter(s => String(s.md || '').replace(/^##.*$/gm, '').trim());
+    if (!list.length) { toast('Nessuna scheda scritta tra quelle filtrate'); return; }
+    const s = list[Math.floor(Math.random() * list.length)];
+    go(`#/sec/${s.id}/oral`);
+  });
+}
+
+/* =====================================================================
    v3.30: Medicina di laboratorio
    Schede degli esami (range, valori critici, cause, uso diagnostico con
    sensibilità, specificità e rapporti di verosimiglianza), lettura di un
@@ -11040,7 +11205,8 @@ const LAB_CATS = [
   ['ferr', 'Ferro e vitamine'], ['endo', 'Endocrinologia'], ['infi', 'Infiammazione e immunologia'], ['tumo', 'Marcatori tumorali'],
   ['micr', 'Microbiologia e sierologia'], ['liqu', 'Liquidi biologici'], ['farm', 'Farmaci e tossicologia'], ['altr', 'Altro']
 ];
-const labCatName = k => (LAB_CATS.find(c => c[0] === k) || LAB_CATS[LAB_CATS.length - 1])[1];
+// le categorie nuove create da te si salvano col loro nome
+const labCatName = k => (LAB_CATS.find(c => c[0] === k) || [k, String(k || '').startsWith('c:') ? String(k).slice(2) : 'Altro'])[1];
 const labExams = () => state.links.filter(l => l.kind === 'lab').sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
 const labById = id => state.links.find(l => l.kind === 'lab' && l.id === id);
 const labNum = v => { const n = parseFloat(String(v ?? '').trim().replace(/\s/g, '').replace(',', '.')); return Number.isFinite(n) ? n : null; };
@@ -11112,6 +11278,203 @@ const LAB_BASE = [
   ['farm', 'Digossinemia', '', 'Siero', 'ng/mL'], ['farm', 'Litiemia', 'Li', 'Siero', 'mEq/L'], ['farm', 'Vancomicina (valle)', '', 'Siero', 'mg/L'], ['farm', 'Etanolemia', '', 'Sangue', 'g/L'], ['farm', 'Carbossiemoglobina', 'COHb', 'Sangue intero (eparina)', '%']
 ];
 
+/* ---------- Dati di partenza degli esami, scritti da Claude ----------
+   Valori indicativi dell’adulto come nei testi di riferimento, in unità
+   convenzionali. Ogni laboratorio ha i suoi: tutto è modificabile e vale
+   sempre il range stampato sul referto.
+   r: righe di range [per chi, min, max, nota] · c: valori critici [basso, alto]
+   u: cause di aumento · d: cause di diminuzione · p: prelievo e preparazione
+   k: andamento nel tempo · w: quando richiederlo · n: note · si: [unità SI, fattore] */
+const LAB_SOURCE_CLAUDE = 'Claude (AI di Anthropic): valori indicativi da testi di riferimento, da verificare sul tuo libro e sul referto del laboratorio';
+const LAB_DATA = {
+  'Emoglobina': { r: [['Uomini', '13', '17', ''], ['Donne', '12', '15,5', '']], c: ['7', '20'], si: ['g/L', '10'],
+    u: 'Policitemia vera\nPoliglobulia secondaria: ipossia cronica (BPCO, cardiopatie cianogene, apnee notturne), alta quota, fumo\nProduzione inappropriata di eritropoietina (tumori renali, epatocarcinoma)\nEmoconcentrazione da disidratazione\nTestosterone o eritropoietina esogeni',
+    d: 'Anemia da carenza di ferro, B12 o folati\nPerdite ematiche acute o croniche\nEmolisi\nAnemia delle malattie croniche\nInsufficienza renale cronica\nInsufficienza midollare, mielodisplasie, infiltrazione midollare\nEmodiluizione, gravidanza (fisiologica)',
+    w: 'Sospetta anemia o poliglobulia, sanguinamento, controllo di terapie' },
+  'Ematocrito': { r: [['Uomini', '40', '50', ''], ['Donne', '36', '46', '']], u: 'Le stesse dell’emoglobina alta, in particolare disidratazione e policitemia', d: 'Le stesse dell’emoglobina bassa; emodiluizione' },
+  'Globuli rossi': { r: [['Uomini', '4,5', '5,9', ''], ['Donne', '4', '5,2', '']], u: 'Policitemia vera e poliglobulie secondarie\nTrait talassemico (molti globuli rossi piccoli con emoglobina normale o poco ridotta)\nDisidratazione', d: 'Anemie\nEmodiluizione' },
+  'Volume corpuscolare medio': { r: [['Adulti', '80', '100', '']],
+    u: 'Carenza di B12 o folati (anemia megaloblastica)\nAlcol\nEpatopatia\nIpotiroidismo\nMielodisplasie\nReticolocitosi (emolisi, emorragia)\nFarmaci: idrossiurea, metotrexato, zidovudina',
+    d: 'Carenza di ferro\nTalassemie\nAnemia delle malattie croniche (talvolta)\nAnemia sideroblastica',
+    n: 'Insieme all’RDW orienta: microcitosi con RDW alto fa pensare a carenza di ferro, con RDW normale a talassemia.' },
+  'Contenuto emoglobinico medio': { r: [['Adulti', '27', '33', '']], u: 'Macrocitosi', d: 'Carenza di ferro, talassemie (ipocromia)' },
+  'Concentrazione emoglobinica media': { r: [['Adulti', '32', '36', '']], u: 'Sferocitosi ereditaria\nAgglutinine fredde e lipemia (falsi aumenti)', d: 'Carenza di ferro, talassemie' },
+  'Ampiezza di distribuzione dei globuli rossi': { r: [['Adulti', '11,5', '14,5', '']], u: 'Carenza di ferro, B12 o folati\nAnemie miste\nDopo trasfusione o terapia marziale\nMielodisplasie', d: 'Non ha significato clinico' },
+  'Globuli bianchi': { r: [['Adulti', '4', '10', '']], c: ['2', '30'],
+    u: 'Infezioni batteriche\nInfiammazione, traumi, ustioni, chirurgia\nCorticosteroidi, stress, esercizio intenso\nFumo\nLeucemie e sindromi mieloproliferative\nNecrosi tissutale (infarto)',
+    d: 'Infezioni virali, sepsi grave\nFarmaci (chemioterapici, antitiroidei, clozapina e molti altri)\nInsufficienza o infiltrazione midollare\nCarenza di B12 o folati\nIpersplenismo\nMalattie autoimmuni (LES)' },
+  'Neutrofili': { r: [['Adulti', '1,8', '7,5', '']], c: ['0,5', ''],
+    u: 'Infezioni batteriche\nInfiammazione acuta, necrosi\nCorticosteroidi\nLeucemia mieloide cronica e altre neoplasie mieloproliferative',
+    d: 'Farmaci (chemioterapici, metamizolo, antitiroidei, clozapina)\nInfezioni virali, sepsi grave\nAplasia o infiltrazione midollare\nNeutropenia etnica benigna\nIpersplenismo, autoimmunità',
+    n: 'Sotto 0,5 ×10³/µL (neutropenia grave) il rischio di infezioni è alto: una febbre in questa situazione è un’urgenza.' },
+  'Linfociti': { r: [['Adulti', '1', '4', '']], u: 'Infezioni virali (mononucleosi, CMV, pertosse)\nLeucemia linfatica cronica e linfomi', d: 'Corticosteroidi, immunosoppressori\nHIV\nStress acuto, sepsi\nLinfomi, chemioterapia, radioterapia' },
+  'Monociti': { r: [['Adulti', '0,2', '0,8', '']], u: 'Infezioni croniche (tubercolosi, endocardite)\nFase di recupero di una neutropenia\nMalattie infiammatorie croniche intestinali\nLeucemia mielomonocitica cronica', d: 'Aplasia midollare\nCorticosteroidi\nLeucemia a cellule capellute' },
+  'Eosinofili': { r: [['Adulti', '0', '0,5', '']], u: 'Allergie, asma, dermatite atopica\nParassitosi (soprattutto elminti)\nFarmaci (anche reazione DRESS)\nVasculiti (granulomatosi eosinofila con poliangioite)\nInsufficienza surrenalica\nNeoplasie ematologiche, sindrome ipereosinofila', d: 'Corticosteroidi\nStress acuto, sindrome di Cushing' },
+  'Basofili': { r: [['Adulti', '0', '0,1', '']], u: 'Leucemia mieloide cronica e altre neoplasie mieloproliferative\nAllergie\nIpotiroidismo', d: 'Non ha significato clinico' },
+  'Piastrine': { r: [['Adulti', '150', '400', '']], c: ['20', '1000'],
+    u: 'Trombocitosi reattiva: infezioni, infiammazione, carenza di ferro, emorragie, dopo splenectomia, tumori\nTrombocitemia essenziale e altre neoplasie mieloproliferative',
+    d: 'Ridotta produzione: aplasia, infiltrazione midollare, chemioterapia, alcol, carenza di B12 o folati\nAumentata distruzione: trombocitopenia immune, farmaci (eparina: HIT), CID, porpora trombotica trombocitopenica, sindrome emolitico-uremica\nSequestro splenico (ipertensione portale)\nPseudopiastrinopenia da EDTA (aggregati in provetta)',
+    n: 'Una piastrinopenia isolata e inattesa va ricontrollata su provetta al citrato per escludere la pseudopiastrinopenia da EDTA.' },
+  'Reticolociti': { r: [['Adulti', '0,5', '2,5', '']], u: 'Emolisi\nPerdita ematica acuta (dopo 3-5 giorni)\nRisposta alla terapia con ferro, B12 o folati', d: 'Carenze di ferro, B12 o folati non trattate\nAplasia midollare, aplasia eritroide (parvovirus B19)\nInsufficienza renale (poca eritropoietina)\nAnemia delle malattie croniche',
+    n: 'Dicono se il midollo risponde all’anemia: anemia con reticolociti alti è periferica (emolisi, emorragia), con reticolociti bassi è da ridotta produzione.' },
+  'Velocità di eritrosedimentazione': { r: [['Uomini', '', '15', 'sotto i 50 anni; con l’età si alza (circa età/2)'], ['Donne', '', '20', 'sotto i 50 anni; con l’età si alza (circa (età+10)/2)']],
+    u: 'Infezioni e infiammazioni\nArterite a cellule giganti e polimialgia reumatica (spesso oltre 50-100)\nMieloma e gammopatie\nTumori\nAnemia, gravidanza, età avanzata, insufficienza renale', d: 'Policitemia\nAnemia falciforme, sferocitosi\nIpofibrinogenemia\nInsufficienza cardiaca grave',
+    k: 'Lenta: sale in giorni e scende in settimane, più lenta della PCR.' },
+  'Tempo di protrombina': { r: [['Adulti', '11', '13,5', 'secondi; molti laboratori lo esprimono come INR o come percentuale di attività']],
+    u: 'Terapia con antagonisti della vitamina K (warfarin)\nCarenza di vitamina K (malassorbimento, antibiotici, ittero ostruttivo)\nEpatopatia grave\nCoagulazione intravascolare disseminata\nCarenza dei fattori VII, X, V, II, fibrinogeno', d: 'Non ha significato clinico' },
+  'International Normalized Ratio': { r: [['Senza terapia', '0,8', '1,2', '']], c: ['', '5'],
+    u: 'Warfarin e altri antagonisti della vitamina K\nCarenza di vitamina K\nInsufficienza epatica\nCID', d: 'Non ha significato clinico',
+    n: 'In terapia con warfarin l’obiettivo è di solito 2-3 (2,5-3,5 per alcune protesi valvolari meccaniche). Serve a confrontare i PT di laboratori diversi.' },
+  'Tempo di tromboplastina parziale attivata': { r: [['Adulti', '25', '35', 'secondi; spesso espresso come rapporto (ratio 0,8-1,2)']],
+    u: 'Eparina non frazionata\nEmofilia A e B (fattori VIII, IX), carenza di fattore XI o XII\nMalattia di von Willebrand (a volte)\nLupus anticoagulant (allunga in vitro, ma dà trombosi)\nCID, epatopatia grave', d: 'Non ha significato clinico',
+    n: 'Allungato con PT normale: pensa a eparina, carenze della via intrinseca o lupus anticoagulant; il test di miscela distingue una carenza (si corregge) da un inibitore (non si corregge).' },
+  'Fibrinogeno': { r: [['Adulti', '200', '400', '']], c: ['100', ''], si: ['g/L', '0,01'],
+    u: 'Infiammazione e infezioni (proteina di fase acuta)\nGravidanza, tumori, fumo', d: 'Coagulazione intravascolare disseminata\nEpatopatia grave\nFibrinolisi, terapia trombolitica\nDifetti congeniti (afibrinogenemia, disfibrinogenemia)\nEmorragie massive con diluizione' },
+  'D-dimero': { r: [['Adulti', '', '500', 'ng/mL FEU; oltre i 50 anni si usa il limite età × 10']],
+    u: 'Tromboembolismo venoso (trombosi venosa profonda, embolia polmonare)\nCID\nChirurgia e traumi recenti\nInfezioni, tumori, gravidanza, età avanzata\nDissecazione aortica',
+    n: 'Molto sensibile e poco specifico: serve soprattutto a escludere un tromboembolismo quando la probabilità clinica (score di Wells) è bassa o intermedia. Un valore alto da solo non fa diagnosi.' },
+  'Antitrombina': { r: [['Adulti', '80', '120', '']], d: 'Deficit congenito (trombofilia)\nConsumo: CID, trombosi estese\nEpatopatia (ridotta sintesi)\nSindrome nefrosica (perdita urinaria)\nTerapia con eparina prolungata, L-asparaginasi', n: 'Una carenza riduce l’effetto dell’eparina (resistenza all’eparina).' },
+  'Sodio': { r: [['Adulti', '135', '145', '']], c: ['120', '160'],
+    u: 'Perdita di acqua libera: scarso accesso all’acqua, sudorazione, diarrea osmotica\nDiabete insipido centrale o nefrogenico\nDiuresi osmotica (iperglicemia)\nApporto eccessivo di sodio (soluzioni ipertoniche, bicarbonato)',
+    d: 'SIADH (tumori, malattie polmonari e del sistema nervoso, farmaci)\nDiuretici tiazidici\nInsufficienza cardiaca, cirrosi, sindrome nefrosica\nIpotiroidismo grave, insufficienza surrenalica\nPolidipsia primaria, ridotto apporto di soluti\nPseudoiponatriemia (iperlipidemia, paraproteine) e iponatriemia da iperglicemia',
+    n: 'Correggere un’iponatriemia cronica troppo in fretta (più di circa 8-10 mEq/L in 24 ore) espone alla sindrome da demielinizzazione osmotica. Con iperglicemia calcola il sodio corretto (scheda Calcoli).' },
+  'Potassio': { r: [['Adulti', '3,5', '5', '']], c: ['2,5', '6,5'],
+    u: 'Insufficienza renale acuta o cronica\nFarmaci: ACE-inibitori, sartani, spironolattone, FANS, eparina, trimetoprim\nInsufficienza surrenalica (ipoaldosteronismo)\nAcidosi, deficit di insulina\nLisi tissutale: rabdomiolisi, emolisi, lisi tumorale\nPseudoiperkaliemia: prelievo emolizzato, leucocitosi o piastrinosi estreme',
+    d: 'Perdite gastrointestinali (vomito, diarrea)\nDiuretici dell’ansa e tiazidici\nIperaldosteronismo, sindrome di Cushing\nAlcalosi, insulina, beta-2-agonisti\nIpomagnesemia\nScarso apporto',
+    n: 'Valori critici possono dare aritmie gravi: con potassio alto controlla subito l’ECG (onde T appuntite, QRS largo). Un campione emolizzato dà falsi aumenti.' },
+  'Cloro': { r: [['Adulti', '98', '107', '']], u: 'Acidosi metabolica ipercloremica (diarrea, acidosi tubulare renale)\nInfusione abbondante di fisiologica\nDisidratazione', d: 'Vomito e aspirazione gastrica (alcalosi metabolica)\nDiuretici\nIperidratazione\nAcidosi respiratoria compensata' },
+  'Calcio totale': { r: [['Adulti', '8,5', '10,5', '']], c: ['6,5', '13'], si: ['mmol/L', '0,2495'],
+    u: 'Iperparatiroidismo primario (più frequente negli ambulatori)\nTumori: PTHrP, metastasi ossee, mieloma (più frequente in ospedale)\nIntossicazione da vitamina D, granulomatosi (sarcoidosi)\nTiazidici, litio\nImmobilizzazione, ipertiroidismo',
+    d: 'Ipoalbuminemia (calcio totale basso, ionizzato normale)\nIpoparatiroidismo (anche dopo tiroidectomia)\nCarenza di vitamina D, insufficienza renale cronica\nIpomagnesemia\nPancreatite acuta\nTrasfusioni massive (citrato)',
+    n: 'Con albumina bassa usa il calcio corretto (scheda Calcoli) o dosa il calcio ionizzato.' },
+  'Calcio ionizzato': { r: [['Adulti', '1,12', '1,32', '']], u: 'Le stesse del calcio totale alto', d: 'Ipoparatiroidismo, carenza di vitamina D\nAlcalosi (il calcio si lega di più all’albumina)\nTrasfusioni massive (citrato), sepsi, pancreatite', n: 'È la frazione attiva: non risente dell’albumina ma risente del pH.' },
+  'Magnesio': { r: [['Adulti', '1,7', '2,4', '']], c: ['1', ''], si: ['mmol/L', '0,4114'], u: 'Insufficienza renale\nSomministrazione eccessiva (solfato di magnesio in ostetricia, lassativi, antiacidi)', d: 'Alcolismo, malnutrizione\nDiarrea, malassorbimento\nDiuretici, inibitori di pompa protonica per lungo tempo\nCisplatino, aminoglicosidi, amfotericina\nChetoacidosi diabetica in trattamento', n: 'Una ipomagnesemia rende difficile correggere l’ipokaliemia e l’ipocalcemia.' },
+  'Fosforo': { r: [['Adulti', '2,5', '4,5', '']], c: ['1', ''], si: ['mmol/L', '0,3229'], u: 'Insufficienza renale\nIpoparatiroidismo\nLisi tumorale, rabdomiolisi\nEccesso di vitamina D', d: 'Iperparatiroidismo primario\nSindrome da rialimentazione (refeeding)\nAlcolismo, malnutrizione\nCarenza di vitamina D\nChetoacidosi in trattamento con insulina\nTubulopatie (sindrome di Fanconi)' },
+  'Bicarbonati': { r: [['Adulti', '22', '28', '']], c: ['10', '40'], u: 'Alcalosi metabolica: vomito, diuretici, iperaldosteronismo\nCompenso di un’acidosi respiratoria cronica (BPCO)', d: 'Acidosi metabolica: chetoacidosi, acidosi lattica, insufficienza renale, diarrea, acidosi tubulare renale, intossicazioni\nCompenso di un’alcalosi respiratoria' },
+  'Osmolalità plasmatica': { r: [['Adulti', '275', '295', '']], u: 'Ipernatriemia\nIperglicemia\nUremia\nAlcoli e glicoli (etanolo, metanolo, glicole etilenico): gap osmolare aumentato\nMannitolo', d: 'Iponatriemia ipotonica (SIADH, polidipsia, scompenso)' },
+  'pH arterioso': { r: [['Adulti', '7,35', '7,45', '']], c: ['7,2', '7,6'], u: 'Alcalosi metabolica (vomito, diuretici)\nAlcalosi respiratoria (iperventilazione: ansia, ipossia, embolia polmonare, sepsi iniziale, salicilati)', d: 'Acidosi metabolica (chetoacidosi, acidosi lattica, insufficienza renale, diarrea)\nAcidosi respiratoria (ipoventilazione: BPCO, sedativi, malattie neuromuscolari)', n: 'Leggi l’emogas in ordine: pH, poi pCO₂ e bicarbonati per capire il disturbo primario, poi il compenso atteso e il gap anionico.' },
+  'Pressione parziale di CO₂': { r: [['Adulti', '35', '45', '']], c: ['20', '70'], u: 'Ipoventilazione: BPCO riacutizzata, sedativi e oppioidi, malattie neuromuscolari, obesità-ipoventilazione\nCompenso di un’alcalosi metabolica', d: 'Iperventilazione: ansia, dolore, ipossiemia, embolia polmonare, sepsi, salicilati\nCompenso di un’acidosi metabolica' },
+  'Pressione parziale di O₂': { r: [['Adulti in aria ambiente', '80', '100', 'si riduce con l’età']], c: ['40', ''], d: 'Ipoventilazione\nAlterazione ventilazione/perfusione (polmonite, BPCO, asma, embolia polmonare)\nShunt (ARDS, atelettasia, cardiopatie)\nDisturbo della diffusione (fibrosi polmonare)\nBassa FiO₂ (alta quota)', u: 'Ossigenoterapia', n: 'Con ossigeno valuta il rapporto pO₂/FiO₂ (normale circa 400-500; sotto 300 indica insufficienza respiratoria in ARDS).' },
+  'Eccesso di basi': { r: [['Adulti', '-2', '2', '']], u: 'Alcalosi metabolica', d: 'Acidosi metabolica' },
+  'Lattati': { r: [['Adulti', '0,5', '2', '']], c: ['', '4'], u: 'Ipoperfusione: shock settico, cardiogeno, ipovolemico\nIpossia grave\nIschemia intestinale\nConvulsioni, esercizio intenso\nInsufficienza epatica\nMetformina, intossicazioni (cianuro, alcoli), tiamina carente', n: 'Nella sepsi un lattato oltre 2 mmol/L indica ipoperfusione; oltre 4 è un segno di gravità. Si ripete per vedere se scende con la terapia.' },
+  'Creatinina': { r: [['Uomini', '0,7', '1,2', ''], ['Donne', '0,5', '1', '']], si: ['µmol/L', '88,4'],
+    u: 'Insufficienza renale acuta o cronica\nRiduzione della perfusione renale: disidratazione, scompenso\nOstruzione delle vie urinarie\nGrande massa muscolare, dieta ricca di carne\nRabdomiolisi\nFarmaci che ne riducono la secrezione tubulare (trimetoprim, cimetidina)',
+    d: 'Ridotta massa muscolare (anziani, malnutrizione, amputazioni)\nGravidanza (aumento del filtrato)\nEpatopatia grave',
+    n: 'Sale solo quando il filtrato è già calato molto: per stimare la funzione renale usa l’eGFR (scheda Calcoli).' },
+  'Filtrato glomerulare stimato': { r: [['Adulti', '90', '', 'tra 60 e 89 è normale se non ci sono segni di danno renale']], d: 'Malattia renale cronica (sotto 60 per più di 3 mesi)\nInsufficienza renale acuta (la stima non è affidabile se la creatinina non è stabile)\nEtà avanzata', n: 'Classi della malattia renale cronica: G1 ≥90, G2 60-89, G3a 45-59, G3b 30-44, G4 15-29, G5 <15 mL/min/1,73 m².' },
+  'Azotemia (urea)': { r: [['Adulti', '15', '50', 'come urea; come BUN circa 7-20 mg/dL']], si: ['mmol/L', '0,1665'], u: 'Insufficienza renale\nDisidratazione, scompenso (azotemia prerenale: rapporto urea/creatinina alto)\nEmorragia digestiva alta\nDieta iperproteica, catabolismo, corticosteroidi', d: 'Insufficienza epatica grave\nMalnutrizione, dieta povera di proteine\nGravidanza, iperidratazione\nSIADH' },
+  'Acido urico': { r: [['Uomini', '3,5', '7,2', ''], ['Donne', '2,6', '6', '']], si: ['µmol/L', '59,48'], u: 'Gotta e iperuricemia primaria\nInsufficienza renale\nDiuretici, basse dosi di aspirina, ciclosporina\nAlcol, dieta ricca di purine e fruttosio\nLisi tumorale, malattie mieloproliferative, psoriasi\nSindrome metabolica, preeclampsia', d: 'Allopurinolo, febuxostat, uricosurici\nSIADH\nSindrome di Fanconi\nGravidanza', n: 'Durante un attacco acuto di gotta l’uricemia può essere normale.' },
+  'Esame delle urine': { r: [['Peso specifico', '1,005', '1,030', ''], ['pH', '4,5', '8', '']],
+    n: 'Normalmente sono **negativi**: proteine, glucosio, corpi chetonici, emoglobina, nitriti, esterasi leucocitaria, bilirubina. Nel sedimento: pochi leucociti ed emazie (fino a circa 2-5 per campo), nessun cilindro patologico.\n\n- **Nitriti ed esterasi** positivi: infezione delle vie urinarie\n- **Cilindri ematici**: glomerulonefrite\n- **Cilindri granulosi "a fango"**: necrosi tubulare acuta\n- **Emoglobina positiva senza emazie**: emoglobinuria o mioglobinuria (rabdomiolisi)' },
+  'Proteinuria delle 24 ore': { r: [['Adulti', '', '150', '']], u: 'Glomerulopatie (oltre 3,5 g/24 h: range nefrosico)\nNefropatia diabetica e ipertensiva\nMieloma (catene leggere: non sempre viste dallo stick)\nFebbre, esercizio intenso, ortostatismo (transitoria)\nInfezioni urinarie' },
+  'Rapporto albumina/creatinina urinario': { r: [['Adulti', '', '30', '']], u: 'Danno renale iniziale: diabete, ipertensione\nGlomerulopatie\nEsercizio, febbre, infezioni urinarie (transitorio)', n: 'Classi: A1 sotto 30, A2 30-300, A3 oltre 300 mg/g. Va confermato su 2 campioni su 3 in 3-6 mesi.' },
+  'Aspartato aminotransferasi': { r: [['Adulti', '10', '40', '']], u: 'Epatiti virali, tossiche (paracetamolo) e ischemiche\nEpatopatia alcolica (AST/ALT oltre 2)\nSteatosi epatica\nDanno muscolare: rabdomiolisi, miositi, esercizio intenso\nInfarto miocardico\nEmolisi', n: 'Non è specifica del fegato: si trova anche nel muscolo e nei globuli rossi.' },
+  'Alanina aminotransferasi': { r: [['Uomini', '10', '50', ''], ['Donne', '10', '35', '']], u: 'Epatiti virali acute e croniche\nSteatosi epatica (MASLD)\nFarmaci e tossici (paracetamolo, amiodarone, statine, antitubercolari)\nEpatite ischemica (valori altissimi)\nEpatite autoimmune, malattia di Wilson, emocromatosi\nCeliachia', n: 'È più specifica del fegato rispetto all’AST. Valori oltre 1000 U/L fanno pensare a epatite virale acuta, tossica (paracetamolo) o ischemica.' },
+  'Gamma-glutamiltransferasi': { r: [['Uomini', '', '60', ''], ['Donne', '', '40', '']], u: 'Alcol\nColestasi intra ed extraepatica\nSteatosi epatica\nFarmaci induttori enzimatici (antiepilettici)\nObesità', n: 'Se la fosfatasi alcalina è alta, una GGT alta dice che l’origine è epatobiliare e non ossea.' },
+  'Fosfatasi alcalina': { r: [['Adulti', '40', '130', 'più alta nell’adolescenza e in gravidanza']], u: 'Colestasi: calcolosi del coledoco, tumori della testa del pancreas, colangite biliare primitiva, colangite sclerosante\nInfiltrazione epatica (metastasi, granulomi)\nMalattie dell’osso: malattia di Paget, metastasi ossee, osteomalacia, fratture in guarigione\nCrescita, gravidanza (placenta)', d: 'Ipofosfatasia\nMalnutrizione, carenza di zinco' },
+  'Bilirubina totale': { r: [['Adulti', '0,3', '1,2', '']], si: ['µmol/L', '17,1'], u: 'Indiretta (non coniugata): emolisi, sindrome di Gilbert, eritropoiesi inefficace\nDiretta (coniugata): epatiti, cirrosi, colestasi, ostruzione delle vie biliari, sindromi di Dubin-Johnson e Rotor', n: 'L’ittero si vede di solito oltre 2,5-3 mg/dL.' },
+  'Bilirubina diretta': { r: [['Adulti', '0', '0,3', '']], si: ['µmol/L', '17,1'], u: 'Ostruzione delle vie biliari (calcoli, tumori)\nEpatiti, cirrosi\nColestasi da farmaci, sepsi, nutrizione parenterale\nColangite biliare primitiva e sclerosante' },
+  'Albumina': { r: [['Adulti', '3,5', '5', '']], si: ['g/L', '10'], u: 'Disidratazione (emoconcentrazione)', d: 'Insufficienza epatica\nSindrome nefrosica\nMalnutrizione, malassorbimento, enteropatie protidodisperdenti\nInfiammazione (proteina di fase acuta negativa)\nUstioni, iperidratazione' },
+  'Proteine totali': { r: [['Adulti', '6,4', '8,3', '']], si: ['g/L', '10'], u: 'Mieloma e gammopatie monoclonali\nInfiammazione cronica (gamma policlonali)\nDisidratazione', d: 'Sindrome nefrosica\nInsufficienza epatica\nMalnutrizione\nIperidratazione' },
+  'Lattato deidrogenasi': { r: [['Adulti', '135', '225', 'cambia molto con il metodo']], u: 'Emolisi (anche del campione)\nLinfomi e altri tumori\nInfarto (miocardico, polmonare, renale, intestinale)\nDanno muscolare ed epatico\nPolmonite da Pneumocystis\nAnemia megaloblastica', n: 'Poco specifica: utile soprattutto come indice di emolisi e di massa tumorale (linfomi).' },
+  'Ammoniemia': { r: [['Adulti', '', '50', 'µmol/L; alcuni laboratori usano µg/dL']], u: 'Insufficienza epatica, encefalopatia epatica\nShunt porto-sistemico\nAcido valproico\nDifetti del ciclo dell’urea\nEmorragia digestiva\nErrori di prelievo: laccio a lungo, campione non in ghiaccio o analizzato tardi', p: 'Prelievo senza laccio prolungato, provetta in ghiaccio e analisi entro 30 minuti.', n: 'Il valore non è proporzionale alla gravità dell’encefalopatia epatica, che si diagnostica in clinica.' },
+  'Amilasi': { r: [['Adulti', '30', '110', '']], u: 'Pancreatite acuta\nOstruzione o perforazione intestinale, ischemia mesenterica\nParotite e malattie delle ghiandole salivari\nInsufficienza renale\nGravidanza ectopica rotta\nMacroamilasemia', k: 'Sale in 6-12 ore e torna normale in 3-5 giorni, prima della lipasi.' },
+  'Lipasi': { r: [['Adulti', '', '60', 'il limite cambia molto con il metodo']], u: 'Pancreatite acuta (oltre 3 volte il limite superiore è un criterio diagnostico)\nInsufficienza renale\nPatologie intestinali acute (occlusione, perforazione, ischemia)\nChetoacidosi diabetica', k: 'Sale in 4-8 ore, picco a 24 ore, resta alta 8-14 giorni.', n: 'È più specifica dell’amilasi per il pancreas. Il valore non indica la gravità della pancreatite.' },
+  'Troponina ad alta sensibilità': { r: [['hs-cTnT', '', '14', '99° percentile'], ['hs-cTnI, uomini', '', '34', '99° percentile, metodo Abbott'], ['hs-cTnI, donne', '', '16', '99° percentile, metodo Abbott']],
+    u: 'Infarto miocardico\nMiocardite, pericardite con coinvolgimento miocardico\nEmbolia polmonare\nScompenso cardiaco, tachiaritmie, crisi ipertensive\nSepsi, shock\nInsufficienza renale cronica (valori stabili moderatamente alti)\nCardiomiopatia takotsubo, contusione cardiaca, cardioversione, chemioterapia cardiotossica',
+    k: 'Si alza in 1-3 ore dall’inizio dell’ischemia, picco a 12-48 ore, resta alta fino a 10-14 giorni.',
+    w: 'Dolore toracico con sospetto di sindrome coronarica acuta, con prelievi ripetuti (per esempio a 0 e 1-2 ore).',
+    n: 'I limiti cambiano con il kit: usa sempre quello del tuo laboratorio. Per l’infarto conta la **variazione** tra due prelievi, non un singolo valore.' },
+  'Creatinchinasi': { r: [['Uomini', '40', '200', ''], ['Donne', '25', '170', '']], u: 'Rabdomiolisi (anche oltre 5 volte il limite, spesso migliaia)\nTraumi muscolari, iniezioni intramuscolari, esercizio intenso, crisi convulsive\nMiositi, distrofie muscolari\nIpotiroidismo\nStatine\nInfarto miocardico\nIpertermia maligna, sindrome maligna da neurolettici', d: 'Ridotta massa muscolare' },
+  'Creatinchinasi MB': { r: [['Adulti', '', '5', 'ng/mL (dosaggio in massa)']], u: 'Infarto miocardico\nMiocardite, chirurgia cardiaca\nDanno muscolare scheletrico esteso', k: 'Sale in 3-6 ore, picco a 12-24 ore, torna normale in 48-72 ore: utile per riconoscere un reinfarto.', n: 'Oggi è quasi sostituita dalla troponina ad alta sensibilità.' },
+  'Peptide natriuretico di tipo B': { r: [['Esclusione di scompenso acuto', '', '100', '']], u: 'Scompenso cardiaco\nSindrome coronarica acuta, embolia polmonare, ipertensione polmonare\nFibrillazione atriale\nInsufficienza renale\nEtà avanzata, sepsi', d: 'Obesità (valori più bassi a parità di scompenso)\nTerapia con sacubitril/valsartan aumenta il BNP ma non l’NT-proBNP', n: 'Serve soprattutto a escludere lo scompenso: sotto la soglia è molto improbabile.' },
+  'NT-proBNP': { r: [['Esclusione di scompenso acuto', '', '300', ''], ['Esclusione di scompenso cronico', '', '125', '']], u: 'Le stesse del BNP; risente di più della funzione renale', n: 'Nella dispnea acuta le soglie per *confermare* lo scompenso salgono con l’età (circa 450 sotto i 50 anni, 900 tra 50 e 75, 1800 oltre i 75 pg/mL).' },
+  'Mioglobina': { r: [['Uomini', '28', '72', ''], ['Donne', '25', '58', '']], u: 'Rabdomiolisi (può causare insufficienza renale acuta)\nDanno muscolare e traumi\nInfarto miocardico (molto precoce e poco specifica)\nInsufficienza renale', k: 'Sale in 1-3 ore e scende in 24 ore.' },
+  'Glicemia': { r: [['A digiuno', '70', '99', '']], c: ['40', '450'], si: ['mmol/L', '0,0555'], p: 'A digiuno da almeno 8 ore.',
+    u: 'Diabete mellito (a digiuno ≥126 in due occasioni, o ≥200 casuale con sintomi)\nAlterata glicemia a digiuno (100-125)\nStress acuto, infezioni, infarto, ictus\nCorticosteroidi, tiazidici\nSindrome di Cushing, feocromocitoma, acromegalia\nPancreatite, tumori del pancreas',
+    d: 'Eccesso di insulina o sulfaniluree\nAlcol\nInsufficienza epatica o renale, sepsi\nInsufficienza surrenalica\nInsulinoma\nDigiuno prolungato, malnutrizione\nCampione lasciato a lungo senza fluoruro (le cellule consumano glucosio)' },
+  'Emoglobina glicata': { r: [['Adulti', '', '39', 'mmol/mol (5,7%)']], u: 'Diabete mellito (≥48 mmol/mol, cioè 6,5%)\nPrediabete (39-47 mmol/mol)\nCarenza di ferro, splenectomia (falsi aumenti)', d: 'Emolisi, perdite ematiche, trasfusioni recenti, gravidanza (falsi cali)\nEmoglobinopatie (dipende dal metodo)', n: 'Riflette la glicemia media degli ultimi 2-3 mesi. Nei diabetici l’obiettivo è di solito sotto 53 mmol/mol (7%), da personalizzare.' },
+  'Colesterolo totale': { r: [['Desiderabile', '', '200', '']], si: ['mmol/L', '0,02586'], u: 'Ipercolesterolemie familiari e poligeniche\nIpotiroidismo\nSindrome nefrosica\nColestasi\nGravidanza\nFarmaci (corticosteroidi, ciclosporina)', d: 'Ipertiroidismo\nMalnutrizione, malassorbimento\nInsufficienza epatica\nStatine e altri ipolipemizzanti\nInfiammazione acuta' },
+  'Colesterolo HDL': { r: [['Uomini', '40', '', 'valore desiderabile'], ['Donne', '50', '', 'valore desiderabile']], si: ['mmol/L', '0,02586'], u: 'Attività fisica, moderato consumo di alcol, estrogeni', d: 'Sindrome metabolica, diabete di tipo 2, obesità\nFumo, sedentarietà\nIpertrigliceridemia\nAndrogeni e progestinici' },
+  'Colesterolo LDL': { r: [['Rischio cardiovascolare basso', '', '116', 'obiettivo'], ['Rischio moderato', '', '100', 'obiettivo'], ['Rischio alto', '', '70', 'obiettivo'], ['Rischio molto alto', '', '55', 'obiettivo']], si: ['mmol/L', '0,02586'], u: 'Le stesse del colesterolo totale; ipercolesterolemia familiare (spesso oltre 190)', n: 'Gli obiettivi dipendono dal rischio cardiovascolare (linee guida europee ESC/EAS 2019). Si calcola con la formula di Friedewald (scheda Calcoli) o si misura direttamente.' },
+  'Trigliceridi': { r: [['A digiuno', '', '150', '']], si: ['mmol/L', '0,01129'], p: 'Preferibilmente a digiuno da 12 ore.', u: 'Obesità, sindrome metabolica, diabete scompensato\nAlcol\nIpotiroidismo, sindrome nefrosica, insufficienza renale\nFarmaci: estrogeni orali, corticosteroidi, retinoidi, antiretrovirali, tamoxifene\nIpertrigliceridemie familiari\nPasto recente', d: 'Malnutrizione, malassorbimento\nIpertiroidismo', n: 'Oltre 1000 mg/dL c’è rischio di pancreatite acuta.' },
+  'Lipoproteina(a)': { r: [['Adulti', '', '50', 'mg/dL (circa 125 nmol/L)']], u: 'Soprattutto genetica, da misurare almeno una volta nella vita\nSindrome nefrosica, insufficienza renale cronica\nMenopausa', n: 'Fattore di rischio cardiovascolare indipendente; varia poco con la dieta e con le statine.' },
+  'Insulina': { r: [['A digiuno', '2', '25', '']], p: 'A digiuno.', u: 'Insulino-resistenza: obesità, sindrome metabolica, sindrome dell’ovaio policistico, diabete di tipo 2 iniziale\nInsulinoma\nInsulina esogena', d: 'Diabete di tipo 1\nDiabete di tipo 2 avanzato\nIpopituitarismo', n: 'Nell’ipoglicemia, insulina alta con peptide C basso fa pensare a insulina esogena; entrambi alti a insulinoma o sulfaniluree.' },
+  'Peptide C': { r: [['A digiuno', '0,8', '3,1', '']], si: ['nmol/L', '0,331'], u: 'Insulinoma\nSulfaniluree\nInsulino-resistenza\nInsufficienza renale', d: 'Diabete di tipo 1\nInsulina esogena (somministrazione fittizia)\nDiabete di tipo 2 avanzato' },
+  'Sideremia': { r: [['Uomini', '65', '175', ''], ['Donne', '50', '170', '']], si: ['µmol/L', '0,179'], p: 'Al mattino, a digiuno: varia molto durante la giornata.', u: 'Emocromatosi\nEmolisi, eritropoiesi inefficace (talassemie)\nTrasfusioni ripetute, terapia marziale\nEpatite acuta', d: 'Carenza di ferro\nInfiammazione cronica (anemia delle malattie croniche)\nPerdite ematiche', n: 'Da sola dice poco: va letta con ferritina e saturazione della transferrina.' },
+  'Ferritina': { r: [['Uomini', '30', '400', ''], ['Donne', '15', '150', '']], u: 'Infiammazione e infezioni (proteina di fase acuta)\nEmocromatosi e sovraccarico di ferro (trasfusioni)\nEpatopatie, alcol\nTumori, linfomi\nSindrome metabolica\nMalattia di Still, sindrome emofagocitica (valori altissimi)', d: 'Carenza di ferro (il segno più specifico)', n: 'Sotto 30 ng/mL indica carenza di ferro quasi sempre; con infiammazione la carenza può esserci anche con ferritina fino a 100.' },
+  'Transferrina': { r: [['Adulti', '200', '360', '']], si: ['g/L', '0,01'], u: 'Carenza di ferro\nGravidanza, estrogeni', d: 'Infiammazione cronica\nMalnutrizione\nSindrome nefrosica, insufficienza epatica\nSovraccarico di ferro' },
+  'Saturazione della transferrina': { r: [['Adulti', '20', '45', '']], u: 'Emocromatosi (oltre 45% a digiuno fa sospettarla)\nEmolisi, trasfusioni, terapia marziale', d: 'Carenza di ferro\nAnemia delle malattie croniche', n: 'Si calcola: sideremia (µg/dL) / transferrina (mg/dL) × 70,9.' },
+  'Vitamina B12': { r: [['Adulti', '200', '900', '']], si: ['pmol/L', '0,738'], u: 'Malattie mieloproliferative\nEpatopatie\nTumori\nIntegrazione', d: 'Anemia perniciosa (gastrite autoimmune)\nGastrectomia, chirurgia bariatrica\nMalattie dell’ileo terminale (Crohn, resezione)\nDieta vegana senza integrazione\nMetformina e inibitori di pompa protonica a lungo\nPancreatite cronica, sovracrescita batterica, botriocefalo', n: 'Nei valori al limite (200-300) aiutano omocisteina e acido metilmalonico, che salgono nella carenza vera.' },
+  'Folati': { r: [['Adulti', '4', '', '']], si: ['nmol/L', '2,266'], d: 'Dieta povera di verdure, alcolismo\nMalassorbimento (celiachia)\nAumentato fabbisogno: gravidanza, emolisi\nFarmaci: metotrexato, trimetoprim, fenitoina' },
+  '25-idrossivitamina D': { r: [['Adulti', '30', '100', 'tra 20 e 30 insufficienza, sotto 20 carenza']], si: ['nmol/L', '2,496'], u: 'Integrazione eccessiva (tossicità oltre 150)', d: 'Poca esposizione al sole, pelle scura, inverno\nMalassorbimento, obesità\nInsufficienza epatica o renale\nFarmaci antiepilettici, corticosteroidi', n: 'Le soglie cambiano tra società scientifiche: alcune considerano sufficiente già 20 ng/mL.' },
+  'Tireotropina': { r: [['Adulti', '0,4', '4', '']], u: 'Ipotiroidismo primario (tiroidite di Hashimoto, dopo tiroidectomia o radioiodio, amiodarone, litio)\nIpotiroidismo subclinico\nFase di recupero da malattia acuta\nTumori ipofisari secernenti TSH (rari)', d: 'Ipertiroidismo primario (malattia di Basedow-Graves, gozzo nodulare tossico, tiroiditi)\nEccesso di levotiroxina\nIpotiroidismo centrale (con FT4 basso)\nCorticosteroidi, dopamina, malattia acuta grave\nPrimo trimestre di gravidanza', n: 'È il primo esame della funzione tiroidea; si completa con FT4 se è alterato.' },
+  'Tiroxina libera': { r: [['Adulti', '8', '18', 'pg/mL (circa 0,8-1,8 ng/dL)']], si: ['pmol/L', '1,287'], u: 'Ipertiroidismo\nEccesso di levotiroxina\nAmiodarone\nEparina (falso aumento in vitro)', d: 'Ipotiroidismo primario e centrale\nMalattia acuta grave (sindrome del malato eutiroideo)' },
+  'Triiodotironina libera': { r: [['Adulti', '2', '4,4', 'pg/mL']], si: ['pmol/L', '1,536'], u: 'Ipertiroidismo (anche T3-tossicosi isolata)', d: 'Malattia acuta grave e digiuno (sindrome del malato eutiroideo: T3 basso)\nIpotiroidismo avanzato\nAmiodarone, corticosteroidi, propranololo' },
+  'Anticorpi anti-tireoperossidasi': { r: [['Adulti', '', '35', 'il limite cambia con il kit']], u: 'Tiroidite di Hashimoto\nMalattia di Basedow-Graves\nTiroidite post-partum\nSoggetti sani, soprattutto donne anziane (positività a basso titolo)' },
+  'Cortisolo': { r: [['Al mattino (ore 8)', '5', '25', '']], si: ['nmol/L', '27,59'], p: 'Prelievo alle 8 del mattino: il cortisolo ha un ritmo circadiano.', u: 'Sindrome di Cushing (si studia con cortisolo libero urinario, test di soppressione con desametasone, cortisolo salivare notturno)\nStress acuto, malattia grave\nEstrogeni e gravidanza (aumento della proteina di trasporto)\nDepressione, alcolismo', d: 'Insufficienza surrenalica primaria (malattia di Addison) e secondaria\nSospensione brusca di corticosteroidi', n: 'Un cortisolo delle 8 sotto 3-5 µg/dL rende molto probabile un’insufficienza surrenalica; la conferma è il test con ACTH.' },
+  'ACTH': { r: [['Al mattino (ore 8)', '7', '63', '']], p: 'Al mattino, provetta con EDTA in ghiaccio, centrifugata subito.', u: 'Malattia di Addison (con cortisolo basso)\nMalattia di Cushing ipofisaria e produzione ectopica (con cortisolo alto)\nStress', d: 'Insufficienza surrenalica secondaria\nSindrome di Cushing surrenalica (tumore del surrene)\nTerapia con corticosteroidi' },
+  'Prolattina': { r: [['Uomini', '2', '18', ''], ['Donne non in gravidanza', '3', '29', '']], si: ['mUI/L', '21,2'], p: 'Al mattino, a riposo, lontano da stress e visite al seno.', u: 'Gravidanza e allattamento\nProlattinoma (spesso oltre 200 ng/mL)\nFarmaci: antipsicotici, metoclopramide, domperidone, antidepressivi, estrogeni\nCompressione del peduncolo ipofisario\nIpotiroidismo primario, insufficienza renale, cirrosi\nStress, sonno, macroprolattina', d: 'Ipopituitarismo\nAgonisti dopaminergici' },
+  'Paratormone': { r: [['Adulti', '15', '65', '']], si: ['pmol/L', '0,106'], u: 'Iperparatiroidismo primario (con calcio alto)\nIperparatiroidismo secondario: carenza di vitamina D, insufficienza renale cronica, malassorbimento (con calcio normale o basso)\nIperparatiroidismo terziario\nLitio', d: 'Ipoparatiroidismo (dopo chirurgia del collo, autoimmune)\nIpercalcemia non paratiroidea (tumori, vitamina D, sarcoidosi)\nIpomagnesemia grave', n: 'Si legge sempre insieme al calcio.' },
+  'Beta-hCG': { r: [['Donne non in gravidanza', '', '5', '']], u: 'Gravidanza (raddoppia ogni 48-72 ore all’inizio)\nGravidanza ectopica (sale meno del previsto)\nMola idatiforme e coriocarcinoma (valori molto alti)\nTumori a cellule germinali del testicolo e dell’ovaio', n: 'In ogni donna in età fertile si esclude una gravidanza prima di farmaci teratogeni, radiografie o interventi.' },
+  'Proteina C reattiva': { r: [['Adulti', '', '5', 'mg/L; molti laboratori italiani la danno in mg/dL: < 0,5']],
+    u: 'Infezioni batteriche (spesso oltre 100 mg/L)\nInfiammazione: artrite reumatoide, vasculiti, malattie infiammatorie intestinali\nTraumi, chirurgia, ustioni\nTumori\nInfarto, pancreatite\nInfezioni virali (di solito aumenti modesti)', k: 'Sale in 6-8 ore, picco a 48 ore, si dimezza in circa 19 ore quando lo stimolo cessa: è utile per seguire la risposta alla terapia.', n: 'Il lupus spesso ha PCR normale anche in fase attiva, salvo infezioni o sierositi.' },
+  'Procalcitonina': { r: [['Adulti', '', '0,05', 'sani']], u: 'Infezioni batteriche sistemiche e sepsi (oltre 0,5, molto probabile oltre 2 ng/mL)\nTraumi gravi, ustioni, chirurgia maggiore\nShock cardiogeno\nCarcinoma midollare della tiroide', k: 'Sale in 3-6 ore, picco a 12-24 ore.', n: 'Aiuta a distinguere un’infezione batterica da una virale e a decidere quando sospendere gli antibiotici; non sostituisce il giudizio clinico.' },
+  'Elettroforesi delle proteine sieriche': { r: [['Albumina', '55', '68', ''], ['Alfa-1', '1,5', '4', ''], ['Alfa-2', '7', '13', ''], ['Beta', '8', '14', ''], ['Gamma', '11', '19', '']],
+    n: '- **Picco monoclonale** (stretto, di solito in gamma): gammopatia monoclonale, mieloma, macroglobulinemia di Waldenström; si completa con immunofissazione e catene leggere libere\n- **Gamma alte e larghe** (policlonali): infiammazione cronica, epatopatie croniche, malattie autoimmuni, HIV\n- **Alfa-2 alte**: infiammazione acuta, sindrome nefrosica\n- **Albumina bassa con alfa-2 alte**: sindrome nefrosica\n- **Gamma basse**: immunodeficienze, chemioterapia, catene leggere del mieloma' },
+  'Immunoglobuline G, A, M': { r: [['IgG', '700', '1600', ''], ['IgA', '70', '400', ''], ['IgM', '40', '230', '']], si: ['g/L', '0,01'], u: 'Infiammazione cronica, epatopatie, malattie autoimmuni (aumento policlonale)\nMieloma (IgG o IgA monoclonali), Waldenström (IgM)\nIgA alte: cirrosi alcolica, celiachia\nIgM alte: infezioni acute recenti, colangite biliare primitiva', d: 'Immunodeficienze primarie (deficit selettivo di IgA, immunodeficienza comune variabile)\nImmunodeficienze secondarie: leucemia linfatica cronica, mieloma (le altre classi), sindrome nefrosica, immunosoppressori, rituximab', n: 'Il deficit selettivo di IgA dà falsi negativi agli anticorpi di classe IgA della celiachia.' },
+  'Complemento C3 e C4': { r: [['C3', '90', '180', ''], ['C4', '10', '40', '']], u: 'Infiammazione (proteine di fase acuta)', d: 'Lupus eritematoso sistemico in fase attiva (consumo)\nGlomerulonefriti: post-infettiva e membranoproliferativa (C3 basso)\nCrioglobulinemia (C4 molto basso)\nDeficit ereditari (C4 basso nell’angioedema ereditario)\nSepsi, insufficienza epatica' },
+  'Anticorpi antinucleo': { n: 'Si considerano negativi sotto 1:80 (immunofluorescenza su cellule HEp-2), ma il limite dipende dal laboratorio.\n\n- **Positivi**: lupus (quasi sempre), sclerosi sistemica, sindrome di Sjögren, connettiviti miste, polimiositi, epatite autoimmune, farmaci, infezioni, tumori\n- **A basso titolo** anche in molti sani, soprattutto donne e anziani\n- Il **pattern** orienta: omogeneo (lupus, da farmaci), centromerico (sclerosi sistemica limitata), nucleolare (sclerosi sistemica), speckled (Sjögren, connettivite mista)\n- Se positivi si completano con anti-dsDNA ed ENA.' },
+  'Anticorpi anti-citoplasma dei neutrofili': { n: '- **c-ANCA / anti-PR3**: granulomatosi con poliangioite\n- **p-ANCA / anti-MPO**: poliangioite microscopica, granulomatosi eosinofila con poliangioite, glomerulonefrite pauci-immune\n- p-ANCA atipici anche in colite ulcerosa, colangite sclerosante, epatite autoimmune\n- Normalmente **negativi**.' },
+  'Fattore reumatoide': { r: [['Adulti', '', '14', 'il limite cambia con il kit']], u: 'Artrite reumatoide (circa 70-80% dei casi, poco specifico)\nSindrome di Sjögren, crioglobulinemia (HCV)\nAltre connettiviti\nInfezioni croniche (endocardite, epatite C, tubercolosi)\nEtà avanzata, sani' },
+  'Anticorpi anti-peptidi citrullinati': { r: [['Adulti', '', '20', 'il limite cambia con il kit']], u: 'Artrite reumatoide (molto specifici, presenti anche anni prima dei sintomi)', n: 'Più specifici del fattore reumatoide; positivi indicano anche una malattia più aggressiva.' },
+  'Antigene prostatico specifico': { r: [['Uomini', '', '4', 'il limite sale con l’età']], u: 'Carcinoma della prostata\nIpertrofia prostatica benigna\nProstatite, infezioni urinarie\nRitenzione urinaria, cateterismo, biopsia, esplorazione rettale ed eiaculazione recenti', d: 'Inibitori della 5-alfa-reduttasi (finasteride, dutasteride: dimezzano il PSA)', n: 'Non è specifico del tumore: si valuta con velocità di aumento, PSA libero/totale, risonanza e biopsia. Lo screening va discusso con il paziente.' },
+  'Antigene carcinoembrionario': { r: [['Non fumatori', '', '3', ''], ['Fumatori', '', '5', '']], u: 'Carcinoma del colon-retto (follow-up) e altri adenocarcinomi (pancreas, stomaco, polmone, mammella)\nFumo\nCirrosi, pancreatite, malattie infiammatorie intestinali, BPCO', n: 'Non serve per lo screening: si usa per il follow-up dopo terapia.' },
+  'CA 19-9': { r: [['Adulti', '', '37', '']], u: 'Carcinoma del pancreas e delle vie biliari\nAltri tumori gastrointestinali\nColestasi e colangite (anche benigne), pancreatite', n: 'Non si alza nelle persone Lewis-negative (circa 5-10%). Si usa per il follow-up, non per lo screening.' },
+  'CA 125': { r: [['Adulti', '', '35', '']], u: 'Carcinoma ovarico\nEndometriosi, mestruazioni, gravidanza, malattia infiammatoria pelvica\nCirrosi con ascite, versamenti pleurici e pericardici\nScompenso cardiaco, altri tumori', n: 'Poco specifico in premenopausa.' },
+  'CA 15-3': { r: [['Adulti', '', '30', '']], u: 'Carcinoma della mammella (soprattutto metastatico)\nEpatopatie, altre neoplasie', n: 'Usato per il follow-up della malattia avanzata.' },
+  'Alfa-fetoproteina': { r: [['Adulti, non in gravidanza', '', '10', '']], u: 'Epatocarcinoma\nTumori a cellule germinali non seminomatosi\nEpatiti e cirrosi (aumenti modesti)\nGravidanza', n: 'Nella sorveglianza dei cirrotici si affianca all’ecografia.' },
+  'Emocoltura': { p: 'Almeno 2 set (aerobi e anaerobi) da sedi diverse, prima degli antibiotici, con antisepsi accurata della cute.', n: 'Normalmente **negativa**.\n\n- Un germe cutaneo (stafilococchi coagulasi-negativi, corinebatteri) in un solo set di solito è una **contaminazione**.\n- Lo stesso germe in più set, o germi tipicamente patogeni (S. aureus, E. coli, Candida), indicano una batteriemia vera.\n- S. aureus nel sangue richiede di cercare un’endocardite.' },
+  'Urinocoltura': { p: 'Urine del mattino, mitto intermedio dopo lavaggio dei genitali; consegna entro 1-2 ore o conservazione in frigo.', n: 'Carica significativa di solito **≥ 100.000 UFC/mL**; con sintomi, nei maschi o con catetere possono contare cariche più basse.\n\n- Più germi diversi: spesso contaminazione.\n- La batteriuria senza sintomi si tratta solo in gravidanza e prima di interventi urologici.' },
+  'Antigene di superficie dell’epatite B': { n: 'Normalmente **negativo**.\n\n- **Positivo**: infezione da HBV in corso, acuta o cronica (cronica se positivo oltre 6 mesi).\n- Si completa con anti-HBc (IgM per l’acuta), HBeAg, anti-HBe, HBV-DNA.\n- **Anti-HBs** positivo da solo = vaccinazione; con anti-HBc = infezione guarita.' },
+  'Anticorpi anti-HCV': { n: 'Normalmente **negativi**.\n\n- **Positivi**: contatto con HCV, infezione in corso o guarita.\n- Per sapere se è in corso si dosa l’**HCV-RNA**.\n- Gli anticorpi restano positivi anche dopo la guarigione e dopo la terapia.' },
+  'Test combinato HIV antigene/anticorpi': { n: 'Normalmente **negativo**.\n\n- Il test di quarta generazione rileva antigene p24 e anticorpi: si positivizza circa 2-6 settimane dopo il contagio (periodo finestra).\n- Un risultato positivo va sempre confermato con un test di conferma e con HIV-RNA.' },
+  'Esame del liquor': { r: [['Proteine', '15', '45', 'mg/dL'], ['Glucosio', '50', '80', 'mg/dL, circa 2/3 della glicemia'], ['Leucociti', '', '5', 'cellule/µL']],
+    n: '- **Meningite batterica**: molti neutrofili, proteine alte, glucosio basso (rapporto liquor/sangue sotto 0,4)\n- **Meningite virale**: linfociti, proteine poco aumentate, glucosio normale\n- **Tubercolare o fungina**: linfociti, proteine molto alte, glucosio basso\n- **Guillain-Barré**: proteine alte con cellule normali (dissociazione albumino-citologica)\n- **Sclerosi multipla**: bande oligoclonali\n- Si fa la TC prima della puntura se ci sono segni di ipertensione endocranica o deficit focali.' },
+  'Esame del liquido pleurico': { n: '**Criteri di Light**: è un **essudato** se c’è almeno uno di questi:\n- proteine pleuriche / sieriche > 0,5\n- LDH pleurico / sierico > 0,6\n- LDH pleurico > 2/3 del limite superiore dell’LDH sierico\n\n- **Trasudato**: scompenso cardiaco, cirrosi, sindrome nefrosica\n- **Essudato**: polmonite (parapneumonico), tubercolosi, tumori, embolia polmonare, connettiviti\n- pH sotto 7,2 o glucosio basso in un versamento parapneumonico indicano la necessità di drenaggio.' },
+  'Esame del liquido ascitico': { n: '- **SAAG** (albumina sierica − albumina ascitica) ≥ 1,1 g/dL: ascite da **ipertensione portale** (cirrosi, scompenso cardiaco, Budd-Chiari); sotto 1,1: carcinosi peritoneale, tubercolosi, pancreatite, sindrome nefrosica\n- **Neutrofili ≥ 250/µL**: peritonite batterica spontanea, da trattare subito\n- Proteine alte con SAAG alto: ascite cardiaca\n- Si fanno sempre coltura (nei flaconi da emocoltura), conta cellulare, albumina e proteine.' },
+  'Esame del liquido sinoviale': { r: [['Leucociti, normale', '', '200', 'cellule/µL']], n: 'Indicativamente:\n- **Non infiammatorio** (artrosi): 200-2.000 leucociti/µL\n- **Infiammatorio** (artrite reumatoide, gotta, condrocalcinosi): 2.000-50.000\n- **Settico**: spesso oltre 50.000, con molti neutrofili\n\nI **cristalli** al microscopio a luce polarizzata: aghiformi a birifrangenza negativa nella gotta, romboidali a birifrangenza debolmente positiva nella condrocalcinosi. Sempre coltura e Gram.' },
+  'Digossinemia': { r: [['Intervallo terapeutico', '0,5', '2', 'nello scompenso si punta a 0,5-0,9']], c: ['', '2'], si: ['nmol/L', '1,281'], p: 'Almeno 6-8 ore dopo l’ultima dose.', u: 'Insufficienza renale\nInterazioni: amiodarone, verapamil, chinidina, claritromicina\nAnziani, basso peso', n: 'La tossicità (nausea, disturbi visivi, aritmie) aumenta con ipokaliemia, ipomagnesemia e ipercalcemia, anche con livelli nel range.' },
+  'Litiemia': { r: [['Intervallo terapeutico', '0,6', '1,2', 'mantenimento di solito 0,6-1']], c: ['', '2'], p: 'Circa 12 ore dopo l’ultima dose.', u: 'Disidratazione, diete povere di sale\nInsufficienza renale\nInterazioni: tiazidici, ACE-inibitori, sartani, FANS', n: 'Tossicità già oltre 1,5 mEq/L: tremore grossolano, atassia, confusione, aritmie. Si controllano anche funzione renale e tiroidea.' },
+  'Vancomicina (valle)': { r: [['Valle', '10', '20', 'mg/L; oggi si preferisce il monitoraggio dell’AUC (400-600)']], p: 'Prima della dose successiva, di solito dalla quarta dose.', n: 'Livelli alti aumentano il rischio di danno renale, soprattutto con altri nefrotossici.' },
+  'Etanolemia': { r: [['Limite per la guida in Italia', '', '0,5', 'g/L; zero per neopatentati e conducenti professionali']], u: 'Assunzione di alcol', n: 'Indicativamente: oltre 1,5-2 g/L ebbrezza marcata, oltre 3-4 g/L rischio di coma e morte nei non abituati. Con un gap osmolare aumentato e acidosi pensa anche a metanolo e glicole etilenico.' },
+  'Carbossiemoglobina': { r: [['Non fumatori', '', '3', ''], ['Fumatori', '', '10', '']], u: 'Intossicazione da monossido di carbonio (stufe, bracieri, incendi)\nFumo', n: 'Il saturimetro comune non distingue la carbossiemoglobina: la saturazione sembra normale. Serve l’emogas con co-ossimetria. Terapia: ossigeno ad alto flusso, camera iperbarica nei casi gravi.' }
+};
+// Applica i dati di partenza a una scheda: riempie solo i campi vuoti
+function labApplyBase(x, { onlyEmpty = true } = {}) {
+  const d = LAB_DATA[x.name];
+  if (!d) return false;
+  let changed = false;
+  const set = (k, v) => { if (v === undefined || v === null || v === '') return; if (onlyEmpty && String(x[k] ?? '').trim()) return; x[k] = v; changed = true; };
+  if (d.r && !labHasRange(x)) { x.ranges = d.r.map(([who, low, high, note]) => ({ who, low, high, note })); changed = true; }
+  if (d.c && !(String(x.crit?.low ?? '').trim() || String(x.crit?.high ?? '').trim())) { x.crit = { low: d.c[0] || '', high: d.c[1] || '' }; changed = true; }
+  set('up', d.u); set('down', d.d); set('prep', d.p); set('kinetics', d.k); set('when', d.w); set('notes', d.n);
+  if (d.si) { set('siUnit', d.si[0]); set('siFactor', d.si[1]); }
+  if (d.r) set('rangeSrc', 'valori indicativi di Claude, da confrontare con il tuo laboratorio');
+  if (changed) {
+    const src = sourcesOf(x);
+    if (!src.some(t => t.startsWith('Claude'))) { x.sources = [...src, LAB_SOURCE_CLAUDE]; delete x.source; }
+  }
+  return changed;
+}
+
+function updateIncBadge() {
+  const b = document.getElementById('incBadge');
+  if (!b) return;
+  const n = state.sections.filter(x => x.incomplete).length + state.links.filter(l => (l.kind === 'clinical' || l.kind === 'lab') && l.incomplete).length;
+  b.hidden = !n;
+  b.textContent = n > 99 ? '99+' : String(n);
+}
 let labQuery = '';
 const labCatFilter = new Set();
 function labTabs(cur) {
@@ -11136,15 +11499,24 @@ function viewLab(p1, p2) {
     ${labTabs('')}
     ${all.length ? `
       <input type="search" class="input search" id="labQ" placeholder="Cerca un esame, una sigla o una causa" aria-label="Cerca negli esami" value="${esc(labQuery)}">
-      <div class="tag-cloud" aria-label="Filtra per categoria">${LAB_CATS.filter(([k]) => counts.has(k)).map(([k, l]) => `<button type="button" class="tag ${labCatFilter.has(k) ? 'on' : ''}" data-lc="${k}" aria-pressed="${labCatFilter.has(k)}">${l} <span class="muted-inline">${counts.get(k)}</span></button>`).join('')}</div>
+      <div class="tag-cloud" aria-label="Filtra per categoria">${[...LAB_CATS.filter(([k]) => counts.has(k)), ...[...counts.keys()].filter(k => !LAB_CATS.some(c => c[0] === k)).map(k => [k, labCatName(k)])].map(([k, l]) => `<button type="button" class="tag ${labCatFilter.has(k) ? 'on' : ''}" data-lc="${k}" aria-pressed="${labCatFilter.has(k)}">${l} <span class="muted-inline">${counts.get(k)}</span></button>`).join('')}</div>
       <div id="labList"></div>
-      <p class="hint">Mancano esami? <button class="btn sm ghost" type="button" data-act="lab-base">Aggiungi dall’elenco di base</button></p>` : `
+      <p class="hint">Mancano esami? <button class="btn sm ghost" type="button" data-act="lab-base">Aggiungi dall’elenco di base</button>
+        ${all.some(x => { const d = LAB_DATA[x.name]; return d && ((d.r && !labHasRange(x)) || (d.u && !String(x.up || '').trim()) || (d.n && !String(x.notes || '').trim())); }) ? `<br>Alcune schede dell’elenco di base sono ancora vuote. <button class="btn sm ghost" type="button" data-act="lab-fill">Completale con i dati di Claude</button>` : ''}</p>` : `
       <div class="empty">
-        <p>Ancora nessun esame. Puoi partire dall’<strong>elenco di base</strong>, con nome, sigla, campione e unità di oltre 110 esami divisi per categoria, e poi completare ognuno con il tuo libro; oppure crearli uno per uno.</p>
+        <p>Ancora nessun esame. Puoi partire dall’<strong>elenco di base</strong>: oltre 110 esami divisi per categoria, già compilati da me (Claude) con range indicativi, cause e note, tutti modificabili; oppure crearli uno per uno.</p>
         <div class="inline" style="justify-content:center"><button class="btn primary" type="button" data-act="lab-base">Aggiungi l’elenco di base</button><a class="btn" href="#/lab/new">Nuovo esame</a></div>
       </div>`}
   `);
   on('[data-act="lab-base"]', 'click', labBaseFlow);
+  on('[data-act="lab-fill"]', 'click', async () => {
+    const list = labExams().filter(x => LAB_DATA[x.name]);
+    if (!(await modal({ title: 'Completare le schede?', text: 'Riempio solo i campi vuoti delle schede dell’elenco di base, con i miei valori indicativi e me (Claude) come fonte. Quello che hai già scritto non cambia.', confirm: 'Completa' }))) return;
+    let n = 0;
+    for (const x of list) if (labApplyBase(x)) { await saveLink(x); n++; }
+    toast(n ? `${n} schede completate` : 'Niente da completare');
+    route();
+  });
   const draw = () => {
     const box = $('#labList');
     if (!box) return;
@@ -11152,17 +11524,18 @@ function viewLab(p1, p2) {
     const list = all.filter(x => (!labCatFilter.size || labCatFilter.has(x.cat || 'altr')) && (!toks.length || toks.every(t => foldAccents(`${x.name} ${x.abbr || ''} ${x.up || ''} ${x.down || ''} ${(x.uses || []).map(u => u.dx).join(' ')} ${x.notes || ''}`).includes(t))));
     const byCat = new Map();
     list.forEach(x => { const k = x.cat || 'altr'; if (!byCat.has(k)) byCat.set(k, []); byCat.get(k).push(x); });
-    box.innerHTML = list.length ? LAB_CATS.filter(([k]) => byCat.has(k)).map(([k, l]) => `
+    const cats = [...LAB_CATS.filter(([k]) => byCat.has(k)), ...[...byCat.keys()].filter(k => !LAB_CATS.some(c => c[0] === k)).sort().map(k => [k, labCatName(k)])];
+    box.innerHTML = list.length ? cats.map(([k, l]) => `
       <h2 class="sub">${l}</h2>
       <ul class="list">${byCat.get(k).map(x => {
         const r = labPickRange(x);
-        const bits = [r ? labRangeText(r, x.unit) : 'senza range', x.sample || ''].filter(Boolean);
+        const bits = [r ? labRangeText(r, x.unit) : (String(x.notes || '').trim() ? 'esame qualitativo, vedi la scheda' : 'senza range'), x.sample || ''].filter(Boolean);
         return `<li><a class="row" href="#/lab/${x.id}">
           <span class="row-main">
             <span class="row-title">${esc(x.name)}${x.abbr ? ` <span class="lab-abbr">${esc(x.abbr)}</span>` : ''}</span>
             <span class="row-sub">${esc(bits.join(' · '))}${x.incomplete ? ' · ⚠ incompleto' : ''}</span>
           </span>
-          ${labHasRange(x) ? '' : '<span class="pill soft">da completare</span>'}
+          ${labHasRange(x) || String(x.notes || '').trim() ? '' : '<span class="pill soft">da completare</span>'}
         </a></li>`;
       }).join('')}</ul>`).join('') : '<p class="hint">Nessun esame corrisponde.</p>';
   };
@@ -11180,7 +11553,7 @@ async function labBaseFlow() {
   const have = new Set(labExams().map(x => foldAccents(x.name)));
   const sh = openSheet(`
     <h2>Elenco di base</h2>
-    <p class="sheet-sub">Nome, sigla, campione e unità più usate in Italia, senza range: quelli li aggiungi tu dalla tua fonte, perché cambiano da laboratorio a laboratorio. Controlla anche le unità sul tuo referto. Gli esami che hai già non vengono doppiati.</p>
+    <p class="sheet-sub">Schede già compilate da me, Claude: campione, unità, range indicativi dell’adulto, valori critici, cause di aumento e diminuzione, note. La fonte di ogni scheda sono io: confronta i valori con il tuo libro e con il referto del tuo laboratorio, e cambia tutto quello che vuoi. Gli esami che hai già non vengono doppiati.</p>
     <div class="lab-base-cats">${LAB_CATS.filter(([k]) => LAB_BASE.some(b => b[0] === k)).map(([k, l]) => {
       const n = LAB_BASE.filter(b => b[0] === k && !have.has(foldAccents(b[1]))).length;
       return `<label class="check"><input type="checkbox" data-bc="${k}" ${n ? 'checked' : 'disabled'}><span>${l} <span class="muted-inline">${n ? `${n} da aggiungere` : 'già tutti presenti'}</span></span></label>`;
@@ -11195,7 +11568,9 @@ async function labBaseFlow() {
     const now = Date.now();
     const add = LAB_BASE.filter(b => cats.has(b[0]) && !have.has(foldAccents(b[1])));
     for (const [i, [cat, name, abbr, sample, unit]] of add.entries()) {
-      await saveLink({ id: uid(), kind: 'lab', notebookId: '_lab', created: now + i, name, abbr, cat, sample, unit, ranges: [], uses: [] });
+      const rec = { id: uid(), kind: 'lab', notebookId: '_lab', created: now + i, name, abbr, cat, sample, unit, ranges: [], uses: [] };
+      labApplyBase(rec);
+      await saveLink(rec);
     }
     sh.close();
     toast(add.length ? `${add.length} esami aggiunti` : 'Nessun esame nuovo');
@@ -11290,7 +11665,7 @@ function viewLabEdit(id) {
       <label class="field"><span>Nome dell’esame</span><input class="input" id="lxName" value="${esc(x.name || '')}" required placeholder="Es. Troponina ad alta sensibilità"></label>
       <div class="grid2">
         <label class="field"><span>Sigla</span><input class="input" id="lxAbbr" value="${esc(x.abbr || '')}" placeholder="Es. hs-cTn"></label>
-        <label class="field"><span>Categoria</span><select class="input" id="lxCat">${LAB_CATS.map(([k, l]) => `<option value="${k}" ${x.cat === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="field"><span>Categoria</span><select class="input" id="lxCat">${[...LAB_CATS, ...[...new Set(labExams().map(e => e.cat).filter(c => c && !LAB_CATS.some(k => k[0] === c)))].map(c => [c, labCatName(c)])].map(([k, l]) => `<option value="${esc(k)}" ${x.cat === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}<option value="__new">＋ Nuova categoria…</option></select></label>
       </div>
       <div class="grid2">
         <label class="field"><span>Campione</span><input class="input" id="lxSample" value="${esc(x.sample || '')}" placeholder="Es. Siero, plasma (citrato), urine"></label>
@@ -11356,6 +11731,18 @@ function viewLabEdit(id) {
     else if (b.dataset.udel !== undefined) { readRows(); uses.splice(+b.dataset.udel, 1); redraw(); }
   });
   $('#lxInc').addEventListener('change', e => { $('#lxIncBox').hidden = !e.target.checked; });
+  let lastCat = $('#lxCat').value;
+  $('#lxCat').addEventListener('change', async e => {
+    if (e.target.value !== '__new') { lastCat = e.target.value; return; }
+    const name = await modal({ title: 'Nuova categoria', text: 'Per esempio “Gravidanza” o “Genetica”.', input: true, placeholder: 'Nome della categoria', confirm: 'Crea' });
+    if (!name || !String(name).trim()) { e.target.value = lastCat; return; }
+    const k = `c:${String(name).trim()}`;
+    if (!$(`#lxCat option[value="${CSS.escape(k)}"]`)) e.target.insertAdjacentHTML('beforeend', `<option value="${esc(k)}">${esc(String(name).trim())}</option>`);
+    const nw = $('#lxCat option[value="__new"]');
+    e.target.append(nw);
+    e.target.value = k;
+    lastCat = k;
+  });
   $('#lxCnQ')?.addEventListener('input', e => {
     const q = foldAccents(e.target.value.trim());
     $$('[data-cnt]', form).forEach(l => { l.hidden = !!q && !l.dataset.cnt.includes(q) && !l.querySelector('input').checked; });
@@ -11634,7 +12021,7 @@ const TUTORIAL = [
   { icon: '📥', title: '2. Importa', html: `In <b>Importa</b> incolli un testo, carichi un PDF o una mappa XMind e l’app crea le sezioni.<br><br>Un PDF lo dividi ogni tot pagine, a intervalli scelti o <b>per argomenti</b>, leggendo i titoli. Con una chiave AI (Impostazioni) i testi vengono anche formattati, con cloze e domande.` },
   { icon: '🧠', title: '3. Studia una sezione', html: `In alto trovi le schede:<br><br><b>Cloze</b> nasconde i termini chiave · <b>Leggi</b> · <b>Mappe</b> · <b>Pagina bianca</b> e <b>Orale</b>: ripeti e confronta, segnando col semaforo · <b>Domande</b> · <b>Flashcard</b> · <b>Video</b> · <b>Modifica</b>.<br><br>Seleziona del testo in Leggi per evidenziarlo o farne un cloze o una flashcard.` },
   { icon: '🔁', title: '4. Ripassa', html: `Finita una sezione, scegli in fondo:<br><br><b>Segna come studiata in StudyHub</b>: i ripassi li pianifica StudyHub.<br><b>Ripassa nel Notebook</b>: li trovi nella scheda Ripasso.<br><br>Dopo ogni prova tocca <b>Di nuovo</b>, <b>Difficile</b>, <b>Bene</b> o <b>Facile</b>: l’app decide quando riproportela.` },
-  { icon: '🩺', title: '5. Gli strumenti clinici', html: `In <b>Altro</b> trovi le <b>Note cliniche</b> (i quadri clinici, cercabili per sintomo), i <b>Casi clinici</b> (con foto, PDF e la modalità Risolvi), la <b>Medicina di laboratorio</b> (esami, referti e calcoli) e il <b>Glossario</b>.<br><br>Sulle immagini puoi creare un’<b>image occlusion</b> o l’esercizio delle <b>etichette</b> da rimettere al posto giusto.` },
+  { icon: '🩺', title: '5. Gli strumenti clinici', html: `In <b>Altro</b> (sul telefono) trovi le <b>Note cliniche</b> (i quadri clinici, cercabili per sintomo), i <b>Casi clinici</b> (con foto, PDF e la modalità Risolvi), la <b>Medicina di laboratorio</b> (esami, referti e calcoli), la <b>Semeiotica</b> e il <b>Glossario</b>. Sul computer li trovi nella barra a sinistra.<br><br>Sulle immagini puoi creare un’<b>image occlusion</b> o l’esercizio delle <b>etichette</b> da rimettere al posto giusto.` },
   { icon: '📚', title: '6. Fonti e incompleti', html: `In fondo a ogni sezione (in Leggi) aggiungi le <b>fonti</b>.<br><br>Non hai finito, per esempio hai letto una sola fonte? Tocca <b>Segna incompleta</b>: la ritrovi in Altro → <b>Da completare</b>.` },
   { icon: '💾', title: '7. I tuoi dati', html: `Restano su questo dispositivo. Con la <b>sincronizzazione su Google Drive</b> li hai uguali su telefono e computer.<br><br>Ogni tanto fai comunque un <b>backup</b>: Impostazioni → Backup.` },
   { icon: '✨', title: 'Ultimi consigli', html: `Il tasto <span class="help-btn demo" aria-hidden="true">?</span> accanto ai titoli spiega a cosa serve ogni parte.<br><br>Dal menu apri <b>StudyHub</b> qui accanto. La guida completa è in Altro → <b>Guida</b>, dove puoi anche rivedere questo tutorial.` }
@@ -11711,7 +12098,8 @@ const HELP = {
   search: { t: 'Cerca', b: `Cerca in tutto: appunti, flashcard, testo dei PDF, glossario e note cliniche.` },
   links: { t: 'Link utili', b: `I siti che usi di più, a portata di tocco. Tieni premuto o usa Modifica per cambiarli.` },
   exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
-  lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami con nome, sigla, campione e unità: i range li aggiungi tu, perché cambiano da laboratorio a laboratorio.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
+  lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
+  semei: { t: 'Semeiotica', b: `Una scheda per ogni <b>manovra</b>, <b>segno</b> o <b>punto di repere</b>, divise tra semeiotica <b>clinica</b> e <b>chirurgica</b> e per distretto (che scegli tu, per esempio Addome o Torace).<br><br>Ogni scheda è una sezione: descrivi i passaggi, aggiungi foto con <b>＋ Foto</b> (poi puoi farne etichette da rimettere al posto giusto o un’image occlusion) e video nella scheda Video.<br><br><b>Esercitati</b> apre una scheda a caso tra quelle filtrate in modalità Orale: descrivi la manovra a voce e confronta.` },
   labRef: { t: 'Leggi un referto', b: `Scrivi esame e valore (anche la sigla): l’app usa i range delle tue schede e segna in giallo i valori bassi o alti e in rosso quelli critici. Indica il sesso per i range diversi.<br><br>È un esercizio di lettura: in un referto vero vale sempre il range stampato dal laboratorio.` },
   labCalc: { t: 'Calcoli di laboratorio', b: `Gap anionico (anche corretto per l’albumina), calcio corretto, eGFR con la CKD-EPI 2021, LDL di Friedewald, osmolalità calcolata e gap osmolare, sodio corretto per la glicemia. Sotto ogni calcolo c’è la formula.<br><br>Le unità sono quelle convenzionali (mg/dL, mEq/L) dei referti italiani.` },
   labQuiz: { t: 'Allenati', b: `Domande pescate a caso dalle tue schede: range, cause di aumento e diminuzione, quale esame chiedere per una malattia, campione e preparazione. Più schede completi, più domande ci sono.` },
@@ -11749,6 +12137,7 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Simulazione d’esame', key: 'exam' },
   { sel: '.page-head h1', text: 'Impostazioni', key: 'settings' },
   { sel: '.page-head h1', text: 'Medicina di laboratorio', key: 'lab' },
+  { sel: '.page-head h1', text: 'Semeiotica', key: 'semei' },
   { sel: '.page-head h1', text: 'Leggi un referto', key: 'labRef' },
   { sel: '.page-head h1', text: 'Calcoli di laboratorio', key: 'labCalc' },
   { sel: '.page-head h1', text: 'Allenati', key: 'labQuiz', hash: /^#\/lab/ },

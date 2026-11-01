@@ -242,6 +242,9 @@ a { color: var(--accent); }
     background: var(--surface);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
   }
   .brand {
     display: flex;
@@ -261,7 +264,7 @@ a { color: var(--accent); }
     flex: none;
     flex-direction: row;
     gap: 12px;
-    padding: 9px 12px;
+    padding: 7px 12px;
     font-size: 0.95rem;
     font-weight: 600;
     border-radius: var(--r-md);
@@ -3013,3 +3016,7 @@ h1 .help-btn { width: 24px; height: 24px; font-size: 0.85rem; transform: transla
 .lab-q-t { font-size: 1.15rem; line-height: 1.45; margin: 4px 0 16px; }
 .lab-q-a { margin: 0 0 16px; padding: 12px 14px; border-radius: var(--r); background: var(--surface-2); }
 .lab-q-a ul { margin: 0; }
+
+/* v3.31: semeiotica */
+.semei-tools { flex-wrap: nowrap; align-items: center; margin-bottom: 4px; }
+.semei-tools .search { flex: 1; min-width: 0; margin: 0; }
