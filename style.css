@@ -2847,3 +2847,169 @@ html.bluelight::after {
 .tp-peek-t { margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: var(--surface-2); color: var(--muted); font-size: 0.85rem; line-height: 1.5; white-space: pre-wrap; max-height: 220px; overflow: auto; }
 .tp-list .check > span { flex: 1; }
 .tp-list .check input.tp-title { width: 100%; height: auto; margin: 0; flex: initial; accent-color: auto; }
+
+/* =====================================================================
+   v3.28: fonti, incompleti, casi clinici
+   ===================================================================== */
+.fonti {
+  margin: 28px 0 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.fonti-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.fonti h3 { margin: 0; font-size: 0.95rem; font-weight: 750; }
+.fonti .hint { margin: 8px 0 0; }
+.fonti-list { margin: 8px 0 0; padding-left: 1.3em; display: grid; gap: 4px; font-size: 0.93rem; overflow-wrap: anywhere; }
+.fonti-list a { color: var(--accent); font-weight: 650; text-decoration: none; }
+.fonti-list a:hover { text-decoration: underline; }
+.fonti-mini { margin: 14px 0 0; padding: 10px 12px; }
+.btn.inc-on { color: var(--warn); border-color: var(--warn); }
+.inc-line { margin: 10px 0 0; color: var(--warn); font-weight: 650; font-size: 0.92rem; }
+.inc-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin: 2px 0 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--warn);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.inc-item { display: flex; align-items: center; gap: 8px; }
+.inc-item .row { flex: 1; min-width: 0; }
+.inc-item > .btn { flex: none; margin-right: 6px; }
+.case-meta { color: var(--accent); font-weight: 650; }
+.case-run .case-part { animation: fadeIn 0.2s ease-out; }
+.case-run .case-part + .case-part { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.case-guess {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--accent-soft);
+  font-weight: 650;
+}
+.case-next { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 20px; }
+.case-next .field { width: 100%; }
+.case-left { margin: 0; }
+
+/* =====================================================================
+   v3.29: tutorial e tasti “?”
+   ===================================================================== */
+.help-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 22px; height: 22px;
+  margin-left: 8px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 750 0.78rem/1 var(--ui-font);
+  vertical-align: middle;
+  cursor: pointer;
+  flex: none;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+.help-btn::before { content: ""; position: absolute; inset: -9px; border-radius: 50%; }
+.help-btn:hover, .help-btn:focus-visible { background: var(--accent); color: #0b0f17; }
+.help-btn.demo { pointer-events: none; margin: 0 2px; }
+h1 .help-btn { width: 24px; height: 24px; font-size: 0.85rem; transform: translateY(-3px); }
+.split-seg + .help-btn, .seg + .help-btn { margin: -4px 0 8px 2px; }
+.sec-extra > .help-btn { width: 30px; height: 30px; margin-left: 2px; font-size: 0.9rem; }
+.help-body { line-height: 1.6; }
+.help-body b { color: var(--text); }
+.modal.tut { text-align: center; }
+.tut-icon { font-size: 2.6rem; line-height: 1; margin: 6px 0 10px; }
+.tut-title { margin: 0 0 12px; }
+.tut-text { text-align: left; line-height: 1.6; min-height: 7.5em; }
+.tut-dots { display: flex; justify-content: center; gap: 6px; margin: 18px 0 6px; }
+.tut-dots span { width: 7px; height: 7px; border-radius: 50%; background: var(--line); transition: width 0.2s var(--ease), background 0.2s var(--ease); }
+.tut-dots span.on { width: 20px; border-radius: 4px; background: var(--accent); }
+.modal.tut .modal-actions { justify-content: space-between; }
+
+/* =====================================================================
+   v3.30: Medicina di laboratorio
+   ===================================================================== */
+.lab-tabs { margin-bottom: 18px; }
+.lab-abbr {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: var(--ui-font);
+  font-size: 0.78rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.lab-abbr.big { font-size: 0.95rem; padding: 2px 9px; }
+.lab-notes .lab-block { margin-bottom: 8px; }
+.lab-notes .lab-block > h2.sub, .lab-two h2.sub { margin-top: 18px; }
+.lab-notes td.num, .lab-notes th { white-space: nowrap; }
+.lab-notes td.num { font-variant-numeric: tabular-nums; }
+.lab-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0 24px; }
+.lab-form h2.sub { margin-top: 26px; }
+.lab-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1.4fr) auto; gap: 6px; margin-bottom: 6px; align-items: center; }
+.lab-row.use { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.8fr) auto; }
+@media (max-width: 640px) {
+  .lab-row, .lab-row.use { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; padding: 8px; border: 1px solid var(--line); border-radius: var(--r); }
+  .lab-row > :first-child, .lab-row > [data-rf="note"] { grid-column: 1 / 3; }
+  .lab-row > [data-rf="note"] { grid-row: 3; }
+  .lab-row > button { grid-column: 3; grid-row: 1; }
+  .lab-row.use > [data-uf="cut"] { grid-column: 1 / 3; }
+}
+.input.num { font-variant-numeric: tabular-nums; }
+.lab-cn { max-height: 220px; overflow: auto; margin: 8px 0 14px; padding: 4px 12px; border: 1px solid var(--line); border-radius: var(--r); }
+.lab-cn .check[hidden] { display: none; }
+.lab-base-cats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; margin: 6px 0 10px; }
+.lab-ref-head { max-width: 420px; }
+.ref-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(130px, 1fr) minmax(0, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.ref-row.ok { border-left-color: #22c55e; }
+.ref-row.low, .ref-row.high { border-left-color: var(--warn); }
+.ref-row.crit { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
+.ref-val { display: flex; align-items: center; gap: 6px; }
+.ref-val .input { min-width: 0; }
+.ref-unit { color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+.ref-out { font-size: 0.9rem; color: var(--muted); }
+.ref-row.low .ref-out, .ref-row.high .ref-out { color: var(--warn); font-weight: 650; }
+.ref-row.crit .ref-out { color: var(--danger); font-weight: 750; }
+.ref-out a { color: var(--accent); }
+@media (max-width: 640px) {
+  .ref-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ref-row > .ref-val { grid-column: 1; }
+  .ref-row > .ref-out { grid-column: 1 / -1; }
+  .ref-row > button { grid-column: 2; grid-row: 1; }
+}
+.lab-calcs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.lab-calc { padding: 4px 16px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.lab-calc h2.sub { margin-top: 12px; }
+.lab-calc-f { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; }
+.lab-calc-out { min-height: 1.5em; margin: 4px 0 6px; font-size: 1.02rem; }
+.lab-calc-out strong { color: var(--accent); font-size: 1.15em; }
+.lab-q { padding: 18px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.lab-q-t { font-size: 1.15rem; line-height: 1.45; margin: 4px 0 16px; }
+.lab-q-a { margin: 0 0 16px; padding: 12px 14px; border-radius: var(--r); background: var(--surface-2); }
+.lab-q-a ul { margin: 0; }

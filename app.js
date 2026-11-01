@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.27';
+const APP_VERSION = '3.30';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1012,6 +1012,7 @@ function sectionRow(s, { showNb = false, review = false } = {}) {
   if (cz) bits.push(`${cz} cloze`);
   if (q) bits.push(`${q} ${q === 1 ? 'domanda' : 'domande'}`);
   if (s.needsFormat) bits.push('da formattare');
+  if (s.incomplete) bits.push('⚠ incompleta');
   const href = review ? `#/sec/${s.id}/${defaultMode(s)}` : `#/sec/${s.id}/${openMode(s)}`;
   return `
     <li data-id="${s.id}">
@@ -1046,7 +1047,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1089,6 +1090,9 @@ function route() {
     case 'card': return viewCardEditor(p1);
     case 'study': return viewStudy(p1);
     case 'studyhub': ShDock.open(); location.replace('#/notebooks'); return;
+    case 'cases': return viewCases();
+    case 'lab': return viewLab(p1, p2);
+    case 'incomplete': return viewIncomplete();
     default: return viewNotebooks();
   }
 }
@@ -1160,6 +1164,7 @@ function viewNotebooks() {
 function viewNotebook(id) {
   const nb = nbById(id);
   if (!nb) return notFound('Questo notebook');
+  if (nb.kind === 'cases') { location.replace('#/cases'); return; }
   const secs = secsOf(id);
   const due = secs.filter(isDue).length;
   const nbCards = cardsOf(id);
@@ -1515,14 +1520,17 @@ function viewSection(id, mode) {
     saveSection(sec).then(() => { toast('Ho chiuso un cloze rimasto aperto in questa sezione'); route(); });
     return;
   }
-  if (!MODES.some(([m]) => m === mode)) mode = openMode(sec);
+  const caseSec = isCase(sec);
+  const modes = caseSec ? [['case', 'Risolvi'], ...MODES] : MODES;
+  if (!modes.some(([m]) => m === mode)) mode = openMode(sec);
   const nb = nbById(sec.notebookId);
   const crumb = state.fromReview
     ? '<a class="back" href="#/review">Ripasso</a>'
+    : caseSec ? '<a class="back" href="#/cases">Casi clinici</a>'
     : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
   // “Torna a…”: la pagina da cui sei arrivato, se non è già quella del percorso
   const from = Nav.from();
-  const crumbHref = state.fromReview ? '#/review' : `#/nb/${sec.notebookId}`;
+  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : `#/nb/${sec.notebookId}`;
   const prevLabel = from && Nav.key(from) !== Nav.key(location.hash) && Nav.key(from) !== Nav.key(crumbHref) ? Nav.label(from) : '';
   const back = `<div class="back-row">${prevLabel ? `<a class="back back-prev" href="${esc(from)}" data-nav-back title="Torna alla pagina di prima">${esc(prevLabel)}</a>` : ''}${crumb}</div>`;
   const order = nb ? nbReadingOrder(nb) : [];
@@ -1533,16 +1541,19 @@ function viewSection(id, mode) {
     ${back}
     <header class="sec-head">
       <h1>${esc(sec.title)}</h1>
+      ${caseSec && caseMetaBits(sec).length ? `<p class="meta case-meta">${esc(caseMetaBits(sec).join(' · '))}</p>` : ''}
       <p class="meta">${esc(srsLabel(sec))}</p>
+      ${sec.incomplete ? `<button class="inc-chip" type="button" data-act="inc" title="Cosa manca">⚠ Incompleta${incompleteNote(sec) ? `: ${esc(incompleteNote(sec).slice(0, 60))}${incompleteNote(sec).length > 60 ? '…' : ''}` : ''}</button>` : ''}
       ${tagChips(tagsOf(sec))}
       <div class="sec-extra">
+        ${caseSec ? '<button class="btn sm" type="button" data-act="case-meta">Dati del caso</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button><button class="btn sm" type="button" data-act="case-pdf">＋ PDF</button>' : ''}
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length ? ` (${pdfsOf(sec.id).length})` : ''}</a>
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
     </header>
     <nav class="tabs" aria-label="Modalità di studio">
-      ${MODES.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}</a>`).join('')}
+      ${modes.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}</a>`).join('')}
     </nav>
     <section id="modeBody" class="mode-body"></section>
     ${prevSec || nextSec ? `
@@ -1552,6 +1563,10 @@ function viewSection(id, mode) {
       </nav>` : ''}
   `);
   on('[data-act="labels"]', 'click', () => startLabels(sec));
+  on('[data-act="inc"]', 'click', async () => { if (await toggleIncomplete(sec, () => saveSection(sec), caseSec ? 'caso' : 'sezione')) route(); });
+  on('[data-act="case-meta"]', 'click', async () => { if (await caseSheet(sec)) { toast('Dati del caso salvati'); route(); } });
+  on('[data-act="case-photo"]', 'click', async () => { if (await addPhotosTo(sec)) route(); });
+  on('[data-act="case-pdf"]', 'click', async () => { if (await addPdfTo(sec)) route(); });
   // Cambiare scheda non riempie la cronologia: il tasto Indietro torna al notebook.
   on('.tabs a', 'click', e => { e.preventDefault(); Nav.replace(e.currentTarget.getAttribute('href')); });
   const tabsEl = $('.tabs');
@@ -1561,7 +1576,7 @@ function viewSection(id, mode) {
     tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
   }
   const body = $('#modeBody');
-  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, edit: modeEdit }[mode])(sec, body);
+  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, edit: modeEdit, case: modeCase }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -1755,8 +1770,9 @@ function modeRead(sec, body) {
           <button class="btn ghost" data-act="plan">Ripassa nel Notebook</button>
         </div>
       </div>` : ''}
-    ${sec.source ? `<p class="source">Fonte: ${esc(sec.source)}</p>` : ''}
+    ${sourcesBlockHtml(sec)}
   `;
+  bindSourcesBlock(body, sec, () => saveSection(sec), isCase(sec) ? 'caso' : 'sezione');
   const notesEl = $('.notes', body);
   if (notesEl) {
     const readFolds = setupFolds(notesEl, sec.id);
@@ -5022,7 +5038,8 @@ function viewGuide() {
   const sec = (title, body, open = false) => `<details class="guide" ${open ? 'open' : ''}><summary>${title}</summary><div class="notes guide-body">${body}</div></details>`;
   setView(`
     <header class="page-head"><div><h1>Guida all’uso</h1>
-      <p class="lede">Tocca un argomento per aprirlo.</p></div></header>
+      <p class="lede">Tocca un argomento per aprirlo. In ogni pagina il tasto ? accanto ai titoli spiega a cosa serve.</p></div>
+      <button class="btn" type="button" data-act="tutorial">Rivedi il tutorial</button></header>
     ${sec('Primi passi', `
       <ol>
         <li>Crea un <strong>notebook</strong> per ogni materia (Notebook → Nuovo notebook).</li>
@@ -5032,6 +5049,30 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.30: Medicina di laboratorio', `
+      <ul>
+        <li>Da Altro → <strong>Medicina di laboratorio</strong>. Ogni esame ha la sua scheda: campione e preparazione, range (anche diversi per uomini, donne o età) con la loro fonte, valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, quando richiederlo, uso diagnostico, note, note cliniche collegate, fonti e “incompleto”.</li>
+        <li><strong>Uso diagnostico</strong>: una riga per malattia e soglia con sensibilità e specificità; LR+ e LR− li calcola l’app.</li>
+        <li><strong>Elenco di base</strong>: oltre 110 esami in 16 categorie, con nome, sigla, campione e unità più usate in Italia. I range li aggiungi tu dalla tua fonte, perché cambiano da laboratorio a laboratorio.</li>
+        <li><strong>Compila con l’AI</strong> riempie i campi vuoti di una scheda e la segna come incompleta, da verificare.</li>
+        <li><strong>Leggi un referto</strong>: scrivi esami e valori e l’app segna quelli bassi, alti o critici secondo le tue schede.</li>
+        <li><strong>Calcoli</strong>: gap anionico, calcio corretto, eGFR CKD-EPI 2021, LDL di Friedewald, osmolalità e gap osmolare, sodio corretto.</li>
+        <li><strong>Allenati</strong>: domande a caso dalle tue schede. Gli esami compaiono anche in Cerca e nelle note cliniche collegate.</li>
+      </ul>`)}
+    ${sec('Novità della 3.29: tutorial e tasti ?', `
+      <ul>
+        <li>Al primo avvio parte un <strong>tutorial</strong> a passi; lo rivedi da qui con “Rivedi il tutorial”.</li>
+        <li>Il tasto <strong>?</strong> accanto ai titoli delle pagine, ai gruppi delle Impostazioni, alle opzioni di Importa e alle schede di una sezione spiega a cosa serve quella parte.</li>
+      </ul>`)}
+    ${sec('Novità della 3.28: casi clinici, fonti e “Da completare”', `
+      <ul>
+        <li><strong>Casi clinici</strong> (da Altro): “Nuovo caso” chiede titolo, data, dove l’hai visto (lezione, tirocinio, libro), docente, specialità e materia, e prepara lo schema: presentazione, anamnesi, esame obiettivo, esami, diagnosi differenziale, diagnosi, terapia, punti chiave. Niente dati che rendano riconoscibile il paziente.</li>
+        <li>Nel caso, <strong>＋ Foto</strong> aggiunge una o più foto (sul telefono puoi scattarle al momento) in fondo, sotto “Allegati”; <strong>＋ PDF</strong> allega slide o referti. Per Word o PowerPoint salva prima in PDF.</li>
+        <li>La scheda <strong>Risolvi</strong> mostra il caso una parte alla volta. Prima della diagnosi differenziale e della diagnosi ti chiede la tua ipotesi, poi la confronti. Alla fine lo valuti come una sezione, così torna nei ripassi.</li>
+        <li>Nella pagina dei casi cerchi per sintomi, esami o diagnosi e filtri per specialità, materia o contesto.</li>
+        <li><strong>Fonti</strong>: in fondo a ogni sezione e caso (in Leggi) e in ogni nota clinica, una per riga; i link restano cliccabili.</li>
+        <li><strong>Segna incompleta</strong>: accanto alle fonti, con una nota su cosa manca. Resta segnalata in cima alla sezione e nell’elenco del notebook, e tutto finisce nella pagina <strong>Da completare</strong> (da Altro), dal più vecchio.</li>
+      </ul>`)}
     ${sec('Novità della 3.27: PDF divisi per argomenti', `
       <ul>
         <li>In Importa, con un PDF che ha il testo selezionabile (anche con l’OCR fatto da te), scegli <strong>Per argomenti</strong>. L’app legge i titoli: quelli più grandi del testo, quelli numerati come 3.1 o 3.1.2 e le righe in maiuscolo.</li>
@@ -5200,6 +5241,7 @@ function viewGuide() {
     ${sec('Backup e sicurezza dei dati', `
       <p>I dati sono salvati nel browser di ogni dispositivo e, se la attivi, su Drive. In Impostazioni → Backup puoi esportare un file con tutto. Le chiavi API restano solo sul dispositivo.</p>`)}
   `);
+  on('[data-act="tutorial"]', 'click', openTutorial);
 }
 
 /* ---------------------------------------------------------------------
@@ -6480,6 +6522,9 @@ function takeSharedText() {
    ===================================================================== */
 
 const ICONS = {
+  lab: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6.5L4.8 18.3A1.8 1.8 0 0 0 6.4 21h11.2a1.8 1.8 0 0 0 1.6-2.7L14 9.5V3"/><path d="M7.2 15h9.6"/></svg>',
+  cases: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9 3v3h6V3"/><path d="M12 10v6M9 13h6"/></svg>',
+  incomplete: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19z"/><path d="M12 10v4.5M12 17.3v.2"/></svg>',
   studyhub: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/><path d="m16.2 12 1.3 1.3 2-2.6"/></svg>',
   calendar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="2.5"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>',
   clinic: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M10 13v2a5 5 0 0 0 10 0v-2"/><circle cx="20" cy="11" r="2"/></svg>',
@@ -6525,6 +6570,9 @@ const MORE_ITEMS = [
   ['studyhub', 'StudyHub', 'Il tuo planner, aperto qui accanto senza lasciare il Notebook'],
   ['calendar', 'Calendario', 'Ripassi in programma, tempo di studio, punti deboli'],
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
+  ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
+  ['lab', 'Medicina di laboratorio', 'Esami con range, cause e uso diagnostico; referti, calcoli e allenamento'],
+  ['incomplete', 'Da completare', 'Sezioni, casi e note che hai segnato come incompleti'],
   ['glossary', 'Glossario', 'Parole particolari e il loro significato'],
   ['tag', 'Tag', 'Appunti e flashcard per etichetta'],
   ['links', 'Link utili', 'I siti che usi per studiare'],
@@ -7056,12 +7104,16 @@ function clinicSheet(entry = null, prefill = {}) {
       ${known.length ? `<div class="tag-suggest" data-for="cnSyms"><span class="hint">Già usati:</span>${known.map(t => `<button type="button" class="tag" data-addtag="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
       <label class="field"><span>Materia</span>${nbSelectHtml('cnNb', e.nbId || prefill.nbId || '')}</label>
       <label class="field"><span>Note: diagnosi, esami, terapia…</span><textarea class="input card-ta" id="cnBody" rows="6">${esc(e.body || prefill.body || '')}</textarea></label>
+      <label class="field"><span>Fonti, una per riga</span><textarea class="input" id="cnSrc" rows="2" placeholder="Harrison, cap. 270&#10;https://www.orpha.net/…">${esc(sourcesOf(e).join('\n'))}</textarea></label>
+      <label class="check"><input type="checkbox" id="cnInc" ${e.incomplete ? 'checked' : ''}><span>Incompleta</span></label>
+      <label class="field" id="cnIncBox" ${e.incomplete ? '' : 'hidden'}><span>Cosa manca? Facoltativo</span><input class="input" id="cnIncNote" value="${esc(e.incomplete?.note || '')}" placeholder="Es. manca la terapia"></label>
       <div class="modal-actions">
         ${entry ? '<button class="btn ghost danger" type="button" data-cn-act="del">Elimina</button>' : ''}
         <button class="btn ghost" type="button" data-cn-act="no">Annulla</button>
         <button class="btn primary" type="button" data-cn-act="ok">Salva</button>
       </div>`, { label: 'Nota clinica', onClose: resolve });
     bindTagField(sh.el, 'cnSyms');
+    $('#cnInc', sh.el).addEventListener('change', ev => { $('#cnIncBox', sh.el).hidden = !ev.target.checked; });
     $('[data-cn-act="no"]', sh.el).onclick = () => sh.close(false);
     const del = $('[data-cn-act="del"]', sh.el);
     if (del) del.onclick = async () => { await removeRecords([{ store: 'links', rec: entry }]); toast('Nota clinica eliminata'); sh.close(true); };
@@ -7070,6 +7122,9 @@ function clinicSheet(entry = null, prefill = {}) {
       if (!title) { toast('Scrivi il quadro clinico'); $('#cnTitle', sh.el).focus(); return; }
       const rec = entry || { id: uid(), kind: 'clinical', notebookId: '_clinical', created: Date.now(), sectionId: prefill.sectionId || '' };
       Object.assign(rec, { title, symptoms: parseTags($('#cnSyms', sh.el).value), nbId: $('#cnNb', sh.el).value || '', body: $('#cnBody', sh.el).value.trim() });
+      rec.sources = $('#cnSrc', sh.el).value.split('\n').map(x => x.trim()).filter(Boolean);
+      if ($('#cnInc', sh.el).checked) rec.incomplete = { note: $('#cnIncNote', sh.el).value.trim(), since: rec.incomplete?.since || todayStr() };
+      else delete rec.incomplete;
       await saveLink(rec);
       toast(entry ? 'Nota clinica aggiornata' : 'Nota clinica salvata');
       sh.close(true);
@@ -7085,7 +7140,10 @@ function showClinicNote(id) {
     <h2>${esc(n.title)}</h2>
     ${n.nbId && nbById(n.nbId) ? `<p class="sheet-sub">${esc(nbById(n.nbId).name)}</p>` : ''}
     ${(n.symptoms || []).length ? `<div class="tags sym-tags">${n.symptoms.map(s => `<span class="tag sym">${esc(s)}</span>`).join('')}</div>` : ''}
+    ${n.incomplete ? `<p class="inc-line">⚠ Incompleta${incompleteNote(n) ? `: ${esc(incompleteNote(n))}` : ''}</p>` : ''}
     ${n.body ? `<div class="notes cn-body">${renderMd(n.body)}</div>` : ''}
+    ${labExams().some(x => (x.clinic || []).includes(n.id)) ? `<div class="fonti fonti-mini"><h3>Esami di laboratorio</h3><div class="tags">${labExams().filter(x => (x.clinic || []).includes(n.id)).map(x => `<a class="tag" href="#/lab/${x.id}" data-g="lab">${esc(x.name)}</a>`).join('')}</div></div>` : ''}
+    ${sourcesOf(n).length ? `<div class="fonti fonti-mini"><h3>Fonti</h3><ol class="fonti-list">${sourcesOf(n).map(t => `<li>${sourceLineHtml(t)}</li>`).join('')}</ol></div>` : ''}
     ${sec ? `<p class="source">Dalla sezione <a href="#/sec/${sec.id}" data-g="go">${esc(sec.title)}</a></p>` : ''}
     <div class="modal-actions">
       <button class="btn ghost" type="button" data-g="edit">Modifica</button>
@@ -7094,6 +7152,7 @@ function showClinicNote(id) {
   $('[data-g="close"]', sh.el).onclick = () => sh.close();
   const go2 = $('[data-g="go"]', sh.el);
   if (go2) go2.onclick = () => sh.close();
+  $$('[data-g="lab"]', sh.el).forEach(a => { a.onclick = () => sh.close(); });
   $('[data-g="edit"]', sh.el).onclick = async () => { sh.close(); if (await clinicSheet(n)) route(); };
 }
 function viewClinic() {
@@ -9575,6 +9634,8 @@ function moreSearchHtml(q) {
   if (gl.length) out.push(`<h2 class="sub">Glossario</h2><ul class="list">${gl.map(g => `<li><button type="button" class="row" data-sgl="${g.id}"><span class="row-main"><span class="row-title">${foldSnippet(g.term, f)}</span><span class="row-sub">${foldSnippet(plainText(g.def, 1e9), f, 50)}</span></span></button></li>`).join('')}</ul>`);
   const cn = clinicalNotes().filter(n => foldAccents(`${n.title} ${(n.symptoms || []).join(' ')} ${n.body || ''}`).includes(f)).slice(0, 20);
   if (cn.length) out.push(`<h2 class="sub">Note cliniche</h2><ul class="list">${cn.map(n => `<li><button type="button" class="row" data-scn="${n.id}"><span class="row-main"><span class="row-title">${foldSnippet(n.title, f)}</span>${(n.symptoms || []).length ? `<span class="tags">${n.symptoms.map(s => `<span class="tag sym ${foldAccents(s).includes(f) ? 'on' : ''}">${esc(s)}</span>`).join('')}</span>` : ''}</span></button></li>`).join('')}</ul>`);
+  const lx = labExams().filter(x => foldAccents(`${x.name} ${x.abbr || ''} ${x.up || ''} ${x.down || ''} ${(x.uses || []).map(u => u.dx).join(' ')}`).includes(f)).slice(0, 20);
+  if (lx.length) out.push(`<h2 class="sub">Medicina di laboratorio</h2><ul class="list">${lx.map(x => `<li><a class="row" href="#/lab/${x.id}"><span class="row-main"><span class="row-title">${foldSnippet(x.name, f)}${x.abbr ? ` <span class="lab-abbr">${esc(x.abbr)}</span>` : ''}</span><span class="row-sub">${esc(labCatName(x.cat))}</span></span></a></li>`).join('')}</ul>`);
   const todo = PdfIndex.pending().length;
   if (todo) out.push(`<p class="hint">Sto leggendo il testo di ${todo} PDF per poterlo cercare…</p>`);
   return out.join('');
@@ -10488,6 +10549,7 @@ async function init() {
   setupPwa();
   ShDock.init();
   Nav.init();
+  initHelp();
   Tracker.start();
   applyBlueLight();
   watchKeyboard();
@@ -10936,7 +10998,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {
@@ -10963,6 +11025,1198 @@ function nbReadingOrder(nb) {
   });
   add(secs);
   return out;
+}
+
+/* =====================================================================
+   v3.30: Medicina di laboratorio
+   Schede degli esami (range, valori critici, cause, uso diagnostico con
+   sensibilità, specificità e rapporti di verosimiglianza), lettura di un
+   referto, calcoli di tutti i giorni e un piccolo allenamento.
+   Ogni esame è un record { kind: 'lab' } nei link: si sincronizza e va nel backup.
+   ===================================================================== */
+const LAB_CATS = [
+  ['ema', 'Ematologia'], ['coag', 'Coagulazione'], ['elet', 'Elettroliti e acido-base'], ['rene', 'Rene e urine'],
+  ['fega', 'Fegato e vie biliari'], ['panc', 'Pancreas'], ['cuor', 'Cuore e muscolo'], ['meta', 'Metabolismo'],
+  ['ferr', 'Ferro e vitamine'], ['endo', 'Endocrinologia'], ['infi', 'Infiammazione e immunologia'], ['tumo', 'Marcatori tumorali'],
+  ['micr', 'Microbiologia e sierologia'], ['liqu', 'Liquidi biologici'], ['farm', 'Farmaci e tossicologia'], ['altr', 'Altro']
+];
+const labCatName = k => (LAB_CATS.find(c => c[0] === k) || LAB_CATS[LAB_CATS.length - 1])[1];
+const labExams = () => state.links.filter(l => l.kind === 'lab').sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
+const labById = id => state.links.find(l => l.kind === 'lab' && l.id === id);
+const labNum = v => { const n = parseFloat(String(v ?? '').trim().replace(/\s/g, '').replace(',', '.')); return Number.isFinite(n) ? n : null; };
+const labFmt = (n, d = 2) => (n === null || n === undefined || !Number.isFinite(n) ? '–' : n.toLocaleString('it-IT', { maximumFractionDigits: d }));
+const labLines = t => String(t || '').split('\n').map(x => x.replace(/^\s*[-•·*]\s*/, '').trim()).filter(Boolean);
+function labRangeText(r, unit = '') {
+  const lo = String(r.low ?? '').trim(), hi = String(r.high ?? '').trim();
+  const core = lo && hi ? `${lo} – ${hi}` : hi ? `< ${hi}` : lo ? `> ${lo}` : '';
+  return core ? `${core}${unit ? ` ${unit}` : ''}` : '';
+}
+const labHasRange = x => (x.ranges || []).some(r => String(r.low ?? '').trim() || String(r.high ?? '').trim());
+// il range da usare per una persona: quello del suo sesso se c’è, altrimenti il primo
+function labPickRange(x, sex) {
+  const rows = (x.ranges || []).filter(r => labNum(r.low) !== null || labNum(r.high) !== null);
+  if (!rows.length) return null;
+  const re = sex === 'F' ? /donn|femmin|\bf\b/i : sex === 'M' ? /uomin|maschi|\bm\b/i : null;
+  return (re && rows.find(r => re.test(r.who || ''))) || rows.find(r => !/donn|femmin|uomin|maschi|bambin|neonat|gravid/i.test(r.who || '')) || rows[0];
+}
+
+// Elenco di base: nomi, sigle, campione e unità più usate in Italia. Niente range:
+// quelli li prendi dal tuo libro o dal tuo laboratorio.
+const LAB_BASE = [
+  ['ema', 'Emoglobina', 'Hb', 'Sangue intero (EDTA)', 'g/dL'], ['ema', 'Ematocrito', 'Ht', 'Sangue intero (EDTA)', '%'],
+  ['ema', 'Globuli rossi', 'GR', 'Sangue intero (EDTA)', '×10⁶/µL'], ['ema', 'Volume corpuscolare medio', 'MCV', 'Sangue intero (EDTA)', 'fL'],
+  ['ema', 'Contenuto emoglobinico medio', 'MCH', 'Sangue intero (EDTA)', 'pg'], ['ema', 'Concentrazione emoglobinica media', 'MCHC', 'Sangue intero (EDTA)', 'g/dL'],
+  ['ema', 'Ampiezza di distribuzione dei globuli rossi', 'RDW', 'Sangue intero (EDTA)', '%'], ['ema', 'Globuli bianchi', 'GB', 'Sangue intero (EDTA)', '×10³/µL'],
+  ['ema', 'Neutrofili', 'NEU', 'Sangue intero (EDTA)', '×10³/µL'], ['ema', 'Linfociti', 'LYM', 'Sangue intero (EDTA)', '×10³/µL'],
+  ['ema', 'Monociti', 'MONO', 'Sangue intero (EDTA)', '×10³/µL'], ['ema', 'Eosinofili', 'EOS', 'Sangue intero (EDTA)', '×10³/µL'],
+  ['ema', 'Basofili', 'BASO', 'Sangue intero (EDTA)', '×10³/µL'], ['ema', 'Piastrine', 'PLT', 'Sangue intero (EDTA)', '×10³/µL'],
+  ['ema', 'Reticolociti', 'RET', 'Sangue intero (EDTA)', '%'], ['ema', 'Velocità di eritrosedimentazione', 'VES', 'Sangue intero (citrato)', 'mm/h'],
+  ['coag', 'Tempo di protrombina', 'PT', 'Plasma (citrato)', 's'], ['coag', 'International Normalized Ratio', 'INR', 'Plasma (citrato)', ''],
+  ['coag', 'Tempo di tromboplastina parziale attivata', 'aPTT', 'Plasma (citrato)', 's'], ['coag', 'Fibrinogeno', '', 'Plasma (citrato)', 'mg/dL'],
+  ['coag', 'D-dimero', '', 'Plasma (citrato)', ''], ['coag', 'Antitrombina', 'AT', 'Plasma (citrato)', '%'],
+  ['elet', 'Sodio', 'Na⁺', 'Siero', 'mEq/L'], ['elet', 'Potassio', 'K⁺', 'Siero', 'mEq/L'], ['elet', 'Cloro', 'Cl⁻', 'Siero', 'mEq/L'],
+  ['elet', 'Calcio totale', 'Ca', 'Siero', 'mg/dL'], ['elet', 'Calcio ionizzato', 'Ca²⁺', 'Sangue intero (eparina)', 'mmol/L'],
+  ['elet', 'Magnesio', 'Mg', 'Siero', 'mg/dL'], ['elet', 'Fosforo', 'P', 'Siero', 'mg/dL'], ['elet', 'Bicarbonati', 'HCO₃⁻', 'Siero o sangue arterioso', 'mEq/L'],
+  ['elet', 'Osmolalità plasmatica', '', 'Siero', 'mOsm/kg'], ['elet', 'pH arterioso', 'pH', 'Sangue arterioso (eparina)', ''],
+  ['elet', 'Pressione parziale di CO₂', 'pCO₂', 'Sangue arterioso (eparina)', 'mmHg'], ['elet', 'Pressione parziale di O₂', 'pO₂', 'Sangue arterioso (eparina)', 'mmHg'],
+  ['elet', 'Eccesso di basi', 'BE', 'Sangue arterioso (eparina)', 'mEq/L'], ['elet', 'Lattati', '', 'Sangue arterioso o venoso', 'mmol/L'],
+  ['rene', 'Creatinina', 'Crea', 'Siero', 'mg/dL'], ['rene', 'Filtrato glomerulare stimato', 'eGFR', 'Calcolato', 'mL/min/1,73 m²'],
+  ['rene', 'Azotemia (urea)', 'Urea', 'Siero', 'mg/dL'], ['rene', 'Acido urico', 'UA', 'Siero', 'mg/dL'], ['rene', 'Esame delle urine', '', 'Urine (mitto intermedio)', ''],
+  ['rene', 'Proteinuria delle 24 ore', '', 'Urine delle 24 ore', 'mg/24 h'], ['rene', 'Rapporto albumina/creatinina urinario', 'ACR', 'Urine (spot)', 'mg/g'],
+  ['fega', 'Aspartato aminotransferasi', 'AST', 'Siero', 'U/L'], ['fega', 'Alanina aminotransferasi', 'ALT', 'Siero', 'U/L'],
+  ['fega', 'Gamma-glutamiltransferasi', 'GGT', 'Siero', 'U/L'], ['fega', 'Fosfatasi alcalina', 'ALP', 'Siero', 'U/L'],
+  ['fega', 'Bilirubina totale', '', 'Siero', 'mg/dL'], ['fega', 'Bilirubina diretta', '', 'Siero', 'mg/dL'], ['fega', 'Albumina', 'Alb', 'Siero', 'g/dL'],
+  ['fega', 'Proteine totali', '', 'Siero', 'g/dL'], ['fega', 'Lattato deidrogenasi', 'LDH', 'Siero', 'U/L'], ['fega', 'Ammoniemia', 'NH₃', 'Plasma (EDTA, in ghiaccio)', ''],
+  ['panc', 'Amilasi', '', 'Siero', 'U/L'], ['panc', 'Lipasi', '', 'Siero', 'U/L'],
+  ['cuor', 'Troponina ad alta sensibilità', 'hs-cTn', 'Siero o plasma', 'ng/L'], ['cuor', 'Creatinchinasi', 'CK', 'Siero', 'U/L'],
+  ['cuor', 'Creatinchinasi MB', 'CK-MB', 'Siero', 'ng/mL'], ['cuor', 'Peptide natriuretico di tipo B', 'BNP', 'Plasma (EDTA)', 'pg/mL'],
+  ['cuor', 'NT-proBNP', 'NT-proBNP', 'Siero o plasma', 'pg/mL'], ['cuor', 'Mioglobina', '', 'Siero', 'ng/mL'],
+  ['meta', 'Glicemia', 'Glu', 'Plasma (fluoruro) o siero', 'mg/dL'], ['meta', 'Emoglobina glicata', 'HbA1c', 'Sangue intero (EDTA)', 'mmol/mol'],
+  ['meta', 'Colesterolo totale', 'CT', 'Siero', 'mg/dL'], ['meta', 'Colesterolo HDL', 'HDL', 'Siero', 'mg/dL'], ['meta', 'Colesterolo LDL', 'LDL', 'Siero', 'mg/dL'],
+  ['meta', 'Trigliceridi', 'TG', 'Siero', 'mg/dL'], ['meta', 'Lipoproteina(a)', 'Lp(a)', 'Siero', ''], ['meta', 'Insulina', '', 'Siero', 'µU/mL'], ['meta', 'Peptide C', '', 'Siero', 'ng/mL'],
+  ['ferr', 'Sideremia', 'Fe', 'Siero', 'µg/dL'], ['ferr', 'Ferritina', '', 'Siero', 'ng/mL'], ['ferr', 'Transferrina', '', 'Siero', 'mg/dL'],
+  ['ferr', 'Saturazione della transferrina', 'TSAT', 'Calcolato', '%'], ['ferr', 'Vitamina B12', 'B12', 'Siero', 'pg/mL'], ['ferr', 'Folati', '', 'Siero', 'ng/mL'],
+  ['ferr', '25-idrossivitamina D', '25(OH)D', 'Siero', 'ng/mL'],
+  ['endo', 'Tireotropina', 'TSH', 'Siero', 'mUI/L'], ['endo', 'Tiroxina libera', 'FT4', 'Siero', ''], ['endo', 'Triiodotironina libera', 'FT3', 'Siero', ''],
+  ['endo', 'Anticorpi anti-tireoperossidasi', 'Anti-TPO', 'Siero', 'UI/mL'], ['endo', 'Cortisolo', '', 'Siero', 'µg/dL'], ['endo', 'ACTH', 'ACTH', 'Plasma (EDTA, in ghiaccio)', 'pg/mL'],
+  ['endo', 'Prolattina', 'PRL', 'Siero', 'ng/mL'], ['endo', 'Paratormone', 'PTH', 'Plasma o siero', 'pg/mL'], ['endo', 'Beta-hCG', 'β-hCG', 'Siero o urine', 'mUI/mL'],
+  ['infi', 'Proteina C reattiva', 'PCR', 'Siero', ''], ['infi', 'Procalcitonina', 'PCT', 'Siero', 'ng/mL'], ['infi', 'Elettroforesi delle proteine sieriche', '', 'Siero', '%'],
+  ['infi', 'Immunoglobuline G, A, M', 'IgG IgA IgM', 'Siero', 'mg/dL'], ['infi', 'Complemento C3 e C4', 'C3 C4', 'Siero', 'mg/dL'],
+  ['infi', 'Anticorpi antinucleo', 'ANA', 'Siero', 'titolo'], ['infi', 'Anticorpi anti-citoplasma dei neutrofili', 'ANCA', 'Siero', ''],
+  ['infi', 'Fattore reumatoide', 'FR', 'Siero', 'UI/mL'], ['infi', 'Anticorpi anti-peptidi citrullinati', 'Anti-CCP', 'Siero', 'U/mL'],
+  ['tumo', 'Antigene prostatico specifico', 'PSA', 'Siero', 'ng/mL'], ['tumo', 'Antigene carcinoembrionario', 'CEA', 'Siero', 'ng/mL'],
+  ['tumo', 'CA 19-9', 'CA 19-9', 'Siero', 'U/mL'], ['tumo', 'CA 125', 'CA 125', 'Siero', 'U/mL'], ['tumo', 'CA 15-3', 'CA 15-3', 'Siero', 'U/mL'], ['tumo', 'Alfa-fetoproteina', 'AFP', 'Siero', 'ng/mL'],
+  ['micr', 'Emocoltura', '', 'Sangue (flaconi aerobi e anaerobi)', ''], ['micr', 'Urinocoltura', '', 'Urine (mitto intermedio)', 'UFC/mL'],
+  ['micr', 'Antigene di superficie dell’epatite B', 'HBsAg', 'Siero', ''], ['micr', 'Anticorpi anti-HCV', 'Anti-HCV', 'Siero', ''], ['micr', 'Test combinato HIV antigene/anticorpi', 'HIV Ag/Ab', 'Siero', ''],
+  ['liqu', 'Esame del liquor', '', 'Liquor', ''], ['liqu', 'Esame del liquido pleurico', '', 'Liquido pleurico', ''], ['liqu', 'Esame del liquido ascitico', '', 'Liquido ascitico', ''], ['liqu', 'Esame del liquido sinoviale', '', 'Liquido sinoviale', ''],
+  ['farm', 'Digossinemia', '', 'Siero', 'ng/mL'], ['farm', 'Litiemia', 'Li', 'Siero', 'mEq/L'], ['farm', 'Vancomicina (valle)', '', 'Siero', 'mg/L'], ['farm', 'Etanolemia', '', 'Sangue', 'g/L'], ['farm', 'Carbossiemoglobina', 'COHb', 'Sangue intero (eparina)', '%']
+];
+
+let labQuery = '';
+const labCatFilter = new Set();
+function labTabs(cur) {
+  const t = [['', 'Esami'], ['ref', 'Leggi un referto'], ['calc', 'Calcoli'], ['quiz', 'Allenati']];
+  return `<nav class="tabs lab-tabs" aria-label="Medicina di laboratorio">${t.map(([k, l]) => `<a href="#/lab${k ? `/${k}` : ''}" class="tab ${cur === k ? 'on' : ''}" ${cur === k ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`;
+}
+function viewLab(p1, p2) {
+  if (p1 === 'ref') return viewLabRef();
+  if (p1 === 'calc') return viewLabCalc();
+  if (p1 === 'quiz') return viewLabQuiz();
+  if (p1 === 'new') return viewLabEdit(null);
+  if (p1) return p2 === 'edit' ? viewLabEdit(p1) : viewLabExam(p1);
+  const all = labExams();
+  const counts = new Map();
+  all.forEach(x => counts.set(x.cat || 'altr', (counts.get(x.cat || 'altr') || 0) + 1));
+  [...labCatFilter].forEach(k => { if (!counts.has(k)) labCatFilter.delete(k); });
+  setView(`
+    <header class="page-head">
+      <div><h1>Medicina di laboratorio</h1><p class="lede">${all.length ? `${all.length} esami. ` : ''}Per ogni esame: range, valori critici, cause di aumento e diminuzione, uso diagnostico.</p></div>
+      <a class="btn primary" href="#/lab/new">Nuovo esame</a>
+    </header>
+    ${labTabs('')}
+    ${all.length ? `
+      <input type="search" class="input search" id="labQ" placeholder="Cerca un esame, una sigla o una causa" aria-label="Cerca negli esami" value="${esc(labQuery)}">
+      <div class="tag-cloud" aria-label="Filtra per categoria">${LAB_CATS.filter(([k]) => counts.has(k)).map(([k, l]) => `<button type="button" class="tag ${labCatFilter.has(k) ? 'on' : ''}" data-lc="${k}" aria-pressed="${labCatFilter.has(k)}">${l} <span class="muted-inline">${counts.get(k)}</span></button>`).join('')}</div>
+      <div id="labList"></div>
+      <p class="hint">Mancano esami? <button class="btn sm ghost" type="button" data-act="lab-base">Aggiungi dall’elenco di base</button></p>` : `
+      <div class="empty">
+        <p>Ancora nessun esame. Puoi partire dall’<strong>elenco di base</strong>, con nome, sigla, campione e unità di oltre 110 esami divisi per categoria, e poi completare ognuno con il tuo libro; oppure crearli uno per uno.</p>
+        <div class="inline" style="justify-content:center"><button class="btn primary" type="button" data-act="lab-base">Aggiungi l’elenco di base</button><a class="btn" href="#/lab/new">Nuovo esame</a></div>
+      </div>`}
+  `);
+  on('[data-act="lab-base"]', 'click', labBaseFlow);
+  const draw = () => {
+    const box = $('#labList');
+    if (!box) return;
+    const toks = foldAccents(labQuery).split(/\s+/).filter(Boolean);
+    const list = all.filter(x => (!labCatFilter.size || labCatFilter.has(x.cat || 'altr')) && (!toks.length || toks.every(t => foldAccents(`${x.name} ${x.abbr || ''} ${x.up || ''} ${x.down || ''} ${(x.uses || []).map(u => u.dx).join(' ')} ${x.notes || ''}`).includes(t))));
+    const byCat = new Map();
+    list.forEach(x => { const k = x.cat || 'altr'; if (!byCat.has(k)) byCat.set(k, []); byCat.get(k).push(x); });
+    box.innerHTML = list.length ? LAB_CATS.filter(([k]) => byCat.has(k)).map(([k, l]) => `
+      <h2 class="sub">${l}</h2>
+      <ul class="list">${byCat.get(k).map(x => {
+        const r = labPickRange(x);
+        const bits = [r ? labRangeText(r, x.unit) : 'senza range', x.sample || ''].filter(Boolean);
+        return `<li><a class="row" href="#/lab/${x.id}">
+          <span class="row-main">
+            <span class="row-title">${esc(x.name)}${x.abbr ? ` <span class="lab-abbr">${esc(x.abbr)}</span>` : ''}</span>
+            <span class="row-sub">${esc(bits.join(' · '))}${x.incomplete ? ' · ⚠ incompleto' : ''}</span>
+          </span>
+          ${labHasRange(x) ? '' : '<span class="pill soft">da completare</span>'}
+        </a></li>`;
+      }).join('')}</ul>`).join('') : '<p class="hint">Nessun esame corrisponde.</p>';
+  };
+  draw();
+  $('#labQ')?.addEventListener('input', e => { labQuery = e.target.value; draw(); });
+  on('[data-lc]', 'click', e => {
+    const k = e.currentTarget.dataset.lc;
+    if (labCatFilter.has(k)) labCatFilter.delete(k); else labCatFilter.add(k);
+    e.currentTarget.classList.toggle('on', labCatFilter.has(k));
+    e.currentTarget.setAttribute('aria-pressed', labCatFilter.has(k));
+    draw();
+  });
+}
+async function labBaseFlow() {
+  const have = new Set(labExams().map(x => foldAccents(x.name)));
+  const sh = openSheet(`
+    <h2>Elenco di base</h2>
+    <p class="sheet-sub">Nome, sigla, campione e unità più usate in Italia, senza range: quelli li aggiungi tu dalla tua fonte, perché cambiano da laboratorio a laboratorio. Controlla anche le unità sul tuo referto. Gli esami che hai già non vengono doppiati.</p>
+    <div class="lab-base-cats">${LAB_CATS.filter(([k]) => LAB_BASE.some(b => b[0] === k)).map(([k, l]) => {
+      const n = LAB_BASE.filter(b => b[0] === k && !have.has(foldAccents(b[1]))).length;
+      return `<label class="check"><input type="checkbox" data-bc="${k}" ${n ? 'checked' : 'disabled'}><span>${l} <span class="muted-inline">${n ? `${n} da aggiungere` : 'già tutti presenti'}</span></span></label>`;
+    }).join('')}</div>
+    <div class="modal-actions">
+      <button class="btn ghost" type="button" data-bb="no">Annulla</button>
+      <button class="btn primary" type="button" data-bb="ok">Aggiungi</button>
+    </div>`, { label: 'Elenco di base' });
+  $('[data-bb="no"]', sh.el).onclick = () => sh.close();
+  $('[data-bb="ok"]', sh.el).onclick = async () => {
+    const cats = new Set($$('[data-bc]:checked', sh.el).map(c => c.dataset.bc));
+    const now = Date.now();
+    const add = LAB_BASE.filter(b => cats.has(b[0]) && !have.has(foldAccents(b[1])));
+    for (const [i, [cat, name, abbr, sample, unit]] of add.entries()) {
+      await saveLink({ id: uid(), kind: 'lab', notebookId: '_lab', created: now + i, name, abbr, cat, sample, unit, ranges: [], uses: [] });
+    }
+    sh.close();
+    toast(add.length ? `${add.length} esami aggiunti` : 'Nessun esame nuovo');
+    route();
+  };
+}
+
+function viewLabExam(id) {
+  const x = labById(id);
+  if (!x) return notFound('Questo esame');
+  const ranges = (x.ranges || []).filter(r => labRangeText(r) || r.note);
+  const up = labLines(x.up), down = labLines(x.down);
+  const uses = (x.uses || []).filter(u => u.dx);
+  const linked = (x.clinic || []).map(cid => state.links.find(l => l.id === cid && l.kind === 'clinical')).filter(Boolean);
+  const siF = labNum(x.siFactor);
+  const block = (title, html) => html ? `<section class="lab-block"><h2 class="sub">${title}</h2>${html}</section>` : '';
+  const lr = u => {
+    const se = labNum(u.sens), sp = labNum(u.spec);
+    if (se === null || sp === null) return ['–', '–'];
+    const s = se / 100, p = sp / 100;
+    return [p >= 1 ? '∞' : labFmt(s / (1 - p), 1), p <= 0 ? '–' : labFmt((1 - s) / p, 2)];
+  };
+  setView(`
+    <div class="back-row"><a class="back" href="#/lab">Medicina di laboratorio</a></div>
+    <header class="sec-head">
+      <h1>${esc(x.name)}${x.abbr ? ` <span class="lab-abbr big">${esc(x.abbr)}</span>` : ''}</h1>
+      <p class="meta">${esc([labCatName(x.cat), x.sample, x.unit ? `unità: ${x.unit}` : ''].filter(Boolean).join(' · '))}</p>
+      ${x.incomplete ? `<button class="inc-chip" type="button" data-act="inc">⚠ Incompleto${incompleteNote(x) ? `: ${esc(incompleteNote(x).slice(0, 70))}` : ''}</button>` : ''}
+      <div class="sec-extra"><a class="btn sm" href="#/lab/${x.id}/edit">Modifica</a></div>
+    </header>
+    <div class="notes lab-notes">
+      ${block('Valori di riferimento', ranges.length ? `
+        <div class="table-wrap"><table><thead><tr><th>Per chi</th><th>Range</th><th>Note</th></tr></thead><tbody>
+          ${ranges.map(r => `<tr><td>${esc(r.who || 'Adulti')}</td><td class="num">${esc(labRangeText(r, x.unit) || '–')}</td><td>${esc(r.note || '')}</td></tr>`).join('')}
+        </tbody></table></div>
+        ${x.siUnit && siF ? `<p class="hint">In unità SI: moltiplica per ${labFmt(siF, 4)} per avere ${esc(x.siUnit)}${ranges[0] && labNum(ranges[0].low) !== null && labNum(ranges[0].high) !== null ? ` (${labFmt(labNum(ranges[0].low) * siF)} – ${labFmt(labNum(ranges[0].high) * siF)} ${esc(x.siUnit)})` : ''}.</p>` : ''}
+        ${x.rangeSrc ? `<p class="hint">Range da: ${esc(x.rangeSrc)}. I range cambiano da laboratorio a laboratorio: vale sempre quello stampato sul referto.</p>` : '<p class="hint">I range cambiano da laboratorio a laboratorio: vale sempre quello stampato sul referto.</p>'}`
+        : '<p class="hint">Range non ancora inseriti. <a href="#/lab/' + x.id + '/edit">Aggiungili</a> dalla tua fonte.</p>')}
+      ${block('Valori critici', labNum(x.crit?.low) !== null || labNum(x.crit?.high) !== null ? `<p>${labNum(x.crit?.low) !== null ? `Sotto <strong>${esc(x.crit.low)}</strong>` : ''}${labNum(x.crit?.low) !== null && labNum(x.crit?.high) !== null ? ' oppure ' : ''}${labNum(x.crit?.high) !== null ? `sopra <strong>${esc(x.crit.high)}</strong>` : ''} ${esc(x.unit || '')}: da comunicare subito al medico.</p>` : '')}
+      ${block('Prelievo e preparazione', x.prep ? `<p>${esc(x.prep)}</p>` : '')}
+      ${up.length || down.length ? `<section class="lab-block"><div class="lab-two">
+        ${up.length ? `<div><h2 class="sub">↑ Cause di aumento</h2><ul>${up.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+        ${down.length ? `<div><h2 class="sub">↓ Cause di diminuzione</h2><ul>${down.map(t => `<li>${esc(t)}</li>`).join('')}</ul></div>` : ''}
+      </div></section>` : ''}
+      ${block('Interferenze e falsi risultati', x.interf ? `<p>${esc(x.interf).replace(/\n/g, '<br>')}</p>` : '')}
+      ${block('Andamento nel tempo', x.kinetics ? `<p>${esc(x.kinetics).replace(/\n/g, '<br>')}</p>` : '')}
+      ${block('Quando richiederlo', x.when ? `<p>${esc(x.when).replace(/\n/g, '<br>')}</p>` : '')}
+      ${block('Uso diagnostico', uses.length ? `
+        <div class="table-wrap"><table><thead><tr><th>Per diagnosticare</th><th>Soglia</th><th>Sens.</th><th>Spec.</th><th>LR+</th><th>LR−</th></tr></thead><tbody>
+          ${uses.map(u => { const [p, n] = lr(u); return `<tr><td>${esc(u.dx)}</td><td>${esc(u.cut || '–')}</td><td class="num">${labNum(u.sens) !== null ? `${labFmt(labNum(u.sens), 1)}%` : '–'}</td><td class="num">${labNum(u.spec) !== null ? `${labFmt(labNum(u.spec), 1)}%` : '–'}</td><td class="num">${p}</td><td class="num">${n}</td></tr>`; }).join('')}
+        </tbody></table></div>
+        <p class="hint">LR+ = sensibilità / (1 − specificità): sopra 10 un risultato positivo conferma molto. LR− = (1 − sensibilità) / specificità: sotto 0,1 un risultato negativo esclude molto. Valgono per quella malattia e quella soglia.</p>` : '')}
+      ${block('Note', x.notes ? renderMd(x.notes) : '')}
+      ${block('Note cliniche collegate', linked.length ? `<div class="tags">${linked.map(n => `<button type="button" class="tag sym" data-lcn="${n.id}">${esc(n.title)}</button>`).join('')}</div>` : '')}
+    </div>
+    ${sourcesBlockHtml(x)}
+  `);
+  on('[data-lcn]', 'click', e => showClinicNote(e.currentTarget.dataset.lcn));
+  on('[data-act="inc"]', 'click', async () => { if (await toggleIncomplete(x, () => saveLink(x), 'esame')) route(); });
+  bindSourcesBlock($('#view'), x, () => saveLink(x), 'esame');
+}
+
+function viewLabEdit(id) {
+  const x = id ? labById(id) : { id: uid(), kind: 'lab', notebookId: '_lab', created: Date.now(), name: '', cat: 'altr', ranges: [], uses: [] };
+  if (!x) return notFound('Questo esame');
+  const isNew = !id;
+  const ranges = (x.ranges && x.ranges.length ? x.ranges : [{ who: 'Adulti', low: '', high: '', note: '' }]).map(r => ({ ...r }));
+  const uses = (x.uses || []).map(u => ({ ...u }));
+  let clinic = new Set(x.clinic || []);
+  const rangeRow = (r, i) => `
+    <div class="lab-row" data-ri="${i}">
+      <input class="input" data-rf="who" value="${esc(r.who || '')}" placeholder="Per chi (es. Adulti, Uomini, Donne)" aria-label="Per chi">
+      <input class="input num" data-rf="low" value="${esc(r.low ?? '')}" placeholder="Min" inputmode="decimal" aria-label="Valore minimo">
+      <input class="input num" data-rf="high" value="${esc(r.high ?? '')}" placeholder="Max" inputmode="decimal" aria-label="Valore massimo">
+      <input class="input" data-rf="note" value="${esc(r.note || '')}" placeholder="Nota (es. a digiuno)" aria-label="Nota">
+      <button class="btn sm ghost" type="button" data-rdel="${i}" aria-label="Togli questa riga">✕</button>
+    </div>`;
+  const useRow = (u, i) => `
+    <div class="lab-row use" data-ui="${i}">
+      <input class="input" data-uf="dx" value="${esc(u.dx || '')}" placeholder="Malattia o condizione" aria-label="Malattia o condizione">
+      <input class="input" data-uf="cut" value="${esc(u.cut || '')}" placeholder="Soglia" aria-label="Soglia">
+      <input class="input num" data-uf="sens" value="${esc(u.sens ?? '')}" placeholder="Sens. %" inputmode="decimal" aria-label="Sensibilità in percentuale">
+      <input class="input num" data-uf="spec" value="${esc(u.spec ?? '')}" placeholder="Spec. %" inputmode="decimal" aria-label="Specificità in percentuale">
+      <button class="btn sm ghost" type="button" data-udel="${i}" aria-label="Togli questa riga">✕</button>
+    </div>`;
+  const notes = clinicalNotes().sort((a, b) => a.title.localeCompare(b.title, 'it'));
+  setView(`
+    <div class="back-row"><a class="back" href="${isNew ? '#/lab' : `#/lab/${x.id}`}">${isNew ? 'Medicina di laboratorio' : esc(x.name)}</a></div>
+    <header class="page-head"><div><h1>${isNew ? 'Nuovo esame' : 'Modifica esame'}</h1></div>
+      ${AI.ready() ? `<button class="btn" type="button" data-act="lab-ai">Compila con ${AI.name()}</button>` : ''}</header>
+    <form id="labForm" class="lab-form" autocomplete="off">
+      <label class="field"><span>Nome dell’esame</span><input class="input" id="lxName" value="${esc(x.name || '')}" required placeholder="Es. Troponina ad alta sensibilità"></label>
+      <div class="grid2">
+        <label class="field"><span>Sigla</span><input class="input" id="lxAbbr" value="${esc(x.abbr || '')}" placeholder="Es. hs-cTn"></label>
+        <label class="field"><span>Categoria</span><select class="input" id="lxCat">${LAB_CATS.map(([k, l]) => `<option value="${k}" ${x.cat === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Campione</span><input class="input" id="lxSample" value="${esc(x.sample || '')}" placeholder="Es. Siero, plasma (citrato), urine"></label>
+        <label class="field"><span>Unità di misura</span><input class="input" id="lxUnit" value="${esc(x.unit || '')}" placeholder="Es. mg/dL"></label>
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Unità SI, facoltativa</span><input class="input" id="lxSiUnit" value="${esc(x.siUnit || '')}" placeholder="Es. µmol/L"></label>
+        <label class="field"><span>Fattore di conversione verso SI</span><input class="input" id="lxSiF" value="${esc(x.siFactor ?? '')}" inputmode="decimal" placeholder="Es. 88,4"></label>
+      </div>
+      <label class="field"><span>Prelievo e preparazione</span><input class="input" id="lxPrep" value="${esc(x.prep || '')}" placeholder="Es. a digiuno da 8 ore, provetta in ghiaccio"></label>
+
+      <h2 class="sub">Valori di riferimento</h2>
+      <div id="lxRanges">${ranges.map(rangeRow).join('')}</div>
+      <button class="btn sm ghost" type="button" data-act="r-add">+ Altra riga (uomini, donne, età…)</button>
+      <label class="field"><span>Da dove vengono i range</span><input class="input" id="lxRangeSrc" value="${esc(x.rangeSrc || '')}" placeholder="Es. Harrison, oppure il laboratorio del policlinico"></label>
+      <div class="grid2">
+        <label class="field"><span>Valore critico basso</span><input class="input" id="lxCritLo" value="${esc(x.crit?.low ?? '')}" inputmode="decimal"></label>
+        <label class="field"><span>Valore critico alto</span><input class="input" id="lxCritHi" value="${esc(x.crit?.high ?? '')}" inputmode="decimal"></label>
+      </div>
+
+      <div class="grid2">
+        <label class="field"><span>↑ Cause di aumento, una per riga</span><textarea class="input" id="lxUp" rows="6">${esc(x.up || '')}</textarea></label>
+        <label class="field"><span>↓ Cause di diminuzione, una per riga</span><textarea class="input" id="lxDown" rows="6">${esc(x.down || '')}</textarea></label>
+      </div>
+      <label class="field"><span>Interferenze e falsi positivi o negativi</span><textarea class="input" id="lxInterf" rows="3">${esc(x.interf || '')}</textarea></label>
+      <label class="field"><span>Andamento nel tempo</span><textarea class="input" id="lxKin" rows="2" placeholder="Es. sale dopo 3 ore, picco a 24, resta alta 10-14 giorni">${esc(x.kinetics || '')}</textarea></label>
+      <label class="field"><span>Quando richiederlo</span><textarea class="input" id="lxWhen" rows="2">${esc(x.when || '')}</textarea></label>
+
+      <h2 class="sub">Uso diagnostico</h2>
+      <p class="hint">Sensibilità e specificità dipendono dalla malattia e dalla soglia: una riga per ogni uso. LR+ e LR− li calcolo io.</p>
+      <div id="lxUses">${uses.map(useRow).join('')}</div>
+      <button class="btn sm ghost" type="button" data-act="u-add">+ Aggiungi un uso diagnostico</button>
+
+      <label class="field"><span>Note, anche in Markdown</span><textarea class="input" id="lxNotes" rows="4">${esc(x.notes || '')}</textarea></label>
+
+      ${notes.length ? `<h2 class="sub">Note cliniche collegate</h2>
+        <input class="input" id="lxCnQ" placeholder="Cerca una nota clinica" aria-label="Cerca una nota clinica">
+        <div class="lab-cn" id="lxCn">${notes.map(n => `<label class="check" data-cnt="${esc(foldAccents(n.title))}"><input type="checkbox" value="${n.id}" ${clinic.has(n.id) ? 'checked' : ''}><span>${esc(n.title)}</span></label>`).join('')}</div>` : ''}
+
+      <label class="field"><span>Fonti, una per riga</span><textarea class="input" id="lxSrc" rows="2">${esc(sourcesOf(x).join('\n'))}</textarea></label>
+      <label class="check"><input type="checkbox" id="lxInc" ${x.incomplete ? 'checked' : ''}><span>Incompleto</span></label>
+      <label class="field" id="lxIncBox" ${x.incomplete ? '' : 'hidden'}><span>Cosa manca? Facoltativo</span><input class="input" id="lxIncNote" value="${esc(x.incomplete?.note || '')}"></label>
+
+      <div class="save-row">
+        ${isNew ? '' : '<button class="btn ghost danger" type="button" data-act="lab-del">Elimina</button>'}
+        <a class="btn ghost" href="${isNew ? '#/lab' : `#/lab/${x.id}`}">Annulla</a>
+        <button class="btn primary" type="submit">Salva</button>
+      </div>
+    </form>
+  `);
+  const form = $('#labForm');
+  const readRows = () => {
+    $$('[data-ri]', form).forEach(row => { const r = ranges[+row.dataset.ri]; $$('[data-rf]', row).forEach(i => { r[i.dataset.rf] = i.value.trim(); }); });
+    $$('[data-ui]', form).forEach(row => { const u = uses[+row.dataset.ui]; $$('[data-uf]', row).forEach(i => { u[i.dataset.uf] = i.value.trim(); }); });
+  };
+  const redraw = () => { $('#lxRanges').innerHTML = ranges.map(rangeRow).join(''); $('#lxUses').innerHTML = uses.map(useRow).join(''); };
+  form.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.act === 'r-add') { readRows(); ranges.push({ who: '', low: '', high: '', note: '' }); redraw(); $$('[data-ri]', form).pop()?.querySelector('input')?.focus(); }
+    else if (b.dataset.act === 'u-add') { readRows(); uses.push({ dx: '', cut: '', sens: '', spec: '' }); redraw(); $$('[data-ui]', form).pop()?.querySelector('input')?.focus(); }
+    else if (b.dataset.rdel !== undefined) { readRows(); ranges.splice(+b.dataset.rdel, 1); redraw(); }
+    else if (b.dataset.udel !== undefined) { readRows(); uses.splice(+b.dataset.udel, 1); redraw(); }
+  });
+  $('#lxInc').addEventListener('change', e => { $('#lxIncBox').hidden = !e.target.checked; });
+  $('#lxCnQ')?.addEventListener('input', e => {
+    const q = foldAccents(e.target.value.trim());
+    $$('[data-cnt]', form).forEach(l => { l.hidden = !!q && !l.dataset.cnt.includes(q) && !l.querySelector('input').checked; });
+  });
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    readRows();
+    const name = $('#lxName').value.trim();
+    if (!name) { toast('Scrivi il nome dell’esame'); $('#lxName').focus(); return; }
+    const dup = labExams().find(o => o.id !== x.id && foldAccents(o.name) === foldAccents(name));
+    if (dup && !(await modal({ title: 'Esame già presente', text: `Hai già una scheda “${dup.name}”. Salvarne un’altra con lo stesso nome?`, confirm: 'Salva lo stesso' }))) return;
+    Object.assign(x, {
+      name, abbr: $('#lxAbbr').value.trim(), cat: $('#lxCat').value, sample: $('#lxSample').value.trim(), unit: $('#lxUnit').value.trim(),
+      siUnit: $('#lxSiUnit').value.trim(), siFactor: $('#lxSiF').value.trim(), prep: $('#lxPrep').value.trim(),
+      ranges: ranges.filter(r => r.who || r.low || r.high || r.note), rangeSrc: $('#lxRangeSrc').value.trim(),
+      crit: { low: $('#lxCritLo').value.trim(), high: $('#lxCritHi').value.trim() },
+      up: $('#lxUp').value.trim(), down: $('#lxDown').value.trim(), interf: $('#lxInterf').value.trim(), kinetics: $('#lxKin').value.trim(), when: $('#lxWhen').value.trim(),
+      uses: uses.filter(u => u.dx), notes: $('#lxNotes').value.trim(),
+      clinic: $$('#lxCn input:checked', form).map(c => c.value),
+      sources: $('#lxSrc').value.split('\n').map(t => t.trim()).filter(Boolean)
+    });
+    if ($('#lxInc').checked) x.incomplete = { note: $('#lxIncNote').value.trim(), since: x.incomplete?.since || todayStr() };
+    else delete x.incomplete;
+    await saveLink(x);
+    toast('Esame salvato');
+    go(`#/lab/${x.id}`);
+  });
+  on('[data-act="lab-del"]', 'click', async () => {
+    if (!(await modal({ title: 'Eliminare l’esame?', text: `La scheda “${x.name}” sparisce su tutti i tuoi dispositivi.`, confirm: 'Elimina', danger: true }))) return;
+    await removeRecords([{ store: 'links', rec: x }]);
+    toast('Esame eliminato');
+    go('#/lab');
+  });
+  on('[data-act="lab-ai"]', 'click', async e => {
+    const btn = e.currentTarget;
+    const name = $('#lxName').value.trim();
+    if (!name) { toast('Scrivi prima il nome dell’esame'); $('#lxName').focus(); return; }
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = 'Compilo…';
+    try {
+      readRows();
+      const d = await labAiFill(name, $('#lxAbbr').value.trim());
+      const setIf = (sel, v) => { const el = $(sel); if (el && !el.value.trim() && v !== undefined && v !== null && String(v).trim()) el.value = Array.isArray(v) ? v.join('\n') : String(v); };
+      setIf('#lxAbbr', d.abbr); setIf('#lxSample', d.sample); setIf('#lxUnit', d.unit); setIf('#lxSiUnit', d.siUnit); setIf('#lxSiF', d.siFactor);
+      setIf('#lxPrep', d.prep); setIf('#lxUp', d.up); setIf('#lxDown', d.down); setIf('#lxInterf', d.interf); setIf('#lxKin', d.kinetics); setIf('#lxWhen', d.when); setIf('#lxNotes', d.notes);
+      setIf('#lxCritLo', d.crit?.low); setIf('#lxCritHi', d.crit?.high);
+      if (d.cat && LAB_CATS.some(c => c[0] === d.cat) && (isNew || !x.cat || x.cat === 'altr')) $('#lxCat').value = d.cat;
+      const emptyRanges = !ranges.some(r => r.low || r.high);
+      if (emptyRanges && Array.isArray(d.ranges) && d.ranges.length) { ranges.splice(0, ranges.length, ...d.ranges.map(r => ({ who: String(r.who || ''), low: String(r.low ?? ''), high: String(r.high ?? ''), note: String(r.note || '') }))); }
+      if (!uses.length && Array.isArray(d.uses)) uses.push(...d.uses.filter(u => u && u.dx).map(u => ({ dx: String(u.dx), cut: String(u.cut ?? ''), sens: String(u.sens ?? ''), spec: String(u.spec ?? '') })));
+      redraw();
+      const src = $('#lxSrc');
+      const line = `Compilato con ${AI.name()} il ${fmtDay(todayStr())}: da verificare`;
+      if (!src.value.includes('Compilato con')) src.value = `${src.value.trim()}${src.value.trim() ? '\n' : ''}${line}`;
+      $('#lxInc').checked = true;
+      $('#lxIncBox').hidden = false;
+      if (!$('#lxIncNote').value.trim()) $('#lxIncNote').value = 'Compilato con l’AI: controlla valori, cause e sensibilità sulla tua fonte';
+      toast('Campi vuoti compilati: controllali prima di salvare');
+    } catch (err) { toast(err.message || 'Non sono riuscita a compilarlo', 'err'); }
+    finally { btn.disabled = false; btn.textContent = label; }
+  });
+}
+async function labAiFill(name, abbr) {
+  const cats = LAB_CATS.map(([k, l]) => `${k} = ${l}`).join('; ');
+  const system = `Sei un docente italiano di medicina di laboratorio e prepari schede di studio per una studentessa di medicina.
+Rispondi SOLO con un oggetto JSON valido, senza testo prima o dopo e senza blocchi di codice, con questi campi:
+{"abbr": "", "cat": "", "sample": "", "prep": "", "unit": "", "siUnit": "", "siFactor": null,
+ "ranges": [{"who": "Adulti", "low": "", "high": "", "note": ""}], "crit": {"low": "", "high": ""},
+ "up": ["cause di aumento"], "down": ["cause di diminuzione"], "interf": "", "kinetics": "", "when": "",
+ "uses": [{"dx": "", "cut": "", "sens": 0, "spec": 0}], "notes": ""}
+Regole: scrivi in italiano; categoria "cat" scelta tra: ${cats}. Unità convenzionali usate nei laboratori italiani; "siFactor" è il numero per cui moltiplicare il valore convenzionale per avere l’unità SI. Range dell’adulto come nei testi di riferimento, con righe separate per uomini e donne se diversi. Numeri con il punto decimale. Nelle "uses" metti solo usi diagnostici ben documentati, con sensibilità e specificità in percentuale; se non sei sicuro lascia la lista vuota. "notes" breve, in Markdown. Se un campo non si applica lascialo vuoto.`;
+  const r = await AI.generate({ system, text: `Esame: ${name}${abbr ? ` (${abbr})` : ''}`, maxTokens: 4000 });
+  const t = String(r.text || '');
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a < 0 || b <= a) throw new Error('La risposta dell’AI non è nel formato atteso: riprova.');
+  try { return JSON.parse(t.slice(a, b + 1)); }
+  catch { throw new Error('La risposta dell’AI non è nel formato atteso: riprova.'); }
+}
+
+/* ---------- Leggi un referto ---------- */
+const labRef = { sex: '', rows: [{ id: '', v: '' }] };
+function viewLabRef() {
+  const all = labExams().filter(labHasRange);
+  setView(`
+    <header class="page-head"><div><h1>Leggi un referto</h1><p class="lede">Scrivi i valori di un referto (anche di un caso clinico): segno quelli fuori range in base alle tue schede.</p></div></header>
+    ${labTabs('ref')}
+    ${all.length ? `
+      <div class="grid2 lab-ref-head">
+        <label class="field"><span>Sesso, per i range diversi</span><select class="input" id="refSex"><option value="">Non indicato</option><option value="F" ${labRef.sex === 'F' ? 'selected' : ''}>Donna</option><option value="M" ${labRef.sex === 'M' ? 'selected' : ''}>Uomo</option></select></label>
+      </div>
+      <datalist id="refExams">${all.map(x => `<option value="${esc(x.name)}">${x.abbr ? esc(x.abbr) : ''}</option>`).join('')}</datalist>
+      <div id="refRows"></div>
+      <div class="inline"><button class="btn sm" type="button" data-act="ref-add">+ Altro valore</button><button class="btn sm ghost" type="button" data-act="ref-clear">Svuota</button></div>
+      <p class="hint">Uso le schede con i range compilati (${all.length}). Il range che vale è sempre quello stampato sul referto: questo è un esercizio di lettura.</p>`
+      : '<div class="empty"><p>Per leggere un referto servono esami con i range compilati. Aggiungili nella scheda Esami.</p><a class="btn primary" href="#/lab">Vai agli esami</a></div>'}
+  `);
+  if (!all.length) return;
+  const find = v => { const f = foldAccents(v.trim()); return all.find(x => foldAccents(x.name) === f || (x.abbr && foldAccents(x.abbr) === f)); };
+  const verdict = (x, v) => {
+    const n = labNum(v);
+    if (n === null || !x) return { cls: '', text: '' };
+    const r = labPickRange(x, labRef.sex);
+    const lo = labNum(r?.low), hi = labNum(r?.high);
+    const cl = labNum(x.crit?.low), ch = labNum(x.crit?.high);
+    const rng = r ? `range ${labRangeText(r, x.unit)}${r.who ? ` (${r.who})` : ''}` : '';
+    if (cl !== null && n < cl) return { cls: 'crit', text: `Critico basso · ${rng}` };
+    if (ch !== null && n > ch) return { cls: 'crit', text: `Critico alto · ${rng}` };
+    if (lo !== null && n < lo) return { cls: 'low', text: `↓ Basso · ${rng}` };
+    if (hi !== null && n > hi) return { cls: 'high', text: `↑ Alto · ${rng}` };
+    return { cls: 'ok', text: `Nella norma · ${rng}` };
+  };
+  // le righe si ridisegnano solo quando ne aggiungi o togli una; scrivendo cambia solo l’esito
+  const outHtml = (r, x) => {
+    const vd = verdict(x, r.v);
+    return { cls: vd.cls, html: x ? `${esc(vd.text)}${vd.text ? ` · <a href="#/lab/${x.id}">scheda</a>` : ''}` : (r.name ? 'Esame non trovato tra quelli con range' : '') };
+  };
+  const updateRow = i => {
+    const row = $(`[data-rr="${i}"]`);
+    const r = labRef.rows[i];
+    if (!row || !r) return;
+    const x = all.find(e => e.id === r.id);
+    const o = outHtml(r, x);
+    row.className = `ref-row ${o.cls}`;
+    $('.ref-out', row).innerHTML = o.html;
+    $('.ref-unit', row).textContent = x?.unit || '';
+  };
+  const draw = () => {
+    $('#refRows').innerHTML = labRef.rows.map((r, i) => {
+      const x = all.find(e => e.id === r.id);
+      const o = outHtml(r, x);
+      return `<div class="ref-row ${o.cls}" data-rr="${i}">
+        <input class="input" list="refExams" data-rk="name" value="${esc(x ? x.name : r.name || '')}" placeholder="Esame" aria-label="Esame">
+        <span class="ref-val"><input class="input num" data-rk="v" value="${esc(r.v)}" inputmode="decimal" placeholder="Valore" aria-label="Valore"><span class="ref-unit">${esc(x?.unit || '')}</span></span>
+        <span class="ref-out">${o.html}</span>
+        <button class="btn sm ghost" type="button" data-rdel="${i}" aria-label="Togli">✕</button>
+      </div>`;
+    }).join('');
+  };
+  draw();
+  $('#refSex').addEventListener('change', e => { labRef.sex = e.target.value; labRef.rows.forEach((_, i) => updateRow(i)); });
+  const onEdit = e => {
+    const row = e.target.closest('[data-rr]');
+    if (!row || !e.target.dataset.rk) return;
+    const i = +row.dataset.rr;
+    const r = labRef.rows[i];
+    if (e.target.dataset.rk === 'name') { const x = find(e.target.value); r.id = x ? x.id : ''; r.name = e.target.value; }
+    else r.v = e.target.value;
+    updateRow(i);
+  };
+  $('#refRows').addEventListener('input', onEdit);
+  $('#refRows').addEventListener('change', e => {
+    onEdit(e);
+    if (e.target.dataset.rk === 'name' && labRef.rows[+e.target.closest('[data-rr]').dataset.rr].id) e.target.closest('[data-rr]').querySelector('[data-rk="v"]')?.focus();
+  });
+  $('#refRows').addEventListener('click', e => { const b = e.target.closest('[data-rdel]'); if (!b) return; labRef.rows.splice(+b.dataset.rdel, 1); if (!labRef.rows.length) labRef.rows.push({ id: '', v: '' }); draw(); });
+  on('[data-act="ref-add"]', 'click', () => { labRef.rows.push({ id: '', v: '' }); draw(); $$('[data-rk="name"]').pop()?.focus(); });
+  on('[data-act="ref-clear"]', 'click', () => { labRef.rows = [{ id: '', v: '' }]; draw(); });
+}
+
+/* ---------- Calcoli ---------- */
+const LAB_CALCS = [
+  { id: 'ag', title: 'Gap anionico', f: [['na', 'Na⁺', 'mEq/L'], ['cl', 'Cl⁻', 'mEq/L'], ['hco3', 'HCO₃⁻', 'mEq/L'], ['alb', 'Albumina (facoltativa)', 'g/dL']],
+    run: v => {
+      if ([v.na, v.cl, v.hco3].some(x => x === null)) return null;
+      const ag = v.na - (v.cl + v.hco3);
+      return `Gap anionico <strong>${labFmt(ag, 1)}</strong> mEq/L${v.alb !== null ? `; corretto per l’albumina <strong>${labFmt(ag + 2.5 * (4 - v.alb), 1)}</strong> mEq/L` : ''}.`;
+    }, note: 'Na⁺ − (Cl⁻ + HCO₃⁻). Correzione: + 2,5 per ogni g/dL di albumina sotto 4. Il valore normale dipende dal metodo del laboratorio.' },
+  { id: 'ca', title: 'Calcio corretto per l’albumina', f: [['ca', 'Calcio totale', 'mg/dL'], ['alb', 'Albumina', 'g/dL']],
+    run: v => (v.ca === null || v.alb === null ? null : `Calcio corretto <strong>${labFmt(v.ca + 0.8 * (4 - v.alb), 2)}</strong> mg/dL.`),
+    note: 'Ca + 0,8 × (4 − albumina). È una stima: se serve precisione si misura il calcio ionizzato.' },
+  { id: 'egfr', title: 'eGFR CKD-EPI 2021', f: [['cr', 'Creatinina', 'mg/dL'], ['age', 'Età', 'anni'], ['sex', 'Sesso', 'sex']],
+    run: v => {
+      if (v.cr === null || v.age === null || !v.sex) return null;
+      const f = v.sex === 'F', k = f ? 0.7 : 0.9, a = f ? -0.241 : -0.302;
+      const g = 142 * Math.min(v.cr / k, 1) ** a * Math.max(v.cr / k, 1) ** -1.2 * 0.9938 ** v.age * (f ? 1.012 : 1);
+      return `eGFR <strong>${labFmt(g, 0)}</strong> mL/min/1,73 m².`;
+    }, note: 'Equazione CKD-EPI 2021 con la sola creatinina, senza correzione per etnia. Vale per adulti con creatinina stabile.' },
+  { id: 'ldl', title: 'LDL calcolato (Friedewald)', f: [['tc', 'Colesterolo totale', 'mg/dL'], ['hdl', 'HDL', 'mg/dL'], ['tg', 'Trigliceridi', 'mg/dL']],
+    run: v => {
+      if ([v.tc, v.hdl, v.tg].some(x => x === null)) return null;
+      return v.tg >= 400 ? 'Con trigliceridi da 400 mg/dL in su la formula non è affidabile: serve il dosaggio diretto.' : `LDL <strong>${labFmt(v.tc - v.hdl - v.tg / 5, 0)}</strong> mg/dL.`;
+    }, note: 'Totale − HDL − trigliceridi/5, in mg/dL. Non vale con trigliceridi da 400 mg/dL in su.' },
+  { id: 'osm', title: 'Osmolalità calcolata e gap osmolare', f: [['na', 'Na⁺', 'mEq/L'], ['glu', 'Glicemia', 'mg/dL'], ['urea', 'Azotemia (urea)', 'mg/dL'], ['meas', 'Osmolalità misurata (facoltativa)', 'mOsm/kg']],
+    run: v => {
+      if ([v.na, v.glu, v.urea].some(x => x === null)) return null;
+      const c = 2 * v.na + v.glu / 18 + v.urea / 6;
+      return `Osmolalità calcolata <strong>${labFmt(c, 0)}</strong> mOsm/kg${v.meas !== null ? `; gap osmolare <strong>${labFmt(v.meas - c, 0)}</strong>` : ''}.`;
+    }, note: '2 × Na + glicemia/18 + urea/6 (con l’azotemia come urea; con il BUN si divide per 2,8). Un gap alto fa pensare a sostanze osmoticamente attive come alcoli e glicoli.' },
+  { id: 'nacorr', title: 'Sodio corretto per la glicemia', f: [['na', 'Na⁺', 'mEq/L'], ['glu', 'Glicemia', 'mg/dL']],
+    run: v => {
+      if (v.na === null || v.glu === null) return null;
+      const d = Math.max(0, v.glu - 100) / 100;
+      return `Sodio corretto <strong>${labFmt(v.na + 1.6 * d, 1)}</strong> mEq/L con il fattore 1,6; <strong>${labFmt(v.na + 2.4 * d, 1)}</strong> con 2,4.`;
+    }, note: 'Per ogni 100 mg/dL di glicemia sopra 100 si aggiunge 1,6 (Katz) o 2,4 (Hillier) al sodio misurato.' }
+];
+function viewLabCalc() {
+  setView(`
+    <header class="page-head"><div><h1>Calcoli di laboratorio</h1><p class="lede">I conti di tutti i giorni, con la formula sotto. Strumenti di studio: in reparto si ricontrolla sempre.</p></div></header>
+    ${labTabs('calc')}
+    <div class="lab-calcs">${LAB_CALCS.map(c => `
+      <section class="lab-calc" data-calc="${c.id}">
+        <h2 class="sub">${c.title}</h2>
+        <div class="lab-calc-f">${c.f.map(([k, l, u]) => u === 'sex'
+          ? `<label class="field"><span>${l}</span><select class="input" data-k="${k}"><option value="">–</option><option value="F">Donna</option><option value="M">Uomo</option></select></label>`
+          : `<label class="field"><span>${l}${u ? ` <span class="muted-inline">${u}</span>` : ''}</span><input class="input num" data-k="${k}" inputmode="decimal"></label>`).join('')}</div>
+        <p class="lab-calc-out" aria-live="polite"></p>
+        <p class="hint">${c.note}</p>
+      </section>`).join('')}</div>
+  `);
+  $$('.lab-calc').forEach(box => {
+    const c = LAB_CALCS.find(x => x.id === box.dataset.calc);
+    const upd = () => {
+      const v = {};
+      $$('[data-k]', box).forEach(i => { v[i.dataset.k] = i.tagName === 'SELECT' ? i.value : labNum(i.value); });
+      const out = c.run(v);
+      $('.lab-calc-out', box).innerHTML = out || '';
+    };
+    box.addEventListener('input', upd);
+    box.addEventListener('change', upd);
+  });
+}
+
+/* ---------- Allenati: domande dalle tue schede ---------- */
+function labQuizItems() {
+  const items = [];
+  labExams().forEach(x => {
+    if (labHasRange(x)) items.push({ x, q: `Valori di riferimento di <strong>${esc(x.name)}</strong>${x.abbr ? ` (${esc(x.abbr)})` : ''}?`, a: (x.ranges || []).filter(r => labRangeText(r)).map(r => `${esc(r.who || 'Adulti')}: <strong>${esc(labRangeText(r, x.unit))}</strong>${r.note ? ` <span class="muted-inline">${esc(r.note)}</span>` : ''}`).join('<br>') });
+    if (labLines(x.up).length) items.push({ x, q: `Cause di <strong>aumento</strong> di ${esc(x.name)}?`, a: `<ul>${labLines(x.up).map(t => `<li>${esc(t)}</li>`).join('')}</ul>` });
+    if (labLines(x.down).length) items.push({ x, q: `Cause di <strong>diminuzione</strong> di ${esc(x.name)}?`, a: `<ul>${labLines(x.down).map(t => `<li>${esc(t)}</li>`).join('')}</ul>` });
+    (x.uses || []).filter(u => u.dx).forEach(u => items.push({ x, q: `Quale esame chiedi per <strong>${esc(u.dx)}</strong>, e quanto è affidabile?`, a: `<strong>${esc(x.name)}</strong>${u.cut ? `, soglia ${esc(u.cut)}` : ''}${labNum(u.sens) !== null ? ` · sensibilità ${labFmt(labNum(u.sens), 1)}%` : ''}${labNum(u.spec) !== null ? ` · specificità ${labFmt(labNum(u.spec), 1)}%` : ''}` }));
+    if (x.sample && x.prep) items.push({ x, q: `Su che campione si dosa <strong>${esc(x.name)}</strong>${x.prep ? ', e come ci si prepara' : ''}?`, a: `${esc(x.sample)}${x.prep ? `<br>${esc(x.prep)}` : ''}` });
+  });
+  return items;
+}
+function viewLabQuiz() {
+  const items = labQuizItems();
+  setView(`
+    <header class="page-head"><div><h1>Allenati</h1><p class="lede">Domande pescate a caso dalle tue schede: rispondi a mente o a voce, poi scopri la risposta.</p></div></header>
+    ${labTabs('quiz')}
+    ${items.length ? '<div id="lqz"></div>' : '<div class="empty"><p>Le domande nascono dalle schede compilate: range, cause, usi diagnostici. Completa qualche esame e torna qui.</p><a class="btn primary" href="#/lab">Vai agli esami</a></div>'}
+  `);
+  if (!items.length) return;
+  let order = items.map((_, i) => i).sort(() => Math.random() - 0.5);
+  let at = 0, shown = false, ok = 0, done = 0;
+  const draw = () => {
+    if (at >= order.length) { order = order.sort(() => Math.random() - 0.5); at = 0; }
+    const it = items[order[at]];
+    $('#lqz').innerHTML = `
+      <div class="lab-q">
+        <p class="hint">${labCatName(it.x.cat)} · domanda ${done + 1}${done ? ` · sapute ${ok} su ${done}` : ''}</p>
+        <p class="lab-q-t">${it.q}</p>
+        ${shown ? `<div class="lab-q-a notes">${it.a}</div>
+          <div class="inline"><button class="btn" type="button" data-qz="no">Non la sapevo</button><button class="btn primary" type="button" data-qz="yes">La sapevo</button><a class="btn ghost" href="#/lab/${it.x.id}">Apri la scheda</a></div>`
+        : '<button class="btn primary" type="button" data-qz="show">Mostra la risposta</button>'}
+      </div>`;
+  };
+  $('#lqz').addEventListener('click', e => {
+    const b = e.target.closest('[data-qz]');
+    if (!b) return;
+    if (b.dataset.qz === 'show') shown = true;
+    else { if (b.dataset.qz === 'yes') ok++; done++; at++; shown = false; }
+    draw();
+  });
+  draw();
+}
+
+/* =====================================================================
+   v3.29: tutorial a passi al primo avvio e tasti “?” che spiegano ogni parte
+   ===================================================================== */
+const TUT_KEY = 'nb-tutorial-done';
+const TUTORIAL = [
+  { icon: '👋', title: 'Benvenuta nel Notebook', html: `Qui trasformi appunti, PDF e slide in materiale da <b>ripassare attivamente</b>: cloze, domande, flashcard, ripetizione a voce.<br><br>Ti bastano due minuti per il giro completo.` },
+  { icon: '📲', title: 'Mettilo sulla schermata Home', html: `Così si apre come una vera app e i dati restano al sicuro.<br><br><b>Android:</b> Altro → Impostazioni → <b>Installa l’app</b>, oppure in Chrome menu <b>⋮</b> → <b>Installa app</b>.<br><b>iPhone:</b> in <b>Safari</b> tasto <b>Condividi</b> → <b>Aggiungi alla schermata Home</b>.` },
+  { icon: '📒', title: '1. Notebook e argomenti', html: `Crea un <b>notebook</b> per ogni materia.<br><br>Dentro puoi dividerlo in <b>macro-argomenti</b> e <b>sottoargomenti</b>; le <b>sezioni</b> sono i singoli argomenti che studi e ripassi.` },
+  { icon: '📥', title: '2. Importa', html: `In <b>Importa</b> incolli un testo, carichi un PDF o una mappa XMind e l’app crea le sezioni.<br><br>Un PDF lo dividi ogni tot pagine, a intervalli scelti o <b>per argomenti</b>, leggendo i titoli. Con una chiave AI (Impostazioni) i testi vengono anche formattati, con cloze e domande.` },
+  { icon: '🧠', title: '3. Studia una sezione', html: `In alto trovi le schede:<br><br><b>Cloze</b> nasconde i termini chiave · <b>Leggi</b> · <b>Mappe</b> · <b>Pagina bianca</b> e <b>Orale</b>: ripeti e confronta, segnando col semaforo · <b>Domande</b> · <b>Flashcard</b> · <b>Video</b> · <b>Modifica</b>.<br><br>Seleziona del testo in Leggi per evidenziarlo o farne un cloze o una flashcard.` },
+  { icon: '🔁', title: '4. Ripassa', html: `Finita una sezione, scegli in fondo:<br><br><b>Segna come studiata in StudyHub</b>: i ripassi li pianifica StudyHub.<br><b>Ripassa nel Notebook</b>: li trovi nella scheda Ripasso.<br><br>Dopo ogni prova tocca <b>Di nuovo</b>, <b>Difficile</b>, <b>Bene</b> o <b>Facile</b>: l’app decide quando riproportela.` },
+  { icon: '🩺', title: '5. Gli strumenti clinici', html: `In <b>Altro</b> trovi le <b>Note cliniche</b> (i quadri clinici, cercabili per sintomo), i <b>Casi clinici</b> (con foto, PDF e la modalità Risolvi), la <b>Medicina di laboratorio</b> (esami, referti e calcoli) e il <b>Glossario</b>.<br><br>Sulle immagini puoi creare un’<b>image occlusion</b> o l’esercizio delle <b>etichette</b> da rimettere al posto giusto.` },
+  { icon: '📚', title: '6. Fonti e incompleti', html: `In fondo a ogni sezione (in Leggi) aggiungi le <b>fonti</b>.<br><br>Non hai finito, per esempio hai letto una sola fonte? Tocca <b>Segna incompleta</b>: la ritrovi in Altro → <b>Da completare</b>.` },
+  { icon: '💾', title: '7. I tuoi dati', html: `Restano su questo dispositivo. Con la <b>sincronizzazione su Google Drive</b> li hai uguali su telefono e computer.<br><br>Ogni tanto fai comunque un <b>backup</b>: Impostazioni → Backup.` },
+  { icon: '✨', title: 'Ultimi consigli', html: `Il tasto <span class="help-btn demo" aria-hidden="true">?</span> accanto ai titoli spiega a cosa serve ogni parte.<br><br>Dal menu apri <b>StudyHub</b> qui accanto. La guida completa è in Altro → <b>Guida</b>, dove puoi anche rivedere questo tutorial.` }
+];
+function openTutorial() {
+  let i = 0;
+  const sh = openSheet('<div id="tutBox"></div>', { label: 'Tutorial', onClose: () => { try { localStorage.setItem(TUT_KEY, '1'); } catch { /* niente */ } } });
+  sh.el.classList.add('tut');
+  const draw = () => {
+    const s = TUTORIAL[i], last = i === TUTORIAL.length - 1;
+    $('#tutBox', sh.el).innerHTML = `
+      <div class="tut-icon" aria-hidden="true">${s.icon}</div>
+      <h2 class="tut-title">${s.title}</h2>
+      <div class="tut-text">${s.html}</div>
+      <div class="tut-dots" aria-label="Passo ${i + 1} di ${TUTORIAL.length}">${TUTORIAL.map((_, k) => `<span class="${k === i ? 'on' : ''}"></span>`).join('')}</div>
+      <div class="modal-actions">
+        ${i ? '<button class="btn ghost" type="button" data-tut="-1">Indietro</button>' : '<button class="btn ghost" type="button" data-tut="skip">Salta</button>'}
+        <button class="btn primary" type="button" data-tut="${last ? 'end' : '1'}">${last ? 'Inizia' : 'Avanti'}</button>
+      </div>`;
+    $('[data-tut]:last-child', sh.el)?.focus({ preventScroll: true });
+  };
+  sh.el.addEventListener('click', e => {
+    const b = e.target.closest('[data-tut]');
+    if (!b) return;
+    const v = b.dataset.tut;
+    if (v === 'skip' || v === 'end') { sh.close(true); return; }
+    i = Math.max(0, Math.min(TUTORIAL.length - 1, i + +v));
+    draw();
+  });
+  sh.el.addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight' && i < TUTORIAL.length - 1) { i++; draw(); }
+    else if (e.key === 'ArrowLeft' && i > 0) { i--; draw(); }
+  });
+  draw();
+}
+
+const HELP = {
+  // Impostazioni
+  ai: { t: 'Intelligenza artificiale', b: `Serve per: formattare testi e PDF importati, aggiungere cloze e domande, valutare la Pagina bianca e l’Orale, creare flashcard, leggere ad alta voce con la voce di Google.<br><br><b>Senza chiave l’app funziona lo stesso</b>: importa con una formattazione di base e tutti gli esercizi restano.<br><br><b>Gemini</b> ha un piano gratuito con un numero di richieste al giorno per ogni modello. <b>Claude</b> si paga a consumo con crediti prepagati.` },
+  apikey: { t: 'Chiave API', b: `È la “password” che permette all’app di usare l’AI con il tuo account.<br><br>Gemini: si crea gratis su <b>Google AI Studio</b>. Claude: su <b>platform.claude.com</b>, con credito caricato.<br><br>Resta <b>solo su questo dispositivo</b>: non va su GitHub, nella sincronizzazione né nel backup. Su un altro dispositivo va incollata di nuovo. “Prova la connessione” controlla che funzioni.` },
+  model: { t: 'Modello', b: `Quale modello di AI usare. Se non sai, lascia quello proposto.<br><br>I modelli “flash” sono veloci e hanno più richieste gratuite; quelli “pro” ragionano meglio ma con la chiave gratuita possono avere poche richieste o nessuna.` },
+  backupModels: { t: 'Modelli di riserva', b: `Con la chiave gratuita ogni modello ha un suo numero di richieste al giorno. Quando il modello principale le finisce, l’app passa da sola al primo modello di riserva, fino all’azzeramento del giorno dopo (verso le 8 o le 9 del mattino).<br><br>Puoi scriverne più d’uno, separati da virgola. Lascia vuoto per non usarne.` },
+  prompts: { t: 'Prompt per l’AI', b: `Sono le istruzioni che l’app dà all’AI per ogni lavoro: formattare, creare flashcard, valutare l’orale…<br><br>Puoi riscriverle a tuo gusto (per esempio “usa più tabelle” o “domande da esame orale”). “Ripristina” torna al testo di partenza.` },
+  sync: { t: 'Sincronizzazione con Google Drive', b: `Tiene uguali i dati su telefono e computer, salvandoli in una cartella del tuo Google Drive tramite il tuo script di Apps Script.<br><br>Su ogni dispositivo servono lo stesso <b>indirizzo dell’app web</b> (finisce con /exec) e la stessa <b>frase segreta</b>.<br><br>Le chiavi dell’AI non vengono sincronizzate. Se usi un solo dispositivo, basta il backup.` },
+  cardsSet: { t: 'Flashcard', b: `<b>Nuove al giorno</b>: quante flashcard mai viste ti propone ogni giorno per ogni notebook, così il ripasso non esplode.<br><br>La <b>nota del “Di nuovo”</b> ti chiede perché hai sbagliato: ti aiuta a riconoscere gli errori che ripeti.` },
+  images: { t: 'Immagini', b: `Quante immagini hai salvato e quanto spazio occupano.<br><br>“Elimina le immagini non usate” toglie quelle che non compaiono più in nessuna sezione o flashcard.` },
+  studyhub: { t: 'StudyHub', b: `Il collegamento con il tuo planner. Quando segni una sezione come studiata, StudyHub la riceve e ne pianifica i ripassi; i voti dati qui gli arrivano.<br><br>Dal menu puoi aprire StudyHub <b>qui accanto</b> (in basso sul telefono). Lascia vuoto l’indirizzo per usare quello di sempre.` },
+  importSet: { t: 'Importazione', b: `Il numero di pagine per sezione proposto quando importi un PDF “ogni tot pagine”. Lo puoi sempre cambiare al momento.` },
+  look: { t: 'Lettura e aspetto', b: `Tema chiaro o scuro, carattere, dimensione e interlinea degli appunti.<br><br>Il <b>filtro luce blu</b> rende i colori più caldi la sera. La <b>voce per l’ascolto</b> legge le sezioni ad alta voce.` },
+  tts: { t: 'Voce per l’ascolto', b: `<b>Voce del telefono</b>: gratuita, funziona anche senza internet.<br><b>Voce di Google</b>: più naturale, usa la chiave di Gemini e ha un suo limite giornaliero.<br><br>“Prova la voce” ti fa sentire come suona.` },
+  backup: { t: 'Backup', b: `Un unico file con tutti i tuoi dati: notebook, sezioni, flashcard, immagini, PDF, glossario, note e casi clinici.<br><br>Conservalo su Drive o mandatelo per email, una volta a settimana o prima di cambiare telefono. “Importa un backup” riporta tutto com’era.<br><br>Le chiavi dell’AI e la frase segreta restano fuori.` },
+  install: { t: 'App sul telefono', b: `Installata, si apre dall’icona come una vera app, a schermo intero, e il browser difficilmente ne cancella i dati.<br><br><b>Android:</b> tasto Installa qui, oppure in Chrome menu ⋮ → Installa app.<br><b>iPhone:</b> in Safari, Condividi → Aggiungi alla schermata Home.` },
+  // Importa
+  importSrc: { t: 'Cosa importare', b: `<b>Testo</b>: incolli appunti, capitoli o testo da NotebookLM; se è lungo viene diviso in più sezioni.<br><b>PDF</b>: libri, dispense, slide.<br><b>XMind</b>: ogni foglio della mappa diventa una sezione con elenchi annidati.` },
+  importGroup: { t: 'Macro-argomento', b: `Dove finiscono le sezioni create. Lascia vuoto per metterle nel notebook senza un macro-argomento.<br><br>Con “Per argomenti” l’app può anche creare da sola macro-argomenti e sottoargomenti dai titoli del PDF.` },
+  split: { t: 'Come dividere il PDF', b: `<b>Ogni tot pagine</b>: blocchi uguali, per esempio 5 pagine per sezione.<br><b>Intervalli scelti</b>: scrivi una riga per sezione, come “13-30 Il cuore”, oppure usa i capitoli del PDF se ci sono.<br><b>Per argomenti</b>: l’app legge i titoli (più grandi, numerati come 3.1 o in maiuscolo) e crea una sezione per argomento, pulendo il testo. Serve un PDF con il testo selezionabile, anche con l’OCR fatto da te.` },
+  pdfMode: { t: 'Testo o lettura dell’AI', b: `<b>Estrai il testo</b>: gratis, veloce, senza limiti. Serve un PDF con il testo selezionabile.<br><br><b>Fai leggere le pagine all’AI</b>: funziona anche con scansioni, schemi e tabelle, ma ogni richiesta è più pesante e con Gemini gratuito i limiti scattano prima.` },
+  aiOpts: { t: 'Elaborazione', b: `<b>Formatta con l’AI</b>: riordina il testo in titoli, elenchi puntati e tabelle.<br><b>Cloze</b>: segna i termini chiave da nascondere nella scheda Cloze.<br><b>Domande</b>: prepara le domande per il richiamo nella scheda Domande.<br><br>Senza AI il testo viene salvato con una formattazione di base.` },
+  keepImgs: { t: 'Immagini del PDF', b: `Ritaglia le figure delle pagine importate e le mette in fondo a ogni sezione. Poi puoi usarle per l’image occlusion o le etichette.` },
+  // Sezione
+  modes: { t: 'Le schede della sezione', b: `<b>Cloze</b>: i termini chiave sono nascosti, toccali per scoprirli.<br><b>Leggi</b>: gli appunti; selezionando il testo evidenzi o crei cloze e flashcard.<br><b>Mappe</b>: gli appunti come mappa concettuale.<br><b>Pagina bianca</b>: scrivi tutto quello che ricordi, poi confronti.<br><b>Orale</b>: ripeti a voce come all’esame, poi confronti.<br><b>Domande</b>, <b>Flashcard</b>, <b>Video</b>, <b>Modifica</b>.<br><br>Nei casi clinici c’è anche <b>Risolvi</b>: il caso si scopre una parte alla volta.<br><br>Quando confronti, segna col semaforo: tocca il pallino accanto ai titoli o il margine sinistro.` },
+  // Pagine
+  notebooks: { t: 'I tuoi notebook', b: `Un notebook per ogni materia. Toccane uno per vedere macro-argomenti e sezioni; da qui ne crei di nuovi.` },
+  notebook: { t: 'Il notebook', b: `Le sezioni divise in <b>macro-argomenti</b> e <b>sottoargomenti</b>. Il menu “⋯” di un gruppo serve per aggiungere sezioni, crearne di nuove, importare lì o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
+  review: { t: 'Ripasso', b: `Le sezioni da ripassare oggi nel Notebook (quelle mandate a StudyHub le pianifica StudyHub).<br><br>Dopo ogni prova valuta con Di nuovo, Difficile, Bene o Facile: l’app decide quando riproportela.` },
+  cardsPage: { t: 'Flashcard', b: `Le flashcard da ripassare di tutti i notebook. Gira la carta, poi valuta quanto la sapevi.<br><br>Le crei selezionando il testo in Leggi, con l’AI o a mano.` },
+  pdfs: { t: 'PDF', b: `La tua libreria di PDF, collegati ai notebook o alle singole sezioni. Nel lettore puoi evidenziare, scrivere a mano, mettere segnalibri e trascinare parti negli appunti.` },
+  importPage: { t: 'Importa', b: `Da qui crei le sezioni a partire da testo, PDF o mappe XMind. Scegli prima il notebook e, se vuoi, il macro-argomento.` },
+  clinic: { t: 'Note cliniche', b: `I quadri clinici di tutte le materie, cercabili per sintomo: tocca più sintomi per restringere.<br><br>Ogni nota ha fonti e può essere segnata come incompleta. Puoi crearla anche selezionando del testo in Leggi.` },
+  cases: { t: 'Casi clinici', b: `I casi visti a lezione, in tirocinio o sui libri. Ognuno è una sezione con i dati del caso, foto e PDF allegati e la modalità <b>Risolvi</b>.<br><br>Cerca per sintomi, esami o diagnosi e filtra per specialità, materia o contesto. Niente dati che rendano riconoscibile il paziente.` },
+  incomplete: { t: 'Da completare', b: `Tutto quello che hai segnato come incompleto, dal più vecchio: sezioni, casi e note cliniche, con la nota su cosa manca.<br><br>“Completa” toglie la segnalazione.` },
+  glossary: { t: 'Glossario', b: `I termini di tutte le materie con la loro definizione. Puoi aggiungerli da qui o selezionando una parola mentre leggi.` },
+  calendar: { t: 'Calendario', b: `I ripassi in programma giorno per giorno, il tempo di studio e i punti deboli, cioè le parti che nel Cloze o nell’Orale sono rimaste più volte rosse o arancio.` },
+  search: { t: 'Cerca', b: `Cerca in tutto: appunti, flashcard, testo dei PDF, glossario e note cliniche.` },
+  links: { t: 'Link utili', b: `I siti che usi di più, a portata di tocco. Tieni premuto o usa Modifica per cambiarli.` },
+  exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
+  lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami con nome, sigla, campione e unità: i range li aggiungi tu, perché cambiano da laboratorio a laboratorio.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
+  labRef: { t: 'Leggi un referto', b: `Scrivi esame e valore (anche la sigla): l’app usa i range delle tue schede e segna in giallo i valori bassi o alti e in rosso quelli critici. Indica il sesso per i range diversi.<br><br>È un esercizio di lettura: in un referto vero vale sempre il range stampato dal laboratorio.` },
+  labCalc: { t: 'Calcoli di laboratorio', b: `Gap anionico (anche corretto per l’albumina), calcio corretto, eGFR con la CKD-EPI 2021, LDL di Friedewald, osmolalità calcolata e gap osmolare, sodio corretto per la glicemia. Sotto ogni calcolo c’è la formula.<br><br>Le unità sono quelle convenzionali (mg/dL, mEq/L) dei referti italiani.` },
+  labQuiz: { t: 'Allenati', b: `Domande pescate a caso dalle tue schede: range, cause di aumento e diminuzione, quale esame chiedere per una malattia, campione e preparazione. Più schede completi, più domande ci sono.` },
+  labEdit: { t: 'Scheda dell’esame', b: `Compila quello che ti serve: i campi vuoti non compaiono nella scheda.<br><br><b>Range</b>: una riga per popolazione (adulti, uomini, donne, bambini); con solo il massimo scrivi “< max”, con solo il minimo “> min”.<br><b>Uso diagnostico</b>: una riga per malattia e soglia, con sensibilità e specificità in percentuale.<br><b>Fattore SI</b>: il numero per cui moltiplicare per passare all’unità SI (per esempio 88,4 per la creatinina da mg/dL a µmol/L).` },
+  settings: { t: 'Impostazioni', b: `Ogni gruppo ha il suo tasto ? con la spiegazione. Quelle che cambi qui valgono su questo dispositivo; prompt e preferenze di lettura si sincronizzano.` }
+};
+function helpBtn(key) {
+  const h = HELP[key];
+  return h ? `<button type="button" class="help-btn" data-help="${key}" aria-label="Aiuto: ${esc(h.t)}" title="Cos’è?">?</button>` : '';
+}
+function showHelp(key) {
+  const h = HELP[key];
+  if (!h) return;
+  const sh = openSheet(`
+    <h2>${esc(h.t)}</h2>
+    <div class="help-body">${h.b}</div>
+    <div class="modal-actions"><button class="btn primary" type="button" data-help-close>Ho capito</button></div>`, { label: h.t });
+  $('[data-help-close]', sh.el).onclick = () => sh.close();
+}
+// Dove compaiono i “?”: cerco i titoli e le etichette già presenti nella pagina
+const HELP_SPOTS = [
+  { sel: '.page-head h1', text: 'I tuoi notebook', key: 'notebooks' },
+  { sel: '.page-head h1', hash: /^#\/nb\//, key: 'notebook' },
+  { sel: '.page-head h1', text: 'Ripasso', key: 'review' },
+  { sel: '.page-head h1', text: 'Flashcard', key: 'cardsPage' },
+  { sel: '.page-head h1', text: 'PDF', key: 'pdfs' },
+  { sel: '.page-head h1', text: 'Importa', key: 'importPage' },
+  { sel: '.page-head h1', text: 'Note cliniche', key: 'clinic' },
+  { sel: '.page-head h1', text: 'Casi clinici', key: 'cases' },
+  { sel: '.page-head h1', text: 'Da completare', key: 'incomplete' },
+  { sel: '.page-head h1', text: 'Glossario', key: 'glossary' },
+  { sel: '.page-head h1', text: 'Calendario', key: 'calendar' },
+  { sel: '.page-head h1', text: 'Cerca', key: 'search' },
+  { sel: '.page-head h1', text: 'Link utili', key: 'links' },
+  { sel: '.page-head h1', text: 'Simulazione d’esame', key: 'exam' },
+  { sel: '.page-head h1', text: 'Impostazioni', key: 'settings' },
+  { sel: '.page-head h1', text: 'Medicina di laboratorio', key: 'lab' },
+  { sel: '.page-head h1', text: 'Leggi un referto', key: 'labRef' },
+  { sel: '.page-head h1', text: 'Calcoli di laboratorio', key: 'labCalc' },
+  { sel: '.page-head h1', text: 'Allenati', key: 'labQuiz', hash: /^#\/lab/ },
+  { sel: '.page-head h1', text: 'Nuovo esame', key: 'labEdit' },
+  { sel: '.page-head h1', text: 'Modifica esame', key: 'labEdit' },
+  { sel: 'h2', text: 'Intelligenza artificiale', key: 'ai', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'Prompt per l’AI', key: 'prompts', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'Sincronizzazione con Google Drive', key: 'sync', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'Flashcard', key: 'cardsSet', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'Immagini', key: 'images', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'StudyHub', key: 'studyhub', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'Importazione', key: 'importSet', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'Lettura e aspetto', key: 'look', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'Backup', key: 'backup', hash: /^#\/settings/ },
+  { sel: 'h2', text: 'App sul telefono', key: 'install', hash: /^#\/settings/ },
+  { sel: '.provider label.lbl', text: 'Chiave API', key: 'apikey' },
+  { sel: '.provider .field > span', text: 'Modello', key: 'model' },
+  { sel: '.field > span', text: 'Modelli di riserva', key: 'backupModels' },
+  { sel: '.field > span.lbl', text: 'Voce per l’ascolto', key: 'tts' },
+  { sel: '#imGroupBox > label.lbl', text: 'Macro-argomento', key: 'importGroup' },
+  { sel: '.opts > legend', text: 'Elaborazione', key: 'aiOpts' },
+  { after: '.seg[aria-label="Tipo di fonte"]', key: 'importSrc' },
+  { after: '.split-seg', key: 'split' },
+  { after: '#pdfModeBox', key: 'pdfMode', inside: true },
+  { after: '#optImgs', key: 'keepImgs', label: true },
+  { after: '.sec-extra', key: 'modes', inside: true }
+];
+function decorateHelp(root = $('#view')) {
+  if (!root) return;
+  const h = location.hash || '#/notebooks';
+  for (const sp of HELP_SPOTS) {
+    if (sp.hash && !sp.hash.test(h)) continue;
+    if (sp.sel) {
+      $$(sp.sel, root).forEach(el => {
+        if (el.querySelector('.help-btn')) return;
+        const txt = el.textContent.replace(/\s+/g, ' ').trim();
+        if (sp.text && !txt.startsWith(sp.text)) return;
+        el.insertAdjacentHTML('beforeend', helpBtn(sp.key));
+      });
+    } else {
+      $$(sp.after, root).forEach(el => {
+        if (sp.label) {
+          const lab = el.closest('label');
+          const span = lab && $('span', lab);
+          if (span && !span.querySelector('.help-btn')) span.insertAdjacentHTML('beforeend', helpBtn(sp.key));
+          return;
+        }
+        if (sp.inside) { if (!$(`:scope > .help-btn[data-help="${sp.key}"]`, el)) el.insertAdjacentHTML('beforeend', helpBtn(sp.key)); return; }
+        const nx = el.nextElementSibling;
+        if (nx && nx.matches(`.help-btn[data-help="${sp.key}"]`)) return;
+        el.insertAdjacentHTML('afterend', helpBtn(sp.key));
+      });
+    }
+  }
+}
+function initHelp() {
+  // in cattura: il “?” dentro un’etichetta o una riga non spunta caselle e non apre la pagina
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.help-btn[data-help]');
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    showHelp(b.dataset.help);
+  }, true);
+  const view = $('#view');
+  if (view) {
+    let raf = 0;
+    new MutationObserver(() => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; decorateHelp(view); }); }).observe(view, { childList: true, subtree: true });
+    decorateHelp(view);
+  }
+  try {
+    if (!localStorage.getItem(TUT_KEY)) setTimeout(() => { if (!$('#modalRoot').children.length) openTutorial(); }, 700);
+  } catch { /* niente */ }
+}
+
+/* =====================================================================
+   v3.28: casi clinici, fonti in fondo, segnalazione “incompleta”
+   ===================================================================== */
+
+/* ---------- Fonti: una per riga, i link diventano cliccabili ---------- */
+const sourcesOf = r => (Array.isArray(r.sources) ? r.sources : (r.source ? [r.source] : [])).filter(x => String(x || '').trim());
+function sourceLineHtml(t) {
+  const re = /https?:\/\/[^\s<>"')\]]+/g;
+  let out = '', last = 0, m;
+  const s = String(t);
+  while ((m = re.exec(s))) {
+    out += esc(s.slice(last, m.index));
+    let host = m[0];
+    try { const u = new URL(m[0]); host = u.hostname.replace(/^www\./, '') + (u.pathname.length > 1 ? '/…' : ''); } catch { /* resta il testo */ }
+    out += `<a href="${esc(m[0])}" target="_blank" rel="noopener noreferrer" title="${esc(m[0])}">${esc(host)} ↗</a>`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(s.slice(last));
+}
+function editSourcesSheet(list) {
+  return new Promise(resolve => {
+    const sh = openSheet(`
+      <h2>Fonti</h2>
+      <p class="sheet-sub">Una per riga: libro e capitolo, slide della lezione, linea guida, sito. I link restano cliccabili.</p>
+      <label class="field"><span>Fonti</span>
+        <textarea class="input" id="srcTa" rows="6" placeholder="Harrison, 21ª ed., cap. 270&#10;Slide della lezione del 12 novembre&#10;https://www.orpha.net/…">${esc(list.join('\n'))}</textarea></label>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-src-act="no">Annulla</button>
+        <button class="btn primary" type="button" data-src-act="ok">Salva</button>
+      </div>`, { label: 'Fonti', onClose: v => resolve(v === undefined ? null : v) });
+    $('[data-src-act="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-src-act="ok"]', sh.el).onclick = () => sh.close($('#srcTa', sh.el).value.split('\n').map(x => x.trim()).filter(Boolean));
+    setTimeout(() => $('#srcTa', sh.el)?.focus(), 40);
+  });
+}
+// risultato: { note } per segnarla, false per toglierla, null se annulli
+function incompleteSheet(rec, what = 'sezione') {
+  return new Promise(resolve => {
+    const cur = rec.incomplete;
+    const sh = openSheet(`
+      <h2>${cur ? `${what === 'caso' ? 'Caso incompleto' : what === 'esame' ? 'Esame incompleto' : what === 'nota' ? 'Nota incompleta' : 'Sezione incompleta'}` : 'Segna come incompleta'}</h2>
+      <p class="sheet-sub">Resta segnalata qui e nella pagina “Da completare” finché non la segni come completa.</p>
+      <label class="field"><span>Cosa manca? Facoltativo</span>
+        <textarea class="input" id="incTa" rows="3" placeholder="Es. letto solo il Robbins, manca la terapia">${esc(cur?.note || '')}</textarea></label>
+      <div class="modal-actions">
+        ${cur ? '<button class="btn ghost" type="button" data-inc="done">È completa</button>' : '<button class="btn ghost" type="button" data-inc="no">Annulla</button>'}
+        <button class="btn primary" type="button" data-inc="ok">${cur ? 'Salva' : 'Segna incompleta'}</button>
+      </div>`, { label: 'Incompleta', onClose: v => resolve(v === undefined ? null : v) });
+    $('[data-inc="no"]', sh.el)?.addEventListener('click', () => sh.close(null));
+    $('[data-inc="done"]', sh.el)?.addEventListener('click', () => sh.close(false));
+    $('[data-inc="ok"]', sh.el).onclick = () => sh.close({ note: $('#incTa', sh.el).value.trim() });
+    setTimeout(() => $('#incTa', sh.el)?.focus(), 40);
+  });
+}
+async function toggleIncomplete(rec, save, what) {
+  const r = await incompleteSheet(rec, what);
+  if (r === null) return false;
+  if (r === false) { delete rec.incomplete; toast('Segnata come completa'); }
+  else { rec.incomplete = { note: r.note, since: rec.incomplete?.since || todayStr() }; toast('Segnata come incompleta'); }
+  await save();
+  return true;
+}
+const incompleteNote = r => (r.incomplete && r.incomplete.note ? r.incomplete.note : '');
+// riquadro in fondo: fonti e stato di completezza
+function sourcesBlockHtml(rec) {
+  const list = sourcesOf(rec);
+  return `
+    <section class="fonti" aria-label="Fonti">
+      <div class="fonti-head">
+        <h3>Fonti</h3>
+        <div class="inline">
+          <button class="btn sm ghost" type="button" data-fonti="edit">${list.length ? 'Modifica' : 'Aggiungi una fonte'}</button>
+          <button class="btn sm ghost ${rec.incomplete ? 'inc-on' : ''}" type="button" data-fonti="inc">${rec.incomplete ? '⚠ Incompleta' : 'Segna incompleta'}</button>
+        </div>
+      </div>
+      ${list.length ? `<ol class="fonti-list">${list.map(t => `<li>${sourceLineHtml(t)}</li>`).join('')}</ol>` : '<p class="hint">Nessuna fonte. Aggiungila per ricordarti da dove viene e cosa hai già letto.</p>'}
+      ${rec.incomplete ? `<p class="inc-line">⚠ Incompleta${incompleteNote(rec) ? `: ${esc(incompleteNote(rec))}` : ''} <span class="muted-inline">(dal ${esc(fmtDay(rec.incomplete.since))})</span></p>` : ''}
+    </section>`;
+}
+function bindSourcesBlock(root, rec, save, what) {
+  $('[data-fonti="edit"]', root)?.addEventListener('click', async () => {
+    const list = await editSourcesSheet(sourcesOf(rec));
+    if (!list) return;
+    rec.sources = list;
+    delete rec.source;
+    await save();
+    toast(list.length ? 'Fonti salvate' : 'Fonti tolte');
+    route();
+  });
+  $('[data-fonti="inc"]', root)?.addEventListener('click', async () => { if (await toggleIncomplete(rec, save, what)) route(); });
+}
+function fmtDay(d) {
+  if (!d) return '';
+  const [y, m, dd] = String(d).split('-').map(Number);
+  if (!y) return String(d);
+  return new Date(y, m - 1, dd).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/* ---------- Pagina “Da completare” ---------- */
+function viewIncomplete() {
+  const cnb = casesNb();
+  const secs = state.sections.filter(s => s.incomplete);
+  const cases = secs.filter(s => cnb && s.notebookId === cnb.id);
+  const others = secs.filter(s => !cnb || s.notebookId !== cnb.id);
+  const notes = clinicalNotes().filter(n => n.incomplete);
+  const labs = labExams().filter(x => x.incomplete);
+  const total = secs.length + notes.length + labs.length;
+  const byNb = new Map();
+  others.forEach(s => { const k = s.notebookId; if (!byNb.has(k)) byNb.set(k, []); byNb.get(k).push(s); });
+  const since = r => r.incomplete?.since || '9999';
+  const item = (title, href, rec, kind, id) => `
+    <li class="inc-item">
+      <a class="row" href="${href}" ${kind === 'note' ? `data-inc-note="${id}"` : ''}>
+        <span class="row-main">
+          <span class="row-title">${esc(title)}</span>
+          <span class="row-sub">${incompleteNote(rec) ? esc(incompleteNote(rec)) : 'Senza nota'} · dal ${esc(fmtDay(rec.incomplete.since))}</span>
+        </span>
+      </a>
+      <button class="btn sm ghost" type="button" data-inc-done="${kind}:${id}">Completa</button>
+    </li>`;
+  setView(`
+    <header class="page-head">
+      <div><h1>Da completare</h1><p class="lede">${total ? `${total} ${total === 1 ? 'elemento segnato come incompleto' : 'elementi segnati come incompleti'}, dal più vecchio.` : 'Niente da completare.'}</p></div>
+    </header>
+    ${total ? '' : '<div class="empty"><p>Quando una sezione, un caso o una nota clinica non è finita (per esempio hai letto solo una delle fonti), toccale “Segna incompleta” in fondo: la ritrovi qui.</p></div>'}
+    ${cases.length ? `<h2 class="sub">Casi clinici</h2><ul class="list">${cases.sort((a, b) => since(a).localeCompare(since(b))).map(s => item(s.title, `#/sec/${s.id}/read`, s, 'sec', s.id)).join('')}</ul>` : ''}
+    ${[...byNb.entries()].map(([nbId, list]) => `
+      <h2 class="sub">${esc(nbById(nbId)?.name || 'Notebook')}</h2>
+      <ul class="list">${list.sort((a, b) => since(a).localeCompare(since(b))).map(s => item(s.title, `#/sec/${s.id}/read`, s, 'sec', s.id)).join('')}</ul>`).join('')}
+    ${notes.length ? `<h2 class="sub">Note cliniche</h2><ul class="list">${notes.sort((a, b) => since(a).localeCompare(since(b))).map(n => item(n.title, '#/clinic', n, 'note', n.id)).join('')}</ul>` : ''}
+    ${labs.length ? `<h2 class="sub">Medicina di laboratorio</h2><ul class="list">${labs.sort((a, b) => since(a).localeCompare(since(b))).map(x => item(x.name, `#/lab/${x.id}`, x, 'lab', x.id)).join('')}</ul>` : ''}
+  `);
+  on('[data-inc-note]', 'click', e => { e.preventDefault(); showClinicNote(e.currentTarget.dataset.incNote); });
+  on('[data-inc-done]', 'click', async e => {
+    const [kind, id] = e.currentTarget.dataset.incDone.split(':');
+    if (kind === 'sec') { const s = secById(id); if (s) { delete s.incomplete; await saveSection(s); } }
+    else { const n = state.links.find(l => l.id === id); if (n) { delete n.incomplete; await saveLink(n); } }
+    toast(kind === 'lab' ? 'Segnato come completo' : 'Segnata come completa');
+    route();
+  });
+}
+
+/* ---------- Casi clinici ----------
+   Ogni caso è una sezione del notebook “Casi clinici”: ha quindi tutto quello
+   delle sezioni (Leggi, Cloze, Orale, Domande, flashcard, PDF, video, etichette)
+   più i dati del caso, gli allegati e la modalità Risolvi. */
+const CASE_PARTS = ['Presentazione', 'Anamnesi', 'Esame obiettivo', 'Esami di laboratorio', 'Esami strumentali', 'Diagnosi differenziale', 'Diagnosi', 'Terapia e decorso', 'Punti chiave'];
+const CASE_CTX = { lezione: 'Lezione', tirocinio: 'Tirocinio', libro: 'Libro o sito', altro: 'Altro' };
+const casesNb = () => state.notebooks.find(n => n.kind === 'cases');
+async function ensureCasesNb() {
+  let nb = casesNb();
+  if (!nb) {
+    nb = { id: uid(), name: 'Casi clinici', kind: 'cases', created: Date.now() };
+    await saveNotebook(nb);
+  }
+  return nb;
+}
+const isCase = sec => !!sec && !!casesNb() && sec.notebookId === casesNb().id;
+const caseOf = sec => (sec.case && typeof sec.case === 'object' ? sec.case : (sec.case = {}));
+let casesQuery = '';
+const casesFilter = new Set();
+function caseMetaBits(sec, { short = false } = {}) {
+  const c = caseOf(sec);
+  const bits = [];
+  if (c.date) bits.push(fmtDay(c.date));
+  if (c.ctx) bits.push(`${CASE_CTX[c.ctx] || c.ctx}${c.who ? ` (${c.who})` : ''}`);
+  else if (c.who) bits.push(c.who);
+  if (c.spec) bits.push(c.spec);
+  if (!short && c.nbId && nbById(c.nbId)) bits.push(nbById(c.nbId).name);
+  return bits;
+}
+function caseSheet(sec = null) {
+  return new Promise(resolve => {
+    const c = sec ? caseOf(sec) : { date: todayStr(), ctx: 'lezione' };
+    const cnb = casesNb();
+    const specs = [...new Set((cnb ? secsOf(cnb.id) : []).map(s => s.case?.spec).filter(Boolean))].sort();
+    const nbs = state.notebooks.filter(n => n.kind !== 'cases');
+    const sh = openSheet(`
+      <h2>${sec ? 'Dati del caso' : 'Nuovo caso clinico'}</h2>
+      <p class="sheet-sub">Niente nomi, date di nascita o altri dati che rendano riconoscibile il paziente, nemmeno nelle foto.</p>
+      <label class="field"><span>Titolo</span><input class="input" id="csTitle" value="${esc(sec?.title || '')}" placeholder="Es. Donna, 34 anni, febbre e artralgie"></label>
+      <div class="grid2">
+        <label class="field"><span>Data</span><input class="input" type="date" id="csDate" value="${esc(c.date || '')}"></label>
+        <label class="field"><span>Dove l’hai visto</span><select class="input" id="csCtx">${Object.entries(CASE_CTX).map(([k, l]) => `<option value="${k}" ${c.ctx === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      </div>
+      <label class="field"><span>Docente, corso o reparto, facoltativo</span><input class="input" id="csWho" value="${esc(c.who || '')}" placeholder="Es. prof.ssa Rossi, Medicina interna"></label>
+      <div class="grid2">
+        <label class="field"><span>Specialità</span><input class="input" id="csSpec" value="${esc(c.spec || '')}" list="csSpecs" placeholder="Es. Cardiologia"><datalist id="csSpecs">${specs.map(s => `<option value="${esc(s)}">`).join('')}</datalist></label>
+        <label class="field"><span>Materia</span><select class="input" id="csNb"><option value="">Nessuna in particolare</option>${nbs.map(n => `<option value="${n.id}" ${n.id === c.nbId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+      </div>
+      ${sec ? '' : `<label class="check"><input type="checkbox" id="csTpl" checked><span>Prepara lo schema: ${CASE_PARTS.join(', ')}</span></label>`}
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-cs="no">Annulla</button>
+        <button class="btn primary" type="button" data-cs="ok">${sec ? 'Salva' : 'Crea il caso'}</button>
+      </div>`, { label: sec ? 'Dati del caso' : 'Nuovo caso clinico', onClose: v => resolve(v || null) });
+    $('[data-cs="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-cs="ok"]', sh.el).onclick = async () => {
+      const title = $('#csTitle', sh.el).value.trim();
+      if (!title) { toast('Scrivi un titolo per il caso'); $('#csTitle', sh.el).focus(); return; }
+      const data = { date: $('#csDate', sh.el).value || '', ctx: $('#csCtx', sh.el).value, who: $('#csWho', sh.el).value.trim(), spec: $('#csSpec', sh.el).value.trim(), nbId: $('#csNb', sh.el).value || '' };
+      let s = sec;
+      if (!s) {
+        const nb = await ensureCasesNb();
+        const tpl = $('#csTpl', sh.el)?.checked;
+        s = newSection(nb.id, { title, md: tpl ? CASE_PARTS.map(p => `## ${p}\n\n`).join('') : '' });
+      } else s.title = title;
+      s.case = { ...caseOf(s), ...data };
+      await saveSection(s);
+      sh.close(s);
+    };
+    setTimeout(() => $(sec ? '#csWho' : '#csTitle', sh.el)?.focus(), 40);
+  });
+}
+async function newCaseFlow() {
+  const s = await caseSheet();
+  if (s) { toast('Caso creato: scrivilo o aggiungi foto e PDF'); go(`#/sec/${s.id}/edit`); }
+}
+function viewCases() {
+  const cnb = casesNb();
+  const all = cnb ? secsOf(cnb.id) : [];
+  const facets = new Map();
+  all.forEach(s => {
+    const c = s.case || {};
+    if (c.spec) facets.set(`spec:${c.spec}`, c.spec);
+    if (c.nbId && nbById(c.nbId)) facets.set(`nb:${c.nbId}`, nbById(c.nbId).name);
+    if (c.ctx) facets.set(`ctx:${c.ctx}`, CASE_CTX[c.ctx] || c.ctx);
+  });
+  [...casesFilter].forEach(k => { if (!facets.has(k)) casesFilter.delete(k); });
+  setView(`
+    <header class="page-head">
+      <div><h1>Casi clinici</h1><p class="lede">${all.length ? `${all.length} ${all.length === 1 ? 'caso' : 'casi'}. ` : ''}Quelli visti a lezione, in tirocinio o sui libri, con foto e PDF allegati. In ogni caso trovi la modalità Risolvi.</p></div>
+      <button class="btn primary" data-act="new-case">Nuovo caso</button>
+    </header>
+    ${all.length ? `
+      <input type="search" class="input search" id="csQ" placeholder="Cerca nei casi: sintomi, diagnosi, esami…" aria-label="Cerca nei casi" value="${esc(casesQuery)}">
+      ${facets.size ? `<div class="tag-cloud" aria-label="Filtra i casi">${[...facets.entries()].sort((a, b) => a[1].localeCompare(b[1])).map(([k, l]) => `<button type="button" class="tag ${casesFilter.has(k) ? 'on' : ''}" data-cf="${esc(k)}" aria-pressed="${casesFilter.has(k)}">${esc(l)}</button>`).join('')}</div>` : ''}
+      <ul class="list" id="csList"></ul>` : `
+      <div class="empty"><p>Ancora nessun caso. Creane uno durante la lezione: scrivi la presentazione, scatta le foto delle slide o degli esami e allega il PDF.</p><button class="btn primary" data-act="new-case">Nuovo caso</button></div>`}
+  `);
+  on('[data-act="new-case"]', 'click', newCaseFlow);
+  const draw = () => {
+    const box = $('#csList');
+    if (!box) return;
+    const toks = foldAccents(casesQuery).split(/\s+/).filter(Boolean);
+    const list = all.filter(s => {
+      const c = s.case || {};
+      for (const k of casesFilter) {
+        const [t, v] = [k.slice(0, k.indexOf(':')), k.slice(k.indexOf(':') + 1)];
+        if ((t === 'spec' && c.spec !== v) || (t === 'nb' && c.nbId !== v) || (t === 'ctx' && c.ctx !== v)) return false;
+      }
+      if (!toks.length) return true;
+      const hay = foldAccents(`${s.title} ${s.md} ${c.spec || ''} ${c.who || ''} ${tagsOf(s).join(' ')}`);
+      return toks.every(t => hay.includes(t));
+    }).sort((a, b) => String(b.case?.date || '').localeCompare(String(a.case?.date || '')) || b.created - a.created);
+    box.innerHTML = list.length ? list.map(s => {
+      const nImg = imageRefs(s.md).length, nPdf = pdfsOf(s.id).length;
+      const extra = [nImg ? `${nImg} ${nImg === 1 ? 'foto' : 'foto'}` : '', nPdf ? `${nPdf} PDF` : '', s.incomplete ? '⚠ incompleto' : ''].filter(Boolean);
+      return `
+        <li><a class="row" href="#/sec/${s.id}/read">
+          <span class="row-main">
+            <span class="row-title">${esc(s.title)}</span>
+            <span class="row-sub">${esc([...caseMetaBits(s), ...extra].join(' · ') || 'Senza dati')}</span>
+          </span>
+          ${statusPill(s)}
+        </a></li>`;
+    }).join('') : '<li class="hint">Nessun caso corrisponde.</li>';
+  };
+  draw();
+  $('#csQ')?.addEventListener('input', e => { casesQuery = e.target.value; draw(); });
+  on('[data-cf]', 'click', e => {
+    const k = e.currentTarget.dataset.cf;
+    if (casesFilter.has(k)) casesFilter.delete(k); else casesFilter.add(k);
+    e.currentTarget.classList.toggle('on', casesFilter.has(k));
+    e.currentTarget.setAttribute('aria-pressed', casesFilter.has(k));
+    draw();
+  });
+}
+
+// Foto dal telefono (anche scattate al momento) o dal PC, in fondo al caso sotto “Allegati”
+function chooseImageFiles() {
+  return new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.multiple = true;
+    input.style.display = 'none';
+    input.addEventListener('change', () => { resolve([...(input.files || [])]); input.remove(); });
+    input.addEventListener('cancel', () => { resolve([]); input.remove(); });
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+async function addPhotosTo(sec) {
+  const files = await chooseImageFiles();
+  if (!files.length) return false;
+  const ids = [];
+  for (const f of files) {
+    try { ids.push((await saveImage(await compressImage(f), sec.notebookId)).id); }
+    catch (err) { toast(`${f.name}: ${err.message}`, 'err'); }
+  }
+  if (!ids.length) return false;
+  const block = ids.map(id => imageMd(id, 'Foto')).join('\n\n');
+  let md = String(sec.md || '').replace(/\s+$/, '');
+  if (/^##\s+Allegati\s*$/m.test(md)) {
+    // dopo l’ultimo contenuto della parte “Allegati”, prima di un eventuale titolo successivo
+    const lines = md.split('\n');
+    const at = lines.findIndex(l => /^##\s+Allegati\s*$/.test(l));
+    let end = lines.length;
+    for (let i = at + 1; i < lines.length; i++) if (/^#{1,2}\s/.test(lines[i])) { end = i; break; }
+    lines.splice(end, 0, '', block, '');
+    md = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+  } else md = `${md}${md ? '\n\n' : ''}## Allegati\n\n${block}`;
+  sec.md = md + '\n';
+  await saveSection(sec);
+  toast(ids.length === 1 ? 'Foto aggiunta' : `${ids.length} foto aggiunte`);
+  return true;
+}
+async function addPdfTo(sec) {
+  const f = await choosePdfFile();
+  if (!f) return false;
+  try {
+    await storePdfFile(f, sec);
+    toast('PDF allegato al caso');
+    return true;
+  } catch (err) { toast(err.message || 'Non riesco ad allegare il PDF', 'err'); return false; }
+}
+
+// Modalità Risolvi: il caso si scopre una parte alla volta; prima della diagnosi scrivi la tua ipotesi
+function caseParts(md) {
+  const lines = String(md || '').split('\n');
+  const parts = [];
+  let cur = { title: '', lines: [] };
+  for (const l of lines) {
+    const m = l.match(/^##\s+(.+?)\s*$/);
+    if (m) { parts.push(cur); cur = { title: m[1], lines: [] }; } else cur.lines.push(l);
+  }
+  parts.push(cur);
+  return parts.map(p => ({ title: p.title, md: p.lines.join('\n').trim() })).filter(p => p.md);
+}
+function modeCase(sec, body) {
+  const parts = caseParts(sec.md).filter(p => !/^allegati$/i.test(p.title));
+  if (!parts.length) {
+    body.innerHTML = `<div class="empty"><p>Il caso è ancora vuoto: scrivilo in Modifica, una parte per titolo (Anamnesi, Esame obiettivo, Diagnosi…).</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi il caso</a></div>`;
+    return;
+  }
+  const isDx = t => /diagnosi|conclusion/i.test(t) && !/differenzial/i.test(t);
+  const isDdx = t => /differenzial/i.test(t);
+  let shown = 1;
+  let guess = '';
+  let ddxGuess = '';
+  const allegati = caseParts(sec.md).find(p => /^allegati$/i.test(p.title));
+  const draw = () => {
+    const next = parts[shown];
+    const needDdx = next && isDdx(next.title) && !ddxGuess;
+    const needDx = next && isDx(next.title) && !guess;
+    body.innerHTML = `
+      <p class="hint">Leggi una parte alla volta e ragiona prima di andare avanti. Prima della diagnosi ti chiedo la tua ipotesi.</p>
+      <article class="notes case-run">${parts.slice(0, shown).map((p, i) => `
+        <section class="case-part">${p.title ? `<h2>${esc(p.title)}</h2>` : ''}${renderMd(p.md)}
+          ${isDdx(p.title) && ddxGuess && ddxGuess !== '—' ? `<p class="case-guess">La tua diagnosi differenziale: ${esc(ddxGuess)}</p>` : ''}
+          ${isDx(p.title) && guess && guess !== '—' ? `<p class="case-guess">La tua ipotesi: ${esc(guess)}</p>` : ''}
+        </section>`).join('')}</article>
+      ${allegati && shown === 1 ? '<p class="hint">Le foto e i file del caso sono in fondo, in Leggi: qui li tengo nascosti per non anticipare la soluzione.</p>' : ''}
+      ${next ? `
+        <div class="case-next">
+          ${needDdx || needDx ? `
+            <label class="field"><span>${needDdx ? 'Prima di guardare: quali diagnosi metteresti in differenziale?' : 'Prima di guardare: qual è la tua diagnosi?'}</span>
+              <textarea class="input" id="caseGuess" rows="2" placeholder="${needDdx ? 'Es. pericardite, IMA, dissecazione aortica' : 'Es. endocardite infettiva'}"></textarea></label>
+            <div class="inline"><button class="btn primary" type="button" data-case="guess">Confronta con “${esc(next.title)}”</button><button class="btn ghost" type="button" data-case="skip">Salta e mostra</button></div>`
+            : `<button class="btn primary" type="button" data-case="next">Mostra: ${esc(next.title || 'il resto')}</button>`}
+          <span class="hint case-left">${parts.length - shown} ${parts.length - shown === 1 ? 'parte da scoprire' : 'parti da scoprire'}</span>
+        </div>` : '<div id="gradeSlot"></div>'}`;
+    hydrateImages(body);
+    const notesEl = $('.notes', body);
+    if (notesEl) prepareImages(notesEl, sec);
+    if (!next) gradeBar(sec, $('#gradeSlot', body), { mode: 'case' });
+  };
+  body.addEventListener('click', e => {
+    const b = e.target.closest('[data-case]');
+    if (!b) return;
+    const next = parts[shown];
+    if (b.dataset.case === 'guess') {
+      const v = $('#caseGuess', body)?.value.trim() || '';
+      if (!v) { toast('Scrivi la tua ipotesi, oppure tocca Salta'); return; }
+      if (isDdx(next.title)) ddxGuess = v; else guess = v;
+    } else if (b.dataset.case === 'skip') {
+      if (isDdx(next.title)) ddxGuess = '—'; else guess = '—';
+    }
+    shown = Math.min(parts.length, shown + 1);
+    draw();
+    $$('.case-part', body).pop()?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+  draw();
 }
 
 /* =====================================================================
