@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.31';
+const APP_VERSION = '3.33';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1053,6 +1053,9 @@ function route() {
   cleanups = [];
   const back = Nav.enter();
   updateIncBadge();
+  Resume.refresh();
+  Pad.onRoute();
+  if (Resume.pendingY !== null) setTimeout(() => Resume.restore(), 0);
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, '')) || 'notebooks';
   const [p0, p1, p2] = h.split('/');
   if (p0 !== 'sec') state.fromReview = false;
@@ -1094,6 +1097,8 @@ function route() {
     case 'cases': return viewCases();
     case 'lab': return viewLab(p1, p2);
     case 'semei': return viewSemei();
+    case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
+    case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
     case 'incomplete': return viewIncomplete();
     default: return viewNotebooks();
   }
@@ -1119,6 +1124,7 @@ function viewNotebooks() {
       <h1>I tuoi notebook</h1>
       ${nbs.length ? '<button class="btn primary" data-act="new-nb">Nuovo notebook</button>' : ''}
     </header>
+    ${Resume.target() ? `<a class="resume-card" href="#/resume"><span class="resume-ic" aria-hidden="true">↺</span><span class="row-main"><span class="row-sub">Riprendi da dove eri</span><span class="row-title">${esc(Resume.target().sec.title)}</span></span></a>` : ''}
     ${nbs.length && todayBits.length ? `
       <a class="today" href="${dueSecs ? '#/review' : '#/study/all'}">
         <span class="today-main">
@@ -1570,6 +1576,7 @@ function viewSection(id, mode) {
       </nav>` : ''}
   `);
   on('[data-act="labels"]', 'click', () => startLabels(sec));
+  if (mode !== 'edit') { Resume.save(location.hash || `#/sec/${sec.id}/${mode}`, window.scrollY); Resume.refresh(); }
   on('[data-act="inc"]', 'click', async () => { if (await toggleIncomplete(sec, () => saveSection(sec), caseSec ? 'caso' : 'sezione')) route(); });
   on('[data-act="case-meta"]', 'click', async () => { if (await caseSheet(sec)) { toast('Dati del caso salvati'); route(); } });
   on('[data-act="semei-meta"]', 'click', async () => { if (await semeiSheet(sec)) { toast('Dati della scheda salvati'); route(); } });
@@ -1855,6 +1862,7 @@ function modeCloze(sec, body) {
   bindFoldAll($('[data-act="fold-all"]', body), folds);
   bindImagesToggle($('[data-act="imgs"]', body), prepareImages($('.notes', body), sec, { cloze: true }).count);
   setupClozeMarks($('.notes', body), sec);
+  setupReadingTools($('.notes', body), sec);
   const weak = czWeakOf(sec);
   if (weak.length) {
     $('.notes', body).insertAdjacentHTML('beforebegin', `
@@ -2293,10 +2301,16 @@ function modeEdit(sec, body) {
       <button class="btn sm" data-act="hw">Scrivi a mano</button>
       ${AI.ready() ? `<button class="btn sm" data-act="ai-format">Riformatta con ${AI.name()}</button>` : ''}
     </div>
-    <p class="hint edit-hint">Negli elenchi, Invio crea una nuova voce e Invio su una voce vuota torna indietro di un livello.</p>
-    <label class="sr-only" for="edMd">Testo della sezione in Markdown</label>
-    <textarea id="edMd" class="input md-edit" spellcheck="false">${esc(sec.md)}</textarea>
-    <details class="preview" id="prevBox"><summary>Anteprima</summary><article class="notes" id="edPrev"></article></details>
+    <p class="hint edit-hint">Scrivi direttamente nell’anteprima: seleziona il testo e usa i pulsanti qui sopra. Invio apre un nuovo paragrafo, Tab rientra una voce di elenco. Immagini e blocchi HTML si modificano nel codice: toccali per andarci.</p>
+    <div class="wy-wrap">
+      <article class="notes wy" id="edWy" aria-label="Anteprima modificabile della sezione"></article>
+    </div>
+    <details class="code-box" id="codeBox" ${localStorage.getItem('nb-code-open') === '0' ? '' : 'open'}>
+      <summary>Codice <span class="muted-inline">Markdown: qui vedi la sintassi e correggi gli errori; il blocco dove sei si illumina sopra</span></summary>
+      <label class="sr-only" for="edMd">Testo della sezione in Markdown</label>
+      <textarea id="edMd" class="input md-edit" spellcheck="false">${esc(sec.md)}</textarea>
+      <p class="hint edit-hint">Nel codice, negli elenchi Invio crea una nuova voce e Invio su una voce vuota torna indietro di un livello.</p>
+    </details>
     <label class="field"><span>Domande per il richiamo, una riga “D:” e una “R:” per domanda</span>
       <textarea id="edQs" class="input qs-edit" spellcheck="false">${esc(serializeQs(sec.questions))}</textarea></label>
     <label class="field"><span>Link a siti utili, uno per riga: Titolo | https://indirizzo</span>
@@ -2319,7 +2333,7 @@ function modeEdit(sec, body) {
   if (editJump && editJump.secId === sec.id) {
     const jmp = editJump;
     editJump = null;
-    setTimeout(() => jumpInTextarea($('#edMd', body), jmp), 60);
+    setTimeout(() => wy.jump(jmp), 80);
   }
   bindTagField(body, 'edTags');
   on('[data-act="hint"]', 'click', async () => {
@@ -2361,12 +2375,9 @@ function modeEdit(sec, body) {
     refresh();
   }, body);
   const ta = $('#edMd', body);
-  const prev = $('#edPrev', body);
-  const prevBox = $('#prevBox', body);
-  let timer;
-  const refresh = () => { if (prevBox.open) prev.innerHTML = renderMd(ta.value); };
-  prevBox.addEventListener('toggle', refresh);
-  ta.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 250); });
+  const wy = setupWysiwyg($('#edWy', body), ta, $('.edit-tools', body));
+  const refresh = () => wy.render();
+  $('#codeBox', body).addEventListener('toggle', e => { try { localStorage.setItem('nb-code-open', e.target.open ? '1' : '0'); } catch { /* niente */ } });
   setupListEditing(ta);
   on('[data-indent]', 'click', e => { ta.focus(); indentLines(ta, +e.currentTarget.dataset.indent); }, body);
   on('[data-mark]', 'click', e => { if (wrapSelectionInTextarea(ta, `{{${e.currentTarget.dataset.mark}|`, '}}')) refresh(); }, body);
@@ -2460,6 +2471,7 @@ function modeEdit(sec, body) {
   }, body);
 
   on('[data-act="save"]', 'click', async () => {
+    wy.flush();
     const before = imageRefs(sec.md);
     const oldTitle = sec.title;
     sec.title = $('#edTitle', body).value.trim() || 'Senza titolo';
@@ -5057,6 +5069,18 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.33: modifica sull’anteprima', `
+      <ul>
+        <li>In <strong>Modifica</strong> scrivi direttamente sugli appunti come li vedi in Leggi: correggi il testo, premi Invio per un nuovo paragrafo, seleziona e usa Cloze, Grassetto, Sottolinea, i colori, Elenco, Rientra (anche Tab) e Suggerimento.</li>
+        <li>Sotto c’è il <strong>codice</strong> Markdown, sempre aggiornato: il blocco su cui stai lavorando si illumina, e toccando un blocco nell’anteprima il codice scorre lì. Immagini e blocchi HTML si modificano nel codice: toccali per arrivarci. Il riquadro del codice si può chiudere.</li>
+        <li>Selezionando del testo in <strong>Leggi o nel Cloze</strong>, il primo pulsante della barra è <strong>✎ Modifica</strong>: apre Modifica con il cursore proprio su quel testo.</li>
+      </ul>`)}
+    ${sec('Novità della 3.32: blocco note, Riprendi e barra a scomparsa', `
+      <ul>
+        <li><strong>Blocco note a mano</strong>: il tasto con la penna in basso a destra apre un foglio accanto a qualunque pagina, anche durante Cloze, Orale o le flashcard. Sul computer sta a destra, sul telefono in basso; trascina il bordo per cambiarne la misura. Penna con pressione, quattro colori, tre spessori, gomma, annulla, più pagine; ogni sezione ha il suo blocco. Su tablet attiva “Solo penna” per appoggiare il palmo.</li>
+        <li><strong>Riprendi</strong>: in cima alla barra laterale (sul telefono in Notebook e in Altro) riporta all’ultima sezione che stavi studiando, nella stessa scheda e allo stesso punto della pagina.</li>
+        <li><strong>Barra laterale a scomparsa</strong>: il tasto accanto al nome dell’app la nasconde, quello in alto a sinistra la riapre; anche con Ctrl+B. L’app se lo ricorda.</li>
+      </ul>`)}
     ${sec('Novità della 3.31: semeiotica, dati di laboratorio e barra laterale', `
       <ul>
         <li><strong>Sul computer</strong> la barra a sinistra ha ora Casi clinici, Laboratorio, Semeiotica e Da completare, con il numero degli elementi incompleti. Sul telefono restano in Altro.</li>
@@ -5461,6 +5485,7 @@ function wrapSelectionInTextarea(ta, open, close) {
    --------------------------------------------------------------------- */
 function readingToolsHtml() {
   return `
+    <button type="button" class="rt-btn rt-edit" data-rt="edit" title="Apre Modifica con il cursore su questo testo">✎ Modifica</button>
     <button type="button" class="rt-btn" data-rt="cloze" title="Nascondi nel Cloze">Cloze</button>
     <span class="rt-colors" role="group" aria-label="Evidenzia">
       ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key}" data-rt="${c.key}" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}
@@ -5469,8 +5494,7 @@ function readingToolsHtml() {
     <button type="button" class="rt-btn" data-rt="none" title="Togli evidenziatura e sottolineatura" aria-label="Togli evidenziatura e sottolineatura">✕</button>
     <button type="button" class="rt-btn" data-rt="gloss" title="Aggiungi al glossario">Glossario</button>
     <button type="button" class="rt-btn" data-rt="clin" title="Crea una nota clinica">Nota clinica</button>
-    <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>
-    <button type="button" class="rt-btn" data-rt="edit" title="Apre Modifica con il cursore in questo punto">Modifica qui</button>`;
+    <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>`;
 }
 
 function setupReadingTools(container, sec) {
@@ -6537,6 +6561,8 @@ function takeSharedText() {
    ===================================================================== */
 
 const ICONS = {
+  resume: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>',
+  pad: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/><path d="M13 20h7"/></svg>',
   semei: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5a6.5 6.5 0 0 1-6.5 6.5h-.6a6 6 0 0 1-4.9-2.6l-2.7-3.9a1.5 1.5 0 0 1 2.4-1.8L8 15"/></svg>',
   lab: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6.5L4.8 18.3A1.8 1.8 0 0 0 6.4 21h11.2a1.8 1.8 0 0 0 1.6-2.7L14 9.5V3"/><path d="M7.2 15h9.6"/></svg>',
   cases: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9 3v3h6V3"/><path d="M12 10v6M9 13h6"/></svg>',
@@ -6582,6 +6608,8 @@ function openSheet(inner, { label = '', onClose = () => {} } = {}) {
 
 /* ---------- Pagina "Altro" ---------- */
 const MORE_ITEMS = [
+  ['resume', 'Riprendi', 'Torna all’ultima sezione che stavi studiando, nella stessa scheda e allo stesso punto'],
+  ['pad', 'Blocco note', 'Scrivi a mano accanto a qualunque pagina, mentre ripeti'],
   ['search', 'Cerca ovunque', 'Appunti, flashcard, testo dei PDF, glossario, note cliniche'],
   ['studyhub', 'StudyHub', 'Il tuo planner, aperto qui accanto senza lasciare il Notebook'],
   ['calendar', 'Calendario', 'Ripassi in programma, tempo di studio, punti deboli'],
@@ -10566,6 +10594,9 @@ async function init() {
   setupPwa();
   ShDock.init();
   Nav.init();
+  NavHide.init();
+  Resume.init();
+  Pad.init();
   initHelp();
   Tracker.start();
   applyBlueLight();
@@ -10980,6 +11011,7 @@ const Nav = {
   // da chiamare all’inizio di route(): dice se è un ritorno su una pagina già vista
   enter() {
     if (this.cur) this.ys.set(this.cur.k, window.scrollY);
+    if (this.cur && /^#\/sec\//.test(this.cur.hash)) Resume.save(this.cur.hash, window.scrollY);
     const st = history.state;
     let back = true;
     if (!st || !st.nbk) {
@@ -11043,6 +11075,843 @@ function nbReadingOrder(nb) {
   add(secs);
   return out;
 }
+
+/* =====================================================================
+   v3.33: Modifica sull’anteprima
+   Gli appunti si scrivono direttamente nell’anteprima; sotto resta il codice
+   Markdown, sempre allineato, per vedere e correggere la sintassi.
+   Il testo è diviso nei suoi blocchi (paragrafi, titoli, elenchi, tabelle):
+   si riconverte solo il blocco che tocchi, gli altri restano identici.
+   Immagini, blocchi HTML e codice si modificano nel codice.
+   ===================================================================== */
+const WY_EDITABLE = new Set(['paragraph', 'heading', 'list', 'blockquote', 'table', 'text']);
+function wyTokenize(md) {
+  md = String(md || '').replace(/\r\n?/g, '\n');
+  const mk = window.marked;
+  if (mk && mk.lexer) {
+    try {
+      const toks = mk.lexer(md);
+      const raws = toks.map(t => (typeof t.raw === 'string' ? t.raw : ''));
+      if (raws.join('') === md) return { raws, types: toks.map(t => t.type), ok: true };
+    } catch { /* passo al metodo semplice */ }
+  }
+  if (md.includes('```')) return { raws: [md], types: ['code'], ok: false };
+  const raws = [], types = [];
+  md.split(/(\n{2,})/).forEach(p => {
+    if (!p) return;
+    raws.push(p);
+    types.push(/^\n+$/.test(p) ? 'space' : /^#{1,6}\s/.test(p) ? 'heading' : /^\s*([-*+]|\d+[.)])\s/.test(p) ? 'list' : /^\|/.test(p) ? 'table' : /^>/.test(p) ? 'blockquote' : 'paragraph');
+  });
+  return { raws, types, ok: true };
+}
+const wyWrap = (t, a, b) => { const m = t.match(/^(\s*)([\s\S]*?)(\s*)$/); return m[2] ? `${m[1]}${a}${m[2]}${b}${m[3]}` : t; };
+function wyInline(node) {
+  let out = '';
+  node.childNodes.forEach(n => {
+    if (n.nodeType === 3) { out += n.nodeValue.replace(/\u00a0/g, ' ').replace(/\n/g, ' '); return; }
+    if (n.nodeType !== 1) return;
+    const tag = n.tagName;
+    const cls = n.classList;
+    if (tag === 'BR') { out += '\n'; return; }
+    if (tag === 'IMG') { if (n.dataset.img) out += imageMd(n.dataset.img, n.getAttribute('alt') || ''); return; }
+    if (tag === 'STRONG' || tag === 'B') { out += wyWrap(wyInline(n), '**', '**'); return; }
+    if (tag === 'EM' || tag === 'I') { out += wyWrap(wyInline(n), '*', '*'); return; }
+    if (tag === 'S' || tag === 'DEL' || tag === 'STRIKE') { out += wyWrap(wyInline(n), '~~', '~~'); return; }
+    if (tag === 'U') { out += wyWrap(wyInline(n), '{{u|', '}}'); return; }
+    if (tag === 'MARK') {
+      if (cls.contains('cz')) { const h = n.dataset.hint ? `::${n.dataset.hint}` : ''; out += wyWrap(wyInline(n), '==', `${h}==`); return; }
+      const k = [...cls].map(c => (c.match(/^hl-([a-z])$/) || [])[1]).find(Boolean);
+      out += k ? wyWrap(wyInline(n), `{{${k}|`, '}}') : wyInline(n);
+      return;
+    }
+    if (tag === 'A') {
+      const t = wyInline(n).trim();
+      if (cls.contains('xref')) {
+        const id = (n.getAttribute('href') || '').match(/#\/sec\/([^/]+)/)?.[1];
+        const s = id && secById(id);
+        if (s) { out += s.title.trim() === t ? `[[${s.title}]]` : `[[${s.title}|${t}]]`; return; }
+        out += `[[${t}]]`;
+        return;
+      }
+      const href = n.getAttribute('href') || '';
+      out += href && href !== t ? `[${t}](${href})` : t;
+      return;
+    }
+    if (tag === 'SPAN' && cls.contains('xref')) { out += `[[${wyInline(n).trim()}]]`; return; }
+    if (tag === 'CODE') { out += `\`${n.textContent}\``; return; }
+    if (tag === 'SUP' || tag === 'SUB') { out += `<${tag.toLowerCase()}>${wyInline(n)}</${tag.toLowerCase()}>`; return; }
+    if (/^(P|DIV|H[1-6]|LI|UL|OL|TABLE|BLOCKQUOTE)$/.test(tag)) { out += `\n${wyInline(n)}\n`; return; }
+    out += wyInline(n);
+  });
+  return out;
+}
+const wyLine = s => s.replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').replace(/[ \t]{2,}/g, ' ').trim();
+function wyList(list, pad) {
+  const ordered = list.tagName === 'OL';
+  let n = +(list.getAttribute('start') || 1);
+  // il rientro del browser può mettere l’elenco annidato accanto alla voce invece che dentro
+  const items = [];
+  const loose = [];
+  [...list.children].forEach(c => {
+    if (c.tagName === 'LI') items.push({ li: c, subs: [] });
+    else if (c.tagName === 'UL' || c.tagName === 'OL') { if (items.length) items[items.length - 1].subs.push(c); else loose.push(c); }
+  });
+  const out = loose.map(sub => wyList(sub, pad));
+  items.forEach(({ li, subs }) => {
+    const own = document.createElement('div');
+    li.childNodes.forEach(c => {
+      if (c.nodeType === 1 && (c.tagName === 'UL' || c.tagName === 'OL')) subs.unshift(c);
+      else own.append(c.cloneNode(true));
+    });
+    const marker = ordered ? `${n++}. ` : '- ';
+    const text = wyLine(wyInline(own)).replace(/\n/g, ' ');
+    let s = `${pad}${marker}${text}`;
+    subs.forEach(sub => { s += `\n${wyList(sub, pad + ' '.repeat(marker.length))}`; });
+    out.push(s);
+  });
+  return out.join('\n');
+}
+function wyTable(table) {
+  const rows = [...table.rows].map(r => [...r.cells].map(c => wyLine(wyInline(c)).replace(/\n/g, ' ').replace(/\|/g, '\\|')));
+  if (!rows.length) return '';
+  const w = Math.max(...rows.map(r => r.length));
+  rows.forEach(r => { while (r.length < w) r.push(''); });
+  const line = r => `| ${r.join(' | ')} |`;
+  return [line(rows[0]), `|${' --- |'.repeat(w)}`, ...rows.slice(1).map(line)].join('\n');
+}
+function wyBlockToMd(el) {
+  const parts = [];
+  let loose = document.createElement('div');
+  const flushLoose = () => { const t = wyLine(wyInline(loose)); if (t) parts.push(t); loose = document.createElement('div'); };
+  const walk = parent => {
+    parent.childNodes.forEach(n => {
+      if (n.nodeType === 3) { if (n.nodeValue.trim()) loose.append(n.cloneNode(true)); return; }
+      if (n.nodeType !== 1) return;
+      const tag = n.tagName;
+      if (/^(B|STRONG|I|EM|U|MARK|A|SPAN|CODE|SUP|SUB|S|DEL|IMG|BR)$/.test(tag)) { if (tag !== 'BR' || loose.childNodes.length) loose.append(n.cloneNode(true)); return; }
+      flushLoose();
+      if (/^H[1-6]$/.test(tag)) { const t = wyLine(wyInline(n)).replace(/\n/g, ' '); if (t) parts.push(`${'#'.repeat(+tag[1])} ${t}`); }
+      else if (tag === 'UL' || tag === 'OL') parts.push(wyList(n, ''));
+      else if (tag === 'TABLE') parts.push(wyTable(n));
+      else if (tag === 'BLOCKQUOTE') { const t = wyBlockToMd(n); if (t) parts.push(t.split('\n').map(l => (l ? `> ${l}` : '>')).join('\n')); }
+      else if (tag === 'HR') parts.push('---');
+      else if (tag === 'PRE') parts.push(`\`\`\`\n${n.textContent.replace(/\n$/, '')}\n\`\`\``);
+      else if (tag === 'P') { const t = wyLine(wyInline(n)); if (t) parts.push(t); }
+      else if (tag === 'DIV' || tag === 'SECTION' || tag === 'ARTICLE') {
+        if ($$(':scope > p, :scope > div, :scope > ul, :scope > ol, :scope > table, :scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > blockquote, :scope > hr', n).length) walk(n);
+        else { const t = wyLine(wyInline(n)); if (t) parts.push(t); }
+      } else { const t = wyLine(wyInline(n)); if (t) parts.push(t); }
+    });
+  };
+  walk(el);
+  flushLoose();
+  return parts.join('\n\n');
+}
+// prima la misura di dove cade un punto del codice, senza spostare il cursore della pagina
+function taOffsetY(ta, pos) {
+  const cs = getComputedStyle(ta);
+  const mirror = document.createElement('div');
+  ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth', 'borderLeftWidth', 'borderRightWidth', 'boxSizing', 'tabSize'].forEach(p => { mirror.style[p] = cs[p]; });
+  Object.assign(mirror.style, { position: 'absolute', visibility: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', width: `${ta.clientWidth}px`, top: '0', left: '-9999px' });
+  mirror.textContent = ta.value.slice(0, pos);
+  const mark = document.createElement('span');
+  mark.textContent = '|';
+  mirror.append(mark);
+  document.body.append(mirror);
+  const y = mark.offsetTop;
+  mirror.remove();
+  return y;
+}
+
+function setupWysiwyg(box, ta, tools) {
+  let raws = [], types = [];
+  let enabled = true;
+  const dirty = new Set();
+  let timer = 0;
+  let lastFocus = 'wy';
+  const starts = () => { const s = []; let a = 0; raws.forEach(r => { s.push(a); a += r.length; }); return s; };
+  const render = () => {
+    const t = wyTokenize(ta.value);
+    raws = t.raws; types = t.types; enabled = t.ok;
+    if (!enabled) {
+      box.innerHTML = `<div class="wy-note">L’anteprima modificabile non è disponibile per questo testo: modifica nel codice qui sotto.</div>${renderMd(ta.value)}`;
+      box.removeAttribute('data-ph');
+      return;
+    }
+    const html = raws.map((raw, i) => {
+      if (types[i] === 'space' || !raw.trim()) return '';
+      const inner = renderMd(raw);
+      const lock = !WY_EDITABLE.has(types[i]) || /<img|<iframe|html-embed|html-block/.test(inner) || raw.includes('```');
+      return `<div class="wy-b${lock ? ' wy-lock' : ''}" data-b="${i}" contenteditable="${lock ? 'false' : 'true'}"${lock ? ' title="Questo blocco si modifica nel codice qui sotto: toccalo per andarci"' : ' spellcheck="true"'}>${inner}</div>`;
+    }).join('');
+    box.innerHTML = html || '<div class="wy-b wy-new" data-b="new" contenteditable="true" spellcheck="true"><p><br></p></div>';
+    box.toggleAttribute('data-empty', !html);
+  };
+  const convert = el => {
+    if (!el.isConnected) return;
+    const md = wyBlockToMd(el).replace(/\n{3,}/g, '\n\n').trim();
+    if (el.dataset.b === 'new') {
+      raws = md ? [md + '\n'] : [];
+      types = ['paragraph'];
+      el.dataset.b = '0';
+    } else {
+      const i = +el.dataset.b;
+      const raw = raws[i] ?? '';
+      const lead = raw.match(/^\n*/)[0];
+      const trail = raw.match(/\n*$/)[0];
+      raws[i] = md ? `${lead}${md}${trail}` : '';
+      // blocco svuotato: tolgo anche la riga vuota che lo seguiva
+      if (!md && types[i + 1] === 'space') raws[i + 1] = '';
+    }
+    ta.value = raws.join('');
+  };
+  const flush = () => {
+    clearTimeout(timer);
+    timer = 0;
+    if (!dirty.size) return;
+    dirty.forEach(convert);
+    dirty.clear();
+  };
+  const markDirty = el => { if (!el) return; dirty.add(el); clearTimeout(timer); timer = setTimeout(flush, 250); };
+  const blockOf = node => { const n = node && (node.nodeType === 1 ? node : node.parentElement); const b = n && n.closest('.wy-b'); return b && box.contains(b) ? b : null; };
+  box.addEventListener('input', e => markDirty(blockOf(e.target)));
+  box.addEventListener('focusin', e => {
+    lastFocus = 'wy';
+    const b = blockOf(e.target);
+    $$('.wy-cur', box).forEach(x => x.classList.toggle('wy-cur', x === b));
+    if (b && b.dataset.b !== 'new') showInCode(+b.dataset.b);
+  });
+  // uscendo dall’anteprima ridisegno i blocchi, così titoli ed elenchi nuovi prendono forma
+  box.addEventListener('focusout', e => {
+    if (e.relatedTarget && box.contains(e.relatedTarget)) return;
+    if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.edit-tools')) return;
+    flush();
+    setTimeout(() => { if (!box.contains(document.activeElement)) render(); }, 0);
+  });
+  box.addEventListener('click', e => {
+    const b = e.target.closest('.wy-lock');
+    if (b) { goToCode(+b.dataset.b); return; }
+    if (e.target.closest('a')) e.preventDefault();
+  });
+  // incollare: solo testo, niente stili presi da altre pagine
+  box.addEventListener('paste', e => {
+    const text = e.clipboardData?.getData('text/plain');
+    if (text === undefined || [...(e.clipboardData?.items || [])].some(i => i.type.startsWith('image/'))) return;
+    e.preventDefault();
+    document.execCommand('insertText', false, text);
+  });
+  box.addEventListener('keydown', e => {
+    if (e.key === 'Tab') {
+      const sel = getSelection();
+      const li = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement).closest('li');
+      if (li && box.contains(li)) { e.preventDefault(); document.execCommand(e.shiftKey ? 'outdent' : 'indent'); markDirty(blockOf(li)); }
+    }
+  });
+  ta.addEventListener('focusin', () => { lastFocus = 'ta'; });
+  let tt = 0;
+  ta.addEventListener('input', () => { if (box.contains(document.activeElement)) return; clearTimeout(tt); tt = setTimeout(render, 300); });
+  // dal codice all’anteprima: il blocco dove sta il cursore si illumina
+  const syncFromCode = () => {
+    if (!enabled) return;
+    const pos = ta.selectionStart;
+    const st = starts();
+    let i = st.length - 1;
+    while (i > 0 && st[i] > pos) i--;
+    while (i > 0 && (types[i] === 'space' || !raws[i].trim())) i--;
+    $$('.wy-b', box).forEach(x => x.classList.toggle('wy-cur', +x.dataset.b === i));
+  };
+  ta.addEventListener('click', syncFromCode);
+  ta.addEventListener('keyup', syncFromCode);
+  const showInCode = i => {
+    const st = starts();
+    if (st[i] === undefined) return;
+    const y = taOffsetY(ta, st[i] + (raws[i].match(/^\n*/)[0].length));
+    ta.scrollTop = Math.max(0, y - 12);
+  };
+  const goToCode = i => {
+    flush();
+    const st = starts();
+    const lead = (raws[i] || '').match(/^\n*/)[0].length;
+    const a = (st[i] ?? 0) + lead, b = (st[i] ?? 0) + (raws[i] || '').trimEnd().length;
+    const det = ta.closest('details');
+    if (det) det.open = true;
+    jumpInTextarea(ta, { start: a, end: b });
+  };
+
+  /* Strumenti di formattazione quando scrivi nell’anteprima */
+  const selIn = () => {
+    const s = getSelection();
+    if (!s.rangeCount) return null;
+    const r = s.getRangeAt(0);
+    const el = blockOf(r.commonAncestorContainer);
+    return el && el.isContentEditable ? { r, el, s } : null;
+  };
+  const unwrap = n => { const p = n.parentNode; while (n.firstChild) p.insertBefore(n.firstChild, n); p.removeChild(n); };
+  const wrap = (make, matches) => {
+    const x = selIn();
+    if (!x) { toast('Metti il cursore nel testo dell’anteprima'); return false; }
+    const anc = (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('mark, u, strong, b');
+    if (anc && x.el.contains(anc) && matches(anc)) { unwrap(anc); markDirty(x.el); return true; }
+    if (x.r.collapsed) { toast('Seleziona prima il testo'); return false; }
+    const w = make();
+    w.append(x.r.extractContents());
+    x.r.insertNode(w);
+    x.s.removeAllRanges();
+    const nr = document.createRange();
+    nr.selectNodeContents(w);
+    x.s.addRange(nr);
+    markDirty(x.el);
+    return true;
+  };
+  const tag = (name, cls) => () => { const e = document.createElement(name); if (cls) e.className = cls; return e; };
+  const handle = e => {
+    if (lastFocus !== 'wy' || !enabled) return false;
+    const b = e.target.closest('button');
+    if (!b) return false;
+    const d = b.dataset;
+    if (d.wrap === '==') return wrap(tag('mark', 'cz'), n => n.tagName === 'MARK' && n.classList.contains('cz')) || true;
+    if (d.wrap === '**') return wrap(tag('strong'), n => n.tagName === 'STRONG' || n.tagName === 'B') || true;
+    if (d.mark === 'u') return wrap(tag('u', 'ul'), n => n.tagName === 'U') || true;
+    if (d.mark) {
+      const k = d.mark;
+      const x = selIn();
+      const anc = x && (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('mark.hl');
+      if (anc && x.el.contains(anc) && !anc.classList.contains(`hl-${k}`)) { anc.className = `hl hl-${k}`; markDirty(x.el); return true; }
+      return wrap(tag('mark', `hl hl-${k}`), n => n.tagName === 'MARK' && n.classList.contains(`hl-${k}`)) || true;
+    }
+    if (d.ins === 'list') { const x = selIn(); if (!x) return true; document.execCommand('insertUnorderedList'); markDirty(x.el); return true; }
+    if (d.indent) {
+      const x = selIn();
+      if (!x) return true;
+      if (!(x.r.startContainer.nodeType === 1 ? x.r.startContainer : x.r.startContainer.parentElement).closest('li')) { toast('Il rientro vale per le voci di un elenco'); return true; }
+      document.execCommand(+d.indent > 0 ? 'indent' : 'outdent');
+      markDirty(x.el);
+      return true;
+    }
+    if (d.act === 'hint') {
+      const x = selIn();
+      const m = x && (x.r.startContainer.nodeType === 1 ? x.r.startContainer : x.r.startContainer.parentElement).closest('mark.cz');
+      if (!m) { toast('Metti il cursore dentro un cloze, oppure trasforma prima il testo in cloze'); return true; }
+      modal({ title: 'Suggerimento', text: `Per “${m.textContent}”: una domanda o un indizio che compare come “?” accanto al termine nascosto. Lascia vuoto per toglierlo.`, input: true, value: m.dataset.hint || '', placeholder: 'Es. ormone che abbassa la glicemia', confirm: 'Salva', allowEmpty: true }).then(v => {
+        if (v === null) return;
+        const c = cleanHint(v);
+        if (c) m.dataset.hint = c; else delete m.dataset.hint;
+        dirty.add(x.el);
+        flush();
+      });
+      return true;
+    }
+    // inserimenti (tabella, immagine, link…): vanno nel codice subito dopo il blocco dove sei
+    const x = selIn();
+    if (x && x.el.dataset.b !== 'new') {
+      flush();
+      const i = +x.el.dataset.b;
+      const st = starts();
+      const end = (st[i] ?? ta.value.length) + (raws[i] || '').length;
+      ta.setSelectionRange(end, end);
+      ta.dataset.touched = '1';
+    }
+    return false;
+  };
+  if (tools) tools.addEventListener('click', e => { if (handle(e)) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+
+  // “Modifica qui”: porto il cursore sul testo scelto, dentro l’anteprima
+  const jump = jmp => {
+    flush();
+    const st = starts();
+    let i = -1;
+    if (jmp.start >= 0) { i = st.length - 1; while (i > 0 && st[i] > jmp.start) i--; }
+    const want = String(jmp.text || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 50);
+    const cands = i >= 0 ? [box.querySelector(`.wy-b[data-b="${i}"]`), ...$$('.wy-b', box)] : $$('.wy-b', box);
+    for (const el of cands) {
+      if (!el || !want) continue;
+      const nodes = [];
+      let acc = '';
+      const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      while (tw.nextNode()) { nodes.push({ n: tw.currentNode, a: acc.length }); acc += tw.currentNode.nodeValue; }
+      const norm = acc.toLowerCase().replace(/\s/g, ' ');
+      const at = norm.indexOf(want);
+      if (at < 0) continue;
+      if (el.classList.contains('wy-lock')) { goToCode(+el.dataset.b); return; }
+      const pick = off => { const k = nodes.filter(x => x.a <= off).pop() || nodes[0]; return [k.n, Math.min(off - k.a, k.n.nodeValue.length)]; };
+      const r = document.createRange();
+      r.setStart(...pick(at));
+      r.setEnd(...pick(at + want.length));
+      el.focus({ preventScroll: true });
+      const s = getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+      const rect = r.getBoundingClientRect();
+      window.scrollBy(0, rect.top - window.innerHeight * 0.35);
+      return;
+    }
+    goToCode(Math.max(0, i));
+    if (jmp.start >= 0) jumpInTextarea(ta, jmp);
+  };
+  render();
+  return { render, flush, jump, lastFocus: () => lastFocus };
+}
+
+/* =====================================================================
+   v3.32: barra laterale a scomparsa, blocco note a mano accanto a ogni
+   funzione, “Riprendi” l’ultimo argomento studiato
+   ===================================================================== */
+
+/* ---------- Barra laterale a scomparsa (computer) ---------- */
+const NavHide = {
+  KEY: 'nb-nav-hidden',
+  on() { try { return localStorage.getItem(this.KEY) === '1'; } catch { return false; } },
+  set(v) {
+    try { localStorage.setItem(this.KEY, v ? '1' : '0'); } catch { /* solo una preferenza */ }
+    document.body.classList.toggle('nav-hidden', v);
+    const b = $('#navShow');
+    if (b) b.hidden = !v;
+    $('#navHide')?.setAttribute('aria-expanded', String(!v));
+  },
+  init() {
+    const brand = $('.nav .brand');
+    if (brand && !$('#navHide')) brand.insertAdjacentHTML('beforeend', '<button type="button" class="nav-hide" id="navHide" aria-label="Nascondi la barra laterale" title="Nascondi la barra (Ctrl+B)" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/><path d="m15.5 9.5-2.5 2.5 2.5 2.5"/></svg></button>');
+    if (!$('#navShow')) document.body.insertAdjacentHTML('beforeend', '<button type="button" class="nav-show" id="navShow" aria-label="Mostra la barra laterale" title="Mostra la barra (Ctrl+B)" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>');
+    $('#navHide').addEventListener('click', () => this.set(true));
+    $('#navShow').addEventListener('click', () => this.set(false));
+    document.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'b' || e.key === 'B') && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) && !document.activeElement?.isContentEditable) {
+        e.preventDefault();
+        this.set(!document.body.classList.contains('nav-hidden'));
+      }
+    });
+    this.set(this.on());
+  }
+};
+
+/* ---------- “Riprendi”: l’ultima sezione studiata, con la scheda e il punto ---------- */
+const Resume = {
+  KEY: 'nb-last-study',
+  pendingY: null,
+  get() { try { return JSON.parse(localStorage.getItem(this.KEY) || 'null'); } catch { return null; } },
+  save(hash, y) {
+    const m = String(hash || '').match(/^#\/sec\/([^/]+)(?:\/([^/]+))?/);
+    if (!m) return;
+    const sec = secById(m[1]);
+    if (!sec || m[2] === 'edit') return;
+    try { localStorage.setItem(this.KEY, JSON.stringify({ id: m[1], mode: m[2] || '', y: Math.round(y || 0), t: Date.now() })); } catch { /* niente */ }
+  },
+  target() {
+    const r = this.get();
+    const sec = r && secById(r.id);
+    return sec ? { ...r, sec } : null;
+  },
+  go() {
+    const r = this.target();
+    if (!r) { toast('Non hai ancora studiato nessuna sezione su questo dispositivo'); return; }
+    this.pendingY = r.y || 0;
+    const h = `#/sec/${r.id}${r.mode ? `/${r.mode}` : ''}`;
+    if (location.hash === h) route(); else go(h);
+  },
+  // da chiamare dopo che la sezione è stata disegnata
+  restore() {
+    if (this.pendingY === null) return;
+    const y = this.pendingY;
+    this.pendingY = null;
+    let tries = 0;
+    const step = () => { window.scrollTo(0, y); if (Math.abs(window.scrollY - y) > 4 && ++tries < 15) setTimeout(step, 80); };
+    requestAnimationFrame(step);
+  },
+  label() {
+    const r = this.target();
+    return r ? r.sec.title : '';
+  },
+  refresh() {
+    const a = $('#navResume');
+    if (!a) return;
+    const r = this.target();
+    a.hidden = !r;
+    if (r) { $('span', a).textContent = 'Riprendi'; a.title = `Torna a “${r.sec.title}”`; $('.nav-resume-t', a).textContent = r.sec.title; }
+  },
+  init() {
+    const firstLink = $('.nav a[data-nav="notebooks"]');
+    if (firstLink && !$('#navResume')) {
+      firstLink.insertAdjacentHTML('beforebegin', `<a href="#/resume" id="navResume" class="nav-extra nav-resume" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>
+        <span>Riprendi</span><small class="nav-resume-t"></small></a>`);
+    }
+    document.addEventListener('click', e => {
+      const a = e.target.closest('a[href="#/resume"]');
+      if (!a || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      this.go();
+    });
+    // la posizione si salva anche quando l’app va in secondo piano o si chiude
+    const flush = () => { if (/^#\/sec\//.test(location.hash)) this.save(location.hash, window.scrollY); };
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+    window.addEventListener('pagehide', flush);
+    let t = 0;
+    window.addEventListener('scroll', () => { clearTimeout(t); t = setTimeout(flush, 600); }, { passive: true });
+    this.refresh();
+  }
+};
+
+/* ---------- Blocco note a mano ----------
+   Un pannello accanto a qualunque pagina (a destra sul computer, in basso sul
+   telefono), largo o alto quanto vuoi. Un blocco per ogni sezione (uno per le
+   altre pagine), con più pagine; resta su questo dispositivo. */
+const PadDB = {
+  db: null,
+  open() {
+    if (this.db) return Promise.resolve(this.db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('nb-pad', 1);
+      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('pads')) r.result.createObjectStore('pads'); };
+      r.onsuccess = () => { this.db = r.result; res(this.db); };
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async get(k) { const db = await this.open(); return new Promise(res => { const q = db.transaction('pads').objectStore('pads').get(k); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); },
+  async put(k, v) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('pads', 'readwrite'); tx.objectStore('pads').put(v, k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); },
+  async del(k) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('pads', 'readwrite'); tx.objectStore('pads').delete(k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); }
+};
+const PAD_COLORS = [['ink', 'Inchiostro'], ['#2563eb', 'Blu'], ['#dc2626', 'Rosso'], ['#16a34a', 'Verde']];
+const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
+const Pad = {
+  KEY: 'nb-pad-prefs',
+  el: null, canvas: null, ctx: null,
+  key: '', title: '', data: null, page: 0,
+  tool: 'pen', color: 'ink', size: 0.006, penOnly: false,
+  undo: [], saveT: 0, drawing: null,
+  prefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { p = {}; } return { w: 420, h: 0.45, open: false, ...p }; },
+  setPrefs(ch) { const p = { ...this.prefs(), ...ch }; try { localStorage.setItem(this.KEY, JSON.stringify(p)); } catch { /* niente */ } return p; },
+  wide: () => matchMedia('(min-width: 900px)').matches,
+  isOpen() { return document.body.classList.contains('pad-open'); },
+  maxW() { return Math.max(300, Math.min(1100, window.innerWidth - (document.body.classList.contains('nav-hidden') ? 0 : 232) - 340)); },
+  maxH() { return Math.max(220, window.innerHeight - 96 - 60); },
+  curW(p = this.prefs()) { return Math.round(Math.min(this.maxW(), Math.max(280, +p.w || 420))); },
+  curH(p = this.prefs()) { return Math.round(Math.min(this.maxH(), Math.max(160, (+p.h || 0.45) * this.maxH()))); },
+  // di chi è il blocco: la sezione aperta, oppure la pagina
+  context() {
+    const m = location.hash.match(/^#\/sec\/([^/]+)/);
+    const sec = m && secById(m[1]);
+    if (sec) return { key: `sec:${sec.id}`, title: sec.title };
+    const k = Nav.key(location.hash);
+    const names = { notebooks: 'Notebook', review: 'Ripasso', cards: 'Flashcard', lab: 'Laboratorio', cases: 'Casi clinici', semei: 'Semeiotica', clinic: 'Note cliniche' };
+    return { key: `page:${k.split('/')[0]}`, title: names[k.split('/')[0]] || 'Blocco note' };
+  },
+  build() {
+    if (this.el) return;
+    const el = document.createElement('aside');
+    el.className = 'pad-dock';
+    el.setAttribute('aria-label', 'Blocco note a mano');
+    el.hidden = true;
+    el.innerHTML = `
+      <div class="sh-grip pad-grip" role="separator" tabindex="0" aria-label="Trascina per cambiare la dimensione del blocco note; anche con le frecce"></div>
+      <header class="pad-head">
+        <div class="pad-title"><strong>Blocco note</strong>${helpBtn('pad')}<span class="pad-ctx"></span></div>
+        <div class="pad-tools" role="toolbar" aria-label="Strumenti">
+          <button type="button" class="pad-b" data-pt="pen" aria-label="Penna" title="Penna"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/></svg></button>
+          <button type="button" class="pad-b" data-pt="eraser" aria-label="Gomma" title="Gomma: tocca o passa sui tratti da togliere"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20h12"/><path d="M5.5 15.5 14 7l5 5-7.5 7.5H9z"/></svg></button>
+          <button type="button" class="pad-b" data-pt="hand" aria-label="Scorri" title="Scorri il foglio con il dito"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5a6.5 6.5 0 0 1-6.5 6.5h-.6a6 6 0 0 1-4.9-2.6l-2.7-3.9a1.5 1.5 0 0 1 2.4-1.8L8 15"/></svg></button>
+          <span class="pad-sep"></span>
+          ${PAD_COLORS.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="${l}" title="${l}" style="--c:${c === 'ink' ? 'var(--text)' : c}"></button>`).join('')}
+          <span class="pad-sep"></span>
+          ${PAD_SIZES.map(([s, l], i) => `<button type="button" class="pad-b pad-s" data-ps="${s}" aria-label="Tratto ${l.toLowerCase()}" title="${l}"><i style="--d:${4 + i * 4}px"></i></button>`).join('')}
+          <span class="pad-sep"></span>
+          <button type="button" class="pad-b" data-pa="undo" aria-label="Annulla l’ultimo tratto" title="Annulla (Ctrl+Z)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+          <button type="button" class="pad-b" data-pa="clear" aria-label="Svuota la pagina" title="Svuota la pagina"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
+          <button type="button" class="pad-b pad-pen" data-pa="penonly" aria-pressed="false" title="Solo penna: il dito e il palmo non scrivono">✍︎</button>
+        </div>
+        <div class="pad-pages">
+          <button type="button" class="pad-b" data-pa="prev" aria-label="Pagina precedente">‹</button>
+          <span class="pad-pn" aria-live="polite"></span>
+          <button type="button" class="pad-b" data-pa="next" aria-label="Pagina successiva">›</button>
+          <button type="button" class="pad-b" data-pa="add" aria-label="Nuova pagina" title="Nuova pagina">＋</button>
+          <button type="button" class="sh-ic" data-pa="size"></button>
+          <button type="button" class="sh-ic" data-pa="close" aria-label="Chiudi il blocco note" title="Chiudi">${SH_ICONS.close}</button>
+        </div>
+      </header>
+      <div class="pad-body"><canvas class="pad-canvas" aria-label="Foglio per scrivere a mano"></canvas></div>`;
+    document.body.append(el);
+    this.el = el;
+    this.canvas = $('canvas', el);
+    this.ctx = this.canvas.getContext('2d');
+    el.addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      if (b.dataset.pt) { this.tool = b.dataset.pt; this.paintTools(); }
+      else if (b.dataset.pc) { this.color = b.dataset.pc; this.tool = 'pen'; this.paintTools(); }
+      else if (b.dataset.ps) { this.size = +b.dataset.ps; this.tool = 'pen'; this.paintTools(); }
+      else if (b.dataset.pa) this.act(b.dataset.pa);
+    });
+    this.bindGrip($('.pad-grip', el));
+    this.bindDraw();
+    new ResizeObserver(() => { if (this.isOpen()) this.layout(); }).observe($('.pad-body', el));
+    el.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.act('undo'); } });
+  },
+  paintTools() {
+    if (!this.el) return;
+    $$('[data-pt]', this.el).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.pt === this.tool)));
+    $$('[data-pc]', this.el).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.pc === this.color)));
+    $$('[data-ps]', this.el).forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.ps === this.size)));
+    $('[data-pa="penonly"]', this.el).setAttribute('aria-pressed', String(this.penOnly));
+    this.canvas.style.touchAction = 'none';
+    this.canvas.style.cursor = this.tool === 'hand' ? 'grab' : this.tool === 'eraser' ? 'cell' : 'crosshair';
+    this.setPrefs({ tool: this.tool === 'hand' ? 'pen' : this.tool, color: this.color, size: this.size, penOnly: this.penOnly });
+  },
+  bindGrip(grip) {
+    let d = null;
+    grip.addEventListener('pointerdown', e => {
+      if (e.button > 0) return;
+      e.preventDefault();
+      try { grip.setPointerCapture(e.pointerId); } catch { /* niente */ }
+      d = { id: e.pointerId, x: e.clientX, y: e.clientY, w: this.curW(), h: this.curH() };
+      this.el.classList.add('resizing');
+    });
+    grip.addEventListener('pointermove', e => {
+      if (!d || e.pointerId !== d.id) return;
+      if (this.wide()) this.apply({ w: d.w - (e.clientX - d.x) }); else this.apply({ hPx: d.h - (e.clientY - d.y) });
+    });
+    const end = e => { if (!d || e.pointerId !== d.id) return; d = null; this.el.classList.remove('resizing'); this.savePos(); };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+    grip.addEventListener('keydown', e => {
+      const dir = { ArrowLeft: 1, ArrowRight: -1, ArrowUp: 1, ArrowDown: -1 }[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      if (this.wide()) this.apply({ w: this.curW() + dir * 32 }); else this.apply({ hPx: this.curH() + dir * 40 });
+      this.savePos();
+    });
+  },
+  apply({ w, hPx } = {}) {
+    const ww = w === undefined ? this.curW() : Math.round(Math.min(this.maxW(), Math.max(280, w)));
+    const hh = hPx === undefined ? this.curH() : Math.round(Math.min(this.maxH(), Math.max(160, hPx)));
+    document.documentElement.style.setProperty('--pad-w', `${ww}px`);
+    document.documentElement.style.setProperty('--pad-h', `${hh}px`);
+    this._w = ww; this._h = hh;
+    if (this.el) {
+      const big = this.wide() ? ww >= this.maxW() - 4 : hh >= this.maxH() - 4;
+      const b = $('[data-pa="size"]', this.el);
+      b.innerHTML = big ? SH_ICONS.small : SH_ICONS.size;
+      b.setAttribute('aria-label', big ? 'Rimpicciolisci il blocco note' : 'Ingrandisci il blocco note');
+      b.title = big ? 'Più piccolo' : 'Più grande';
+    }
+  },
+  savePos() { if (this.wide()) this.setPrefs({ w: this._w }); else this.setPrefs({ h: +(this._h / this.maxH()).toFixed(3) }); },
+  async open() {
+    this.build();
+    if (ShDock.isOpen()) ShDock.close();
+    const p = this.prefs();
+    this.tool = p.tool || 'pen'; this.color = p.color || 'ink'; this.size = +p.size || 0.006; this.penOnly = !!p.penOnly;
+    this.el.hidden = false;
+    document.body.classList.add('pad-open');
+    this.apply();
+    this.paintTools();
+    this.setPrefs({ open: true });
+    await this.load();
+    this.refreshBtn();
+  },
+  close() {
+    if (!this.el) return;
+    this.flush();
+    this.el.hidden = true;
+    document.body.classList.remove('pad-open');
+    this.setPrefs({ open: false });
+    this.refreshBtn();
+  },
+  toggle() { if (this.isOpen()) this.close(); else this.open(); },
+  refreshBtn() {
+    const f = $('#padFab');
+    if (f) { f.hidden = this.isOpen(); }
+    $$('a[href="#/pad"]').forEach(a => a.classList.toggle('sh-on', this.isOpen()));
+  },
+  // cambia foglio quando cambi sezione o pagina
+  async load() {
+    const ctx = this.context();
+    if (this.data && ctx.key === this.key) { this.layout(); return; }
+    this.flush();
+    this.key = ctx.key;
+    this.title = ctx.title;
+    const d = await PadDB.get(this.key);
+    if (this.key !== ctx.key) return;
+    this.data = d && Array.isArray(d.pages) && d.pages.length ? d : { pages: [{ strokes: [], h: 1.6 }], t: Date.now() };
+    this.page = Math.min(this.data.page || 0, this.data.pages.length - 1);
+    this.undo = [];
+    $('.pad-ctx', this.el).textContent = this.title;
+    this.layout();
+    $('.pad-body', this.el).scrollTop = 0;
+  },
+  flush() {
+    if (!this.saveT || !this.key || !this.data) return;
+    clearTimeout(this.saveT);
+    this.saveT = 0;
+    const empty = this.data.pages.every(pg => !pg.strokes.length);
+    if (empty) PadDB.del(this.key); else PadDB.put(this.key, { ...this.data, page: this.page, title: this.title, t: Date.now() });
+  },
+  saveSoon() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { this.saveT = 1; this.flush(); }, 500); },
+  pg() { return this.data.pages[this.page]; },
+  layout() {
+    if (!this.el || !this.data) return;
+    const body = $('.pad-body', this.el);
+    const w = body.clientWidth;
+    if (!w) return;
+    const pg = this.pg();
+    const minH = body.clientHeight;
+    const h = Math.max(minH, Math.round((pg.h || 1.6) * w));
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    this.W = w; this.H = h;
+    this.canvas.style.width = `${w}px`;
+    this.canvas.style.height = `${h}px`;
+    this.canvas.width = Math.round(w * dpr);
+    this.canvas.height = Math.round(h * dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.redraw();
+    $('.pad-pn', this.el).textContent = `${this.page + 1} / ${this.data.pages.length}`;
+    $('[data-pa="prev"]', this.el).disabled = this.page === 0;
+    $('[data-pa="next"]', this.el).disabled = this.page >= this.data.pages.length - 1;
+  },
+  inkColor(c) { return c === 'ink' ? getComputedStyle(document.body).getPropertyValue('--text').trim() || '#111' : c; },
+  redraw() {
+    const c = this.ctx;
+    c.clearRect(0, 0, this.W, this.H);
+    // righe leggere come un quaderno
+    c.save();
+    c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line').trim() || '#ccc';
+    c.globalAlpha = 0.45;
+    c.lineWidth = 1;
+    const step = Math.max(26, this.W * 0.06);
+    for (let y = step; y < this.H; y += step) { c.beginPath(); c.moveTo(0, y + 0.5); c.lineTo(this.W, y + 0.5); c.stroke(); }
+    c.restore();
+    this.pg().strokes.forEach(s => this.drawStroke(s));
+  },
+  drawStroke(s, from = 1) {
+    const c = this.ctx, W = this.W, pts = s.p;
+    c.strokeStyle = this.inkColor(s.c);
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    if (pts.length === 1) {
+      c.fillStyle = c.strokeStyle;
+      c.beginPath(); c.arc(pts[0][0] * W, pts[0][1] * W, Math.max(0.8, s.w * W * (pts[0][2] || 0.5)), 0, Math.PI * 2); c.fill();
+      return;
+    }
+    for (let i = Math.max(1, from); i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      c.lineWidth = Math.max(0.8, s.w * W * (0.45 + ((a[2] + b[2]) / 2 || 0.5)));
+      c.beginPath(); c.moveTo(a[0] * W, a[1] * W); c.lineTo(b[0] * W, b[1] * W); c.stroke();
+    }
+  },
+  bindDraw() {
+    const cv = this.canvas;
+    const pos = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / this.W, (e.clientY - r.top) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5]; };
+    const erase = pt => {
+      const pg = this.pg();
+      const rad = 12 / this.W;
+      const before = pg.strokes.length;
+      const keep = pg.strokes.filter(s => !s.p.some(q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < rad + s.w));
+      if (keep.length !== before) {
+        this.undo.push({ type: 'erase', page: this.page, strokes: pg.strokes });
+        pg.strokes = keep;
+        this.redraw();
+        this.saveSoon();
+      }
+    };
+    const body = () => $('.pad-body', this.el);
+    cv.addEventListener('pointerdown', e => {
+      if (e.button > 0) return;
+      e.preventDefault();
+      try { cv.setPointerCapture(e.pointerId); } catch { /* niente */ }
+      // con la mano, o con le dita in “solo penna”, il foglio scorre
+      if (this.tool === 'hand' || (this.penOnly && e.pointerType === 'touch')) {
+        this.drawing = { id: e.pointerId, pan: true, y0: e.clientY, st: body().scrollTop };
+        return;
+      }
+      const pt = pos(e);
+      if (this.tool === 'eraser') { this.drawing = { id: e.pointerId, erase: true }; erase(pt); return; }
+      const s = { c: this.color, w: this.size, p: [pt.map(v => +v.toFixed(4))] };
+      this.drawing = { id: e.pointerId, s };
+      this.pg().strokes.push(s);
+      this.drawStroke(s);
+    });
+    cv.addEventListener('pointermove', e => {
+      const d = this.drawing;
+      if (!d || e.pointerId !== d.id) return;
+      e.preventDefault();
+      if (d.pan) { body().scrollTop = d.st - (e.clientY - d.y0); return; }
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      for (const ev of evs) {
+        const pt = pos(ev);
+        if (d.erase) { erase(pt); continue; }
+        const last = d.s.p[d.s.p.length - 1];
+        if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) * this.W < 1.2) continue;
+        d.s.p.push(pt.map(v => +v.toFixed(4)));
+        this.drawStroke(d.s, d.s.p.length - 1);
+      }
+      // scrivendo in fondo il foglio si allunga
+      const pg = this.pg();
+      const lastY = d.s ? d.s.p[d.s.p.length - 1][1] * this.W : 0;
+      if (d.s && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.layout(); }
+    });
+    const end = e => {
+      const d = this.drawing;
+      if (!d || e.pointerId !== d.id) return;
+      this.drawing = null;
+      if (d.s) { this.undo.push({ type: 'add', page: this.page, s: d.s }); this.saveSoon(); }
+    };
+    cv.addEventListener('pointerup', end);
+    cv.addEventListener('pointercancel', end);
+  },
+  async act(a) {
+    if (!this.data) return;
+    if (a === 'close') this.close();
+    else if (a === 'size') {
+      if (this.wide()) this.apply({ w: this.curW() >= this.maxW() - 4 ? 380 : this.maxW() });
+      else this.apply({ hPx: this.curH() >= this.maxH() - 4 ? this.maxH() * 0.45 : this.maxH() });
+      this.savePos();
+    } else if (a === 'penonly') {
+      this.penOnly = !this.penOnly;
+      if (this.penOnly && this.tool === 'hand') this.tool = 'pen';
+      this.paintTools();
+      toast(this.penOnly ? 'Solo penna: scrive la penna, con le dita scorri il foglio' : 'Scrivono anche le dita');
+    }
+    else if (a === 'undo') {
+      const u = this.undo.pop();
+      if (!u) return;
+      const pg = this.data.pages[u.page];
+      if (u.type === 'add') pg.strokes = pg.strokes.filter(s => s !== u.s);
+      else if (u.type === 'erase' || u.type === 'clear') pg.strokes = u.strokes;
+      if (u.page !== this.page) { this.page = u.page; this.layout(); } else this.redraw();
+      this.saveSoon();
+    } else if (a === 'clear') {
+      const pg = this.pg();
+      if (!pg.strokes.length) return;
+      this.undo.push({ type: 'clear', page: this.page, strokes: pg.strokes });
+      pg.strokes = [];
+      pg.h = 1.6;
+      this.layout();
+      this.saveSoon();
+      toast('Pagina svuotata', '', { label: 'Annulla', fn: () => this.act('undo') });
+    } else if (a === 'add') {
+      this.data.pages.splice(this.page + 1, 0, { strokes: [], h: 1.6 });
+      this.page++;
+      this.layout();
+      $('.pad-body', this.el).scrollTop = 0;
+      this.saveSoon();
+    } else if (a === 'prev' && this.page > 0) { this.page--; this.layout(); $('.pad-body', this.el).scrollTop = 0; this.saveSoon(); }
+    else if (a === 'next' && this.page < this.data.pages.length - 1) { this.page++; this.layout(); $('.pad-body', this.el).scrollTop = 0; this.saveSoon(); }
+  },
+  init() {
+    if (!$('#padFab')) document.body.insertAdjacentHTML('beforeend', '<button type="button" class="pad-fab" id="padFab" aria-label="Apri il blocco note per scrivere a mano" title="Blocco note a mano"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/><path d="M13 20h7"/></svg></button>');
+    $('#padFab').addEventListener('click', () => this.open());
+    document.addEventListener('click', e => {
+      const a = e.target.closest('a[href="#/pad"]');
+      if (!a || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      this.toggle();
+    });
+    window.addEventListener('resize', () => { if (this.isOpen()) this.apply(); });
+    window.addEventListener('pagehide', () => this.flush());
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') this.flush(); });
+    if (this.prefs().open && this.wide()) this.open();
+  },
+  // da route(): cambia foglio se cambia la sezione o la pagina
+  onRoute() { if (this.isOpen()) this.load(); }
+};
 
 /* =====================================================================
    v3.31: Semeiotica (vuota, la riempi tu)
@@ -12099,6 +12968,7 @@ const HELP = {
   links: { t: 'Link utili', b: `I siti che usi di più, a portata di tocco. Tieni premuto o usa Modifica per cambiarli.` },
   exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
+  pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Con la penna su un tablet attiva <b>✍︎ Solo penna</b>: il palmo non scrive e con le dita scorri.` },
   semei: { t: 'Semeiotica', b: `Una scheda per ogni <b>manovra</b>, <b>segno</b> o <b>punto di repere</b>, divise tra semeiotica <b>clinica</b> e <b>chirurgica</b> e per distretto (che scegli tu, per esempio Addome o Torace).<br><br>Ogni scheda è una sezione: descrivi i passaggi, aggiungi foto con <b>＋ Foto</b> (poi puoi farne etichette da rimettere al posto giusto o un’image occlusion) e video nella scheda Video.<br><br><b>Esercitati</b> apre una scheda a caso tra quelle filtrate in modalità Orale: descrivi la manovra a voce e confronta.` },
   labRef: { t: 'Leggi un referto', b: `Scrivi esame e valore (anche la sigla): l’app usa i range delle tue schede e segna in giallo i valori bassi o alti e in rosso quelli critici. Indica il sesso per i range diversi.<br><br>È un esercizio di lettura: in un referto vero vale sempre il range stampato dal laboratorio.` },
   labCalc: { t: 'Calcoli di laboratorio', b: `Gap anionico (anche corretto per l’albumina), calcio corretto, eGFR con la CKD-EPI 2021, LDL di Friedewald, osmolalità calcolata e gap osmolare, sodio corretto per la glicemia. Sotto ogni calcolo c’è la formula.<br><br>Le unità sono quelle convenzionali (mg/dL, mEq/L) dei referti italiani.` },
@@ -13661,6 +14531,7 @@ const ShDock = {
   },
   open() {
     this.build();
+    if (typeof Pad !== 'undefined' && Pad.isOpen()) Pad.close();
     this.el.hidden = false;
     document.body.classList.add('sh-open');
     this.apply();
