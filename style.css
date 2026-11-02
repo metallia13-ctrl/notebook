@@ -3257,3 +3257,53 @@ h1 .help-btn { width: 24px; height: 24px; font-size: 0.85rem; transform: transla
 .cp-thumb:hover, .cp-thumb:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 .cp-pn { position: absolute; left: 6px; bottom: 6px; padding: 1px 8px; border-radius: 999px; background: rgba(11, 15, 23, 0.75); color: #fff; font: 700 0.78rem/1.5 var(--ui-font); }
 .cp .crop canvas { max-width: 100%; }
+
+/* v3.35: segnalibri collegati alle sezioni */
+.pdf-plist li { flex-wrap: wrap; }
+.bm-secs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 0 0 6px 34px; }
+.bm-sec { color: var(--accent); font-size: 0.82rem; font-weight: 650; text-decoration: none; }
+.bm-sec:hover { text-decoration: underline; }
+.pr-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.pr-list li { display: flex; align-items: center; gap: 6px; }
+.pr-open { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r); color: var(--text); text-decoration: none; }
+.pr-open:hover { border-color: var(--accent); }
+.pr-t { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-s { color: var(--muted); font-size: 0.85rem; }
+.pr-plain { margin: 0 0 18px; }
+.bl-list { max-height: 34vh; overflow: auto; }
+.bl-list .row.on { background: var(--accent-soft); }
+.bb-rows { display: grid; gap: 8px; max-height: 46vh; overflow: auto; margin: 10px 0; padding-right: 4px; }
+.bb-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.bb-t { display: flex; flex-direction: column; min-width: 0; }
+.bb-t strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 560px) { .bb-row { grid-template-columns: 1fr; gap: 4px; } }
+
+/* =====================================================================
+   v3.36: modifica delle mappe
+   ===================================================================== */
+.map-etools { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; }
+@media (max-width: 640px) {
+  .map-etools { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-left: -18px; margin-right: -18px; padding: 0 18px; }
+  .map-etools::-webkit-scrollbar { display: none; }
+  .map-etools > * { flex: none; }
+}
+.map-box.editing .ml-t[contenteditable] { min-width: 3em; outline: none; cursor: text; }
+.map-box.editing .ml-t[contenteditable]:empty::before { content: "Scrivi…"; color: var(--muted); }
+.map-box.editing .ml-t[contenteditable]:focus { background: var(--surface-2); box-shadow: 0 0 0 2px hsl(var(--h) 60% 55% / 0.6); }
+.ml-row.sel .ml-t { box-shadow: 0 0 0 2px hsl(var(--h) 60% 55% / 0.6); }
+.mn.sel rect { stroke: var(--accent); stroke-width: 3; }
+.mn.drop rect { stroke: var(--accent); stroke-width: 3; stroke-dasharray: 5 4; fill: var(--accent-soft); }
+.mn.lift { opacity: 0.6; }
+.map-box.editing .mn { cursor: grab; }
+.map-ghost {
+  position: fixed; left: 0; top: 0; z-index: 200;
+  max-width: 240px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #0b0f17;
+  font: 700 0.9rem var(--ui-font);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

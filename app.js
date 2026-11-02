@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.34';
+const APP_VERSION = '3.36';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1560,7 +1560,7 @@ function viewSection(id, mode) {
       <div class="sec-extra">
         ${caseSec ? '<button class="btn sm" type="button" data-act="case-meta">Dati del caso</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button><button class="btn sm" type="button" data-act="case-pdf">＋ PDF</button>' : ''}
         ${semSec ? '<button class="btn sm" type="button" data-act="semei-meta">Dati della scheda</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>' : ''}
-        <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length ? ` (${pdfsOf(sec.id).length})` : ''}</a>
+        <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length + pdfRefsOf(sec).length ? ` (${pdfsOf(sec.id).length + pdfRefsOf(sec).length})` : ''}</a>
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
@@ -1785,9 +1785,11 @@ function modeRead(sec, body) {
           <button class="btn ghost" data-act="plan">Ripassa nel Notebook</button>
         </div>
       </div>` : ''}
+    ${pdfRefsBlockHtml(sec)}
     ${sourcesBlockHtml(sec)}
   `;
   bindSourcesBlock(body, sec, () => saveSection(sec), isCase(sec) ? 'caso' : 'sezione');
+  bindPdfRefsBlock(body, sec);
   const notesEl = $('.notes', body);
   if (notesEl) {
     const readFolds = setupFolds(notesEl, sec.id);
@@ -5075,6 +5077,20 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.36: crea e modifica le mappe', `
+      <ul>
+        <li>Nella scheda <strong>Mappe</strong> di ogni sezione: <strong>Crea una mappa</strong> da zero, oppure <strong>Crea dagli appunti</strong>: titoli ed elenchi della sezione diventano i rami e i paragrafi le note dei nodi.</li>
+        <li><strong>✎ Modifica</strong> funziona su tutte le mappe, anche quelle caricate da XMind. Nella vista <strong>Elenco</strong> scrivi direttamente sui nodi: Invio aggiunge un nodo accanto, Tab lo mette dentro quello sopra, Maiusc+Tab lo porta fuori, Alt+↑/↓ lo sposta, Canc su un nodo vuoto lo elimina.</li>
+        <li>Nella vista <strong>Mappa</strong> tocchi un nodo per sceglierlo e due volte per rinominarlo; lo trascini su un altro nodo per spostarlo lì dentro (sul telefono tieni premuto un attimo prima di trascinare). I pulsanti sopra fanno lo stesso: ＋ Dentro, ＋ Accanto, Rinomina, Nota, ↑ ↓ ← →, Elimina e Annulla (anche Ctrl+Z).</li>
+        <li>Da <strong>Altro</strong>: <strong>Scarica come file XMind</strong> per riaprirla in XMind, aggiungi un foglio, crea flashcard, aggiungila agli appunti.</li>
+      </ul>`)}
+    ${sec('Novità della 3.35: segnalibri del PDF collegati alle sezioni', `
+      <ul>
+        <li>Nel lettore PDF, pannello <strong>Segnalibri</strong>: il tasto 🔗 accanto a un segnalibro lo collega a una sezione del notebook, che c’è già o nuova. Le pagine vanno dal segnalibro fino a quella prima del segnalibro successivo, e puoi cambiarle.</li>
+        <li>Se il PDF ha un indice interno, in fondo al pannello <strong>Trasforma l’indice in segnalibri</strong> crea un segnalibro per ogni capitolo (e, se vuoi, paragrafo) in un colpo solo.</li>
+        <li><strong>Collega i segnalibri alle sezioni</strong> li collega tutti insieme: per ognuno ti propongo la sezione con lo stesso nome, oppure scegli “Nuova sezione” (anche per tutti quelli senza) e il macro-argomento dove crearle. Comodo per dividere un PDF di centinaia di slide tra gli argomenti.</li>
+        <li>Nella sezione, in fondo a Leggi, trovi <strong>Pagine di PDF</strong>: un tocco apre il PDF proprio lì. Le vedi anche in PDF della sezione; sotto ogni segnalibro compare la sezione collegata.</li>
+      </ul>`)}
     ${sec('Novità della 3.34: menu fisso e figure dalle miniature del PDF', `
       <ul>
         <li>Le <strong>schede in alto</strong> (Cloze, Leggi, Modifica…) restano visibili quando scorri la pagina; in Modifica resta in vista anche la barra degli strumenti (Cloze, Grassetto, colori…).</li>
@@ -5189,7 +5205,7 @@ function viewGuide() {
         <li><strong>Link utili</strong> sono icone: “Modifica” per cambiarli.</li>
       </ul>`)}
     ${sec('Mappe XMind', `
-      <p>Ogni sezione ha la scheda <strong>Mappe</strong>: carichi un file .xmind e lo leggi come <strong>mappa</strong> (rami colorati, zoom con due dita o Ctrl + rotellina, tocchi un nodo per chiuderne o aprirne i rami) o come <strong>elenco</strong>. <strong>Ripassa</strong> copre tutti i rami: prova a ricordarli e toccali per scoprirli. Da <strong>Altro</strong> crei le flashcard della mappa, la aggiungi agli appunti come elenco, carichi altre mappe, la rinomini o la elimini. Si salva la struttura della mappa (titoli e note, non le immagini) e si sincronizza con la sezione.</p>`)}
+      <p>Ogni sezione ha la scheda <strong>Mappe</strong>: crei una mappa (da zero o dagli appunti), la modifichi con ✎ Modifica, oppure carichi un file .xmind; la leggi come <strong>mappa</strong> (rami colorati, zoom con due dita o Ctrl + rotellina, tocchi un nodo per chiuderne o aprirne i rami) o come <strong>elenco</strong>. <strong>Ripassa</strong> copre tutti i rami: prova a ricordarli e toccali per scoprirli. Da <strong>Altro</strong> crei le flashcard della mappa, la aggiungi agli appunti come elenco, carichi altre mappe, la rinomini o la elimini. Si salva la struttura della mappa (titoli e note, non le immagini) e si sincronizza con la sezione.</p>`)}
     ${sec('Suggerimenti nei cloze', `
       <p>Un cloze può avere un suggerimento: una domanda o un indizio che compare come <strong>?</strong> accanto al termine nascosto; toccandolo lo leggi. In Cloze tocca <strong>Suggerimenti</strong> e poi un termine per scriverlo; in Modifica metti il cursore dentro il cloze e tocca <strong>Suggerimento</strong> (nel testo diventa <code>==termine::suggerimento==</code>). Nelle flashcard create dai cloze il suggerimento compare al posto dei puntini.</p>`)}
     ${sec('Modalità esame, zoom e modalità notte', `
@@ -8336,11 +8352,17 @@ function viewPdf(id, pageParam) {
     panelBody.innerHTML = `
       ${meta.bookmarks.length > 3 ? `<input type="search" class="input search pdf-bm-q" id="bmQ" placeholder="Cerca tra i segnalibri e l’indice" aria-label="Cerca tra i segnalibri">` : ''}
       <button class="btn sm block" type="button" data-pm="add">${meta.bookmarks.some(b => b.page === R.cur) ? `Togli il segnalibro da pagina ${R.cur}` : `Segnalibro su pagina ${R.cur}`}</button>
-      ${meta.bookmarks.length ? `<ul class="pdf-plist">${meta.bookmarks.map(b => `
-        <li><button type="button" class="pdf-pitem ${b.page === R.cur ? 'cur' : ''}" data-go="${b.page}">
+      ${meta.bookmarks.length ? `<button class="btn sm block" type="button" data-bmall>Collega i segnalibri alle sezioni</button>` : ''}
+      ${meta.bookmarks.length ? `<ul class="pdf-plist">${meta.bookmarks.map(b => {
+        const linked = refsOfBookmark(meta.id, b.id);
+        return `
+        <li class="${linked.length ? 'has-sec' : ''}"><button type="button" class="pdf-pitem ${b.page === R.cur ? 'cur' : ''}" data-go="${b.page}">
           <span class="pdf-bm-ic">${ICON_BM}</span><span class="pdf-pitem-t">${esc(b.title)}</span><span class="pdf-pitem-p">p. ${b.page}</span></button>
+          <button type="button" class="btn sm ghost" data-bmlink="${b.id}" aria-label="Collega a una sezione" title="Collega a una sezione del notebook">🔗</button>
           <button type="button" class="btn sm ghost" data-bmren="${b.id}" aria-label="Rinomina">✎</button>
-          <button type="button" class="btn sm ghost" data-bmdel="${b.id}" aria-label="Elimina">✕</button></li>`).join('')}</ul>`
+          <button type="button" class="btn sm ghost" data-bmdel="${b.id}" aria-label="Elimina">✕</button>
+          ${linked.length ? `<div class="bm-secs">${linked.map(x => `<a class="bm-sec" href="#/sec/${x.id}">→ ${esc(x.title)}</a>`).join('')}</div>` : ''}</li>`;
+      }).join('')}</ul>`
         : '<p class="hint">Nessun segnalibro. Toccando “Segnalibro” in alto, o premendo B, segni la pagina che stai leggendo.</p>'}
       <h3 class="sub3">Indice del PDF</h3>
       <div id="pdfOutline"><p class="hint">Carico l’indice…</p></div>`;
@@ -8361,9 +8383,40 @@ function viewPdf(id, pageParam) {
     const walk = (items, d) => items.forEach(it => { if (flat.length < 400) { flat.push({ it, d }); if (d < 2 && it.items?.length) walk(it.items, d + 1); } });
     walk(R.outline, 0);
     box.innerHTML = flat.length
-      ? `<ul class="pdf-plist outline">${flat.map(({ it, d }, i) => `<li style="--d:${d}"><button type="button" class="pdf-pitem" data-ol="${i}"><span class="pdf-pitem-t">${esc(String(it.title || '').trim() || 'Senza titolo')}</span></button></li>`).join('')}</ul>`
-      : '<p class="hint">Questo PDF non ha un indice.</p>';
+      ? `<button class="btn sm block" type="button" data-olbm>Trasforma l’indice in segnalibri</button>
+        <ul class="pdf-plist outline">${flat.map(({ it, d }, i) => `<li style="--d:${d}"><button type="button" class="pdf-pitem" data-ol="${i}"><span class="pdf-pitem-t">${esc(String(it.title || '').trim() || 'Senza titolo')}</span></button></li>`).join('')}</ul>`
+      : '<p class="hint">Questo PDF non ha un indice: i segnalibri li crei tu, pagina per pagina.</p>';
+    const pageOf = async it => {
+      let dest = it.dest;
+      if (typeof dest === 'string') dest = await R.doc.getDestination(dest);
+      if (!Array.isArray(dest) || !dest[0]) return null;
+      const ref = dest[0];
+      return (typeof ref === 'number' ? ref : await R.doc.getPageIndex(ref)) + 1;
+    };
     box.onclick = async e => {
+      if (e.target.closest('[data-olbm]')) {
+        // l’indice interno del PDF diventa segnalibri dell’app, da collegare poi alle sezioni
+        const deep = flat.some(x => x.d > 0);
+        const lvl = deep ? await actionSheet('Quali voci dell’indice?', [{ key: '0', label: 'Solo i capitoli (primo livello)' }, { key: '1', label: 'Capitoli e paragrafi' }]) : '0';
+        if (lvl === null || lvl === undefined) return;
+        const have = new Set(meta.bookmarks.map(b => b.page));
+        let n = 0;
+        for (const { it, d } of flat) {
+          if (d > +lvl) continue;
+          let pg = null;
+          try { pg = await pageOf(it); } catch { pg = null; }
+          if (!pg || have.has(pg)) continue;
+          have.add(pg);
+          meta.bookmarks.push({ id: uid(), page: pg, title: String(it.title || '').trim().slice(0, 120) || `Pagina ${pg}`, created: Date.now() + n });
+          n++;
+        }
+        meta.bookmarks.sort((x, y) => x.page - y.page);
+        saveSoon();
+        refreshBm();
+        toast(n ? `${n} segnalibri creati dall’indice: ora puoi collegarli alle sezioni` : 'Le pagine dell’indice hanno già un segnalibro');
+        refreshPanel('marks');
+        return;
+      }
       const b = e.target.closest('[data-ol]');
       if (!b) return;
       try {
@@ -8547,6 +8600,19 @@ function viewPdf(id, pageParam) {
     if (pm) { await toggleBookmark(); return; }
     const ren = e.target.closest('[data-bmren]');
     if (ren) { const b = meta.bookmarks.find(x => x.id === ren.dataset.bmren); if (b) renameBookmark(b); return; }
+    const bl = e.target.closest('[data-bmlink]');
+    if (bl) {
+      const b = meta.bookmarks.find(x => x.id === bl.dataset.bmlink);
+      if (!b) return;
+      const s2 = await pdfBmLinkSheet(meta, b);
+      if (s2) { toast(`“${b.title}” collegato a “${s2.title}”`); refreshPanel('marks'); }
+      return;
+    }
+    if (e.target.closest('[data-bmall]')) {
+      const n = await pdfBmBulkSheet(meta);
+      if (n) { toast(`${n} ${n === 1 ? 'segnalibro collegato' : 'segnalibri collegati'} alle sezioni`); refreshPanel('marks'); }
+      return;
+    }
     const del = e.target.closest('[data-bmdel]');
     if (del) { const b = meta.bookmarks.find(x => x.id === del.dataset.bmdel); if (b) toggleBookmark(b.page); return; }
     const dd = e.target.closest('[data-ddel]');
@@ -8826,6 +8892,8 @@ function viewPdf(id, pageParam) {
       new Set(meta.annots.map(a => a.page)).forEach(drawAnnots);
       refreshBm();
       const start = +pageParam || meta.lastPage || 1;
+      const refHint = PdfRefHint.take(meta.id);
+      if (refHint) setTimeout(() => toast(`${pagesTxt(refHint.from, refHint.to)}: le pagine di “${refHint.title}”`), 400);
       if (pdfPendingHit && pdfPendingHit.id === meta.id) { R.hit = { n: pdfPendingHit.n, q: pdfPendingHit.q }; pdfPendingHit = null; }
       R.cur = 0;
       goTo(start);
@@ -9410,9 +9478,11 @@ function viewPdfLibrary(p1, p2) {
       ${inSecs.length ? `<h2 class="sub">Nelle sezioni</h2><ul class="list pdf-list">${inSecs.map(p => pdfRowHtml(p, { where: true })).join('')}</ul>` : ''}
       ${!list.length ? '<div class="empty"><p>Nessun PDF in questo notebook.</p></div>' : ''}`
     : list.length ? `<ul class="list pdf-list" id="pdfList">${list.map(p => pdfRowHtml(p, { where: !sec })).join('')}</ul>`
-      : `<div class="empty"><p>${sec ? 'Nessun PDF in questa sezione.' : 'Nessun PDF ancora. Caricane uno e scegli il notebook o la sezione a cui appartiene.'}</p></div>`}
+      : sec && pdfRefsOf(sec).length ? '' : `<div class="empty"><p>${sec ? 'Nessun PDF in questa sezione. Puoi anche collegarle le pagine di un PDF più grande dai suoi segnalibri (pannello Segnalibri del lettore, 🔗).' : 'Nessun PDF ancora. Caricane uno e scegli il notebook o la sezione a cui appartiene.'}</p></div>`}
+    ${sec && pdfRefsOf(sec).length ? `<h2 class="sub">Pagine collegate da altri PDF</h2>${pdfRefsBlockHtml(sec).replace('<section class="fonti pdf-refs"', '<section class="pdf-refs pr-plain"')}` : ''}
     ${Sync.configured() ? '<p class="hint">Con la sincronizzazione attiva i PDF vanno anche su Drive e li ritrovi sugli altri dispositivi.</p>' : '<p class="hint">Attiva la sincronizzazione con Drive per ritrovare i PDF sugli altri dispositivi.</p>'}`);
   bindPdfRows($('#view'));
+  if (sec) bindPdfRefsBlock($('#view'), sec);
   on('[data-act="pdf-add"]', 'click', async e => {
     const btn = e.currentTarget;
     const target = sec ? { notebookId: sec.notebookId, sectionId: sec.id } : await pdfTargetSheet('Dove metto il PDF?', nb ? nb.id : null);
@@ -10275,6 +10345,89 @@ const slimTopic = t => {
 const branchHue = i => (i === undefined ? 205 : (200 + i * 67) % 360);
 function mapCountNodes(n) { return 1 + (n.c || []).reduce((a, c) => a + mapCountNodes(c), 0); }
 
+// v3.36: le mappe si modificano (in elenco o sulla mappa), si creano da zero o dagli
+// appunti della sezione e si scaricano come file .xmind da riaprire in XMind.
+function mdToMapTree(md, title) {
+  const clean = s => stripMarks(String(s || ''))
+    .replace(clozeRe(), (m, t) => splitHint(t)[0])
+    .replace(IMG_MD_RE, '')
+    .replace(XREF_RE, (m, t, l) => (l || t))
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/(^|\s)\*([^*]+)\*/g, '$1$2')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const root = { t: title || 'Mappa' };
+  const add = (parent, t) => { const n = { t: t.slice(0, 200) }; (parent.c || (parent.c = [])).push(n); return n; };
+  const note = (node, t) => { if (!t) return; node.n = node.n ? `${node.n}\n${t}`.slice(0, 2000) : t.slice(0, 2000); };
+  const stack = [{ lvl: 0, node: root }];
+  const top = () => stack[stack.length - 1].node;
+  const addList = (items, parent) => items.forEach(it => {
+    const toks = it.tokens || [];
+    const own = toks.filter(t => t.type === 'text' || t.type === 'paragraph').map(t => t.text).join(' ') || String(it.text || '').split('\n')[0];
+    const n = add(parent, clean(own) || '…');
+    toks.filter(t => t.type === 'list').forEach(l => addList(l.items || [], n));
+  });
+  const mk = window.marked;
+  if (mk && mk.lexer) {
+    let toks = [];
+    try { toks = mk.lexer(String(md || '')); } catch { toks = []; }
+    toks.forEach(t => {
+      if (t.type === 'heading') {
+        while (stack.length > 1 && stack[stack.length - 1].lvl >= t.depth) stack.pop();
+        const n = add(top(), clean(t.text) || '…');
+        stack.push({ lvl: t.depth, node: n });
+      } else if (t.type === 'list') addList(t.items || [], top());
+      else if (t.type === 'paragraph') note(top(), clean(t.text));
+    });
+  } else {
+    String(md || '').split('\n').forEach(line => {
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      const li = line.match(/^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$/);
+      if (h) {
+        while (stack.length > 1 && stack[stack.length - 1].lvl >= h[1].length) stack.pop();
+        stack.push({ lvl: h[1].length, node: add(top(), clean(h[2])) });
+      } else if (li) {
+        const depth = Math.floor(li[1].replace(/\t/g, '  ').length / 2);
+        let parent = top();
+        for (let d = 0; d < depth && parent.c && parent.c.length; d++) parent = parent.c[parent.c.length - 1];
+        add(parent, clean(li[2]));
+      }
+    });
+  }
+  // un solo titolo principale uguale al nome: diventa lui il centro
+  if ((root.c || []).length === 1 && foldAccents(root.c[0].t) === foldAccents(root.t)) {
+    const only = root.c[0];
+    root.c = only.c;
+    if (only.n) root.n = only.n;
+    if (!root.c) delete root.c;
+  }
+  return root;
+}
+async function exportXmind(m) {
+  await ensureJSZip();
+  const topic = n => {
+    const o = { id: uid() + uid(), class: 'topic', title: n.t || '' };
+    if (n.n) o.notes = { plain: { content: n.n } };
+    if ((n.c || []).length) o.children = { attached: n.c.map(topic) };
+    return o;
+  };
+  const content = m.sheets.map(s => ({ id: uid() + uid(), class: 'sheet', title: s.title || m.name, rootTopic: { ...topic(s.root), structureClass: 'org.xmind.ui.map.unbalanced' } }));
+  const zip = new window.JSZip();
+  zip.file('content.json', JSON.stringify(content));
+  zip.file('metadata.json', JSON.stringify({ creator: { name: 'StudyHub Notebook', version: APP_VERSION } }));
+  zip.file('manifest.json', JSON.stringify({ 'file-entries': { 'content.json': {}, 'metadata.json': {} } }));
+  const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.xmind.workbook' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${String(m.name || 'Mappa').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Mappa'}.xmind`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
 function modeMap(sec, body) {
   let maps = mapsOf(sec);
   const st = S();
@@ -10282,9 +10435,19 @@ function modeMap(sec, body) {
   let si = 0;
   let view = st.mapView || (window.innerWidth < 700 ? 'list' : 'map');
   let quiz = false;
+  let edit = false;
+  let selNode = null;
+  let undo = [];
   const shown = new Set();
-  const collapsed = new Set();
+  let collapsed = new Set();   // nodi chiusi (per riferimento, così restano chiusi anche spostandoli)
   let zoom = 1;
+  let saveT = 0;
+  const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(() => { saveT = 0; saveSection(sec); }, 600); };
+  addCleanup(() => { if (saveT) { clearTimeout(saveT); saveSection(sec); } });
+  const cur = () => { const m = maps[mi]; return m ? { m, sheet: m.sheets[si] || m.sheets[0] } : null; };
+  const touched = () => { const c = cur(); if (c) c.m.edited = Date.now(); saveSoon(); };
+  const snap = () => { const c = cur(); if (!c) return; undo.push({ si, root: JSON.stringify(c.sheet.root) }); if (undo.length > 60) undo.shift(); };
+
   const draw = () => {
     maps = mapsOf(sec);
     if (mi >= maps.length) mi = Math.max(0, maps.length - 1);
@@ -10292,10 +10455,13 @@ function modeMap(sec, body) {
     if (!m) {
       body.innerHTML = `
         <div class="empty">
-          <p>Carica una mappa di XMind (.xmind): la leggi qui come mappa o come elenco, la ripassi coprendo i rami e ne ricavi flashcard. Funziona con i file di XMind nuovi e con XMind 8.</p>
-          <button class="btn primary" data-act="map-add">Carica una mappa</button>
+          <p>Qui crei e modifichi mappe concettuali: le leggi come mappa o come elenco, le ripassi coprendo i rami, ne ricavi flashcard e le scarichi come file XMind. Puoi anche caricare una mappa di XMind (file nuovi e XMind 8).</p>
+          <div class="inline" style="justify-content:center">
+            <button class="btn primary" data-act="map-new">Crea una mappa</button>
+            ${String(sec.md || '').trim() ? '<button class="btn" data-act="map-from-md">Crea dagli appunti</button>' : ''}
+            <button class="btn" data-act="map-add">Carica un file XMind</button>
+          </div>
         </div>`;
-      on('[data-act="map-add"]', 'click', addMap, body);
       return;
     }
     const sheet = m.sheets[si] || m.sheets[0];
@@ -10308,27 +10474,53 @@ function modeMap(sec, body) {
           <button type="button" data-view="map" aria-selected="${view === 'map'}">Mappa</button>
           <button type="button" data-view="list" aria-selected="${view === 'list'}">Elenco</button>
         </div>
-        <button class="btn sm ${quiz ? 'primary' : ''}" data-act="map-quiz" aria-pressed="${quiz}">${quiz ? `Fine ripasso (${shown.size}/${total})` : 'Ripassa'}</button>
-        ${quiz ? '<button class="btn sm ghost" data-act="map-reveal">Scopri tutto</button>' : ''}
-        <button class="btn sm ghost" data-act="map-more">Altro</button>
+        ${edit ? '<button class="btn sm primary" data-act="map-edit">Fine</button>' : `
+          <button class="btn sm" data-act="map-edit">✎ Modifica</button>
+          <button class="btn sm ${quiz ? 'primary' : ''}" data-act="map-quiz" aria-pressed="${quiz}">${quiz ? `Fine ripasso (${shown.size}/${total})` : 'Ripassa'}</button>
+          ${quiz ? '<button class="btn sm ghost" data-act="map-reveal">Scopri tutto</button>' : ''}
+          <button class="btn sm ghost" data-act="map-more">Altro</button>`}
       </div>
-      <p class="hint map-hint">${quiz ? 'Prova a ricordare ogni ramo, poi toccalo per scoprirlo; toccalo di nuovo per coprirlo.' : view === 'map' ? 'Tocca un nodo per chiudere o aprire i suoi rami; il pallino indica una nota. Zoom con due dita, Ctrl + rotellina o i pulsanti.' : 'Tocca la freccetta per chiudere o aprire un ramo.'}</p>
-      <div id="mapBox" class="map-box ${quiz ? 'quiz' : ''}"></div>`;
+      ${edit ? `<div class="map-etools" role="toolbar" aria-label="Modifica la mappa">
+        <button type="button" class="btn sm" data-me="child" title="Aggiunge un nodo dentro quello scelto (Tab)">＋ Dentro</button>
+        <button type="button" class="btn sm" data-me="sib" title="Aggiunge un nodo accanto a quello scelto (Invio)">＋ Accanto</button>
+        <button type="button" class="btn sm" data-me="rename" title="Rinomina (F2 o doppio tocco)">Rinomina</button>
+        <button type="button" class="btn sm" data-me="note" title="Nota del nodo">Nota</button>
+        <button type="button" class="btn sm" data-me="up" aria-label="Sposta su" title="Sposta su (Alt+↑)">↑</button>
+        <button type="button" class="btn sm" data-me="down" aria-label="Sposta giù" title="Sposta giù (Alt+↓)">↓</button>
+        <button type="button" class="btn sm" data-me="out" aria-label="Sposta fuori di un livello" title="Fuori di un livello (Maiusc+Tab)">←</button>
+        <button type="button" class="btn sm" data-me="in" aria-label="Sposta dentro il nodo sopra" title="Dentro il nodo sopra">→</button>
+        <button type="button" class="btn sm ghost danger" data-me="del" title="Elimina il nodo e i suoi rami (Canc)">Elimina</button>
+        <button type="button" class="btn sm ghost" data-me="undo" ${undo.length ? '' : 'disabled'} title="Annulla (Ctrl+Z)">Annulla</button>
+      </div>` : ''}
+      <p class="hint map-hint">${edit
+        ? (view === 'list' ? 'Scrivi direttamente sui nodi. Invio aggiunge un nodo accanto, Tab lo mette dentro quello sopra, Maiusc+Tab lo porta fuori, Canc su un nodo vuoto lo elimina.' : 'Tocca un nodo per sceglierlo e due volte per rinominarlo; trascinalo su un altro nodo per spostarlo lì dentro (sul telefono tieni premuto prima di trascinare).')
+        : quiz ? 'Prova a ricordare ogni ramo, poi toccalo per scoprirlo; toccalo di nuovo per coprirlo.' : view === 'map' ? 'Tocca un nodo per chiudere o aprire i suoi rami; il pallino indica una nota. Zoom con due dita, Ctrl + rotellina o i pulsanti.' : 'Tocca la freccetta per chiudere o aprire un ramo.'}</p>
+      <div id="mapBox" class="map-box ${quiz ? 'quiz' : ''} ${edit ? 'editing' : ''}"></div>`;
     view === 'map' ? drawSvg(sheet) : drawList(sheet);
   };
   const keyOf = path => path.join('.');
-  const label = (n, key, isRoot) => (quiz && !isRoot && !shown.has(key) ? '' : n.t);
+  const findNode = (sheet, key) => key.split('.').slice(1).reduce((n, k) => (n && n.c ? n.c[+k] : null), sheet.root);
+  const parentOf = (root, target) => { let res = null; const walk = n => (n.c || []).forEach(c => { if (res) return; if (c === target) res = n; else walk(c); }); walk(root); return res; };
+  const pathOf = (root, target) => {
+    if (target === root) return '0';
+    let res = null;
+    const walk = (n, p) => (n.c || []).forEach((c, k) => { if (res) return; if (c === target) res = keyOf([...p, k]); else walk(c, [...p, k]); });
+    walk(root, [0]);
+    return res;
+  };
+  const contains = (a, b) => { let hit = false; const walk = n => (n.c || []).forEach(c => { if (c === b) hit = true; else if (!hit) walk(c); }); walk(a); return hit; };
+
   function drawList(sheet) {
     const box = $('#mapBox', body);
     const walk = (n, path, depth) => {
       const key = keyOf(path);
       const kids = n.c || [];
-      const isClosed = collapsed.has(key);
+      const isClosed = collapsed.has(n);
       const hidden = quiz && depth > 0 && !shown.has(key);
       return `<li class="ml-item d${Math.min(depth, 4)}" style="--h:${branchHue(path[1])}">
-        <div class="ml-row">
+        <div class="ml-row ${edit && n === selNode ? 'sel' : ''}">
           ${kids.length ? `<button type="button" class="fold-btn" data-mtoggle="${key}" aria-expanded="${!isClosed}" aria-label="${isClosed ? 'Espandi' : 'Riduci'}">${CHEVRON}</button>` : '<span class="ml-dot" aria-hidden="true"></span>'}
-          <span class="ml-t ${hidden ? 'covered' : ''}" data-mkey="${key}" ${hidden ? 'role="button" tabindex="0" aria-label="Ramo coperto: tocca per scoprirlo"' : ''}>${esc(n.t)}</span>
+          <span class="ml-t ${hidden ? 'covered' : ''}" data-mkey="${key}" ${edit ? 'contenteditable="true" spellcheck="true" role="textbox" aria-label="Nodo"' : hidden ? 'role="button" tabindex="0" aria-label="Ramo coperto: tocca per scoprirlo"' : ''}>${esc(n.t)}</span>
           ${n.n && !hidden ? `<button type="button" class="ml-note" data-mnote="${key}" aria-label="Nota">i</button>` : ''}
         </div>
         ${kids.length && !isClosed ? `<ul>${kids.map((c, k) => walk(c, [...path, k], depth + 1)).join('')}</ul>` : ''}
@@ -10340,19 +10532,18 @@ function modeMap(sec, body) {
     const box = $('#mapBox', body);
     const GAPX = 46;
     const GAPY = 12;
-    // misure dei nodi
     const layout = (n, path, depth) => {
       const key = keyOf(path);
       const isRoot = depth === 0;
-      const w = mapWrap(n.t, isRoot ? 240 : 200);
+      const w = mapWrap(n.t || ' ', isRoot ? 240 : 200);
       const node = { n, key, depth, path, lines: w.lines, w: Math.ceil(w.width) + 24, h: w.lines.length * 19 + 14, kids: [] };
-      if (!collapsed.has(key)) node.kids = (n.c || []).map((c, k) => layout(c, [...path, k], depth + 1));
+      if (!collapsed.has(n)) node.kids = (n.c || []).map((c, k) => layout(c, [...path, k], depth + 1));
       node.sub = node.kids.length ? Math.max(node.h, node.kids.reduce((a, k) => a + k.sub, 0) + GAPY * (node.kids.length - 1)) : node.h;
       return node;
     };
     const root = layout(sheet.root, [0], 0);
     const colW = [];
-    const measure = (nd) => { colW[nd.depth] = Math.max(colW[nd.depth] || 0, nd.w); nd.kids.forEach(measure); };
+    const measure = nd => { colW[nd.depth] = Math.max(colW[nd.depth] || 0, nd.w); nd.kids.forEach(measure); };
     measure(root);
     const colX = [20];
     for (let d = 1; d < colW.length; d++) colX[d] = colX[d - 1] + colW[d - 1] + GAPX;
@@ -10363,7 +10554,7 @@ function modeMap(sec, body) {
       nd.kids.forEach(k => { place(k, y); y += k.sub + GAPY; });
     };
     place(root, 20);
-    const W = colX[colX.length - 1] + colW[colW.length - 1] + 40;
+    const W = colX[colX.length - 1] + colW[colW.length - 1] + 60;
     const H = root.sub + 40;
     const links = [];
     const nodes = [];
@@ -10382,11 +10573,11 @@ function modeMap(sec, body) {
       const covered = quiz && !isRoot && !shown.has(nd.key);
       const kidsN = (nd.n.c || []).length;
       nodes.push(`
-        <g class="mn ${isRoot ? 'root' : ''} d${Math.min(nd.depth, 3)} ${covered ? 'covered' : ''}" data-mkey="${nd.key}" style="--h:${hue}" transform="translate(${nd.x} ${nd.y})" role="button" tabindex="0" aria-label="${covered ? 'Ramo coperto' : esc(nd.n.t)}">
+        <g class="mn ${isRoot ? 'root' : ''} d${Math.min(nd.depth, 3)} ${covered ? 'covered' : ''} ${edit && nd.n === selNode ? 'sel' : ''}" data-mkey="${nd.key}" style="--h:${hue}" transform="translate(${nd.x} ${nd.y})" role="button" tabindex="0" aria-label="${covered ? 'Ramo coperto' : esc(nd.n.t)}">
           <rect width="${nd.w}" height="${nd.h}" rx="${isRoot ? 14 : 10}"/>
           ${nd.lines.map((l, k) => `<text x="12" y="${21 + k * 19}">${esc(l)}</text>`).join('')}
           ${nd.n.n && !covered ? `<circle class="mn-note" data-mnote="${nd.key}" cx="${nd.w - 2}" cy="2" r="6"/>` : ''}
-          ${kidsN && collapsed.has(nd.key) ? `<g class="mn-more" transform="translate(${nd.w + 6} ${nd.h / 2 - 9})"><rect width="${String(kidsN).length * 8 + 16}" height="18" rx="9"/><text x="8" y="13">+${kidsN}</text></g>` : ''}
+          ${kidsN && collapsed.has(nd.n) ? `<g class="mn-more" data-mtoggle="${nd.key}" transform="translate(${nd.w + 6} ${nd.h / 2 - 9})"><rect width="${String(kidsN).length * 8 + 16}" height="18" rx="9"/><text x="8" y="13">+${kidsN}</text></g>` : ''}
         </g>`);
     };
     walk(root);
@@ -10394,7 +10585,6 @@ function modeMap(sec, body) {
       <div class="map-zoom"><button class="btn sm ghost" data-mz="-">−</button><button class="btn sm ghost" data-mz="0">${Math.round(zoom * 100)}%</button><button class="btn sm ghost" data-mz="+">+</button></div>
       <div class="map-scroll"><svg class="map-svg" viewBox="0 0 ${W} ${H}" width="${Math.round(W * zoom)}" height="${Math.round(H * zoom)}" role="img" aria-label="Mappa: ${esc(sheet.root.t)}"><g class="links">${links.join('')}</g>${nodes.join('')}</svg></div>`;
     const sc = $('.map-scroll', box);
-    // zoom: pulsanti, Ctrl + rotellina e due dita
     const setZoom = (z, cx, cy) => {
       const svg = $('.map-svg', box);
       const old = zoom;
@@ -10424,10 +10614,188 @@ function modeMap(sec, body) {
     let pinch = null;
     const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
     sc.addEventListener('touchstart', e => { if (e.touches.length === 2) { const r = sc.getBoundingClientRect(); pinch = { d: dist(e.touches[0], e.touches[1]), z: zoom, x: (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top }; } }, { passive: true });
-    sc.addEventListener('touchmove', e => { if (pinch && e.touches.length === 2) { e.preventDefault(); setZoom(pinch.z * dist(e.touches[0], e.touches[1]) / pinch.d, pinch.x, pinch.y); } }, { passive: false });
+    sc.addEventListener('touchmove', e => {
+      if (drag && drag.armed) { e.preventDefault(); return; }
+      if (pinch && e.touches.length === 2) { e.preventDefault(); setZoom(pinch.z * dist(e.touches[0], e.touches[1]) / pinch.d, pinch.x, pinch.y); }
+    }, { passive: false });
     sc.addEventListener('touchend', () => { pinch = null; });
+    if (edit) bindDrag(sc, sheet);
   }
-  const findNode = (sheet, key) => key.split('.').slice(1).reduce((n, k) => (n && n.c ? n.c[+k] : null), sheet.root);
+
+  /* trascinare un nodo su un altro (solo in modifica, sulla mappa) */
+  let drag = null;
+  function bindDrag(sc, sheet) {
+    const svg = $('.map-svg', sc);
+    svg.addEventListener('pointerdown', e => {
+      const g = e.target.closest('g.mn');
+      if (!g || g.classList.contains('root') || e.button > 0) return;
+      const n = findNode(sheet, g.dataset.mkey);
+      if (!n) return;
+      drag = { id: e.pointerId, n, x0: e.clientX, y0: e.clientY, armed: e.pointerType !== 'touch', moving: false, ghost: null, timer: 0 };
+      if (e.pointerType === 'touch') drag.timer = setTimeout(() => { if (drag) { drag.armed = true; g.classList.add('lift'); navigator.vibrate?.(15); } }, 380);
+    });
+    svg.addEventListener('pointermove', e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const far = Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 8;
+      if (!drag.armed) { if (far) { clearTimeout(drag.timer); drag = null; } return; }
+      if (!drag.moving && !far) return;
+      if (!drag.moving) {
+        drag.moving = true;
+        try { svg.setPointerCapture(e.pointerId); } catch { /* niente */ }
+        drag.ghost = document.createElement('div');
+        drag.ghost.className = 'map-ghost';
+        drag.ghost.textContent = drag.n.t || '…';
+        document.body.append(drag.ghost);
+      }
+      drag.ghost.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 12}px)`;
+      const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('g.mn');
+      $$('g.mn.drop', svg).forEach(x => { if (x !== over) x.classList.remove('drop'); });
+      if (over) {
+        const t = findNode(sheet, over.dataset.mkey);
+        if (t && t !== drag.n && !contains(drag.n, t)) over.classList.add('drop');
+      }
+    });
+    const end = e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      clearTimeout(drag.timer);
+      const d = drag;
+      drag = null;
+      $$('g.mn.lift', svg).forEach(x => x.classList.remove('lift'));
+      if (!d.moving) return;
+      d.ghost?.remove();
+      const over = $('g.mn.drop', svg);
+      if (!over) return;
+      const t = findNode(sheet, over.dataset.mkey);
+      if (!t || t === d.n || contains(d.n, t)) return;
+      const p = parentOf(sheet.root, d.n);
+      if (!p) return;
+      snap();
+      p.c.splice(p.c.indexOf(d.n), 1);
+      if (!p.c.length) delete p.c;
+      (t.c || (t.c = [])).push(d.n);
+      collapsed.delete(t);
+      selNode = d.n;
+      touched();
+      draw();
+      toast(`“${d.n.t}” spostato dentro “${t.t}”`);
+      suppressClick = true;
+      setTimeout(() => { suppressClick = false; }, 0);
+    };
+    svg.addEventListener('pointerup', end);
+    svg.addEventListener('pointercancel', e => { if (drag) { clearTimeout(drag.timer); drag.ghost?.remove(); drag = null; } });
+  }
+  let suppressClick = false;
+
+  /* operazioni sui nodi */
+  const focusSel = (atEnd = true) => {
+    const c = cur();
+    if (!c || !selNode) return;
+    const key = pathOf(c.sheet.root, selNode);
+    const el = key && $(`[data-mkey="${key}"]`, body);
+    if (!el) return;
+    if (view === 'list') {
+      el.focus();
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      if (atEnd) r.collapse(false);
+      const s = getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    } else el.focus({ preventScroll: false });
+  };
+  const rename = async n => {
+    const v = await modal({ title: 'Rinomina il nodo', input: true, value: n.t, confirm: 'Salva' });
+    if (v === null || v === undefined) return;
+    snap();
+    n.t = String(v).replace(/\s+/g, ' ').trim() || '…';
+    touched();
+    draw();
+  };
+  const op = async (kind) => {
+    const c = cur();
+    if (!c) return;
+    const root = c.sheet.root;
+    if (kind === 'undo') {
+      const u = undo.pop();
+      if (!u) return;
+      si = u.si;
+      const s2 = cur();
+      s2.sheet.root = JSON.parse(u.root);
+      selNode = null;
+      collapsed = new Set();
+      touched();
+      draw();
+      return;
+    }
+    if (!selNode) { selNode = root; }
+    const n = selNode;
+    const p = parentOf(root, n);
+    if (kind === 'child') {
+      snap();
+      const k = { t: '' };
+      (n.c || (n.c = [])).push(k);
+      collapsed.delete(n);
+      selNode = k;
+      touched();
+      draw();
+      if (view === 'list') focusSel(); else rename(k);
+      return;
+    }
+    if (kind === 'sib') {
+      if (!p) return op('child');
+      snap();
+      const k = { t: '' };
+      p.c.splice(p.c.indexOf(n) + 1, 0, k);
+      selNode = k;
+      touched();
+      draw();
+      if (view === 'list') focusSel(); else rename(k);
+      return;
+    }
+    if (kind === 'rename') { if (view === 'list') focusSel(false); else rename(n); return; }
+    if (kind === 'note') {
+      const v = await modal({ title: `Nota di “${n.t || '…'}”`, text: 'Compare toccando il pallino del nodo; puoi usare il grassetto e gli elenchi.', input: true, multiline: true, value: n.n || '', confirm: 'Salva', allowEmpty: true });
+      if (v === null || v === undefined) return;
+      snap();
+      if (String(v).trim()) n.n = String(v).trim().slice(0, 2000); else delete n.n;
+      touched();
+      draw();
+      return;
+    }
+    if (!p) { if (kind === 'del') toast('Il nodo centrale non si elimina: rinominalo, oppure elimina la mappa da Altro'); return; }
+    const i = p.c.indexOf(n);
+    if (kind === 'up' || kind === 'down') {
+      const j = kind === 'up' ? i - 1 : i + 1;
+      if (j < 0 || j >= p.c.length) return;
+      snap();
+      [p.c[i], p.c[j]] = [p.c[j], p.c[i]];
+    } else if (kind === 'in') {
+      if (i === 0) { toast('Non c’è un nodo sopra in cui spostarlo'); return; }
+      snap();
+      const prev = p.c[i - 1];
+      p.c.splice(i, 1);
+      (prev.c || (prev.c = [])).push(n);
+      collapsed.delete(prev);
+    } else if (kind === 'out') {
+      const gp = parentOf(root, p);
+      if (!gp) { toast('È già al primo livello'); return; }
+      snap();
+      p.c.splice(i, 1);
+      if (!p.c.length) delete p.c;
+      gp.c.splice(gp.c.indexOf(p) + 1, 0, n);
+    } else if (kind === 'del') {
+      const kids = mapCountNodes(n) - 1;
+      if (kids > 2 && !(await modal({ title: 'Eliminare il nodo?', text: `“${n.t}” ha ${kids} nodi sotto di sé: spariscono anche loro (puoi annullare).`, confirm: 'Elimina', danger: true }))) return;
+      snap();
+      p.c.splice(i, 1);
+      if (!p.c.length) delete p.c;
+      selNode = p.c && p.c.length ? p.c[Math.max(0, i - 1)] : p;
+    }
+    touched();
+    draw();
+    if (view === 'list') focusSel(); else focusSel();
+  };
+
   async function addMap() {
     const file = await chooseXmindFile();
     if (!file) return;
@@ -10448,16 +10816,107 @@ function modeMap(sec, body) {
       toast(err.message || 'Non riesco a leggere la mappa', 'err');
     }
   }
+  async function newMap(fromMd = false) {
+    const name = await modal({ title: fromMd ? 'Mappa dagli appunti' : 'Nuova mappa', text: fromMd ? 'Titoli ed elenchi degli appunti diventano i rami; i paragrafi diventano note dei nodi. Poi la sistemi come vuoi.' : 'Il nome è anche il nodo centrale.', input: true, value: sec.title, confirm: 'Crea' });
+    if (!name) return;
+    const root = fromMd ? mdToMapTree(sec.md, String(name).trim()) : { t: String(name).trim() };
+    const rec = { id: uid(), name: String(name).trim(), sheets: [{ title: String(name).trim(), root }], created: Date.now(), edited: Date.now() };
+    sec.maps = [...mapsOf(sec), rec];
+    await saveSection(sec);
+    S().mapLast = rec.id;
+    Settings.save();
+    mi = sec.maps.length - 1;
+    si = 0;
+    edit = !fromMd || mapCountNodes(root) < 2;
+    quiz = false;
+    undo = [];
+    selNode = root;
+    collapsed = new Set();
+    draw();
+    if (fromMd) toast(`Mappa creata con ${mapCountNodes(root) - 1} rami: tocca ✎ Modifica per sistemarla`);
+    else focusSel();
+  }
+
   body.addEventListener('change', e => {
-    if (e.target.matches('[data-map-sel]')) { mi = +e.target.value; si = 0; collapsed.clear(); shown.clear(); S().mapLast = maps[mi].id; Settings.save(); draw(); }
-    if (e.target.matches('[data-sheet-sel]')) { si = +e.target.value; collapsed.clear(); shown.clear(); draw(); }
+    if (e.target.matches('[data-map-sel]')) { mi = +e.target.value; si = 0; collapsed = new Set(); shown.clear(); selNode = null; undo = []; S().mapLast = maps[mi].id; Settings.save(); draw(); }
+    if (e.target.matches('[data-sheet-sel]')) { si = +e.target.value; collapsed = new Set(); shown.clear(); selNode = null; draw(); }
+  });
+  // scrivere sui nodi nell’elenco
+  let textSnapFor = null;
+  body.addEventListener('focusin', e => {
+    const t = e.target.closest('.ml-t[contenteditable]');
+    if (!t) return;
+    const c = cur();
+    const n = c && findNode(c.sheet, t.dataset.mkey);
+    if (!n) return;
+    if (selNode !== n) { selNode = n; $$('.ml-row.sel', body).forEach(r => r.classList.remove('sel')); t.closest('.ml-row').classList.add('sel'); }
+    textSnapFor = null;
+  });
+  body.addEventListener('input', e => {
+    const t = e.target.closest('.ml-t[contenteditable]');
+    if (!t) return;
+    const c = cur();
+    const n = c && findNode(c.sheet, t.dataset.mkey);
+    if (!n) return;
+    if (textSnapFor !== n) { snap(); textSnapFor = n; const u = $('[data-me="undo"]', body); if (u) u.disabled = false; }
+    n.t = t.textContent.replace(/\s+/g, ' ').trim();
+    touched();
+  });
+  body.addEventListener('paste', e => {
+    if (!e.target.closest('.ml-t[contenteditable]')) return;
+    e.preventDefault();
+    document.execCommand('insertText', false, (e.clipboardData?.getData('text/plain') || '').replace(/\s+/g, ' '));
+  });
+  body.addEventListener('keydown', e => {
+    if (edit && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); op('undo'); return; }
+    const t = e.target.closest('.ml-t[contenteditable]');
+    if (t && edit) {
+      if (e.key === 'Enter') { e.preventDefault(); op('sib'); return; }
+      if (e.key === 'Tab') { e.preventDefault(); op(e.shiftKey ? 'out' : 'in'); return; }
+      if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); op(e.key === 'ArrowUp' ? 'up' : 'down'); return; }
+      if ((e.key === 'Backspace' || e.key === 'Delete') && !t.textContent.trim()) { e.preventDefault(); op('del'); return; }
+      return;
+    }
+    const g = e.target.closest('[data-mkey]');
+    if (g && edit && view === 'map') {
+      const c = cur();
+      selNode = c && findNode(c.sheet, g.dataset.mkey);
+      if (e.key === 'Tab') { e.preventDefault(); op(e.shiftKey ? 'out' : 'child'); return; }
+      if (e.key === 'Enter') { e.preventDefault(); op('sib'); return; }
+      if (e.key === 'F2') { e.preventDefault(); op('rename'); return; }
+      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); op('del'); return; }
+    }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-mkey]') && !edit) { e.preventDefault(); e.target.closest('[data-mkey]').dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+  });
+  body.addEventListener('dblclick', e => {
+    if (!edit || view !== 'map') return;
+    const g = e.target.closest('g.mn');
+    const c = cur();
+    const n = g && c && findNode(c.sheet, g.dataset.mkey);
+    if (n) { selNode = n; rename(n); }
   });
   body.addEventListener('click', async e => {
+    if (e.target.closest('[data-act="map-new"]')) { newMap(false); return; }
+    if (e.target.closest('[data-act="map-from-md"]')) { newMap(true); return; }
+    if (e.target.closest('[data-act="map-add"]')) { addMap(); return; }
     const m = maps[mi];
     if (!m) return;
     const sheet = m.sheets[si] || m.sheets[0];
+    if (suppressClick) return;
     const v = e.target.closest('[data-view]');
     if (v) { view = v.dataset.view; S().mapView = view; Settings.save(); draw(); return; }
+    if (e.target.closest('[data-act="map-edit"]')) {
+      edit = !edit;
+      quiz = false;
+      shown.clear();
+      if (edit && !selNode) selNode = sheet.root;
+      if (!edit) { flushSave(); toast('Mappa salvata'); }
+      draw();
+      if (edit && view === 'list') focusSel();
+      return;
+    }
+    const me = e.target.closest('[data-me]');
+    if (me) { op(me.dataset.me); return; }
     if (e.target.closest('[data-act="map-quiz"]')) { quiz = !quiz; shown.clear(); draw(); return; }
     if (e.target.closest('[data-act="map-reveal"]')) {
       const all = (n, p) => { shown.add(keyOf(p)); (n.c || []).forEach((c, k) => all(c, [...p, k])); };
@@ -10468,26 +10927,36 @@ function modeMap(sec, body) {
     const note = e.target.closest('[data-mnote]');
     if (note) {
       const n = findNode(sheet, note.dataset.mnote);
+      if (n && edit) { selNode = n; op('note'); return; }
       if (n) { const sh = openSheet(`<h2>${esc(n.t)}</h2><div class="notes">${renderMd(n.n)}</div><div class="modal-actions"><button class="btn primary" type="button" data-x>Chiudi</button></div>`, { label: n.t }); $('[data-x]', sh.el).onclick = () => sh.close(); }
       return;
     }
     const tg = e.target.closest('[data-mtoggle]');
-    if (tg) { const k = tg.dataset.mtoggle; if (collapsed.has(k)) collapsed.delete(k); else collapsed.add(k); draw(); return; }
+    if (tg) { const n = findNode(sheet, tg.dataset.mtoggle); if (n) { if (collapsed.has(n)) collapsed.delete(n); else collapsed.add(n); draw(); } return; }
     const node = e.target.closest('[data-mkey]');
     if (node) {
       const k = node.dataset.mkey;
+      const n = findNode(sheet, k);
+      if (edit) {
+        if (view === 'map' && n) { selNode = n; $$('g.mn.sel', body).forEach(x => x.classList.remove('sel')); node.classList.add('sel'); }
+        return;
+      }
       if (quiz) {
         if (k === '0') return;
         if (shown.has(k)) shown.delete(k); else shown.add(k);
         draw();
         return;
       }
-      if (view === 'map' && (findNode(sheet, k)?.c || []).length) { if (collapsed.has(k)) collapsed.delete(k); else collapsed.add(k); draw(); }
+      if (view === 'map' && (n?.c || []).length) { if (collapsed.has(n)) collapsed.delete(n); else collapsed.add(n); draw(); }
       return;
     }
     if (e.target.closest('[data-act="map-more"]')) {
       const choice = await actionSheet(m.name, [
-        { key: 'add', label: 'Carica un’altra mappa' },
+        { key: 'new', label: 'Crea una mappa nuova' },
+        ...(String(sec.md || '').trim() ? [{ key: 'frommd', label: 'Crea una mappa dagli appunti' }] : []),
+        { key: 'add', label: 'Carica un’altra mappa XMind' },
+        { key: 'export', label: 'Scarica come file XMind' },
+        { key: 'sheet', label: 'Aggiungi un foglio a questa mappa' },
         { key: 'cards', label: 'Crea flashcard da questa mappa' },
         { key: 'notes', label: 'Aggiungi la mappa agli appunti (elenco)' },
         { key: 'fold', label: collapsed.size ? 'Apri tutti i rami' : 'Chiudi i rami dal secondo livello' },
@@ -10495,7 +10964,17 @@ function modeMap(sec, body) {
         { key: 'delete', label: 'Elimina la mappa', danger: true }
       ]);
       const full = t => ({ title: t.t, notes: t.n || '', children: (t.c || []).map(full), floating: [] });
+      if (choice === 'new') newMap(false);
+      if (choice === 'frommd') newMap(true);
       if (choice === 'add') addMap();
+      if (choice === 'export') {
+        try { flushSave(); await exportXmind(m); toast('File XMind pronto: lo apri con XMind'); }
+        catch (err) { toast(err.message || 'Non riesco a creare il file', 'err'); }
+      }
+      if (choice === 'sheet') {
+        const t = await modal({ title: 'Nuovo foglio', text: 'Un’altra mappa nello stesso file, come i fogli di XMind.', input: true, value: '', placeholder: 'Nome del foglio', confirm: 'Crea' });
+        if (t) { m.sheets.push({ title: String(t).trim(), root: { t: String(t).trim() } }); si = m.sheets.length - 1; edit = true; selNode = m.sheets[si].root; collapsed = new Set(); touched(); draw(); focusSel(); }
+      }
       if (choice === 'cards') {
         const cards = xmindCards(full(sheet.root), sec.notebookId, sec.id);
         if (!cards.length) { toast('La mappa non ha rami con sottopunti'); return; }
@@ -10508,8 +10987,8 @@ function modeMap(sec, body) {
         toast('Mappa aggiunta agli appunti: la trovi in Leggi');
       }
       if (choice === 'fold') {
-        if (collapsed.size) collapsed.clear();
-        else (sheet.root.c || []).forEach((c, k) => { if ((c.c || []).length) collapsed.add(`0.${k}`); });
+        if (collapsed.size) collapsed = new Set();
+        else (sheet.root.c || []).forEach(c => { if ((c.c || []).length) collapsed.add(c); });
         draw();
       }
       if (choice === 'rename') {
@@ -10522,9 +11001,7 @@ function modeMap(sec, body) {
       }
     }
   });
-  body.addEventListener('keydown', e => {
-    if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-mkey]')) { e.preventDefault(); e.target.closest('[data-mkey]').dispatchEvent(new MouseEvent('click', { bubbles: true })); }
-  });
+  const flushSave = () => { if (saveT) { clearTimeout(saveT); saveT = 0; saveSection(sec); } };
   draw();
 }
 
@@ -11208,6 +11685,233 @@ function nbReadingOrder(nb) {
   add(secs);
   return out;
 }
+
+/* =====================================================================
+   v3.35: dai segnalibri di un PDF alle sezioni del notebook
+   Un segnalibro diventa un intervallo di pagine (fino al segnalibro dopo)
+   collegato a una sezione: dalla sezione apri il PDF proprio lì.
+   Il collegamento sta nella sezione (sec.pdfRefs), così si sincronizza con lei.
+   ===================================================================== */
+const pdfRefsOf = sec => (Array.isArray(sec.pdfRefs) ? sec.pdfRefs : []).filter(r => pdfById(r.pdfId));
+const refsOfBookmark = (pdfId, bmId) => state.sections.filter(s => (s.pdfRefs || []).some(r => r.pdfId === pdfId && r.bmId === bmId));
+// pagine di un segnalibro: dalla sua fino a quella prima del segnalibro dopo
+function bmRange(meta, b) {
+  const next = (meta.bookmarks || []).filter(x => x.page > b.page).sort((x, y) => x.page - y.page)[0];
+  return { from: b.page, to: next ? Math.max(b.page, next.page - 1) : (meta.pages || b.page) };
+}
+const pagesTxt = (a, b) => (a === b ? `p. ${a}` : `pp. ${a}–${b}`);
+async function addPdfRef(sec, ref) {
+  const list = Array.isArray(sec.pdfRefs) ? sec.pdfRefs : (sec.pdfRefs = []);
+  const ex = list.find(r => r.pdfId === ref.pdfId && (ref.bmId ? r.bmId === ref.bmId : r.from === ref.from && r.to === ref.to));
+  if (ex) Object.assign(ex, ref); else list.push({ id: uid(), ...ref });
+  list.sort((a, b) => (a.pdfId === b.pdfId ? a.from - b.from : 0));
+  await saveSection(sec);
+}
+// una sezione nuova, nel notebook e nel macro-argomento scelti
+async function newSectionForRef(nbId, groupId, title) {
+  const s = newSection(nbId, { groupId: groupId || null, title: title || 'Senza titolo', md: '' });
+  s.order = secsOf(nbId).length;
+  await saveSection(s);
+  return s;
+}
+const guessSection = (title, nbId) => {
+  const f = foldAccents(title || '').trim();
+  if (!f) return null;
+  const pool = state.sections.filter(s => !nbId || s.notebookId === nbId);
+  return pool.find(s => foldAccents(s.title).trim() === f) || pool.find(s => { const t = foldAccents(s.title).trim(); return t.length > 3 && (f.includes(t) || t.includes(f)); }) || null;
+};
+
+// Collegare un segnalibro: pagine, poi una sezione che c’è già o una nuova
+function pdfBmLinkSheet(meta, b) {
+  return new Promise(resolve => {
+    const rg = bmRange(meta, b);
+    const guess = guessSection(b.title, meta.notebookId);
+    const nb = nbById(meta.notebookId) || state.notebooks.find(n => !n.kind) || state.notebooks[0];
+    const where = s => [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › ');
+    const all = state.sections.slice().sort((x, y) => (x.notebookId === meta.notebookId ? 0 : 1) - (y.notebookId === meta.notebookId ? 0 : 1) || x.title.localeCompare(y.title, 'it'));
+    let pick = guess;
+    const sh = openSheet(`
+      <h2>Collega “${esc(b.title)}”</h2>
+      <p class="sheet-sub">Dalla sezione aprirai il PDF proprio su queste pagine.</p>
+      <div class="grid2">
+        <label class="field"><span>Dalla pagina</span><input class="input" type="number" id="blFrom" min="1" max="${meta.pages || 9999}" value="${rg.from}" inputmode="numeric"></label>
+        <label class="field"><span>Alla pagina</span><input class="input" type="number" id="blTo" min="1" max="${meta.pages || 9999}" value="${rg.to}" inputmode="numeric"></label>
+      </div>
+      <div class="seg" role="tablist" aria-label="Quale sezione">
+        <button type="button" role="tab" data-blm="old" aria-selected="true">Sezione che c’è già</button>
+        <button type="button" role="tab" data-blm="new" aria-selected="false">Nuova sezione</button>
+      </div>
+      <div id="blOld">
+        <p class="hint" id="blPicked">${pick ? `Scelta: <strong>${esc(pick.title)}</strong> (${esc(where(pick))})` : 'Cerca e tocca la sezione.'}</p>
+        <input type="search" class="input search" id="blQ" placeholder="Cerca una sezione" aria-label="Cerca una sezione" value="">
+        <ul class="list pick-list bl-list" id="blList"></ul>
+      </div>
+      <div id="blNew" hidden>
+        <label class="field"><span>Titolo</span><input class="input" id="blTitle" value="${esc(b.title)}"></label>
+        <label class="field"><span>Notebook</span><select class="input" id="blNb">${state.notebooks.filter(n => !n.kind).map(n => `<option value="${n.id}" ${nb && n.id === nb.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Macro-argomento</span><select class="input" id="blGroup"></select></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-bl="no">Annulla</button>
+        <button class="btn primary" type="button" data-bl="ok">Collega</button>
+      </div>`, { label: 'Collega a una sezione', onClose: v => resolve(v || null) });
+    let mode = 'old';
+    const list = $('#blList', sh.el);
+    const draw = q => {
+      const f = foldAccents(q.trim());
+      const hits = all.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60);
+      list.innerHTML = hits.map(s => `<li><button type="button" class="row ${pick && pick.id === s.id ? 'on' : ''}" data-blpick="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('') || '<li class="row muted">Nessuna sezione trovata.</li>';
+    };
+    draw(pick ? pick.title : '');
+    if (pick) $('#blQ', sh.el).value = pick.title;
+    $('#blQ', sh.el).addEventListener('input', e => draw(e.target.value));
+    list.addEventListener('click', e => {
+      const x = e.target.closest('[data-blpick]');
+      if (!x) return;
+      pick = secById(x.dataset.blpick);
+      $('#blPicked', sh.el).innerHTML = `Scelta: <strong>${esc(pick.title)}</strong> (${esc(where(pick))})`;
+      $$('[data-blpick]', list).forEach(r => r.classList.toggle('on', r === x));
+    });
+    const fillGroups = () => {
+      const n = nbById($('#blNb', sh.el)?.value);
+      const g = $('#blGroup', sh.el);
+      if (g) g.innerHTML = n ? groupOptions(n, '') : '<option value="">Nessuno</option>';
+    };
+    if ($('#blNb', sh.el)) { fillGroups(); $('#blNb', sh.el).addEventListener('change', fillGroups); }
+    $$('[data-blm]', sh.el).forEach(t => t.addEventListener('click', () => {
+      mode = t.dataset.blm;
+      $$('[data-blm]', sh.el).forEach(x => x.setAttribute('aria-selected', String(x === t)));
+      $('#blOld', sh.el).hidden = mode !== 'old';
+      $('#blNew', sh.el).hidden = mode !== 'new';
+    }));
+    if (!guess && !state.sections.length) $('[data-blm="new"]', sh.el).click();
+    $('[data-bl="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-bl="ok"]', sh.el).onclick = async () => {
+      let from = parseInt($('#blFrom', sh.el).value, 10) || rg.from;
+      let to = parseInt($('#blTo', sh.el).value, 10) || from;
+      if (to < from) [from, to] = [to, from];
+      let sec = pick;
+      if (mode === 'new') {
+        const nbId = $('#blNb', sh.el)?.value;
+        if (!nbId) { toast('Crea prima un notebook'); return; }
+        const gv = $('#blGroup', sh.el).value;
+        sec = await newSectionForRef(nbId, gv && gv !== '__new' ? gv : null, $('#blTitle', sh.el).value.trim() || b.title);
+      }
+      if (!sec) { toast('Scegli la sezione da collegare'); return; }
+      await addPdfRef(sec, { pdfId: meta.id, bmId: b.id, from, to, title: b.title });
+      sh.close(sec);
+    };
+  });
+}
+
+// Tutti i segnalibri insieme: per ognuno una sezione proposta (stesso nome) o una nuova
+function pdfBmBulkSheet(meta) {
+  return new Promise(resolve => {
+    const bms = (meta.bookmarks || []).slice().sort((a, b) => a.page - b.page);
+    const nbs = state.notebooks.filter(n => !n.kind);
+    let nbId = nbById(meta.notebookId) && !nbById(meta.notebookId).kind ? meta.notebookId : nbs[0]?.id;
+    const sh = openSheet(`
+      <h2>Collega i segnalibri alle sezioni</h2>
+      <p class="sheet-sub">Ogni segnalibro prende le pagine fino al segnalibro dopo. Ti propongo la sezione con lo stesso nome; “Nuova sezione” la crea con il titolo del segnalibro.</p>
+      <div class="grid2">
+        <label class="field"><span>Notebook</span><select class="input" id="bbNb">${nbs.map(n => `<option value="${n.id}" ${n.id === nbId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Macro-argomento delle nuove sezioni</span><select class="input" id="bbGroup"></select></label>
+      </div>
+      <div class="inline"><button class="btn sm ghost" type="button" data-bb2="allnew">Nuove sezioni per quelli senza</button><button class="btn sm ghost" type="button" data-bb2="none">Nessuna per tutti</button></div>
+      <div class="bb-rows" id="bbRows"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-bb2="no">Annulla</button>
+        <button class="btn primary" type="button" data-bb2="ok">Collega</button>
+      </div>`, { label: 'Collega i segnalibri', onClose: v => resolve(v || 0) });
+    const rows = $('#bbRows', sh.el);
+    const draw = () => {
+      const secs = state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.title.localeCompare(b.title, 'it'));
+      rows.innerHTML = bms.map(b => {
+        const rg = bmRange(meta, b);
+        const linked = refsOfBookmark(meta.id, b.id).find(s => s.notebookId === nbId);
+        const sel = linked || guessSection(b.title, nbId);
+        return `<div class="bb-row" data-bm="${b.id}">
+          <div class="bb-t"><strong>${esc(b.title)}</strong><span class="muted-inline">${pagesTxt(rg.from, rg.to)}</span></div>
+          <select class="input" aria-label="Sezione per ${esc(b.title)}">
+            <option value="">Nessuna</option>
+            <option value="__new">＋ Nuova sezione “${esc(b.title.slice(0, 40))}”</option>
+            ${secs.map(s => `<option value="${s.id}" ${sel && sel.id === s.id ? 'selected' : ''}>${esc(s.title)}${groupPathText(s) ? ` · ${esc(groupPathText(s))}` : ''}</option>`).join('')}
+          </select>
+        </div>`;
+      }).join('');
+      const g = $('#bbGroup', sh.el);
+      const n = nbById(nbId);
+      g.innerHTML = n ? groupOptions(n, '') : '<option value="">Nessuno</option>';
+    };
+    draw();
+    $('#bbNb', sh.el).addEventListener('change', e => { nbId = e.target.value; draw(); });
+    sh.el.addEventListener('click', async e => {
+      const b = e.target.closest('[data-bb2]');
+      if (!b) return;
+      const k = b.dataset.bb2;
+      if (k === 'no') { sh.close(0); return; }
+      if (k === 'allnew') { $$('.bb-row select', rows).forEach(s => { if (!s.value) s.value = '__new'; }); return; }
+      if (k === 'none') { $$('.bb-row select', rows).forEach(s => { s.value = ''; }); return; }
+      if (k === 'ok') {
+        b.disabled = true;
+        const gv = $('#bbGroup', sh.el).value;
+        const groupId = gv && gv !== '__new' ? gv : null;
+        let n = 0;
+        for (const row of $$('.bb-row', rows)) {
+          const v = $('select', row).value;
+          if (!v) continue;
+          const bm = bms.find(x => x.id === row.dataset.bm);
+          const rg = bmRange(meta, bm);
+          const sec = v === '__new' ? await newSectionForRef(nbId, groupId, bm.title) : secById(v);
+          if (!sec) continue;
+          await addPdfRef(sec, { pdfId: meta.id, bmId: bm.id, from: rg.from, to: rg.to, title: bm.title });
+          n++;
+        }
+        sh.close(n);
+      }
+    });
+  });
+}
+
+// Nella sezione (in Leggi): le pagine di PDF collegate
+function pdfRefsBlockHtml(sec) {
+  const refs = pdfRefsOf(sec);
+  if (!refs.length) return '';
+  return `
+    <section class="fonti pdf-refs" aria-label="Pagine di PDF collegate">
+      <div class="fonti-head"><h3>Pagine di PDF</h3></div>
+      <ul class="pr-list">${refs.map(r => {
+        const p = pdfById(r.pdfId);
+        return `<li>
+          <a class="pr-open" href="#/pdf/${p.id}/${r.from}" data-pr-ref="${r.id}">
+            <span class="pr-t">${esc(r.title || p.name)}</span>
+            <span class="pr-s">${esc(p.name)} · ${pagesTxt(r.from, r.to)}</span>
+          </a>
+          <button class="btn sm ghost" type="button" data-pr-del="${r.id}" aria-label="Scollega ${esc(r.title || p.name)}" title="Scollega">✕</button>
+        </li>`;
+      }).join('')}</ul>
+    </section>`;
+}
+function bindPdfRefsBlock(root, sec) {
+  $$('[data-pr-del]', root).forEach(b => b.addEventListener('click', async () => {
+    const r = (sec.pdfRefs || []).find(x => x.id === b.dataset.prDel);
+    if (!r) return;
+    sec.pdfRefs = sec.pdfRefs.filter(x => x !== r);
+    await saveSection(sec);
+    toast('Pagine scollegate', '', { label: 'Annulla', fn: async () => { sec.pdfRefs = [...(sec.pdfRefs || []), r]; await saveSection(sec); route(); } });
+    route();
+  }));
+  $$('[data-pr-ref]', root).forEach(a => a.addEventListener('click', () => {
+    const r = (sec.pdfRefs || []).find(x => x.id === a.dataset.prRef);
+    if (r) PdfRefHint.set({ pdfId: r.pdfId, from: r.from, to: r.to, title: sec.title });
+  }));
+}
+// aprendo un PDF da una sezione, un avviso ricorda quali pagine sono di quella sezione
+const PdfRefHint = {
+  cur: null,
+  set(x) { this.cur = { ...x, t: Date.now() }; },
+  take(pdfId) { const c = this.cur; this.cur = null; return c && c.pdfId === pdfId && Date.now() - c.t < 15000 ? c : null; }
+};
 
 /* =====================================================================
    v3.33: Modifica sull’anteprima
