@@ -2389,13 +2389,13 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 /* Modifica: la barra di formattazione resta in alto mentre scrivi */
 .mode-body > .edit-tools {
   position: sticky;
-  top: 0;
-  z-index: 6;
+  top: var(--tabs-h, 0px);
+  z-index: 11;
   flex-wrap: nowrap;
   overflow-x: auto;
   scrollbar-width: none;
   margin: 0 -18px 8px;
-  padding: calc(6px + env(safe-area-inset-top, 0px)) 18px 8px;
+  padding: 6px 18px 8px;
   background: color-mix(in srgb, var(--bg) 94%, transparent);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -3215,3 +3215,45 @@ h1 .help-btn { width: 24px; height: 24px; font-size: 0.85rem; transform: transla
 .code-box .md-edit { min-height: 28vh; margin-top: 6px; }
 .rt-btn.rt-edit { color: var(--accent); }
 @media (max-width: 899px) { body:has(.save-bar) .pad-fab { bottom: calc(150px + env(safe-area-inset-bottom, 0px)); } }
+
+
+/* =====================================================================
+   v3.34: schede fisse in alto, miniature del PDF
+   ===================================================================== */
+.tabs {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  margin-top: 10px;
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  padding-bottom: 8px;
+  background: var(--bg);
+  box-shadow: 0 1px 0 var(--line);
+}
+@media (min-width: 900px) { .tabs { margin-left: -32px; margin-right: -32px; padding-left: 32px; padding-right: 32px; } }
+/* scorrendo, un titolo raggiunto con un link non finisce sotto le schede */
+.notes h1, .notes h2, .notes h3, .wy-b { scroll-margin-top: calc(var(--tabs-h, 56px) + 60px); }
+
+.cp-src { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cp-src .file-drop { flex: 1 1 220px; }
+.cp-libt { margin: 4px 0 8px; font-size: 1rem; }
+.cp-lib .row { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.cp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+@media (max-width: 480px) { .cp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; } }
+.cp-thumb {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+  cursor: pointer;
+  aspect-ratio: 3 / 4;
+}
+.cp-thumb.ok { aspect-ratio: auto; }
+.cp-thumb canvas { display: block; width: 100%; height: auto; }
+.cp-thumb:not(.ok) canvas { height: 0; }
+.cp-thumb:hover, .cp-thumb:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.cp-pn { position: absolute; left: 6px; bottom: 6px; padding: 1px 8px; border-radius: 999px; background: rgba(11, 15, 23, 0.75); color: #fff; font: 700 0.78rem/1.5 var(--ui-font); }
+.cp .crop canvas { max-width: 100%; }

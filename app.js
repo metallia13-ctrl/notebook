@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.33';
+const APP_VERSION = '3.34';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -2376,6 +2376,12 @@ function modeEdit(sec, body) {
   }, body);
   const ta = $('#edMd', body);
   const wy = setupWysiwyg($('#edWy', body), ta, $('.edit-tools', body));
+  // la barra degli strumenti resta in alto sotto le schede mentre scorri
+  const tabsEl = $('#view .tabs');
+  const setTop = () => document.documentElement.style.setProperty('--tabs-h', `${tabsEl ? tabsEl.offsetHeight : 0}px`);
+  setTop();
+  window.addEventListener('resize', setTop);
+  addCleanup(() => window.removeEventListener('resize', setTop));
   const refresh = () => wy.render();
   $('#codeBox', body).addEventListener('toggle', e => { try { localStorage.setItem('nb-code-open', e.target.open ? '1' : '0'); } catch { /* niente */ } });
   setupListEditing(ta);
@@ -2390,8 +2396,8 @@ function modeEdit(sec, body) {
     if (im) insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
   }, body);
   on('[data-act="pdf-fig"]', 'click', async () => {
-    const r = await openPdfCropper(sec.notebookId);
-    if (r) insertAtCursor(ta, `\n\n${imageMd(r.id, r.caption)}\n\n`);
+    const list = await openPdfCropper(sec.notebookId, { sec });
+    if (list.length) insertAtCursor(ta, `\n\n${list.map(r => imageMd(r.id, r.caption)).join('\n\n')}\n\n`);
   }, body);
   // Immagini incollate (es. uno screenshot su Windows)
   ta.addEventListener('paste', async e => {
@@ -5069,6 +5075,11 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.34: menu fisso e figure dalle miniature del PDF', `
+      <ul>
+        <li>Le <strong>schede in alto</strong> (Cloze, Leggi, Modifica…) restano visibili quando scorri la pagina; in Modifica resta in vista anche la barra degli strumenti (Cloze, Grassetto, colori…).</li>
+        <li><strong>Figura da PDF</strong>: scegli il PDF tra quelli della libreria (prima quelli della sezione e del notebook) o dal dispositivo, poi vedi tutte le pagine in miniatura e tocchi quella giusta. “Inserisci e continua” ti fa ritagliare più figure di fila; “Tutte le pagine” torna alle miniature.</li>
+      </ul>`)}
     ${sec('Novità della 3.33: modifica sull’anteprima', `
       <ul>
         <li>In <strong>Modifica</strong> scrivi direttamente sugli appunti come li vedi in Leggi: correggi il testo, premi Invio per un nuovo paragrafo, seleziona e usa Cloze, Grassetto, Sottolinea, i colori, Elenco, Rientra (anche Tab) e Suggerimento.</li>
@@ -6245,29 +6256,49 @@ function openOcclusionEditor({ imageId, notebookId, sectionId = null, group = nu
 }
 
 /* Ritaglio di una figura da una pagina di PDF */
-function openPdfCropper(notebookId) {
+// Figure da un PDF: scegli il PDF (dalla libreria o dal dispositivo), vedi tutte le
+// pagine in miniatura, tocchi quella giusta e ritagli; puoi inserirne più d’una di fila.
+// Restituisce un elenco di { id, caption } (vuoto se annulli).
+function openPdfCropper(notebookId, { sec = null } = {}) {
   return new Promise(resolve => {
     const root = $('#modalRoot');
     let pdf = importDraft.pdf;
     let pageNo = 1;
     let rect = null;
     let task = null;
+    let view = pdf ? 'pages' : 'source';
+    let thumbObs = null;
+    let thumbQueue = [];
+    let thumbBusy = false;
+    let closed = false;
+    const added = [];
+    const lib = [
+      ...(sec ? pdfsOf(sec.id) : []),
+      ...state.pdfs.filter(p => p.notebookId === notebookId && (!sec || p.sectionId !== sec.id)).sort((a, b) => b.updated - a.updated),
+      ...state.pdfs.filter(p => p.notebookId !== notebookId).sort((a, b) => b.updated - a.updated)
+    ].slice(0, 30);
     root.innerHTML = `
       <div class="overlay full">
-        <div class="io-editor" role="dialog" aria-modal="true" aria-labelledby="cpTitle">
+        <div class="io-editor cp" role="dialog" aria-modal="true" aria-labelledby="cpTitle">
           <header class="io-head">
             <h2 id="cpTitle">Figura da un PDF</h2>
-            <label class="file-drop slim"><input type="file" id="cpFile" accept="application/pdf,.pdf">
-              <span id="cpFileLabel">${pdf ? `${esc(pdf.name)}, tocca per cambiarlo` : 'Scegli il PDF'}</span></label>
-            <div class="cp-nav" id="cpNav" ${pdf ? '' : 'hidden'}>
+            <div class="cp-src">
+              <label class="file-drop slim"><input type="file" id="cpFile" accept="application/pdf,.pdf">
+                <span id="cpFileLabel">${pdf ? `${esc(pdf.name)}: tocca per sceglierne un altro` : 'Scegli un PDF dal dispositivo'}</span></label>
+              ${lib.length ? '<button class="btn sm ghost" type="button" data-cp="lib">I tuoi PDF</button>' : ''}
+            </div>
+            <div class="cp-nav" id="cpNav" hidden>
+              <button class="btn sm" data-cp="grid" type="button">‹ Tutte le pagine</button>
               <button class="btn sm" data-cp="prev" type="button" aria-label="Pagina precedente">‹</button>
-              <label>Pagina <input class="input page-in" type="number" id="cpPage" min="1" value="1" inputmode="numeric"> di <span id="cpTotal">${pdf ? pdf.pages : ''}</span></label>
+              <label>Pagina <input class="input page-in" type="number" id="cpPage" min="1" value="1" inputmode="numeric"> di <span id="cpTotal"></span></label>
               <button class="btn sm" data-cp="next" type="button" aria-label="Pagina successiva">›</button>
             </div>
-            <p class="hint">Trascina sulla pagina per scegliere la parte da ritagliare.</p>
+            <p class="hint" id="cpHint"></p>
           </header>
-          <div class="io-body">
-            <div class="io-stage drawing crop" id="cpStage">
+          <div class="io-body" id="cpBody">
+            <div id="cpLib"></div>
+            <div class="cp-grid" id="cpGrid" hidden></div>
+            <div class="io-stage drawing crop" id="cpStage" hidden>
               <canvas id="cpCanvas"></canvas>
               <div class="io-draft" id="cpDraft" hidden></div>
               <div class="crop-rect" id="cpRect" hidden></div>
@@ -6276,29 +6307,88 @@ function openPdfCropper(notebookId) {
           <footer class="io-foot">
             <span class="hint" id="cpMsg"></span>
             <button class="btn ghost" data-cp="cancel" type="button">Annulla</button>
-            <button class="btn primary" data-cp="ok" type="button" disabled>Inserisci la figura</button>
+            <button class="btn" data-cp="more" type="button" disabled hidden>Inserisci e continua</button>
+            <button class="btn primary" data-cp="ok" type="button" disabled hidden>Inserisci la figura</button>
           </footer>
         </div>
       </div>`;
     const canvas = $('#cpCanvas', root);
     const stage = $('#cpStage', root);
+    const grid = $('#cpGrid', root);
+    const body = $('#cpBody', root);
     const okBtn = $('[data-cp="ok"]', root);
+    const moreBtn = $('[data-cp="more"]', root);
     const msg = $('#cpMsg', root);
+    const hint = $('#cpHint', root);
+
+    const libHtml = () => lib.length ? `
+      <h3 class="cp-libt">I tuoi PDF</h3>
+      <ul class="list cp-lib">${lib.map(p => `<li><button type="button" class="row" data-cplib="${p.id}">
+        <span class="row-main"><span class="row-title">${esc(p.name)}</span>
+        <span class="row-sub">${p.pages ? `${p.pages} pagine` : ''}${sec && p.sectionId === sec.id ? ' · di questa sezione' : p.notebookId === notebookId ? ' · di questo notebook' : nbById(p.notebookId) ? ` · ${esc(nbById(p.notebookId).name)}` : ''}</span></span></button></li>`).join('')}</ul>` : '<p class="hint">Scegli un PDF dal dispositivo: le slide, un capitolo, una dispensa.</p>';
+    const show = v => {
+      view = v;
+      $('#cpLib', root).hidden = v !== 'source';
+      grid.hidden = v !== 'pages';
+      stage.hidden = v !== 'crop';
+      $('#cpNav', root).hidden = v !== 'crop';
+      okBtn.hidden = moreBtn.hidden = v !== 'crop';
+      hint.textContent = v === 'source' ? '' : v === 'pages' ? 'Tocca la pagina da cui prendere la figura.' : 'Trascina sulla pagina per scegliere la parte da ritagliare.';
+      if (v === 'source') $('#cpLib', root).innerHTML = libHtml();
+    };
+    // miniature: si disegnano quando entrano in vista, una alla volta
+    const drawThumb = async btn => {
+      const n = +btn.dataset.pg;
+      const cv = $('canvas', btn);
+      try {
+        const page = await pdf.doc.getPage(n);
+        const base = page.getViewport({ scale: 1 });
+        const w = Math.max(120, btn.clientWidth || 150) * Math.min(2, window.devicePixelRatio || 1);
+        const vp = page.getViewport({ scale: w / base.width });
+        cv.width = Math.round(vp.width);
+        cv.height = Math.round(vp.height);
+        await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+        btn.classList.add('ok');
+      } catch { btn.classList.add('err'); }
+    };
+    const pump = async () => {
+      if (thumbBusy || closed) return;
+      thumbBusy = true;
+      while (thumbQueue.length && !closed) {
+        const b = thumbQueue.shift();
+        if (b.isConnected && !b.classList.contains('ok')) await drawThumb(b);
+      }
+      thumbBusy = false;
+    };
+    const buildGrid = () => {
+      if (thumbObs) thumbObs.disconnect();
+      thumbQueue = [];
+      grid.innerHTML = Array.from({ length: pdf.pages }, (_, i) => `
+        <button type="button" class="cp-thumb" data-pg="${i + 1}" aria-label="Pagina ${i + 1}">
+          <canvas></canvas><span class="cp-pn">${i + 1}</span>
+        </button>`).join('');
+      thumbObs = new IntersectionObserver(entries => {
+        entries.forEach(en => { if (en.isIntersecting) { thumbObs.unobserve(en.target); thumbQueue.push(en.target); } });
+        pump();
+      }, { root: body, rootMargin: '400px 0px' });
+      $$('.cp-thumb', grid).forEach(b => thumbObs.observe(b));
+    };
     const render = async () => {
       if (!pdf) return;
       pageNo = Math.min(pdf.pages, Math.max(1, pageNo));
       $('#cpPage', root).value = pageNo;
       rect = null;
       $('#cpRect', root).hidden = true;
-      okBtn.disabled = true;
+      okBtn.disabled = moreBtn.disabled = true;
       try {
         if (task) { task.cancel(); task = null; }
         const page = await pdf.doc.getPage(pageNo);
         const base = page.getViewport({ scale: 1 });
-        const cssW = Math.max(280, stage.clientWidth || 360);
+        const cssW = Math.max(280, Math.min(body.clientWidth - 24, 1100) || 360);
         const vp = page.getViewport({ scale: (cssW * (window.devicePixelRatio || 1)) / base.width });
         canvas.width = Math.round(vp.width);
         canvas.height = Math.round(vp.height);
+        canvas.style.width = `${cssW}px`;
         task = page.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
         await task.promise;
         task = null;
@@ -6307,35 +6397,66 @@ function openPdfCropper(notebookId) {
         msg.textContent = 'Non riesco a mostrare questa pagina.';
       }
     };
+    const usePdf = p => {
+      pdf = p;
+      importDraft.pdf = p;
+      $('#cpFileLabel', root).textContent = `${p.name}: tocca per sceglierne un altro`;
+      $('#cpTotal', root).textContent = p.pages;
+      buildGrid();
+      show('pages');
+      body.scrollTop = 0;
+    };
+    const openPage = n => { pageNo = n; show('crop'); body.scrollTop = 0; render(); };
     $('#cpFile', root).addEventListener('change', async e => {
       const f = e.target.files[0];
       if (!f) return;
       $('#cpFileLabel', root).textContent = 'Apro il PDF…';
-      try {
-        pdf = await openPdf(f);
-        importDraft.pdf = pdf;
-        $('#cpFileLabel', root).textContent = `${f.name}, tocca per cambiarlo`;
-        $('#cpTotal', root).textContent = pdf.pages;
-        $('#cpNav', root).hidden = false;
-        pageNo = 1;
-        render();
-      } catch (err) { $('#cpFileLabel', root).textContent = 'Scegli il PDF'; toast(err.message, 'err'); }
+      try { usePdf(await openPdf(f)); }
+      catch (err) { $('#cpFileLabel', root).textContent = 'Scegli un PDF dal dispositivo'; toast(err.message, 'err'); }
     });
+    root.addEventListener('click', async e => {
+      const lb = e.target.closest('[data-cplib]');
+      if (lb) {
+        const meta = pdfById(lb.dataset.cplib);
+        const rec = meta && await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+        if (!rec || !rec.blob) { toast('Questo PDF non è ancora su questo dispositivo: aprilo una volta dalla libreria PDF per scaricarlo', 'err'); return; }
+        msg.textContent = 'Apro il PDF…';
+        try { usePdf(await openPdf(new File([rec.blob], `${meta.name}.pdf`, { type: 'application/pdf' }))); }
+        catch (err) { toast(err.message, 'err'); }
+        msg.textContent = '';
+        return;
+      }
+      const th = e.target.closest('.cp-thumb');
+      if (th) { openPage(+th.dataset.pg); return; }
+    });
+    $('[data-cp="grid"]', root).onclick = () => {
+      show('pages');
+      requestAnimationFrame(() => $(`.cp-thumb[data-pg="${pageNo}"]`, grid)?.scrollIntoView({ block: 'center' }));
+    };
     $('[data-cp="prev"]', root).onclick = () => { pageNo--; render(); };
     $('[data-cp="next"]', root).onclick = () => { pageNo++; render(); };
     $('#cpPage', root).addEventListener('change', e => { pageNo = parseInt(e.target.value, 10) || 1; render(); });
     rectDrawing(stage, {
-      canDraw: () => !!pdf,
+      canDraw: () => !!pdf && view === 'crop',
       onDraft: b => { const d = $('#cpDraft', root); d.hidden = !b; if (b) d.setAttribute('style', posStyle(b)); },
-      onDone: b => { rect = b; const r = $('#cpRect', root); r.hidden = false; r.setAttribute('style', posStyle(b)); okBtn.disabled = false; }
+      onDone: b => { rect = b; const r = $('#cpRect', root); r.hidden = false; r.setAttribute('style', posStyle(b)); okBtn.disabled = moreBtn.disabled = false; }
     });
-    const close = v => { if (task) task.cancel(); root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } };
+    const close = () => {
+      closed = true;
+      if (task) task.cancel();
+      if (thumbObs) thumbObs.disconnect();
+      root.innerHTML = '';
+      document.removeEventListener('keydown', onKey, true);
+      resolve(added);
+    };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
     document.addEventListener('keydown', onKey, true);
-    $('[data-cp="cancel"]', root).onclick = () => close(null);
-    okBtn.onclick = async () => {
-      if (!pdf || !rect) return;
-      okBtn.disabled = true;
+    $('[data-cp="cancel"]', root).onclick = close;
+    const libBtn = $('[data-cp="lib"]', root);
+    if (libBtn) libBtn.onclick = () => { show('source'); body.scrollTop = 0; };
+    const cut = async () => {
+      if (!pdf || !rect) return false;
+      okBtn.disabled = moreBtn.disabled = true;
       msg.textContent = 'Ritaglio…';
       try {
         const page = await pdf.doc.getPage(pageNo);
@@ -6357,15 +6478,27 @@ function openPdfCropper(notebookId) {
         out.height = Math.round(sh * k);
         out.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, out.width, out.height);
         const im = await saveImage(await canvasToImage(out, 0.9), notebookId);
-        toast('Figura aggiunta');
-        close({ id: im.id, caption: `${pdf.base}, pagina ${pageNo}` });
+        added.push({ id: im.id, caption: `${pdf.base}, pagina ${pageNo}` });
+        msg.textContent = '';
+        return true;
       } catch (err) {
         msg.textContent = '';
-        okBtn.disabled = false;
+        okBtn.disabled = moreBtn.disabled = false;
         toast('Ritaglio non riuscito: ' + err.message, 'err');
+        return false;
       }
     };
-    if (pdf) requestAnimationFrame(render);
+    okBtn.onclick = async () => { if (await cut()) { toast(added.length > 1 ? `${added.length} figure aggiunte` : 'Figura aggiunta'); close(); } };
+    moreBtn.onclick = async () => {
+      if (!(await cut())) return;
+      rect = null;
+      $('#cpRect', root).hidden = true;
+      msg.textContent = `${added.length} ${added.length === 1 ? 'figura pronta' : 'figure pronte'}: ritagliane un’altra o scegli un’altra pagina`;
+      show('pages');
+      requestAnimationFrame(() => $(`.cp-thumb[data-pg="${pageNo}"]`, grid)?.scrollIntoView({ block: 'center' }));
+    };
+    if (pdf) { $('#cpTotal', root).textContent = pdf.pages; buildGrid(); show('pages'); }
+    else show('source');
   });
 }
 
