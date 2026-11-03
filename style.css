@@ -3307,3 +3307,126 @@ h1 .help-btn { width: 24px; height: 24px; font-size: 0.85rem; transform: transla
   pointer-events: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* =====================================================================
+   v3.38: Affianca
+   ===================================================================== */
+.split-dock {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  left: 8px; right: 8px;
+  bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+  height: var(--split-h, 50vh);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+}
+.split-dock[hidden] { display: none; }
+.split-dock.resizing { user-select: none; -webkit-user-select: none; }
+.split-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 0 8px 6px 14px; border-bottom: 1px solid var(--line); font-family: var(--ui-font); }
+.split-title { display: flex; flex-direction: column; min-width: 0; flex: 1 1 0; }
+.split-kind { color: var(--muted); font-size: 0.75rem; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.split-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.split-acts { display: flex; align-items: center; gap: 2px; flex: none; }
+.split-pdfbar { flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.split-pdfbar[hidden] { display: none; }
+.split-pg { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 0.85rem; }
+.split-pg .input { width: 4.2em; padding: 4px 6px; text-align: center; }
+.split-zoom { display: inline-flex; }
+.split-bm { max-width: 12em; padding: 4px 8px; font-size: 0.85rem; }
+.split-body { position: relative; flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--bg); }
+.split-body .notes.split-notes { padding: 12px 16px 40px; font-size: 0.97em; }
+.split-wait { padding: 16px; }
+.split-pages { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 12px; transform-origin: top center; }
+.split-page { position: relative; flex: none; background: #fff; border-radius: 4px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); overflow: hidden; }
+.split-page canvas { display: block; width: 100%; height: 100%; }
+.split-pn { position: absolute; right: 6px; bottom: 6px; padding: 1px 8px; border-radius: 999px; background: rgba(11, 15, 23, 0.65); color: #fff; font: 700 0.75rem/1.5 var(--ui-font); }
+body.split-open .pad-fab { display: none; }
+.pdf-split-btn { text-decoration: none; }
+@media (max-width: 699px) {
+  body.split-open .view { padding-bottom: calc(var(--split-h, 50vh) + 104px + env(safe-area-inset-bottom, 0px)); }
+  html.kb-open .split-dock { display: none; }
+  .split-dock { max-height: calc(100dvh - 104px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); }
+}
+/* di fianco: tablet (anche in verticale) e computer */
+@media (min-width: 700px) {
+  .split-dock {
+    top: 0; right: 0; left: auto;
+    bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+    width: var(--split-w, 50vw);
+    height: auto;
+    border-width: 0 0 1px 1px;
+    border-radius: 0 0 0 16px;
+    box-shadow: none;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  html.pdf-open .split-dock { bottom: 0; border-radius: 0; }
+  .split-grip {
+    position: absolute;
+    top: 0; bottom: 0; left: 0;
+    width: 9px; height: auto;
+    z-index: 2;
+    cursor: ew-resize;
+  }
+  .split-grip::after { left: 3px; top: 50%; width: 3px; height: 44px; margin: -22px 0 0; opacity: 0.5; }
+  .split-grip:hover::after, .split-dock.resizing .split-grip::after { opacity: 1; background: var(--accent); }
+  .split-head { padding: 10px 8px 8px 16px; }
+  body.split-open .pdf-app { right: var(--split-w, 50vw); }
+}
+@media (min-width: 700px) and (max-width: 899px) {
+  body.split-open .view { margin-left: 0; margin-right: var(--split-w, 50vw); max-width: none; }
+  body.split-open .toasts, body.split-open .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2); }
+}
+@media (min-width: 900px) {
+  .split-dock { bottom: 0; border-width: 0 0 0 1px; border-radius: 0; }
+  body.split-open .view {
+    margin-left: max(252px, calc((100vw - var(--split-w, 50vw) - 820px) / 2 + 116px));
+    max-width: min(820px, calc(100vw - var(--split-w, 50vw) - 252px));
+  }
+  body.nav-hidden.split-open .view { margin-left: max(64px, calc((100vw - var(--split-w, 50vw) - 820px) / 2)); max-width: min(820px, calc(100vw - var(--split-w, 50vw) - 84px)); }
+  body.split-open .toasts, body.split-open .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2 + 116px); }
+  body.nav-hidden.split-open .toasts, body.nav-hidden.split-open .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2); }
+}
+
+/* =====================================================================
+   v3.39: domande d’esame, ascolto in sequenza, figure del PDF
+   ===================================================================== */
+.eq-tools { display: grid; gap: 10px; margin-bottom: 14px; }
+.eq-tools .search { margin: 0; }
+.eq-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.eq-filters .input { flex: 1 1 160px; min-width: 0; }
+.eq-list .row { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; align-items: flex-start; }
+.eq-n { flex: none; min-width: 2.6em; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 800; font-size: 0.85rem; text-align: center; font-variant-numeric: tabular-nums; }
+.eq-q { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.eq-st { flex: none; color: var(--muted); font-size: 0.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.eq-occ { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1.4fr) auto; gap: 6px; margin-bottom: 6px; }
+@media (max-width: 560px) { .eq-occ { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; } .eq-occ [data-of="src"] { grid-column: 1 / 3; } }
+#eqSecAdd { margin-top: 6px; }
+.eq-map { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0 12px; margin: 8px 0; }
+.eq-auto { align-self: center; }
+.eq-prev { margin: 8px 0; }
+.eq-ptable td { max-width: 320px; }
+.eq-sec .fonti-list li { line-height: 1.45; }
+.eq-sec .link-btn { text-align: left; }
+
+/* barra dell’ascolto in sequenza: sopra la navigazione, resta tra una pagina e l’altra */
+.pl-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.pl-info { display: flex; flex-direction: column; min-width: 0; flex: 1 1 160px; }
+.pl-what { color: var(--muted); font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.92rem; }
+.pl-ctrl { display: flex; align-items: center; gap: 2px; flex: none; }
+body.pl-on .pad-fab { bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
+@media (min-width: 900px) { body.pl-on .pad-fab { bottom: 96px; } }
+
+/* galleria delle figure del PDF */
+.fig-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin: 8px 0; }
+.fig-tile { position: relative; display: grid; place-items: center; min-height: 90px; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: #fff; cursor: pointer; overflow: hidden; }
+.fig-tile canvas { display: block; max-width: 100%; max-height: 160px; height: auto; }
+.fig-tile:not(.ok) canvas { width: 0; height: 0; }
+.fig-tile:hover, .fig-tile:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.fig-p { position: absolute; left: 4px; bottom: 4px; padding: 0 6px; border-radius: 999px; background: rgba(11, 15, 23, 0.7); color: #fff; font: 700 0.72rem/1.5 var(--ui-font); }
+.pl-bar { width: min(560px, calc(100vw - 16px)); }

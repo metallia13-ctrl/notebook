@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.36';
+const APP_VERSION = '3.39';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -27,6 +27,27 @@ const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Gomma della penna: pulsante laterale tenuto premuto (S Pen) o estremità con la gomma
+// (Staedtler Noris digital, penne Wacom e Surface). Vale per tutto il tratto.
+const penErases = e => e.pointerType === 'pen' && ((e.buttons & 32) === 32 || e.button === 5 || (e.buttons & 2) === 2 || e.button === 2);
+// Tocco con due dita = annulla, come nelle app di appunti (utile con Apple Pencil, che non ha gomma)
+function twoFingerTap(el, onTap, when = () => true) {
+  let t = null;
+  el.addEventListener('touchstart', e => {
+    if (e.touches.length === 2 && when()) t = { at: Date.now(), pts: [...e.touches].map(x => [x.clientX, x.clientY]), moved: false };
+    else if (e.touches.length > 2) t = null;
+  }, { passive: true });
+  el.addEventListener('touchmove', e => {
+    if (!t) return;
+    [...e.touches].forEach((x, i) => { const p = t.pts[i]; if (p && Math.hypot(x.clientX - p[0], x.clientY - p[1]) > 12) t.moved = true; });
+  }, { passive: true });
+  el.addEventListener('touchend', e => {
+    if (!t || e.touches.length) return;
+    const ok = !t.moved && Date.now() - t.at < 350;
+    t = null;
+    if (ok) onTap();
+  }, { passive: true });
+}
 
 function localDateStr(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -195,7 +216,7 @@ const nbById = id => state.notebooks.find(n => n.id === id);
 const secById = id => state.sections.find(s => s.id === id);
 const secsOf = nbId => state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.order - b.order);
 const isDue = s => !s.studyhub && !!(s.srs && s.srs.due && s.srs.due <= todayStr());
-const sortDue = (a, b) => a.srs.due.localeCompare(b.srs.due) || a.order - b.order;
+const sortDue = (a, b) => (a.srs.due < b.srs.due ? -1 : a.srs.due > b.srs.due ? 1 : 0) || a.order - b.order;
 // Macro-argomenti: elenco ordinato dentro il notebook, ogni sezione ne indica uno con groupId
 const groupsOf = nb => (nb && Array.isArray(nb.groups) ? nb.groups : []);
 const groupOf = sec => groupsOf(nbById(sec.notebookId)).find(g => g.id === sec.groupId) || null;
@@ -212,7 +233,7 @@ function groupPathOf(sec) {
 }
 const groupPathText = sec => groupPathOf(sec).map(g => g.name).join(' › ');
 // Niente spoiler: una sezione si apre in Cloze se ha termini nascosti, altrimenti in Leggi
-const openMode = s => (countCloze(s.md) || ioMaskCount(s) ? 'cloze' : 'read');
+const openMode = s => (clozeOf(s) || ioMaskCount(s) ? 'cloze' : 'read');
 
 function newSrs() { return { ef: 2.5, interval: 0, reps: 0, due: null, history: [] }; }
 
@@ -413,6 +434,9 @@ function nextSrs(srs, q, mode = '') {
    --------------------------------------------------------------------- */
 const clozeRe = () => /==(?![=\s])([^\n]*?[^\s=])==/g;
 const countCloze = md => ((md || '').match(clozeRe()) || []).length;
+// per le sezioni il conto si ricorda finché il testo non cambia
+const clozeMemo = new WeakMap();
+const clozeOf = s => { const c = clozeMemo.get(s); if (c && c.md === s.md) return c.n; const n = countCloze(s.md); clozeMemo.set(s, { md: s.md, n }); return n; };
 // ==termine::suggerimento==: il suggerimento è facoltativo
 // nel suggerimento niente segni che romperebbero cloze, evidenziature o tabelle
 const cleanHint = v => String(v || '').replace(/\s+/g, ' ').trim().replace(/==/g, '=').replace(/\{\{/g, '(').replace(/\}\}/g, ')').replace(/\|/g, '/').replace(/\*\*/g, '');
@@ -996,7 +1020,7 @@ function statusPill(s) {
 }
 
 function defaultMode(s) {
-  if (countCloze(s.md)) return 'cloze';
+  if (clozeOf(s)) return 'cloze';
   if ((s.questions || []).length) return 'quiz';
   return 'blank';
 }
@@ -1007,7 +1031,7 @@ function sectionRow(s, { showNb = false, review = false } = {}) {
     const gp = groupPathText(s);
     bits.push(esc(nbById(s.notebookId)?.name || '') + (gp ? ` › ${esc(gp)}` : ''));
   }
-  const cz = countCloze(s.md);
+  const cz = clozeOf(s);
   const q = (s.questions || []).length;
   if (cz) bits.push(`${cz} cloze`);
   if (q) bits.push(`${q} ${q === 1 ? 'domanda' : 'domande'}`);
@@ -1047,7 +1071,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1097,8 +1121,10 @@ function route() {
     case 'cases': return viewCases();
     case 'lab': return viewLab(p1, p2);
     case 'semei': return viewSemei();
+    case 'examq': return viewExamQ(p1);
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
     case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
+    case 'split': location.replace('#/notebooks'); setTimeout(() => Split.pick(), 0); return;
     case 'incomplete': return viewIncomplete();
     default: return viewNotebooks();
   }
@@ -1312,6 +1338,7 @@ function viewNotebook(id) {
       ...(parent ? [] : [{ key: 'sub', label: 'Nuovo sottoargomento' }]),
       { key: 'import', label: 'Importa qui' },
       { key: 'exam', label: 'Simulazione d’esame su questo argomento' },
+      { key: 'listen', label: 'Ascolta in sequenza' },
       { key: 'rename', label: 'Rinomina' },
       { key: 'up', label: 'Sposta su', disabled: si <= 0 },
       { key: 'down', label: 'Sposta giù', disabled: si === sibs.length - 1 },
@@ -1329,6 +1356,10 @@ function viewNotebook(id) {
     if (choice === 'write') return newSecIn(g.id);
     if (choice === 'import') return go(`#/import/${id}/${g.id}`);
     if (choice === 'exam') { examRun = null; return go(`#/exam/${id}/${g.id}`); }
+    if (choice === 'listen') {
+      const ids = new Set([g.id, ...groupsOf(nb).filter(x => x.parentId === g.id).map(x => x.id)]);
+      return Playlist.start(nbReadingOrder(nb).filter(s => ids.has(s.groupId)), g.name);
+    }
     if (choice === 'rename') {
       const name = await modal({ title: `Rinomina il ${word}`, input: true, value: g.name, confirm: 'Rinomina' });
       if (!name) return;
@@ -1392,9 +1423,11 @@ function viewNotebook(id) {
   };
   on('[data-act="nb-more"]', 'click', async () => {
     const choice = await actionSheet(nb.name, [
+      { key: 'listen', label: 'Ascolta tutto il notebook' },
       { key: 'rename', label: 'Rinomina il notebook' },
       { key: 'delete', label: 'Elimina il notebook', danger: true }
     ]);
+    if (choice === 'listen') Playlist.start(nbReadingOrder(nb), nb.name);
     if (choice === 'rename') renameNb();
     if (choice === 'delete') deleteNb();
   });
@@ -1561,6 +1594,7 @@ function viewSection(id, mode) {
         ${caseSec ? '<button class="btn sm" type="button" data-act="case-meta">Dati del caso</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button><button class="btn sm" type="button" data-act="case-pdf">＋ PDF</button>' : ''}
         ${semSec ? '<button class="btn sm" type="button" data-act="semei-meta">Dati della scheda</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>' : ''}
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length + pdfRefsOf(sec).length ? ` (${pdfsOf(sec.id).length + pdfRefsOf(sec).length})` : ''}</a>
+        <a class="btn sm" href="#/split" title="Apri di fianco un’altra sezione o un PDF">⇆ Affianca</a>
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
@@ -1767,7 +1801,7 @@ function modeRead(sec, body) {
         <p>Questa sezione è stata salvata senza formattazione AI.</p>
         <button class="btn" data-act="fmt">Formatta con ${AI.name()}</button>
       </div>` : ''}
-    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost ink-btn" data-act="listen" hidden>Ascolta</button><button class="btn sm ghost ink-btn" data-act="ink" hidden>Scrivi a mano</button><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
+    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost ink-btn" data-act="listen" hidden>Ascolta</button><button class="btn sm ghost" data-act="listen-on" hidden title="Legge questa sezione e poi le successive del notebook">Ascolta da qui in poi</button><button class="btn sm ghost ink-btn" data-act="ink" hidden>Scrivi a mano</button><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
       <div class="empty"><p>Sezione vuota.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`}
     ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona del testo per evidenziarlo, sottolinearlo, farne un cloze o una flashcard. Sul PC puoi anche usare il tasto destro.</p>' : ''}
     ${sec.studyhub ? `
@@ -1786,9 +1820,11 @@ function modeRead(sec, body) {
         </div>
       </div>` : ''}
     ${pdfRefsBlockHtml(sec)}
+    ${eqSecBlockHtml(sec)}
     ${sourcesBlockHtml(sec)}
   `;
   bindSourcesBlock(body, sec, () => saveSection(sec), isCase(sec) ? 'caso' : 'sezione');
+  $$('[data-eqopen]', body).forEach(b => b.addEventListener('click', async () => { const x = examQs().find(r => r.id === b.dataset.eqopen); if (x && await eqSheet(x)) route(); }));
   bindPdfRefsBlock(body, sec);
   const notesEl = $('.notes', body);
   if (notesEl) {
@@ -1800,6 +1836,15 @@ function modeRead(sec, body) {
     setupReadingTools(notesEl, sec);
     setupNotesInk(notesEl, sec, $('[data-act="ink"]', body));
     setupListen(notesEl, $('[data-act="listen"]', body), readFolds);
+    const lo = $('[data-act="listen-on"]', body);
+    if (lo && (canSpeak || Voice.useGemini())) {
+      lo.hidden = false;
+      lo.addEventListener('click', () => {
+        const nb = nbById(sec.notebookId);
+        const order = nb ? nbReadingOrder(nb) : [sec];
+        Playlist.start(order.slice(Math.max(0, order.indexOf(sec))), nb ? nb.name : '');
+      });
+    }
     const bl = backlinksOf(sec);
     if (bl.length) notesEl.insertAdjacentHTML('afterend', `<h2 class="sub backlinks">Pagine che rimandano qui</h2><ul class="list">${bl.map(s => sectionRow(s, { showNb: true })).join('')}</ul>`);
   }
@@ -2194,7 +2239,7 @@ function modeQuiz(sec, body) {
   let right = 0;
 
   let dict = null;
-  addCleanup(() => { if (dict) dict.stop(); if (canSpeak) speechSynthesis.cancel(); });
+  addCleanup(() => { if (dict) dict.stop(); if (canSpeak && !Playlist.active()) speechSynthesis.cancel(); });
   const show = () => {
     if (dict) dict.stop();
     if (pos >= order.length) return finish();
@@ -5077,6 +5122,26 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.39: domande d’esame, ascolto in sequenza, figure del PDF', `
+      <ul>
+        <li><strong>Domande d’esame</strong> (barra laterale o Altro): la banca delle domande uscite, con materia, docente, anno, argomento e quante volte sono uscite. Si importano da un foglio <strong>Excel o CSV</strong> scegliendo le colonne; le domande ripetute si sommano. Filtri per materia, docente, anno; allenamento dalle più frequenti o da quelle che sbagli; esportazione in Excel per condividerle.</li>
+        <li><strong>Ascolto in sequenza</strong>: dal menu di un macro-argomento o del notebook, oppure con “Ascolta da qui in poi” in Leggi, la voce legge una sezione dopo l’altra. Continua anche se cambi pagina; con la voce di Google si comanda anche dalla schermata di blocco.</li>
+        <li><strong>Galleria delle figure</strong>: nel lettore PDF, pannello <strong>Figure</strong> (o “Galleria delle figure” nella libreria): l’app trova le immagini pagina per pagina; toccandone una la aggiungi a una sezione, ne fai l’esercizio delle etichette, la scarichi o apri la pagina di fianco.</li>
+        <li><strong>Più leggera sul telefono</strong>: all’avvio non carica più in memoria il testo di tutti i PDF; la lettura dei PDF per la ricerca va a piccoli passi senza bloccare lo schermo e, se chiudi l’app a metà, riprende da dove era rimasta invece di ricominciare (con slide da centinaia di pagine faceva una grande differenza). Anche Leggi e Ripasso si aprono più in fretta con notebook grandi.</li>
+      </ul>`)}
+    ${sec('Novità della 3.38: Affianca', `
+      <ul>
+        <li><strong>⇆ Affianca</strong> (in cima a ogni sezione, nel lettore PDF, nella barra laterale e in Altro) apre in un pannello di fianco una <strong>sezione</strong> o un <strong>PDF</strong> a scelta: puoi confrontare due sezioni, una sezione con le sue slide, due PDF, o tenere un PDF accanto a un altro.</li>
+        <li>Sul tablet sta di fianco anche in verticale; sul telefono si apre sotto. Trascina il bordo per cambiarne la misura.</li>
+        <li>Per i PDF: pagine, zoom (anche con due dita), salto ai segnalibri; le pagine collegate a una sezione hanno il tasto ⇆ per aprirle direttamente di fianco, e nella libreria PDF c’è “Apri di fianco”.</li>
+        <li>“Cambia” mostra un’altra cosa, “Apri qui” la porta nella pagina principale. Il pannello si alterna con il blocco note e con StudyHub.</li>
+      </ul>`)}
+    ${sec('Novità della 3.37: gomma della penna e tocco con due dita', `
+      <ul>
+        <li>In tutti i punti in cui scrivi a mano (blocco note, Scrivi a mano, appunti in Leggi, lettore PDF) funziona la <strong>gomma della penna</strong>: tieni premuto il pulsante laterale della S Pen mentre passi sul tratto, oppure usa l’estremità con la gomma della Staedtler Noris digital (e delle penne Wacom o Surface).</li>
+        <li><strong>Tocco con due dita</strong> = annulla l’ultimo tratto, dopo che hai iniziato a scrivere con la penna. Con l’<strong>Apple Pencil</strong>, che non ha una gomma e il cui doppio tocco non arriva alle app nel browser, è il modo più rapido per correggere.</li>
+        <li>Nel blocco note, appena usi la penna il palmo smette di scrivere da solo e con le dita scorri il foglio, come negli altri punti dell’app.</li>
+      </ul>`)}
     ${sec('Novità della 3.36: crea e modifica le mappe', `
       <ul>
         <li>Nella scheda <strong>Mappe</strong> di ogni sezione: <strong>Crea una mappa</strong> da zero, oppure <strong>Crea dagli appunti</strong>: titoli ed elenchi della sezione diventano i rami e i paragrafi le note dei nodi.</li>
@@ -5713,13 +5778,13 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
     e.preventDefault();
     pid = e.pointerId;
     try { canvas.setPointerCapture(pid); } catch { /* ignora */ }
-    const eraser = state2.tool === 'eraser' || (e.buttons & 32) === 32;
+    const eraser = state2.tool === 'eraser' || penErases(e);
     cur = { color: state2.color, size: state2.size, erase: eraser, points: [pt(e)] };
     drawStroke(cur);
   });
   canvas.addEventListener('pointermove', e => {
     if (!cur || e.pointerId !== pid) return;
-    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    const evs = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
     for (const ev of (evs.length ? evs : [e])) {
       const p = pt(ev);
       const prev = cur.points[cur.points.length - 1];
@@ -5738,6 +5803,8 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
   };
   canvas.addEventListener('pointerup', end);
   canvas.addEventListener('pointercancel', end);
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  twoFingerTap(canvas, () => { if (state2.strokes.length) { state2.strokes.pop(); redraw(); onChange(state2.strokes); toast('Tratto annullato'); } }, () => state2.penSeen);
   const ro = new ResizeObserver(resize);
   ro.observe(canvas);
   resize();
@@ -6710,6 +6777,8 @@ function takeSharedText() {
    ===================================================================== */
 
 const ICONS = {
+  examq: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9.5 9a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4V13M12 16.5v.2"/></svg>',
+  split: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M12 4v16"/><path d="m6.5 10.5 2 1.5-2 1.5M17.5 10.5l-2 1.5 2 1.5"/></svg>',
   resume: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>',
   pad: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/><path d="M13 20h7"/></svg>',
   semei: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5a6.5 6.5 0 0 1-6.5 6.5h-.6a6 6 0 0 1-4.9-2.6l-2.7-3.9a1.5 1.5 0 0 1 2.4-1.8L8 15"/></svg>',
@@ -6759,10 +6828,12 @@ function openSheet(inner, { label = '', onClose = () => {} } = {}) {
 const MORE_ITEMS = [
   ['resume', 'Riprendi', 'Torna all’ultima sezione che stavi studiando, nella stessa scheda e allo stesso punto'],
   ['pad', 'Blocco note', 'Scrivi a mano accanto a qualunque pagina, mentre ripeti'],
+  ['split', 'Affianca', 'Una sezione o un PDF di fianco, per confrontare due cose'],
   ['search', 'Cerca ovunque', 'Appunti, flashcard, testo dei PDF, glossario, note cliniche'],
   ['studyhub', 'StudyHub', 'Il tuo planner, aperto qui accanto senza lasciare il Notebook'],
   ['calendar', 'Calendario', 'Ripassi in programma, tempo di studio, punti deboli'],
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
+  ['examq', 'Domande d’esame', 'Le domande uscite agli esami, anche da Excel: frequenza, docenti, allenamento'],
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
   ['lab', 'Medicina di laboratorio', 'Esami con range, cause e uso diagnostico; referti, calcoli e allenamento'],
   ['semei', 'Semeiotica', 'Manovre, segni e punti di repere, clinica e chirurgica, con foto e video'],
@@ -7099,10 +7170,12 @@ function renderXrefs(src) {
   });
 }
 const xrefPlain = s => String(s || '').replace(XREF_RE, (m, t, label) => (label || t).trim());
+const lowerMemo = new WeakMap();
+const lowerMd = s => { const c = lowerMemo.get(s); if (c && c.md === s.md) return c.l; const l = (s.md || '').toLowerCase(); lowerMemo.set(s, { md: s.md, l }); return l; };
 function backlinksOf(sec) {
   const k = sec.title.trim().toLowerCase();
   if (!k) return [];
-  return state.sections.filter(s => s.id !== sec.id && (s.md || '').toLowerCase().includes('[[' + k)
+  return state.sections.filter(s => s.id !== sec.id && (s.md || '').includes('[[') && lowerMd(s).includes('[[' + k)
     && [...s.md.matchAll(XREF_RE)].some(m => m[1].trim().toLowerCase() === k));
 }
 async function renameXrefs(oldTitle, newTitle, skipId) {
@@ -7625,7 +7698,7 @@ function viewPdf(id, pageParam) {
   meta.drafts = meta.drafts || [];
   const sec = secById(meta.sectionId);
   const back = sec ? `#/pdfs/${sec.id}` : nbById(meta.notebookId) ? `#/pdfs/nb/${meta.notebookId}` : '#/pdfs';
-  const panelTabs = [['pages', 'Pagine'], ['marks', 'Segnalibri'], ['notes', 'Note'], ['search', 'Cerca'], ['drag', 'Trascina']];
+  const panelTabs = [['pages', 'Pagine'], ['marks', 'Segnalibri'], ['figs', 'Figure'], ['notes', 'Note'], ['search', 'Cerca'], ['drag', 'Trascina']];
   setView(`
     <div class="pdf-app" id="pdfApp">
       <header class="pdf-bar">
@@ -7633,6 +7706,7 @@ function viewPdf(id, pageParam) {
         <div class="pdf-title"><b>${esc(meta.name)}</b><small>${esc(sec ? sec.title : nbById(meta.notebookId)?.name || '')}</small></div>
         <label class="pdf-pageno"><span class="sr-only">Pagina</span><input class="input" id="pdfPage" type="number" inputmode="numeric" min="1" max="${meta.pages}" value="1"><span>/ ${meta.pages}</span></label>
         <button class="btn sm pdf-bm-btn" type="button" data-pdf="bookmark" aria-pressed="false" title="Segnalibro su questa pagina (B)">${ICON_BM}<span>Segnalibro</span></button>
+        <a class="btn sm ghost pdf-split-btn" href="#/split" title="Apri di fianco una sezione o un altro PDF">⇆<span>Affianca</span></a>
         <button class="btn sm ghost pdf-panel-btn" type="button" data-pdf="panel" aria-expanded="false" title="Pannello laterale">${ICON_PANEL}<span>Pannello</span></button>
       </header>
       <div class="pdf-tools" role="toolbar" aria-label="Strumenti">
@@ -8183,10 +8257,16 @@ function viewPdf(id, pageParam) {
     }
     if (R.tool === 'pen' || R.tool === 'eraser') {
       if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
-      if (e.button > 0) return;
+      if (e.button > 0 && !penErases(e)) return;
       e.preventDefault();
       el.setPointerCapture(e.pointerId);
-      if (R.tool === 'eraser') { ink = { eraser: true, id: e.pointerId }; eraseAt(e); return; }
+      if (R.tool === 'eraser' || penErases(e)) {
+        // con la gomma della penna i tratti diventano “toccabili” solo per la durata del gesto
+        ink = { eraser: true, id: e.pointerId, restore: R.tool !== 'eraser' ? R.tool : null };
+        if (ink.restore) app.dataset.tool = 'eraser';
+        eraseAt(e);
+        return;
+      }
       const svg = el.querySelector('svg.pdf-ann') || (drawAnnots(+el.dataset.p), el.querySelector('svg.pdf-ann'));
       const path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('class', `ann-ink live ${R.inkW >= 6 ? 'marker' : ''}`);
@@ -8213,7 +8293,7 @@ function viewPdf(id, pageParam) {
       ['x', 'y', 'width', 'height'].forEach((k, i) => ink.occ.setAttribute(k, ink.box[i]));
       return;
     }
-    const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    const evs = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
     for (const ev of evs) {
       const p = pointInPage(ink.el, ev);
       const l = ink.pts[ink.pts.length - 1];
@@ -8226,7 +8306,7 @@ function viewPdf(id, pageParam) {
     if (!ink || e.pointerId !== ink.id) return;
     const cur = ink;
     ink = null;
-    if (cur.eraser) return;
+    if (cur.eraser) { if (cur.restore) app.dataset.tool = cur.restore; return; }
     if (cur.shape) {
       cur.shape.remove();
       const [x1, y1, x2, y2] = cur.box;
@@ -8243,6 +8323,8 @@ function viewPdf(id, pageParam) {
   };
   pagesEl.addEventListener('pointerup', endInk);
   pagesEl.addEventListener('pointercancel', endInk);
+  pagesEl.addEventListener('contextmenu', e => { if (R.tool === 'pen' || R.tool === 'eraser') e.preventDefault(); });
+  twoFingerTap(pagesEl, () => undo(), () => (R.tool === 'pen' || R.tool === 'eraser') && R.penSeen);
   pagesEl.addEventListener('click', async e => {
     const pin = e.target.closest('.pdf-pin');
     if (pin) { const a = meta.annots.find(x => x.id === pin.dataset.ann); if (a) annotSheet(a); return; }
@@ -8345,7 +8427,7 @@ function viewPdf(id, pageParam) {
   const drawPanel = () => {
     R.thumbIo?.disconnect();
     if (!R.doc && R.tab !== 'drag' && R.tab !== 'marks' && R.tab !== 'notes') { panelBody.innerHTML = '<p class="hint">Apro il PDF…</p>'; return; }
-    ({ pages: drawThumbs, marks: drawMarks, notes: drawNotes, search: drawSearch, drag: drawDrag }[R.tab] || drawMarks)();
+    ({ pages: drawThumbs, marks: drawMarks, figs: drawFigs, notes: drawNotes, search: drawSearch, drag: drawDrag }[R.tab] || drawMarks)();
   };
 
   function drawMarks() {
@@ -8498,6 +8580,111 @@ function viewPdf(id, pageParam) {
     }
     R.hit = null;
   };
+
+  // v3.39: galleria delle figure del PDF, trovate pagina per pagina
+  function drawFigs() {
+    if (!R.figs) R.figs = { list: [], next: 1, busy: false, done: false };
+    const F = R.figs;
+    panelBody.innerHTML = `
+      <p class="hint" id="figHint"></p>
+      <div class="fig-grid" id="figGrid"></div>
+      <button class="btn sm block" type="button" id="figMore" hidden>Continua a cercare</button>`;
+    const grid = $('#figGrid', panelBody);
+    const hint = $('#figHint', panelBody);
+    const thumbIo = new IntersectionObserver(ens => ens.forEach(en => { if (en.isIntersecting) { thumbIo.unobserve(en.target); drawFigThumb(en.target); } }), { root: panelBody, rootMargin: '300px 0px' });
+    R.thumbIo = thumbIo;
+    const tile = (f, k) => `<button type="button" class="fig-tile" data-fig="${k}" aria-label="Figura a pagina ${f.page}"><canvas></canvas><span class="fig-p">p. ${f.page}</span></button>`;
+    const addTiles = from => {
+      grid.insertAdjacentHTML('beforeend', F.list.slice(from).map((f, i) => tile(f, from + i)).join(''));
+      $$('.fig-tile:not([data-obs])', grid).forEach(t => { t.dataset.obs = '1'; thumbIo.observe(t); });
+    };
+    const paintHint = () => {
+      hint.textContent = F.done
+        ? (F.list.length ? `${F.list.length} figure in ${meta.pages} pagine. Tocca una figura per aggiungerla a una sezione o farne l’esercizio delle etichette.` : 'Non ho trovato figure in questo PDF: se è una scansione o le slide sono immagini intere, usa “Figura da PDF” in Modifica per ritagliarle a mano.')
+        : `Cerco le figure: pagina ${Math.min(F.next, meta.pages)} di ${meta.pages}${F.list.length ? `, ${F.list.length} trovate` : ''}…`;
+    };
+    addTiles(0);
+    paintHint();
+    const scan = async () => {
+      if (F.busy || F.done) return;
+      F.busy = true;
+      const stopAt = Math.min(meta.pages, F.next + 59);
+      while (F.next <= stopAt) {
+        if (R.tab !== 'figs' || !grid.isConnected) { F.busy = false; return; }
+        const n = F.next++;
+        try {
+          const { boxes } = await findPageImages(R.doc, n);
+          const before = F.list.length;
+          boxes.forEach(b => F.list.push({ page: n, box: b }));
+          if (F.list.length > before) addTiles(before);
+        } catch { /* pagina illeggibile */ }
+        if (n % 5 === 0) paintHint();
+      }
+      F.busy = false;
+      if (F.next > meta.pages) F.done = true;
+      paintHint();
+      const more = $('#figMore', panelBody);
+      if (more) more.hidden = F.done;
+    };
+    $('#figMore', panelBody).onclick = () => { $('#figMore', panelBody).hidden = true; scan(); };
+    scan();
+    grid.onclick = async e => {
+      const t = e.target.closest('[data-fig]');
+      if (!t) return;
+      const f = F.list[+t.dataset.fig];
+      const choice = await actionSheet(`Figura di pagina ${f.page}`, [
+        { key: 'go', label: 'Vai alla pagina' },
+        { key: 'add', label: 'Aggiungi a una sezione' },
+        { key: 'labels', label: 'Aggiungi a una sezione e fai l’esercizio delle etichette' },
+        { key: 'side', label: 'Apri la pagina di fianco' },
+        { key: 'save', label: 'Scarica l’immagine' }
+      ]);
+      if (choice === 'go') { goTo(f.page, { flash: true }); if (window.innerWidth < 900) closePanel(); return; }
+      if (choice === 'side') { Split.show({ kind: 'pdf', id: meta.id, page: f.page }); return; }
+      if (!choice) return;
+      const cv = await figCanvas(f, 1600);
+      if (!cv) { toast('Non riesco a ritagliare questa figura', 'err'); return; }
+      if (choice === 'save') { cv.toBlob(b => downloadBlob(b, `${meta.name} p${f.page}.jpg`), 'image/jpeg', 0.9); return; }
+      const sec = await pickSectionSheet('Aggiungi la figura a…', meta.sectionId);
+      if (!sec) return;
+      const im = await saveImage(await canvasToImage(cv, 0.9), sec.notebookId);
+      await appendImagesUnder(sec, 'Figure dal PDF', [imageMd(im.id, `${meta.name}, pagina ${f.page}`)]);
+      if (choice === 'labels') openLabelEditor(sec, im.id);
+      else toast(`Figura aggiunta a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
+    };
+  }
+  // ritaglio di una figura dalla sua pagina, alla larghezza voluta
+  async function figCanvas(f, width) {
+    try {
+      const page = await R.doc.getPage(f.page);
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(4, Math.max(0.2, width / Math.max(1, f.box.w * base.width)));
+      const vp = page.getViewport({ scale });
+      const full = document.createElement('canvas');
+      full.width = Math.round(vp.width);
+      full.height = Math.round(vp.height);
+      const ctx = full.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, full.width, full.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const sx = Math.round(f.box.x * full.width), sy = Math.round(f.box.y * full.height);
+      const sw = Math.max(1, Math.round(f.box.w * full.width)), sh = Math.max(1, Math.round(f.box.h * full.height));
+      const out = document.createElement('canvas');
+      out.width = sw;
+      out.height = sh;
+      out.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+      return out;
+    } catch { return null; }
+  }
+  async function drawFigThumb(tileEl) {
+    const f = R.figs?.list[+tileEl.dataset.fig];
+    if (!f) return;
+    const cv = await figCanvas(f, 260);
+    if (!cv || !tileEl.isConnected) return;
+    $('canvas', tileEl).replaceWith(cv);
+    tileEl.classList.add('ok');
+  }
+
   function drawThumbs() {
     panelBody.innerHTML = `<div class="pdf-thumbs">${Array.from({ length: meta.pages }, (_, i) => {
       const n = i + 1;
@@ -9317,10 +9504,15 @@ function setupNotesInk(article, sec, btn) {
     if (!on) return;
     if (e.pointerType === 'pen') penSeen = true;
     if (e.pointerType === 'touch' && penSeen) { pan = { id: e.pointerId, y: e.clientY }; return; }
-    if (e.button > 0) return;
+    if (e.button > 0 && !penErases(e)) return;
     e.preventDefault();
     article.setPointerCapture(e.pointerId);
-    if (tool === 'eraser') { cur = { id: e.pointerId, eraser: true }; erase(e); return; }
+    if (tool === 'eraser' || penErases(e)) {
+      cur = { id: e.pointerId, eraser: true, restore: tool !== 'eraser' ? tool : null };
+      if (cur.restore) article.dataset.inkTool = 'eraser';
+      erase(e);
+      return;
+    }
     const [x, y] = toLocal(e);
     // ancoro il tratto al blocco di testo sotto il primo punto, così segue il testo
     const blocks = inkBlocksOf(article);
@@ -9339,7 +9531,7 @@ function setupNotesInk(article, sec, btn) {
     if (pan && e.pointerId === pan.id) { window.scrollBy(0, pan.y - e.clientY); pan.y = e.clientY; return; }
     if (!cur || e.pointerId !== cur.id) return;
     if (cur.eraser) { erase(e); return; }
-    for (const ev of (e.getCoalescedEvents ? e.getCoalescedEvents() : [e])) {
+    for (const ev of ((e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e])) {
       const p = toLocal(ev);
       const l = cur.pts[cur.pts.length - 1];
       if (Math.hypot(p[0] - l[0], p[1] - l[1]) > 1) cur.pts.push(p);
@@ -9351,7 +9543,7 @@ function setupNotesInk(article, sec, btn) {
     if (!cur || e.pointerId !== cur.id) return;
     const c = cur;
     cur = null;
-    if (c.eraser) return;
+    if (c.eraser) { if (c.restore) article.dataset.inkTool = c.restore; return; }
     const d = data();
     const k = d.w / article.clientWidth;
     const s = { id: uid(), c: color, s: +(size * k).toFixed(2), b: c.bi, p: c.pts.map(([x, y]) => [+(x * k).toFixed(1), +((y - c.top) * k).toFixed(1)]) };
@@ -9361,6 +9553,8 @@ function setupNotesInk(article, sec, btn) {
   };
   article.addEventListener('pointerup', end);
   article.addEventListener('pointercancel', end);
+  article.addEventListener('contextmenu', e => { if (on) e.preventDefault(); });
+  twoFingerTap(article, () => $('[data-it="undo"]', bar)?.click(), () => on && penSeen);
   draw();
 }
 
@@ -9395,11 +9589,15 @@ function bindPdfRows(root) {
     if (!p) return;
     const choice = await actionSheet(p.name, [
       { key: 'open', label: 'Apri' },
+      { key: 'side', label: 'Apri di fianco' },
+      { key: 'figs', label: 'Galleria delle figure' },
       { key: 'rename', label: 'Rinomina' },
       { key: 'move', label: 'Sposta in un altro notebook o sezione' },
       { key: 'delete', label: 'Elimina il PDF', danger: true }
     ]);
     if (choice === 'open') go(`#/pdf/${p.id}`);
+    if (choice === 'side') Split.show({ kind: 'pdf', id: p.id });
+    if (choice === 'figs') { S().pdfPanel = 'figs'; Settings.save(); go(`#/pdf/${p.id}`); }
     if (choice === 'rename') {
       const name = await modal({ title: 'Rinomina il PDF', input: true, value: p.name, confirm: 'Rinomina' });
       if (name) { p.name = name; await savePdfMeta(p); route(); }
@@ -9807,31 +10005,54 @@ async function loadPdfText() {
   pdfTextLoaded = true;
   try { (await DB.all('pdftext')).forEach(r => pdfText.set(r.id, r.pages || [])); } catch { /* archivio non ancora creato */ }
 }
+// v3.39: l’indice si costruisce a piccoli passi, lasciando respirare il telefono,
+// e riprende da dove era arrivato se chiudi l’app; all’avvio non carico più tutti i testi.
+const pdfTextDone = new Set();
+let pdfTextKeysLoaded = false;
+const PDFIDX_KEY = 'nb-pdfidx-progress';
+const pdfIdxProgress = () => { try { return JSON.parse(localStorage.getItem(PDFIDX_KEY) || '{}') || {}; } catch { return {}; } };
+const setPdfIdxProgress = (id, n) => { const p = pdfIdxProgress(); if (n) p[id] = n; else delete p[id]; try { localStorage.setItem(PDFIDX_KEY, JSON.stringify(p)); } catch { /* niente */ } };
+async function loadPdfTextKeys() {
+  if (pdfTextKeysLoaded) return;
+  pdfTextKeysLoaded = true;
+  const partial = pdfIdxProgress();
+  try { ((await DB.run('pdftext', 'readonly', tx => tx.objectStore('pdftext').getAllKeys())) || []).forEach(k => { if (!partial[k]) pdfTextDone.add(k); }); } catch { /* archivio non ancora creato */ }
+}
+const idle = () => new Promise(r => (window.requestIdleCallback ? requestIdleCallback(() => r(), { timeout: 400 }) : setTimeout(r, 30)));
 const PdfIndex = {
   busy: false,
   waiting: [],
-  pending() { return state.pdfs.filter(p => localPdfIds.has(p.id) && !pdfText.has(p.id)); },
+  pending() { return state.pdfs.filter(p => localPdfIds.has(p.id) && !pdfTextDone.has(p.id) && !(pdfTextLoaded && pdfText.has(p.id) && !pdfIdxProgress()[p.id])); },
   async run(onEach) {
     if (onEach) this.waiting.push(onEach);
     if (this.busy) return;
     this.busy = true;
     try {
-      await loadPdfText();
+      await loadPdfTextKeys();
       for (const meta of this.pending()) {
         try {
           await ensurePdfJs();
           const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
           if (!rec || !rec.blob) continue;
           const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await rec.blob.arrayBuffer()) }).promise;
-          const pages = [];
-          for (let n = 1; n <= doc.numPages; n++) {
+          // riprendo da dove ero rimasta
+          const from = pdfIdxProgress()[meta.id] || 1;
+          let pages = [];
+          if (from > 1) { try { pages = (await DB.run('pdftext', 'readonly', tx => tx.objectStore('pdftext').get(meta.id)))?.pages || []; } catch { pages = []; } }
+          if (pages.length < from - 1) { pages = []; }
+          for (let n = pages.length + 1; n <= doc.numPages; n++) {
             const tc = await (await doc.getPage(n)).getTextContent();
             pages.push(tc.items.map(i => i.str + (i.hasEOL ? '\n' : ' ')).join('').replace(/[ \t]+/g, ' ').slice(0, 20000));
+            if (n % 4 === 0) await idle();
+            if (n % 40 === 0 && n < doc.numPages) { await DB.put('pdftext', { id: meta.id, pages }); setPdfIdxProgress(meta.id, n + 1); }
+            if (document.hidden) await new Promise(r => setTimeout(r, 1500));
           }
           doc.destroy();
           await DB.put('pdftext', { id: meta.id, pages });
-          pdfText.set(meta.id, pages);
-        } catch { pdfText.set(meta.id, []); }
+          setPdfIdxProgress(meta.id, 0);
+          pdfTextDone.add(meta.id);
+          if (pdfTextLoaded) pdfText.set(meta.id, pages);
+        } catch { pdfTextDone.add(meta.id); }
         this.waiting.forEach(fn => fn());
       }
     } finally {
@@ -9841,7 +10062,7 @@ const PdfIndex = {
   }
 };
 async function dropPdfText(ids) {
-  ids.forEach(id => pdfText.delete(id));
+  ids.forEach(id => { pdfText.delete(id); pdfTextDone.delete(id); setPdfIdxProgress(id, 0); });
   try { await DB.removeMany(ids.map(id => ['pdftext', id])); } catch { /* già rimosso */ }
 }
 let pdfPendingHit = null;
@@ -10007,6 +10228,7 @@ async function restoreBackup(bk) {
     await DB.put('pdfblobs', { id: f.id, blob: slice(f) });
     localPdfIds.add(f.id);
     pdfText.delete(f.id);
+    pdfTextDone.delete(f.id);
   }
   // statistiche: per ogni giorno tengo il valore più alto
   if (d.stats && d.stats.d) {
@@ -10141,15 +10363,18 @@ function setupListen(article, btn, folds) {
     list = blocks();
     if (!list.length) { toast('Niente da leggere in questa sezione'); return; }
     i = Math.max(0, list.indexOf(from));
+    Playlist.stop(true);
     bar.hidden = false;
     btn.classList.add('on');
     article.classList.add('tts-on');
     setPlay(true);
   };
   function stop() {
+    const was = playing;
     playing = false;
     token++;
-    Voice.stop();
+    // se sta leggendo l’ascolto in sequenza, non lo interrompo
+    if (was) Voice.stop();
     keepAwake(false);
     bar.hidden = true;
     btn.classList.remove('on');
@@ -11207,6 +11432,7 @@ async function init() {
   NavHide.init();
   Resume.init();
   Pad.init();
+  Split.init();
   initHelp();
   Tracker.start();
   applyBlueLight();
@@ -11657,7 +11883,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {
@@ -11887,6 +12113,7 @@ function pdfRefsBlockHtml(sec) {
             <span class="pr-t">${esc(r.title || p.name)}</span>
             <span class="pr-s">${esc(p.name)} · ${pagesTxt(r.from, r.to)}</span>
           </a>
+          <button class="btn sm ghost" type="button" data-split-open="pdf:${p.id}:${r.from}" aria-label="Apri di fianco ${esc(r.title || p.name)}" title="Apri di fianco">⇆</button>
           <button class="btn sm ghost" type="button" data-pr-del="${r.id}" aria-label="Scollega ${esc(r.title || p.name)}" title="Scollega">✕</button>
         </li>`;
       }).join('')}</ul>
@@ -11911,6 +12138,983 @@ const PdfRefHint = {
   cur: null,
   set(x) { this.cur = { ...x, t: Date.now() }; },
   take(pdfId) { const c = this.cur; this.cur = null; return c && c.pdfId === pdfId && Date.now() - c.t < 15000 ? c : null; }
+};
+
+/* =====================================================================
+   v3.39: Banca delle domande d’esame
+   Le domande uscite agli esami, con materia, docente, anno e argomento;
+   le stesse domande uscite più volte si sommano (frequenza). Si caricano da
+   un foglio Excel (.xlsx) o CSV, si ripassano e compaiono nella loro sezione.
+   Record nei link: { kind: 'examq' } → si sincronizzano e vanno nel backup.
+   ===================================================================== */
+const examQs = () => state.links.filter(l => l.kind === 'examq');
+const eqKey = (q, nbId) => `${nbId || ''}|${foldAccents(q).replace(/[^a-z0-9]+/g, ' ').trim()}`;
+const eqFreq = x => Math.max(1, (x.occ || []).length);
+const eqOfSec = id => examQs().filter(x => (x.secIds || []).includes(id));
+function eqSubject(x) { return nbById(x.notebookId)?.name || x.subject || 'Senza materia'; }
+function eqMeta(x) {
+  const occ = x.occ || [];
+  const profs = [...new Set(occ.map(o => o.prof).filter(Boolean))];
+  const years = [...new Set(occ.map(o => o.year || (o.date || '').slice(0, 4)).filter(Boolean))].sort();
+  return [eqFreq(x) > 1 ? `uscita ${eqFreq(x)} volte` : 'uscita 1 volta', profs.slice(0, 2).join(', '), years.slice(-3).join(', ')].filter(Boolean).join(' · ');
+}
+
+/* ---------- Lettura di fogli Excel (.xlsx) e CSV, senza librerie esterne oltre a JSZip ---------- */
+async function readSheetFile(file) {
+  const name = file.name.toLowerCase();
+  if (/\.(csv|tsv|txt)$/.test(name)) return parseCsv(await file.text());
+  if (/\.xls$/.test(name)) throw new Error('I file .xls vecchi non si leggono qui: in Excel scegli Salva con nome → Cartella di lavoro Excel (.xlsx), oppure CSV.');
+  if (/\.ods$/.test(name)) throw new Error('I file .ods non si leggono qui: salvali come .xlsx o CSV.');
+  await ensureJSZip();
+  let zip;
+  try { zip = await window.JSZip.loadAsync(file); } catch { throw new Error('Il file non sembra un foglio Excel (.xlsx).'); }
+  const xml = async p => { const f = zip.file(p); return f ? new DOMParser().parseFromString(await f.async('string'), 'application/xml') : null; };
+  const wb = await xml('xl/workbook.xml');
+  if (!wb) throw new Error('Il file non sembra un foglio Excel (.xlsx).');
+  const rels = await xml('xl/_rels/workbook.xml.rels');
+  const sheetsEl = [...wb.getElementsByTagName('sheet')];
+  const relTarget = rid => { const r = rels && [...rels.getElementsByTagName('Relationship')].find(x => x.getAttribute('Id') === rid); const t = r?.getAttribute('Target') || ''; return t.startsWith('/') ? t.slice(1) : `xl/${t.replace(/^\.\//, '')}`; };
+  const ss = await xml('xl/sharedStrings.xml');
+  const strings = ss ? [...ss.getElementsByTagName('si')].map(si => [...si.getElementsByTagName('t')].map(t => t.textContent).join('')) : [];
+  const colIdx = ref => { const m = String(ref).match(/^([A-Z]+)/); let n = 0; for (const ch of m ? m[1] : 'A') n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
+  const out = [];
+  for (const sh of sheetsEl) {
+    const rid = sh.getAttribute('r:id') || sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+    const doc = await xml(relTarget(rid));
+    if (!doc) continue;
+    const rows = [];
+    [...doc.getElementsByTagName('row')].forEach(r => {
+      const row = [];
+      [...r.getElementsByTagName('c')].forEach(c => {
+        const t = c.getAttribute('t');
+        const v = c.getElementsByTagName('v')[0]?.textContent ?? '';
+        let val;
+        if (t === 's') val = strings[+v] ?? '';
+        else if (t === 'inlineStr') val = [...c.getElementsByTagName('t')].map(x => x.textContent).join('');
+        else if (t === 'b') val = v === '1' ? 'VERO' : 'FALSO';
+        else val = v;
+        row[colIdx(c.getAttribute('r'))] = String(val ?? '');
+      });
+      rows.push(Array.from(row, x => x ?? ''));
+    });
+    out.push({ name: sh.getAttribute('name') || `Foglio ${out.length + 1}`, rows: rows.filter(r => r.some(x => String(x).trim())) });
+  }
+  return out;
+}
+function parseCsv(text) {
+  text = text.replace(/^\uFEFF/, '');
+  const first = text.split('\n')[0] || '';
+  const delim = [';', '\t', ','].sort((a, b) => first.split(b).length - first.split(a).length)[0];
+  const rows = [];
+  let row = [], cur = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') q = false;
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === delim) { row.push(cur); cur = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cur); rows.push(row); row = []; cur = ''; }
+    else cur += ch;
+  }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return [{ name: 'CSV', rows: rows.filter(r => r.some(x => String(x).trim())) }];
+}
+// Un .xlsx minimo: una riga di intestazione e i dati, celle di testo
+async function writeXlsx(rows, sheetName = 'Domande') {
+  await ensureJSZip();
+  const x = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+  const col = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows.map((r, ri) => `<row r="${ri + 1}">${r.map((v, ci) => `<c r="${col(ci)}${ri + 1}" t="inlineStr"${ri === 0 ? ' s="1"' : ''}><is><t xml:space="preserve">${x(v)}</t></is></c>`).join('')}</row>`).join('')}</sheetData></worksheet>`;
+  const zip = new window.JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>');
+  zip.file('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>');
+  zip.file('xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${x(sheetName).slice(0, 31)}" sheetId="1" r:id="rId1"/></sheets></workbook>`);
+  zip.file('xl/_rels/workbook.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>');
+  zip.file('xl/styles.xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>');
+  zip.file('xl/worksheets/sheet1.xml', sheet);
+  return zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+const EQ_HEAD = ['Domanda', 'Risposta', 'Materia', 'Argomento', 'Docente', 'Anno', 'Data', 'Fonte', 'Tag'];
+const EQ_FIELDS = [
+  ['q', 'Domanda', /domand|quesit|question/i],
+  ['a', 'Risposta', /rispost|answer|soluzion/i],
+  ['subject', 'Materia', /materi|esame|corso|insegnam|subject/i],
+  ['topic', 'Argomento', /argoment|sezion|capitol|topic/i],
+  ['prof', 'Docente', /docent|prof|commission|esaminat/i],
+  ['year', 'Anno', /^anno|year/i],
+  ['date', 'Data o appello', /data|appell|session|date/i],
+  ['src', 'Fonte', /fonte|source|riferit|studente/i],
+  ['tags', 'Tag', /tag|etichett/i]
+];
+// numeri di Excel che sono date (giorni dal 1900)
+const xlDate = v => { const n = +v; if (!/^\d{5}(\.\d+)?$/.test(String(v)) || n < 20000 || n > 80000) return String(v || '').trim(); const d = new Date(Date.UTC(1899, 11, 30) + n * 86400000); return d.toISOString().slice(0, 10); };
+
+/* ---------- Pagina delle domande d’esame ---------- */
+const eqState = { q: '', nb: '', prof: '', year: '', sort: 'freq' };
+function eqFiltered() {
+  const toks = foldAccents(eqState.q).split(/\s+/).filter(Boolean);
+  let list = examQs().filter(x => (!eqState.nb || x.notebookId === eqState.nb || (eqState.nb === '_none' && !x.notebookId))
+    && (!eqState.prof || (x.occ || []).some(o => o.prof === eqState.prof))
+    && (!eqState.year || (x.occ || []).some(o => (o.year || (o.date || '').slice(0, 4)) === eqState.year))
+    && (!toks.length || toks.every(t => foldAccents(`${x.q} ${x.a || ''} ${(x.tags || []).join(' ')} ${(x.secIds || []).map(id => secById(id)?.title || '').join(' ')}`).includes(t))));
+  const last = x => (x.occ || []).map(o => o.date || o.year || '').sort().pop() || '';
+  const bad = x => (x.stats?.ko || 0) - (x.stats?.ok || 0) * 0.5;
+  list.sort(eqState.sort === 'recent' ? (a, b) => last(b).localeCompare(last(a)) || eqFreq(b) - eqFreq(a)
+    : eqState.sort === 'wrong' ? (a, b) => bad(b) - bad(a) || eqFreq(b) - eqFreq(a)
+    : eqState.sort === 'new' ? (a, b) => (b.created || 0) - (a.created || 0)
+    : (a, b) => eqFreq(b) - eqFreq(a) || last(b).localeCompare(last(a)));
+  return list;
+}
+function viewExamQ(p1) {
+  if (p1 === 'quiz') return viewExamQuiz();
+  const all = examQs();
+  const nbs = [...new Set(all.map(x => x.notebookId).filter(Boolean))].map(nbById).filter(Boolean);
+  const profs = [...new Set(all.flatMap(x => (x.occ || []).map(o => o.prof)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+  const years = [...new Set(all.flatMap(x => (x.occ || []).map(o => o.year || (o.date || '').slice(0, 4))).filter(Boolean))].sort().reverse();
+  setView(`
+    <header class="page-head">
+      <div><h1>Domande d’esame</h1><p class="lede">${all.length ? `${all.length} domande. ` : ''}Quelle uscite agli esami: si sommano quando escono di nuovo, così vedi cosa chiedono di più.</p></div>
+      <div class="inline">
+        <button class="btn primary" type="button" data-act="eq-new">Nuova domanda</button>
+        <button class="btn" type="button" data-act="eq-import">Importa da Excel</button>
+      </div>
+    </header>
+    ${all.length ? `
+      <div class="eq-tools">
+        <input type="search" class="input search" id="eqQ" placeholder="Cerca nelle domande e nelle risposte" aria-label="Cerca nelle domande" value="${esc(eqState.q)}">
+        <div class="eq-filters">
+          <select class="input" id="eqNb" aria-label="Materia"><option value="">Tutte le materie</option>${nbs.map(n => `<option value="${n.id}" ${eqState.nb === n.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}${all.some(x => !x.notebookId) ? `<option value="_none" ${eqState.nb === '_none' ? 'selected' : ''}>Senza notebook</option>` : ''}</select>
+          ${profs.length ? `<select class="input" id="eqProf" aria-label="Docente"><option value="">Tutti i docenti</option>${profs.map(p => `<option ${eqState.prof === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>` : ''}
+          ${years.length ? `<select class="input" id="eqYear" aria-label="Anno"><option value="">Tutti gli anni</option>${years.map(y => `<option ${eqState.year === y ? 'selected' : ''}>${esc(y)}</option>`).join('')}</select>` : ''}
+          <select class="input" id="eqSort" aria-label="Ordine">${[['freq', 'Le più frequenti'], ['recent', 'Uscite di recente'], ['wrong', 'Quelle che sbagli'], ['new', 'Aggiunte di recente']].map(([k, l]) => `<option value="${k}" ${eqState.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        </div>
+        <div class="inline"><a class="btn" href="#/examq/quiz" id="eqQuizBtn">Allenati su queste</a><button class="btn ghost" type="button" data-act="eq-export">Scarica in Excel</button></div>
+      </div>
+      <ul class="list eq-list" id="eqList"></ul>` : `
+      <div class="empty">
+        <p>Raccogli qui le domande uscite agli esami (anche quelle che ti raccontano i compagni): materia, docente, anno, argomento. Puoi scriverle una per una o caricarle tutte da un foglio Excel o Google Fogli.</p>
+        <div class="inline" style="justify-content:center"><button class="btn primary" type="button" data-act="eq-import">Importa da Excel</button><button class="btn" type="button" data-act="eq-template">Scarica il modello</button></div>
+      </div>`}
+  `);
+  const draw = () => {
+    const box = $('#eqList');
+    if (!box) return;
+    const list = eqFiltered();
+    $('#eqQuizBtn').textContent = `Allenati su queste (${list.length})`;
+    box.innerHTML = list.slice(0, 400).map(x => `
+      <li><button type="button" class="row" data-eq="${x.id}">
+        <span class="eq-n" title="Volte che è uscita">${eqFreq(x)}×</span>
+        <span class="row-main">
+          <span class="row-title eq-q">${esc(x.q)}</span>
+          <span class="row-sub">${esc([eqSubject(x), eqMeta(x)].join(' · '))}${(x.secIds || []).length ? ` · ${esc((x.secIds || []).map(id => secById(id)?.title).filter(Boolean).slice(0, 2).join(', '))}` : ''}</span>
+        </span>
+        ${x.stats && (x.stats.ok || x.stats.ko) ? `<span class="eq-st" title="La sapevo / non la sapevo">✓${x.stats.ok || 0} ✗${x.stats.ko || 0}</span>` : ''}
+      </button></li>`).join('') || '<li class="hint">Nessuna domanda corrisponde.</li>';
+  };
+  draw();
+  $('#eqQ')?.addEventListener('input', e => { eqState.q = e.target.value; draw(); });
+  [['#eqNb', 'nb'], ['#eqProf', 'prof'], ['#eqYear', 'year'], ['#eqSort', 'sort']].forEach(([sel, k]) => $(sel)?.addEventListener('change', e => { eqState[k] = e.target.value; draw(); }));
+  on('[data-act="eq-new"]', 'click', async () => { if (await eqSheet(null)) route(); });
+  on('[data-act="eq-import"]', 'click', eqImportFlow);
+  on('[data-act="eq-template"]', 'click', async () => { downloadBlob(await writeXlsx([EQ_HEAD, ['Descrivi il ciclo cardiaco', 'Sistole e diastole…', 'Fisiologia', 'Ciclo cardiaco', 'prof. Rossi', '2025', '2025-06-12', 'Racconto di un compagno', 'orale']]), 'Modello domande d’esame.xlsx'); toast('Modello scaricato: compila una domanda per riga'); });
+  on('[data-act="eq-export"]', 'click', async () => {
+    const rows = [EQ_HEAD];
+    eqFiltered().forEach(x => {
+      const occ = x.occ && x.occ.length ? x.occ : [{}];
+      occ.forEach(o => rows.push([x.q, x.a || '', eqSubject(x), (x.secIds || []).map(id => secById(id)?.title).filter(Boolean).join('; '), o.prof || '', o.year || '', o.date || '', o.src || '', (x.tags || []).join(', ')]));
+    });
+    downloadBlob(await writeXlsx(rows), `Domande d’esame ${todayStr()}.xlsx`);
+    toast('File Excel pronto: una riga per ogni volta che una domanda è uscita');
+  });
+  $('#eqList')?.addEventListener('click', async e => {
+    const b = e.target.closest('[data-eq]');
+    if (!b) return;
+    const x = examQs().find(r => r.id === b.dataset.eq);
+    if (x && await eqSheet(x)) route();
+  });
+}
+// Scheda di una domanda: si vede e si modifica nello stesso foglio
+function eqSheet(x, preset = {}) {
+  return new Promise(resolve => {
+    const isNew = !x;
+    const r = x || { id: uid(), kind: 'examq', notebookId: preset.notebookId || '', q: '', a: '', secIds: preset.secIds || [], occ: [{ prof: '', year: String(new Date().getFullYear()), date: '', src: '' }], tags: [], created: Date.now() };
+    const nbs = state.notebooks.filter(n => !n.kind);
+    const secsOfNb = id => state.sections.filter(s => s.notebookId === id).sort((a, b) => a.title.localeCompare(b.title, 'it'));
+    let occ = (r.occ || []).map(o => ({ ...o }));
+    let secIds = [...(r.secIds || [])];
+    const sh = openSheet(`
+      <h2>${isNew ? 'Nuova domanda d’esame' : 'Domanda d’esame'}</h2>
+      <label class="field"><span>Domanda</span><textarea class="input" id="eqQt" rows="3">${esc(r.q)}</textarea></label>
+      <label class="field"><span>Risposta o traccia, facoltativa</span><textarea class="input" id="eqAt" rows="4" placeholder="Anche in elenco: i punti da toccare">${esc(r.a || '')}</textarea></label>
+      <div class="grid2">
+        <label class="field"><span>Materia (notebook)</span><select class="input" id="eqNbS"><option value="">Nessuno</option>${nbs.map(n => `<option value="${n.id}" ${n.id === r.notebookId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Tag</span><input class="input" id="eqTags" value="${esc((r.tags || []).join(', '))}" placeholder="Es. orale, scritto"></label>
+      </div>
+      <div class="field"><span class="lbl">Argomenti collegati</span><div class="tags" id="eqSecs"></div>
+        <select class="input" id="eqSecAdd" aria-label="Collega un argomento"></select></div>
+      <div class="field"><span class="lbl">Quando è uscita</span><div id="eqOcc"></div><button class="btn sm ghost" type="button" data-eqx="occ">+ È uscita un’altra volta</button></div>
+      ${!isNew && (r.stats?.ok || r.stats?.ko) ? `<p class="hint">Nell’allenamento: la sapevi ${r.stats.ok || 0} volte, non la sapevi ${r.stats.ko || 0}.</p>` : ''}
+      <div class="modal-actions">
+        ${isNew ? '' : '<button class="btn ghost danger" type="button" data-eqx="del">Elimina</button>'}
+        <button class="btn ghost" type="button" data-eqx="no">Annulla</button>
+        <button class="btn primary" type="button" data-eqx="ok">Salva</button>
+      </div>`, { label: 'Domanda d’esame', onClose: v => resolve(!!v) });
+    const drawSecs = () => {
+      const nbId = $('#eqNbS', sh.el).value;
+      $('#eqSecs', sh.el).innerHTML = secIds.map(id => secById(id)).filter(Boolean).map(s => `<span class="tag">${esc(s.title)} <button type="button" class="tag-x" data-eqsec="${s.id}" aria-label="Scollega ${esc(s.title)}">×</button></span>`).join('') || '<span class="hint">Nessuno</span>';
+      $('#eqSecAdd', sh.el).innerHTML = `<option value="">${nbId ? '+ Collega un argomento' : 'Scegli prima la materia'}</option>${nbId ? secsOfNb(nbId).filter(s => !secIds.includes(s.id)).map(s => `<option value="${s.id}">${esc(s.title)}${groupPathText(s) ? ` · ${esc(groupPathText(s))}` : ''}</option>`).join('') : ''}`;
+    };
+    const drawOcc = () => {
+      $('#eqOcc', sh.el).innerHTML = occ.map((o, i) => `<div class="eq-occ" data-oi="${i}">
+        <input class="input" data-of="prof" value="${esc(o.prof || '')}" placeholder="Docente" aria-label="Docente">
+        <input class="input" data-of="year" value="${esc(o.year || '')}" placeholder="Anno" inputmode="numeric" aria-label="Anno">
+        <input class="input" data-of="date" value="${esc(o.date || '')}" placeholder="Data o appello" aria-label="Data o appello">
+        <input class="input" data-of="src" value="${esc(o.src || '')}" placeholder="Fonte (es. un compagno)" aria-label="Fonte">
+        <button class="btn sm ghost" type="button" data-odel="${i}" aria-label="Togli">✕</button></div>`).join('') || '<p class="hint">Aggiungi almeno una volta in cui è uscita.</p>';
+    };
+    const readOcc = () => $$('.eq-occ', sh.el).forEach(row => { const o = occ[+row.dataset.oi]; $$('[data-of]', row).forEach(i => { o[i.dataset.of] = i.value.trim(); }); });
+    drawSecs(); drawOcc();
+    $('#eqNbS', sh.el).addEventListener('change', drawSecs);
+    $('#eqSecAdd', sh.el).addEventListener('change', e => { if (e.target.value) { secIds.push(e.target.value); drawSecs(); } });
+    sh.el.addEventListener('click', async e => {
+      const sx = e.target.closest('[data-eqsec]');
+      if (sx) { secIds = secIds.filter(id => id !== sx.dataset.eqsec); drawSecs(); return; }
+      const od = e.target.closest('[data-odel]');
+      if (od) { readOcc(); occ.splice(+od.dataset.odel, 1); drawOcc(); return; }
+      const b = e.target.closest('[data-eqx]');
+      if (!b) return;
+      const k = b.dataset.eqx;
+      if (k === 'no') sh.close(false);
+      if (k === 'occ') { readOcc(); occ.push({ prof: occ[occ.length - 1]?.prof || '', year: String(new Date().getFullYear()), date: '', src: '' }); drawOcc(); }
+      if (k === 'del') {
+        if (!(await modal({ title: 'Eliminare la domanda?', text: 'Sparisce dalla banca su tutti i tuoi dispositivi.', confirm: 'Elimina', danger: true }))) return;
+        await removeRecords([{ store: 'links', rec: r }]);
+        sh.close(true);
+      }
+      if (k === 'ok') {
+        readOcc();
+        const q = $('#eqQt', sh.el).value.trim();
+        if (!q) { toast('Scrivi la domanda'); $('#eqQt', sh.el).focus(); return; }
+        Object.assign(r, { q, a: $('#eqAt', sh.el).value.trim(), notebookId: $('#eqNbS', sh.el).value, secIds, tags: parseTags($('#eqTags', sh.el).value), occ: occ.filter(o => o.prof || o.year || o.date || o.src).length ? occ.filter(o => o.prof || o.year || o.date || o.src) : [{}] });
+        await saveLink(r);
+        toast(isNew ? 'Domanda aggiunta' : 'Domanda salvata');
+        sh.close(true);
+      }
+    });
+    setTimeout(() => (isNew ? $('#eqQt', sh.el) : null)?.focus(), 40);
+  });
+}
+
+/* ---------- Importazione da Excel o CSV ---------- */
+async function eqImportFlow() {
+  const file = await new Promise(res => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.xlsx,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv';
+    inp.addEventListener('change', () => res(inp.files && inp.files[0] ? inp.files[0] : null), { once: true });
+    inp.click();
+  });
+  if (!file) return;
+  let sheets;
+  try { sheets = await readSheetFile(file); } catch (err) { toast(err.message || 'Non riesco a leggere il file', 'err'); return; }
+  sheets = sheets.filter(s => s.rows.length);
+  if (!sheets.length) { toast('Il foglio è vuoto'); return; }
+  const nbs = state.notebooks.filter(n => !n.kind);
+  let si = 0;
+  const sh = openSheet(`
+    <h2>Importa le domande</h2>
+    <p class="sheet-sub">${esc(file.name)}: dimmi in quali colonne sono domanda, risposta e gli altri dati. Le domande già presenti (stesso testo e stessa materia) si sommano: aumenta il numero di volte che sono uscite.</p>
+    ${sheets.length > 1 ? `<label class="field"><span>Foglio</span><select class="input" id="imSheet">${sheets.map((s, i) => `<option value="${i}">${esc(s.name)} (${s.rows.length} righe)</option>`).join('')}</select></label>` : ''}
+    <label class="check"><input type="checkbox" id="imHead" checked><span>La prima riga contiene i titoli delle colonne</span></label>
+    <div class="eq-map" id="imMap"></div>
+    <div class="grid2">
+      <label class="field"><span>Materia per le righe senza</span><select class="input" id="imNb"><option value="">Nessuna</option>${nbs.map(n => `<option value="${n.id}">${esc(n.name)}</option>`).join('')}</select></label>
+      <label class="check eq-auto"><input type="checkbox" id="imAuto" checked><span>Collega gli argomenti cercando i titoli delle sezioni nel testo della domanda</span></label>
+    </div>
+    <div id="imPrev" class="eq-prev"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" type="button" data-im="no">Annulla</button>
+      <button class="btn primary" type="button" data-im="ok">Importa</button>
+    </div>`, { label: 'Importa le domande' });
+  const cols = () => {
+    const s = sheets[si];
+    const head = $('#imHead', sh.el).checked;
+    const w = Math.max(...s.rows.map(r => r.length));
+    return Array.from({ length: w }, (_, i) => (head ? String(s.rows[0][i] || '').trim() : '') || `Colonna ${String.fromCharCode(65 + (i % 26))}`);
+  };
+  const drawMap = () => {
+    const names = cols();
+    const head = $('#imHead', sh.el).checked;
+    const used = new Set();
+    $('#imMap', sh.el).innerHTML = EQ_FIELDS.map(([k, label, re]) => {
+      let pick = head ? names.findIndex((n, i) => re.test(n) && !used.has(i)) : -1;
+      if (k === 'q' && pick < 0) pick = 0;
+      if (pick >= 0) used.add(pick);
+      return `<label class="field"><span>${label}${k === 'q' ? '' : ' <span class="muted-inline">facoltativa</span>'}</span><select class="input" data-map="${k}"><option value="-1">—</option>${names.map((n, i) => `<option value="${i}" ${i === pick ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>`;
+    }).join('');
+    drawPrev();
+  };
+  const mapping = () => Object.fromEntries($$('[data-map]', sh.el).map(s => [s.dataset.map, +s.value]));
+  const rowsOut = () => {
+    const s = sheets[si];
+    const m = mapping();
+    const body = $('#imHead', sh.el).checked ? s.rows.slice(1) : s.rows;
+    const get = (r, k) => (m[k] >= 0 ? String(r[m[k]] ?? '').trim() : '');
+    return body.map(r => ({ q: get(r, 'q'), a: get(r, 'a'), subject: get(r, 'subject'), topic: get(r, 'topic'), prof: get(r, 'prof'), year: get(r, 'year').replace(/\.0+$/, ''), date: xlDate(get(r, 'date')), src: get(r, 'src'), tags: parseTags(get(r, 'tags')) })).filter(x => x.q);
+  };
+  const resolveNb = (subject, fallback) => {
+    if (!subject) return fallback;
+    const f = foldAccents(subject).trim();
+    return (nbs.find(n => foldAccents(n.name).trim() === f) || nbs.find(n => { const t = foldAccents(n.name); return t.length > 3 && (t.includes(f) || f.includes(t)); }))?.id || '';
+  };
+  const linkSecs = (row, nbId) => {
+    const out = new Set();
+    if (row.topic) row.topic.split(/[;|]/).map(t => t.trim()).filter(Boolean).forEach(t => { const s = guessSection(t, nbId || null); if (s) out.add(s.id); });
+    if ($('#imAuto', sh.el).checked && nbId) {
+      const fq = ` ${foldAccents(row.q).replace(/[^a-z0-9]+/g, ' ')} `;
+      state.sections.filter(s => s.notebookId === nbId).forEach(s => {
+        const t = foldAccents(s.title).replace(/[^a-z0-9]+/g, ' ').trim();
+        if (t.length > 4 && fq.includes(` ${t} `) && out.size < 3) out.add(s.id);
+      });
+    }
+    return [...out];
+  };
+  const drawPrev = () => {
+    const rows = rowsOut();
+    const fb = $('#imNb', sh.el).value;
+    const have = new Set(examQs().map(x => eqKey(x.q, x.notebookId)));
+    const keys = rows.map(r => eqKey(r.q, resolveNb(r.subject, fb)));
+    const dupOld = keys.filter(k => have.has(k)).length;
+    const uniq = new Set(keys).size;
+    const linked = rows.slice(0, 200).filter(r => linkSecs(r, resolveNb(r.subject, fb)).length).length;
+    $('#imPrev', sh.el).innerHTML = rows.length ? `
+      <p class="hint"><strong>${rows.length}</strong> righe con una domanda: ${uniq} domande diverse${dupOld ? `, di cui ${new Set(keys.filter(k => have.has(k))).size} già nella banca (si sommano)` : ''}${uniq < rows.length ? `; ${rows.length - uniq} righe ripetono una domanda e ne aumentano la frequenza` : ''}. ${linked ? `Argomento trovato per ${linked}${rows.length > 200 ? ' delle prime 200' : ''}.` : ''}</p>
+      <div class="table-wrap"><table class="eq-ptable"><thead><tr><th>Domanda</th><th>Materia</th><th>Docente</th><th>Anno</th></tr></thead><tbody>
+        ${rows.slice(0, 6).map(r => `<tr><td>${esc(r.q.slice(0, 120))}</td><td>${esc(nbById(resolveNb(r.subject, fb))?.name || r.subject || '—')}</td><td>${esc(r.prof || '—')}</td><td>${esc(r.year || (r.date || '').slice(0, 4) || '—')}</td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="hint">Nessuna riga con la domanda: controlla la colonna scelta.</p>';
+  };
+  drawMap();
+  sh.el.addEventListener('change', e => {
+    if (e.target.id === 'imSheet') { si = +e.target.value; drawMap(); }
+    else if (e.target.id === 'imHead') drawMap();
+    else drawPrev();
+  });
+  $('[data-im="no"]', sh.el).onclick = () => sh.close();
+  $('[data-im="ok"]', sh.el).onclick = async () => {
+    const rows = rowsOut();
+    if (!rows.length) { toast('Nessuna domanda da importare'); return; }
+    const fb = $('#imNb', sh.el).value;
+    const byKey = new Map(examQs().map(x => [eqKey(x.q, x.notebookId), x]));
+    const touched = new Set();
+    let added = 0, merged = 0;
+    for (const r of rows) {
+      const nbId = resolveNb(r.subject, fb);
+      const key = eqKey(r.q, nbId);
+      let x = byKey.get(key);
+      const o = { prof: r.prof, year: r.year || (r.date || '').slice(0, 4), date: r.date, src: r.src };
+      if (!x) {
+        x = { id: uid(), kind: 'examq', notebookId: nbId, subject: nbId ? '' : r.subject, q: r.q, a: r.a, secIds: [], occ: [], tags: [], created: Date.now() + added };
+        byKey.set(key, x);
+        added++;
+      } else if (!touched.has(x.id)) merged++;
+      if (!x.a && r.a) x.a = r.a;
+      x.occ = [...(x.occ || []).filter(v => v.prof || v.year || v.date || v.src), o];
+      x.secIds = [...new Set([...(x.secIds || []), ...linkSecs(r, nbId)])];
+      x.tags = [...new Set([...(x.tags || []), ...r.tags])];
+      touched.add(x.id);
+    }
+    for (const id of touched) await saveLink([...byKey.values()].find(x => x.id === id));
+    sh.close();
+    toast(`${added} domande nuove${merged ? `, ${merged} già presenti aggiornate` : ''}`);
+    go('#/examq');
+    route();
+  };
+}
+
+/* ---------- Allenamento ---------- */
+function viewExamQuiz() {
+  const list = eqFiltered();
+  setView(`
+    <div class="back-row"><a class="back" href="#/examq">Domande d’esame</a></div>
+    <header class="page-head"><div><h1>Allenati sulle domande d’esame</h1><p class="lede">${list.length} domande, ${eqState.sort === 'freq' ? 'dalle più frequenti' : eqState.sort === 'wrong' ? 'da quelle che sbagli di più' : 'nell’ordine scelto'}. Rispondi a voce o per iscritto, poi guarda la traccia.</p></div></header>
+    ${list.length ? '<div id="eqz"></div>' : '<div class="empty"><p>Nessuna domanda con i filtri scelti.</p><a class="btn primary" href="#/examq">Torna all’elenco</a></div>'}
+  `);
+  if (!list.length) return;
+  let i = 0, shown = false, ok = 0, done = 0;
+  const draw = () => {
+    if (i >= list.length) {
+      $('#eqz').innerHTML = `<div class="lab-q"><p class="lab-q-t">Finito: ne sapevi ${ok} su ${done}.</p><div class="inline"><button class="btn primary" type="button" data-qz="again">Ricomincia</button><a class="btn" href="#/examq">Torna all’elenco</a></div></div>`;
+      return;
+    }
+    const x = list[i];
+    const secs = (x.secIds || []).map(secById).filter(Boolean);
+    $('#eqz').innerHTML = `
+      <div class="lab-q">
+        <p class="hint">${i + 1} di ${list.length} · ${esc(eqSubject(x))} · ${esc(eqMeta(x))}</p>
+        <p class="lab-q-t">${esc(x.q)}</p>
+        ${shown ? `<div class="lab-q-a notes">${x.a ? renderMd(x.a) : '<p class="hint">Nessuna traccia di risposta: aggiungila dalla scheda della domanda, oppure apri l’argomento.</p>'}</div>
+          ${secs.length ? `<p class="hint">Argomento: ${secs.map(s => `<a href="#/sec/${s.id}/read">${esc(s.title)}</a>`).join(', ')}</p>` : ''}
+          <div class="inline"><button class="btn" type="button" data-qz="no">Non la sapevo</button><button class="btn primary" type="button" data-qz="yes">La sapevo</button></div>`
+        : '<button class="btn primary" type="button" data-qz="show">Mostra la traccia</button>'}
+      </div>`;
+  };
+  $('#eqz').addEventListener('click', async e => {
+    const b = e.target.closest('[data-qz]');
+    if (!b) return;
+    if (b.dataset.qz === 'again') { i = 0; ok = 0; done = 0; shown = false; draw(); return; }
+    if (b.dataset.qz === 'show') { shown = true; draw(); return; }
+    const x = list[i];
+    x.stats = { ok: (x.stats?.ok || 0) + (b.dataset.qz === 'yes' ? 1 : 0), ko: (x.stats?.ko || 0) + (b.dataset.qz === 'no' ? 1 : 0), last: todayStr() };
+    if (b.dataset.qz === 'yes') ok++;
+    done++;
+    i++;
+    shown = false;
+    saveLink(x);
+    draw();
+  });
+  draw();
+}
+// Nella sezione, in fondo a Leggi
+function eqSecBlockHtml(sec) {
+  const list = eqOfSec(sec.id).sort((a, b) => eqFreq(b) - eqFreq(a));
+  if (!list.length) return '';
+  return `<section class="fonti eq-sec" aria-label="Domande d’esame su questo argomento">
+    <div class="fonti-head"><h3>Domande d’esame (${list.length})</h3><a class="btn sm ghost" href="#/examq">Tutte</a></div>
+    <ol class="fonti-list">${list.slice(0, 12).map(x => `<li><button type="button" class="link-btn" data-eqopen="${x.id}">${esc(x.q)}</button> <span class="muted-inline">${eqFreq(x)}×${(x.occ || []).map(o => o.prof).filter(Boolean)[0] ? ` · ${esc((x.occ || []).map(o => o.prof).filter(Boolean)[0])}` : ''}</span></li>`).join('')}</ol>
+  </section>`;
+}
+
+/* ---------- Ascolto in sequenza: una sezione dopo l’altra, anche cambiando pagina ---------- */
+function listenBlocksOf(article) {
+  return $$('h1, h2, h3, h4, p, li, tr, blockquote, pre', article).filter(el => {
+    if (el.closest('.html-embed, .img-box, pre code') && el.tagName !== 'PRE') return false;
+    if (el.tagName === 'LI' && el.querySelector('li')) return !!el.firstChild?.textContent?.trim();
+    if (el.tagName === 'P' && el.closest('li, blockquote')) return false;
+    return el.textContent.trim().length > 0;
+  });
+}
+function listenTextOf(el) {
+  if (el.tagName === 'TR') return [...el.children].map(td => td.textContent.trim()).filter(Boolean).join('; ');
+  const c = el.cloneNode(true);
+  c.querySelectorAll('ul, ol, button, .czm-btn').forEach(x => { if (el.tagName === 'LI' || !/^(UL|OL)$/.test(x.tagName)) x.remove(); });
+  return c.textContent.replace(/\s+/g, ' ').trim();
+}
+const Playlist = {
+  secs: [], si: 0, parts: [], pi: 0, playing: false, token: 0, bar: null, wake: null, label: '',
+  active() { return !!this.secs.length; },
+  start(secs, label = '', from = 0) {
+    secs = secs.filter(s => s && String(s.md || '').trim());
+    if (!secs.length) { toast('Niente da ascoltare qui: le sezioni sono vuote'); return; }
+    if (!canSpeak && !Voice.useGemini()) { toast('Questo browser non sa leggere ad alta voce', 'err'); return; }
+    this.stop(true);
+    this.secs = secs;
+    this.si = Math.max(0, Math.min(secs.length - 1, from));
+    this.label = label;
+    this.buildBar();
+    this.load();
+    this.setPlay(true);
+  },
+  load() {
+    const sec = this.secs[this.si];
+    const box = document.createElement('div');
+    box.innerHTML = renderMd(sec.md);
+    const parts = listenBlocksOf(box).map(listenTextOf).filter(Boolean);
+    // se gli appunti iniziano con lo stesso titolo, non lo leggo due volte
+    if (parts.length && foldAccents(parts[0]).replace(/[^a-z0-9]+/g, '') === foldAccents(sec.title).replace(/[^a-z0-9]+/g, '')) parts.shift();
+    this.parts = [`${sec.title}.`, ...parts];
+    this.pi = 0;
+    this.paint();
+    if ('mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: sec.title, artist: nbById(sec.notebookId)?.name || 'Notebook', album: this.label || 'Ascolto in sequenza' });
+        navigator.mediaSession.setActionHandler('play', () => this.setPlay(true));
+        navigator.mediaSession.setActionHandler('pause', () => this.setPlay(false));
+        navigator.mediaSession.setActionHandler('nexttrack', () => this.jumpSec(1));
+        navigator.mediaSession.setActionHandler('previoustrack', () => this.jumpSec(-1));
+      } catch { /* non tutti i browser */ }
+    }
+  },
+  buildBar() {
+    if (this.bar) return;
+    const bar = document.createElement('div');
+    bar.className = 'ink-bar tts-bar pl-bar';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'Ascolto in sequenza');
+    bar.innerHTML = `
+      <div class="pl-info"><small class="pl-what"></small><b class="pl-title"></b></div>
+      <div class="pl-ctrl">
+        <button type="button" class="btn sm ghost" data-pl="prev" aria-label="Sezione precedente">⏮</button>
+        <button type="button" class="btn sm primary pl-play" data-pl="play">Pausa</button>
+        <button type="button" class="btn sm ghost" data-pl="next" aria-label="Sezione successiva">⏭</button>
+        <select class="input ink-size" data-pl-rate aria-label="Velocità">${[0.8, 1, 1.2, 1.4, 1.7].map(r => `<option value="${r}">${String(r).replace('.', ',')}×</option>`).join('')}</select>
+        <button type="button" class="btn sm ghost" data-pl="open" title="Apri la sezione che sta leggendo">Apri</button>
+        <button type="button" class="btn sm ghost" data-pl="stop" aria-label="Chiudi l’ascolto">✕</button>
+      </div>`;
+    document.body.append(bar);
+    this.bar = bar;
+    $('[data-pl-rate]', bar).value = String(S().ttsRate || 1);
+    bar.addEventListener('click', e => {
+      const b = e.target.closest('[data-pl]');
+      if (!b) return;
+      const a = b.dataset.pl;
+      if (a === 'play') this.setPlay(!this.playing);
+      if (a === 'next') this.jumpSec(1);
+      if (a === 'prev') this.jumpSec(this.pi > 2 ? 0 : -1);
+      if (a === 'open') { const s = this.secs[this.si]; if (s) go(`#/sec/${s.id}/read`); }
+      if (a === 'stop') this.stop();
+    });
+    $('[data-pl-rate]', bar).addEventListener('change', e => { S().ttsRate = +e.target.value; Settings.save(); if (this.playing) this.speak(); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && this.playing) this.keepAwake(true); });
+  },
+  paint() {
+    if (!this.bar) return;
+    const s = this.secs[this.si];
+    $('.pl-title', this.bar).textContent = s ? s.title : '';
+    $('.pl-what', this.bar).textContent = `${this.label ? `${this.label} · ` : ''}sezione ${this.si + 1} di ${this.secs.length}${this.parts.length ? ` · ${Math.min(this.pi + 1, this.parts.length)}/${this.parts.length}` : ''}`;
+    $('.pl-play', this.bar).textContent = this.playing ? 'Pausa' : 'Riprendi';
+    document.body.classList.add('pl-on');
+  },
+  async keepAwake(on) {
+    try {
+      if (on && !this.wake && navigator.wakeLock) this.wake = await navigator.wakeLock.request('screen');
+      if (!on && this.wake) { await this.wake.release(); this.wake = null; }
+    } catch { this.wake = null; }
+  },
+  setPlay(v) {
+    this.playing = v;
+    this.keepAwake(v);
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.playbackState = v ? 'playing' : 'paused'; } catch { /* niente */ } }
+    if (v) this.speak(); else { this.token++; Voice.stop(); if (canSpeak) speechSynthesis.cancel(); }
+    this.paint();
+  },
+  jumpSec(d) {
+    const n = this.si + d;
+    if (n < 0) { this.pi = 0; if (this.playing) this.speak(); return; }
+    if (n >= this.secs.length) { this.stop(); toast('Fine dell’ascolto'); return; }
+    this.si = n;
+    this.load();
+    if (this.playing) this.speak(); else this.paint();
+  },
+  advance() {
+    this.pi++;
+    if (this.pi >= this.parts.length) { this.jumpSec(1); return; }
+    this.paint();
+    this.speak();
+  },
+  speak() {
+    const my = ++this.token;
+    Voice.stop();
+    if (canSpeak) speechSynthesis.cancel();
+    const text = this.parts[this.pi];
+    if (text === undefined) { this.advance(); return; }
+    this.paint();
+    const rate = +(S().ttsRate || 1);
+    if (Voice.useGemini()) {
+      Voice.play(text, rate).then(r => { if (my === this.token && this.playing && r !== 'stopped') this.advance(); })
+        .catch(err => { if (my !== this.token) return; toast(`${err.message} Continuo con la voce del telefono.`, 'err'); S().ttsEngine = 'system'; Settings.save(); if (this.playing) this.speak(); });
+      const nx = this.parts[this.pi + 1];
+      if (nx) Voice.fetch(nx).catch(() => {});
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'it-IT';
+    const v = pickItalianVoice();
+    if (v) u.voice = v;
+    u.rate = rate;
+    u.onend = () => { if (my === this.token && this.playing) setTimeout(() => { if (my === this.token && this.playing) this.advance(); }, this.pi === 0 ? 450 : 60); };
+    u.onerror = e => { if (my === this.token && e.error !== 'interrupted' && e.error !== 'canceled' && this.playing) this.advance(); };
+    speechSynthesis.speak(u);
+  },
+  stop(quiet = false) {
+    const was = this.active();
+    this.playing = false;
+    this.token++;
+    if (was) { Voice.stop(); if (canSpeak) speechSynthesis.cancel(); }
+    this.keepAwake(false);
+    this.secs = [];
+    this.parts = [];
+    if (this.bar) { this.bar.remove(); this.bar = null; }
+    document.body.classList.remove('pl-on');
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = null; } catch { /* niente */ } }
+    if (was && !quiet) toast('Ascolto chiuso');
+  }
+};
+
+/* ---------- Aiuti per le figure ---------- */
+// aggiunge immagini in fondo alla sezione, sotto un titolo (creato se manca)
+async function appendImagesUnder(sec, heading, mdLines) {
+  const block = mdLines.join('\n\n');
+  let md = String(sec.md || '').replace(/\s+$/, '');
+  const re = new RegExp(`^##\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm');
+  if (re.test(md)) {
+    const lines = md.split('\n');
+    const at = lines.findIndex(l => re.test(l));
+    let end = lines.length;
+    for (let i = at + 1; i < lines.length; i++) if (/^#{1,2}\s/.test(lines[i])) { end = i; break; }
+    lines.splice(end, 0, '', block, '');
+    md = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+  } else md = `${md}${md ? '\n\n' : ''}## ${heading}\n\n${block}`;
+  sec.md = `${md}\n`;
+  await saveSection(sec);
+}
+// scegli una sezione: prima quella proposta, poi quelle dello stesso notebook
+function pickSectionSheet(title, preferId = '') {
+  return new Promise(resolve => {
+    const pref = secById(preferId);
+    const where = s => [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › ');
+    const all = state.sections.slice().sort((a, b) => (b.id === preferId) - (a.id === preferId) || (pref ? (b.notebookId === pref.notebookId) - (a.notebookId === pref.notebookId) : 0) || (b.updated || 0) - (a.updated || 0));
+    const sh = openSheet(`
+      <h2>${esc(title)}</h2>
+      <input type="search" class="input search" id="psQ" placeholder="Cerca una sezione" aria-label="Cerca una sezione">
+      <ul class="list pick-list" id="psList"></ul>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-psx>Annulla</button></div>`, { label: title, onClose: v => resolve(v || null) });
+    const draw = () => {
+      const f = foldAccents($('#psQ', sh.el).value.trim());
+      $('#psList', sh.el).innerHTML = all.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60)
+        .map(s => `<li><button type="button" class="row" data-ps="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}${s.id === preferId ? ' · sezione del PDF' : ''}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
+    };
+    draw();
+    $('#psQ', sh.el).addEventListener('input', draw);
+    $('#psList', sh.el).addEventListener('click', e => { const b = e.target.closest('[data-ps]'); if (b) sh.close(secById(b.dataset.ps)); });
+    $('[data-psx]', sh.el).onclick = () => sh.close(null);
+  });
+}
+
+/* =====================================================================
+   v3.38: Affianca — una sezione o un PDF in un pannello di fianco
+   Di fianco anche sul tablet in verticale (da 700 px), sotto sul telefono.
+   Il pannello mostra in sola lettura; “Apri qui” lo porta nella pagina principale.
+   ===================================================================== */
+const Split = {
+  KEY: 'nb-split',
+  el: null,
+  item: null,          // { kind: 'sec' | 'pdf', id, page? }
+  pdf: null,           // documento aperto nel pannello
+  zoom: 1,
+  io: null,
+  rendered: new Map(),
+  prefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { p = {}; } return { w: 0.5, h: 0.5, ...p }; },
+  setPrefs(ch) { const p = { ...this.prefs(), ...ch }; try { localStorage.setItem(this.KEY, JSON.stringify(p)); } catch { /* niente */ } return p; },
+  side: () => matchMedia('(min-width: 700px)').matches,
+  isOpen() { return document.body.classList.contains('split-open'); },
+  leftW() { return window.innerWidth >= 900 && !document.body.classList.contains('nav-hidden') ? 232 : 0; },
+  maxW() { return Math.max(300, window.innerWidth - this.leftW() - 300); },
+  maxH() { return Math.max(220, window.innerHeight - 96 - 60); },
+  curW() { const p = this.prefs(); const free = window.innerWidth - this.leftW(); return Math.round(Math.min(this.maxW(), Math.max(300, (+p.w || 0.5) * free))); },
+  curH() { const p = this.prefs(); return Math.round(Math.min(this.maxH(), Math.max(200, (+p.h || 0.5) * this.maxH()))); },
+  apply({ w, hPx } = {}) {
+    const ww = w === undefined ? this.curW() : Math.round(Math.min(this.maxW(), Math.max(300, w)));
+    const hh = hPx === undefined ? this.curH() : Math.round(Math.min(this.maxH(), Math.max(200, hPx)));
+    document.documentElement.style.setProperty('--split-w', `${ww}px`);
+    document.documentElement.style.setProperty('--split-h', `${hh}px`);
+    this._w = ww; this._h = hh;
+  },
+  savePos() {
+    if (this.side()) this.setPrefs({ w: +(this._w / (window.innerWidth - this.leftW())).toFixed(3) });
+    else this.setPrefs({ h: +(this._h / this.maxH()).toFixed(3) });
+  },
+  build() {
+    if (this.el) return;
+    const el = document.createElement('aside');
+    el.className = 'split-dock';
+    el.setAttribute('aria-label', 'Pannello affiancato');
+    el.hidden = true;
+    el.innerHTML = `
+      <div class="sh-grip split-grip" role="separator" tabindex="0" aria-label="Trascina per cambiare la dimensione del pannello; anche con le frecce"></div>
+      <header class="split-head">
+        <div class="split-title"><small class="split-kind"></small><strong class="split-name"></strong></div>
+        <div class="split-acts">
+          <button type="button" class="btn sm ghost" data-sp="pick" title="Mostra un’altra sezione o un altro PDF">Cambia</button>
+          <button type="button" class="btn sm ghost" data-sp="open" title="Apri nella pagina principale">Apri qui</button>
+          <button type="button" class="sh-ic" data-sp="close" aria-label="Chiudi il pannello" title="Chiudi">${SH_ICONS.close}</button>
+        </div>
+        <div class="split-pdfbar" hidden>
+          <button type="button" class="btn sm ghost" data-sp="prev" aria-label="Pagina precedente">‹</button>
+          <label class="split-pg"><span class="sr-only">Pagina</span><input class="input" type="number" inputmode="numeric" min="1" data-sp-page><span class="split-tot"></span></label>
+          <button type="button" class="btn sm ghost" data-sp="next" aria-label="Pagina successiva">›</button>
+          <span class="split-zoom"><button type="button" class="btn sm ghost" data-sp="z-" aria-label="Riduci">−</button><button type="button" class="btn sm ghost" data-sp="z0" title="Adatta alla larghezza">100%</button><button type="button" class="btn sm ghost" data-sp="z+" aria-label="Ingrandisci">+</button></span>
+          <select class="input split-bm" data-sp-bm aria-label="Vai a un segnalibro" hidden></select>
+        </div>
+      </header>
+      <div class="split-body" tabindex="-1"></div>`;
+    document.body.append(el);
+    this.el = el;
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-sp]');
+      if (b) { this.act(b.dataset.sp); return; }
+      const x = e.target.closest('a.xref');
+      if (x) {
+        const id = (x.getAttribute('href') || '').match(/#\/sec\/([^/]+)/)?.[1];
+        if (id) { e.preventDefault(); this.show({ kind: 'sec', id }); }
+      }
+    });
+    el.addEventListener('change', e => {
+      if (e.target.matches('[data-sp-page]')) this.goPage(parseInt(e.target.value, 10) || 1);
+      if (e.target.matches('[data-sp-bm]') && e.target.value) { this.goPage(+e.target.value); e.target.value = ''; }
+    });
+    this.bindGrip($('.split-grip', el));
+    const body = $('.split-body', el);
+    body.addEventListener('scroll', () => this.trackPage(), { passive: true });
+    // due dita per lo zoom del PDF
+    let pinch = null;
+    const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    body.addEventListener('touchstart', e => { if (this.item?.kind === 'pdf' && e.touches.length === 2) pinch = { d: dist(e.touches[0], e.touches[1]), z: this.zoom }; }, { passive: true });
+    body.addEventListener('touchmove', e => { if (pinch && e.touches.length === 2) { e.preventDefault(); this.preview(pinch.z * dist(e.touches[0], e.touches[1]) / pinch.d); } }, { passive: false });
+    body.addEventListener('touchend', () => { if (pinch) { pinch = null; this.setZoom(this.pending || this.zoom); } });
+    body.addEventListener('wheel', e => { if (this.item?.kind === 'pdf' && e.ctrlKey) { e.preventDefault(); this.setZoom(this.zoom * Math.exp(-e.deltaY * 0.01)); } }, { passive: false });
+    new ResizeObserver(() => { if (this.isOpen() && this.item?.kind === 'pdf') this.layoutPdf(); }).observe(body);
+  },
+  bindGrip(grip) {
+    let d = null;
+    grip.addEventListener('pointerdown', e => {
+      if (e.button > 0) return;
+      e.preventDefault();
+      try { grip.setPointerCapture(e.pointerId); } catch { /* niente */ }
+      d = { id: e.pointerId, x: e.clientX, y: e.clientY, w: this.curW(), h: this.curH() };
+      this.el.classList.add('resizing');
+    });
+    grip.addEventListener('pointermove', e => {
+      if (!d || e.pointerId !== d.id) return;
+      if (this.side()) this.apply({ w: d.w - (e.clientX - d.x) }); else this.apply({ hPx: d.h - (e.clientY - d.y) });
+    });
+    const end = e => { if (!d || e.pointerId !== d.id) return; d = null; this.el.classList.remove('resizing'); this.savePos(); window.dispatchEvent(new Event('resize')); };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+    grip.addEventListener('keydown', e => {
+      const dir = { ArrowLeft: 1, ArrowRight: -1, ArrowUp: 1, ArrowDown: -1 }[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      if (this.side()) this.apply({ w: this.curW() + dir * 40 }); else this.apply({ hPx: this.curH() + dir * 40 });
+      this.savePos();
+    });
+  },
+  async show(item) {
+    this.build();
+    if (typeof Pad !== 'undefined' && Pad.isOpen()) Pad.close();
+    if (ShDock.isOpen()) ShDock.close();
+    this.el.hidden = false;
+    const was = this.isOpen();
+    document.body.classList.add('split-open');
+    this.apply();
+    if (!was) setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
+    this.item = item;
+    this.setPrefs({ last: item });
+    const body = $('.split-body', this.el);
+    if (this.io) { this.io.disconnect(); this.io = null; }
+    this.rendered.clear();
+    $('.split-pdfbar', this.el).hidden = item.kind !== 'pdf';
+    if (item.kind === 'sec') {
+      const sec = secById(item.id);
+      if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
+      this.pdf = null;
+      $('.split-kind', this.el).textContent = [nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ') || 'Sezione';
+      $('.split-name', this.el).textContent = sec.title;
+      body.innerHTML = sec.md.trim() ? `<article class="notes split-notes">${renderMd(sec.md)}</article>` : '<p class="hint">Questa sezione è ancora vuota.</p>';
+      const art = $('.split-notes', body);
+      if (art) setupFolds(art, sec.id);
+      body.scrollTop = 0;
+      return;
+    }
+    const meta = pdfById(item.id);
+    if (!meta) { this.close(); toast('Questo PDF non c’è più'); return; }
+    $('.split-kind', this.el).textContent = 'PDF';
+    $('.split-name', this.el).textContent = meta.name;
+    body.innerHTML = '<p class="hint split-wait">Apro il PDF…</p>';
+    try {
+      const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+      if (!rec || !rec.blob) throw new Error('Questo PDF non è ancora su questo dispositivo: aprilo una volta dalla libreria PDF per scaricarlo.');
+      const pdf = await openPdf(new File([rec.blob], `${meta.name}.pdf`, { type: 'application/pdf' }));
+      if (this.item !== item) return;
+      this.pdf = pdf;
+      const first = await pdf.doc.getPage(1);
+      const vp = first.getViewport({ scale: 1 });
+      this.ratio = vp.height / vp.width;
+      this.zoom = 1;
+      $('.split-tot', this.el).textContent = `/ ${pdf.pages}`;
+      $('[data-sp-page]', this.el).max = pdf.pages;
+      const bms = (meta.bookmarks || []).slice().sort((a, b) => a.page - b.page);
+      const sel = $('[data-sp-bm]', this.el);
+      sel.hidden = !bms.length;
+      sel.innerHTML = `<option value="">Segnalibri…</option>${bms.map(b => `<option value="${b.page}">p. ${b.page} · ${esc(b.title)}</option>`).join('')}`;
+      body.innerHTML = `<div class="split-pages">${Array.from({ length: pdf.pages }, (_, i) => `<div class="split-page" data-p="${i + 1}"><canvas></canvas><span class="split-pn">${i + 1}</span></div>`).join('')}</div>`;
+      this.layoutPdf();
+      this.io = new IntersectionObserver(ens => ens.forEach(en => { if (en.isIntersecting) this.renderPage(+en.target.dataset.p); }), { root: body, rootMargin: '600px 0px' });
+      $$('.split-page', body).forEach(p => this.io.observe(p));
+      this.goPage(item.page || meta.lastPage || 1, true);
+    } catch (err) {
+      body.innerHTML = `<div class="empty"><p>${esc(err.message || 'Non riesco ad aprire il PDF.')}</p></div>`;
+    }
+  },
+  layoutPdf() {
+    if (!this.pdf || !this.el) return;
+    const body = $('.split-body', this.el);
+    const w = Math.max(200, (body.clientWidth - 24) * this.zoom);
+    $$('.split-page', body).forEach(p => { p.style.width = `${w}px`; p.style.height = `${Math.round(w * this.ratio)}px`; });
+    $('[data-sp="z0"]', this.el).textContent = `${Math.round(this.zoom * 100)}%`;
+    // le pagine già disegnate si ridisegnano alla nuova misura quando servono
+    this.rendered.forEach((v, n) => { if (v !== w) { this.rendered.delete(n); const el = $(`.split-page[data-p="${n}"]`, body); if (el && this.visible(el)) this.renderPage(n); } });
+  },
+  visible(el) { const b = $('.split-body', this.el).getBoundingClientRect(); const r = el.getBoundingClientRect(); return r.bottom > b.top - 600 && r.top < b.bottom + 600; },
+  async renderPage(n) {
+    if (!this.pdf) return;
+    const el = $(`.split-page[data-p="${n}"]`, this.el);
+    if (!el) return;
+    const w = parseFloat(el.style.width);
+    if (this.rendered.get(n) === w) return;
+    this.rendered.set(n, w);
+    try {
+      const pdf = this.pdf;
+      const page = await pdf.doc.getPage(n);
+      if (pdf !== this.pdf) return;
+      const base = page.getViewport({ scale: 1 });
+      const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+      const vp = page.getViewport({ scale: (w * dpr) / base.width });
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(vp.width);
+      cv.height = Math.round(vp.height);
+      await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+      if (this.rendered.get(n) !== w) return;
+      $('canvas', el).replaceWith(cv);
+      // tengo in memoria solo le pagine vicine
+      if (this.rendered.size > 14) {
+        const cur = this.curPage || n;
+        [...this.rendered.keys()].filter(k => Math.abs(k - cur) > 7).forEach(k => {
+          this.rendered.delete(k);
+          const c = $(`.split-page[data-p="${k}"] canvas`, this.el);
+          if (c) c.replaceWith(document.createElement('canvas'));
+        });
+      }
+    } catch { this.rendered.delete(n); }
+  },
+  goPage(n, instant = false) {
+    if (!this.pdf) return;
+    n = Math.max(1, Math.min(this.pdf.pages, n));
+    const el = $(`.split-page[data-p="${n}"]`, this.el);
+    const body = $('.split-body', this.el);
+    if (el) body.scrollTo({ top: el.offsetTop - 8, behavior: instant ? 'auto' : 'smooth' });
+    this.curPage = n;
+    $('[data-sp-page]', this.el).value = n;
+  },
+  trackPage() {
+    if (!this.pdf) return;
+    const body = $('.split-body', this.el);
+    const mid = body.scrollTop + body.clientHeight / 3;
+    const pages = $$('.split-page', body);
+    let n = 1;
+    for (const p of pages) { if (p.offsetTop <= mid) n = +p.dataset.p; else break; }
+    if (n !== this.curPage) { this.curPage = n; $('[data-sp-page]', this.el).value = n; this.setPrefs({ last: { ...this.item, page: n } }); }
+  },
+  preview(z) {
+    this.pending = Math.max(0.6, Math.min(3, z));
+    $('.split-pages', this.el)?.style.setProperty('transform', `scale(${this.pending / this.zoom})`);
+  },
+  setZoom(z) {
+    const keep = this.curPage || 1;
+    this.zoom = Math.max(0.6, Math.min(3, z));
+    this.pending = null;
+    $('.split-pages', this.el)?.style.removeProperty('transform');
+    this.layoutPdf();
+    this.goPage(keep, true);
+  },
+  act(a) {
+    if (a === 'close') this.close();
+    else if (a === 'pick') this.pick();
+    else if (a === 'open') {
+      const it = this.item;
+      if (!it) return;
+      this.close();
+      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : `#/pdf/${it.id}/${this.curPage || it.page || 1}`);
+    } else if (a === 'prev') this.goPage((this.curPage || 1) - 1);
+    else if (a === 'next') this.goPage((this.curPage || 1) + 1);
+    else if (a === 'z+') this.setZoom(this.zoom * 1.25);
+    else if (a === 'z-') this.setZoom(this.zoom / 1.25);
+    else if (a === 'z0') this.setZoom(1);
+  },
+  close() {
+    if (!this.el) return;
+    this.el.hidden = true;
+    document.body.classList.remove('split-open');
+    if (this.io) { this.io.disconnect(); this.io = null; }
+    this.pdf = null;
+    this.rendered.clear();
+    $('.split-body', this.el).innerHTML = '';
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
+  },
+  // scegli cosa mettere di fianco: prima quello che è vicino alla pagina aperta
+  pick() {
+    return new Promise(resolve => {
+      const m = location.hash.match(/^#\/(sec|pdf)\/([^/]+)/);
+      const here = m && m[1] === 'sec' ? secById(m[2]) : m && m[1] === 'pdf' ? secById(pdfById(m[2])?.sectionId) : null;
+      const hereNb = here ? here.notebookId : (m && m[1] === 'pdf' ? pdfById(m[2])?.notebookId : null);
+      const pdfs = [
+        ...(here ? [...pdfsOf(here.id), ...pdfRefsOf(here).map(r => pdfById(r.pdfId))] : []),
+        ...state.pdfs.filter(p => p.notebookId === hereNb),
+        ...state.pdfs
+      ].filter((p, i, a) => p && a.indexOf(p) === i && !(m && m[1] === 'pdf' && p.id === m[2]));
+      const refPage = id => { const r = here && pdfRefsOf(here).find(x => x.pdfId === id); return r ? r.from : 0; };
+      const secs = [...state.sections].filter(s => !(m && m[1] === 'sec' && s.id === m[2]))
+        .sort((a, b) => (b.notebookId === hereNb) - (a.notebookId === hereNb) || (b.updated || 0) - (a.updated || 0));
+      const where = s => [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › ');
+      let tab = here && pdfs.length ? 'pdf' : 'sec';
+      const sh = openSheet(`
+        <h2>Affianca</h2>
+        <p class="sheet-sub">Si apre in un pannello di fianco, mentre qui resta quello che stai guardando.</p>
+        <div class="seg" role="tablist" aria-label="Cosa affiancare">
+          <button type="button" role="tab" data-spt="sec" aria-selected="${tab === 'sec'}">Sezione</button>
+          <button type="button" role="tab" data-spt="pdf" aria-selected="${tab === 'pdf'}">PDF</button>
+        </div>
+        <input type="search" class="input search" id="spQ" placeholder="Cerca" aria-label="Cerca">
+        <ul class="list pick-list sp-list" id="spList"></ul>
+        <div class="modal-actions"><button class="btn ghost" type="button" data-spx>Chiudi</button></div>`, { label: 'Affianca', onClose: v => resolve(v || null) });
+      const list = $('#spList', sh.el);
+      const draw = () => {
+        const f = foldAccents($('#spQ', sh.el).value.trim());
+        if (tab === 'sec') {
+          const hits = secs.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60);
+          list.innerHTML = hits.map(s => `<li><button type="button" class="row" data-spi="sec:${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
+        } else {
+          const hits = pdfs.filter(p => !f || foldAccents(p.name).includes(f)).slice(0, 60);
+          list.innerHTML = hits.map(p => `<li><button type="button" class="row" data-spi="pdf:${p.id}:${refPage(p.id)}"><span class="row-main"><span class="row-title">${esc(p.name)}</span><span class="row-sub">${p.pages || '?'} pagine${refPage(p.id) ? ` · pagine di questa sezione da ${refPage(p.id)}` : ''}${here && p.sectionId === here.id ? ' · di questa sezione' : ''}</span></span></button></li>`).join('') || '<li class="hint">Nessun PDF trovato.</li>';
+        }
+      };
+      draw();
+      $('#spQ', sh.el).addEventListener('input', draw);
+      $$('[data-spt]', sh.el).forEach(t => t.addEventListener('click', () => { tab = t.dataset.spt; $$('[data-spt]', sh.el).forEach(x => x.setAttribute('aria-selected', String(x === t))); draw(); }));
+      $('[data-spx]', sh.el).onclick = () => sh.close(null);
+      list.addEventListener('click', e => {
+        const b = e.target.closest('[data-spi]');
+        if (!b) return;
+        const [kind, id, pg] = b.dataset.spi.split(':');
+        const it = { kind, id, page: +pg || 0 };
+        sh.close(it);
+        this.show(it);
+      });
+      setTimeout(() => $('#spQ', sh.el)?.focus(), 40);
+    });
+  },
+  init() {
+    document.addEventListener('click', e => {
+      const a = e.target.closest('a[href="#/split"], [data-split-open]');
+      if (!a || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      if (a.dataset.splitOpen) { const [kind, id, pg] = a.dataset.splitOpen.split(':'); this.show({ kind, id, page: +pg || 0 }); return; }
+      if (this.isOpen() && a.closest('.nav')) { this.close(); return; }
+      this.pick();
+    });
+    window.addEventListener('resize', () => { if (this.isOpen()) this.apply(); });
+  }
 };
 
 /* =====================================================================
@@ -12534,6 +13738,7 @@ const Pad = {
   async open() {
     this.build();
     if (ShDock.isOpen()) ShDock.close();
+    if (typeof Split !== 'undefined' && Split.isOpen()) Split.close();
     const p = this.prefs();
     this.tool = p.tool || 'pen'; this.color = p.color || 'ink'; this.size = +p.size || 0.006; this.penOnly = !!p.penOnly;
     this.el.hidden = false;
@@ -12650,16 +13855,17 @@ const Pad = {
     };
     const body = () => $('.pad-body', this.el);
     cv.addEventListener('pointerdown', e => {
-      if (e.button > 0) return;
+      if (e.button > 0 && !penErases(e)) return;
+      if (e.pointerType === 'pen') this.penSeen = true;
       e.preventDefault();
       try { cv.setPointerCapture(e.pointerId); } catch { /* niente */ }
-      // con la mano, o con le dita in “solo penna”, il foglio scorre
-      if (this.tool === 'hand' || (this.penOnly && e.pointerType === 'touch')) {
+      // con la mano, o con le dita quando scrivi con la penna, il foglio scorre
+      if (this.tool === 'hand' || ((this.penOnly || this.penSeen) && e.pointerType === 'touch')) {
         this.drawing = { id: e.pointerId, pan: true, y0: e.clientY, st: body().scrollTop };
         return;
       }
       const pt = pos(e);
-      if (this.tool === 'eraser') { this.drawing = { id: e.pointerId, erase: true }; erase(pt); return; }
+      if (this.tool === 'eraser' || penErases(e)) { this.drawing = { id: e.pointerId, erase: true }; erase(pt); return; }
       const s = { c: this.color, w: this.size, p: [pt.map(v => +v.toFixed(4))] };
       this.drawing = { id: e.pointerId, s };
       this.pg().strokes.push(s);
@@ -12670,7 +13876,7 @@ const Pad = {
       if (!d || e.pointerId !== d.id) return;
       e.preventDefault();
       if (d.pan) { body().scrollTop = d.st - (e.clientY - d.y0); return; }
-      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      const evs = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
       for (const ev of evs) {
         const pt = pos(ev);
         if (d.erase) { erase(pt); continue; }
@@ -12692,6 +13898,8 @@ const Pad = {
     };
     cv.addEventListener('pointerup', end);
     cv.addEventListener('pointercancel', end);
+    cv.addEventListener('contextmenu', e => e.preventDefault());
+    twoFingerTap(cv, () => this.act('undo'), () => this.penOnly || this.penSeen || this.tool === 'hand');
   },
   async act(a) {
     if (!this.data) return;
@@ -13805,7 +15013,9 @@ const HELP = {
   links: { t: 'Link utili', b: `I siti che usi di più, a portata di tocco. Tieni premuto o usa Modifica per cambiarli.` },
   exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
-  pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Con la penna su un tablet attiva <b>✍︎ Solo penna</b>: il palmo non scrive e con le dita scorri.` },
+  examq: { t: 'Domande d’esame', b: `La banca delle domande uscite agli esami. Ogni domanda ha materia, argomenti collegati, risposta o traccia, e le volte in cui è uscita (docente, anno, data, fonte): quando esce di nuovo si somma, così l’elenco “Le più frequenti” ti dice cosa chiedono di più.<br><br><b>Importa da Excel</b>: un foglio .xlsx (anche scaricato da Google Fogli) o un CSV, una domanda per riga. Scegli quali colonne sono domanda, risposta, materia, argomento, docente, anno, data, fonte e tag; “Scarica il modello” ti dà un foglio già pronto. Le domande uguali si sommano e gli argomenti si collegano da soli quando il titolo di una sezione compare nella domanda.<br><br><b>Allenati</b> sulle domande filtrate: le più frequenti, quelle di un docente o di un anno, quelle che sbagli. In ogni sezione, in fondo a Leggi, trovi le domande uscite su quell’argomento.` },
+  split: { t: 'Affianca', b: `Apre di fianco una <b>sezione</b> o un <b>PDF</b>, mentre nella pagina principale resta quello che stai guardando: due sezioni, una sezione e le slide, due PDF, o un PDF accanto al lettore PDF.<br><br>Sul tablet e sul computer sta a destra (anche col tablet in verticale), sul telefono sotto. Trascina il bordo per dargli più o meno spazio.<br><br>Nel PDF: pagine ‹ ›, zoom (anche con due dita), salto ai segnalibri. <b>Cambia</b> mostra un’altra cosa, <b>Apri qui</b> la porta nella pagina principale.` },
+  pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Quando scrivi con la penna il palmo non lascia segni e con le dita scorri il foglio; <b>✍︎ Solo penna</b> lo attiva da subito.<br><br><b>Gomma della penna</b>: tieni premuto il pulsante laterale (S Pen) o gira la penna dalla parte della gomma (Staedtler Noris digital, Wacom, Surface). <b>Tocco con due dita</b>: annulla l’ultimo tratto (comodo con Apple Pencil, che non ha la gomma).` },
   semei: { t: 'Semeiotica', b: `Una scheda per ogni <b>manovra</b>, <b>segno</b> o <b>punto di repere</b>, divise tra semeiotica <b>clinica</b> e <b>chirurgica</b> e per distretto (che scegli tu, per esempio Addome o Torace).<br><br>Ogni scheda è una sezione: descrivi i passaggi, aggiungi foto con <b>＋ Foto</b> (poi puoi farne etichette da rimettere al posto giusto o un’image occlusion) e video nella scheda Video.<br><br><b>Esercitati</b> apre una scheda a caso tra quelle filtrate in modalità Orale: descrivi la manovra a voce e confronta.` },
   labRef: { t: 'Leggi un referto', b: `Scrivi esame e valore (anche la sigla): l’app usa i range delle tue schede e segna in giallo i valori bassi o alti e in rosso quelli critici. Indica il sesso per i range diversi.<br><br>È un esercizio di lettura: in un referto vero vale sempre il range stampato dal laboratorio.` },
   labCalc: { t: 'Calcoli di laboratorio', b: `Gap anionico (anche corretto per l’albumina), calcio corretto, eGFR con la CKD-EPI 2021, LDL di Friedewald, osmolalità calcolata e gap osmolare, sodio corretto per la glicemia. Sotto ogni calcolo c’è la formula.<br><br>Le unità sono quelle convenzionali (mg/dL, mEq/L) dei referti italiani.` },
@@ -13845,6 +15055,7 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Impostazioni', key: 'settings' },
   { sel: '.page-head h1', text: 'Medicina di laboratorio', key: 'lab' },
   { sel: '.page-head h1', text: 'Semeiotica', key: 'semei' },
+  { sel: '.page-head h1', text: 'Domande d’esame', key: 'examq' },
   { sel: '.page-head h1', text: 'Leggi un referto', key: 'labRef' },
   { sel: '.page-head h1', text: 'Calcoli di laboratorio', key: 'labCalc' },
   { sel: '.page-head h1', text: 'Allenati', key: 'labQuiz', hash: /^#\/lab/ },
@@ -15369,6 +16580,7 @@ const ShDock = {
   open() {
     this.build();
     if (typeof Pad !== 'undefined' && Pad.isOpen()) Pad.close();
+    if (typeof Split !== 'undefined' && Split.isOpen()) Split.close();
     this.el.hidden = false;
     document.body.classList.add('sh-open');
     this.apply();
