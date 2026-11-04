@@ -3442,11 +3442,11 @@ body.pl-on .pad-fab { bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
 .rt-bar.rt-side {
   transform: none;
   display: grid;
-  grid-template-columns: repeat(3, 34px);
+  grid-template-columns: repeat(3, 28px);
   justify-content: center;
   align-items: center;
-  gap: 6px 5px;
-  width: 136px;
+  gap: 5px 4px;
+  width: 112px;
   max-height: calc(100vh - 16px);
   overflow-x: hidden;
   overflow-y: auto;
@@ -3457,3 +3457,10 @@ body.pl-on .pad-fab { bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
 .rt-bar.rt-side .rt-u, .rt-bar.rt-side [data-rt="none"] { grid-column: auto; width: 34px; padding: 0; }
 .rt-bar.rt-side .rt-dot { justify-self: center; }
 .rt-bar.rt-top { transform: translateX(-50%); }
+
+/* v3.43: colonna più stretta */
+.rt-bar.rt-side { padding: 6px; }
+.rt-bar.rt-side .rt-btn { min-height: 32px; padding: 0 4px; font-size: 0.8rem; white-space: nowrap; }
+.rt-bar.rt-side .rt-dot { width: 24px; height: 24px; }
+.rt-bar.rt-side .rt-u, .rt-bar.rt-side [data-rt="none"] { width: 28px; }
+.nav a svg { flex: none; }

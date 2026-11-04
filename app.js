@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.42';
+const APP_VERSION = '3.43';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -5172,6 +5172,11 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.43: una sola barra, a sinistra', `
+      <ul>
+        <li>Sul tablet, tenere premuto con la penna o col dito apriva anche il menu pensato per il tasto destro del mouse, e le barre diventavano due. Ora con penna e dita compare solo la barra; il menu resta per il mouse.</li>
+        <li>La colonna della selezione è più stretta e va <strong>a sinistra</strong> del testo, dove c’è spazio anche con la barra laterale aperta; a destra solo se a sinistra non ci sta.</li>
+      </ul>`)}
     ${sec('Novità della 3.42: barra della selezione di lato', `
       <ul>
         <li>Quando selezioni del testo, la barra con Modifica, Cloze, colori, Glossario, Nota clinica e Flashcard si mette <strong>di lato</strong>, nello spazio libero accanto agli appunti e all’altezza della selezione, in colonna. Non copre più il testo né le maniglie della selezione.</li>
@@ -5662,9 +5667,13 @@ function readingToolsHtml() {
    e il browser allungava la selezione fino in fondo alla pagina. */
 const SelGesture = {
   down: false,
+  lastType: 'mouse',
   subs: new Set(),
+  // il menu “tasto destro” dell’app è per il mouse: con penna e dita c’è già la barra
+  touchy() { return this.lastType === 'pen' || this.lastType === 'touch'; },
   init() {
     document.addEventListener('pointerdown', e => {
+      this.lastType = e.pointerType || 'mouse';
       if (e.target.closest && e.target.closest('.rt-bar, .rt-menu')) return;
       this.down = true;
     }, true);
@@ -5676,7 +5685,8 @@ const SelGesture = {
 // v3.42: la barra va di lato, nello spazio libero accanto al testo, all’altezza della
 // selezione; se di lato non c’è posto, in alto sotto le schede. Mai sopra il testo.
 function placeSelBar(bar, container) {
-  bar.classList.remove('rt-side', 'rt-top');
+  bar.classList.remove('rt-side', 'rt-top', 'rt-left', 'rt-right');
+  document.querySelectorAll('.rt-menu').forEach(m => { m.hidden = true; });
   bar.style.left = bar.style.top = '';
   const art = container.getBoundingClientRect();
   const leftEdge = window.innerWidth >= 900 && !document.body.classList.contains('nav-hidden') ? 232 : 0;
@@ -5687,20 +5697,21 @@ function placeSelBar(bar, container) {
     const r = d.getBoundingClientRect();
     if (r.height > window.innerHeight * 0.5 && r.left > art.left) rightEdge = Math.min(rightEdge, r.left);
   });
-  const W = 136;
-  const spaceR = rightEdge - art.right - 10;
-  const spaceL = art.left - leftEdge - 10;
+  const W = 112;
+  const spaceR = rightEdge - art.right - 8;
+  const spaceL = art.left - leftEdge - 8;
   const sel = document.getSelection();
   const rect = sel && sel.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
   const tabs = document.querySelector('#view .tabs');
   const topMin = Math.max(8, tabs ? tabs.getBoundingClientRect().bottom + 8 : 8);
   if (Math.max(spaceR, spaceL) >= W) {
-    bar.classList.add('rt-side');
+    // prima a sinistra, dove resta spazio anche con la barra laterale aperta
+    bar.classList.add('rt-side', spaceL >= W ? 'rt-left' : 'rt-right');
     const h = bar.offsetHeight || 360;
     const y = rect && rect.height ? rect.top - 6 : topMin;
     const bottomMax = window.innerHeight - (window.innerWidth < 900 ? 92 : 8);
     bar.style.top = `${Math.round(Math.max(topMin, Math.min(bottomMax - h, y)))}px`;
-    bar.style.left = `${Math.round(spaceR >= W ? art.right + Math.min(22, (spaceR - W) / 2) : art.left - W - Math.min(22, (spaceL - W) / 2))}px`;
+    bar.style.left = `${Math.round(spaceL >= W ? art.left - W - Math.min(18, (spaceL - W) / 2) : art.right + Math.min(18, (spaceR - W) / 2))}px`;
   } else if (rect && rect.height && rect.top < topMin + 70) {
     // selezione proprio in alto: la barra resta in basso, lontano dal testo scelto
     bar.style.left = `${Math.round((art.left + art.right) / 2)}px`;
@@ -5819,6 +5830,7 @@ function setupReadingTools(container, sec) {
     el.addEventListener('click', e => { const b = e.target.closest('[data-rt]'); if (b) act(b.dataset.rt); });
   });
   const onContext = e => {
+    if (SelGesture.touchy()) return;
     let c = capture();
     if (!c && !e.target.closest('a, img, button, input, textarea')) {
       // nessuna selezione: prendo la parola sotto il puntatore
@@ -8231,7 +8243,7 @@ function viewPdf(id, pageParam) {
     });
   });
   const onContext = e => {
-    if (R.tool !== 'select') return;
+    if (R.tool !== 'select' || SelGesture.touchy()) return;
     const s = readSelection();
     if (!s) return;
     e.preventDefault();
