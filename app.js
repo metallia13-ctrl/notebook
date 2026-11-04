@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.39';
+const APP_VERSION = '3.41';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -221,15 +221,38 @@ const sortDue = (a, b) => (a.srs.due < b.srs.due ? -1 : a.srs.due > b.srs.due ? 
 const groupsOf = nb => (nb && Array.isArray(nb.groups) ? nb.groups : []);
 const groupOf = sec => groupsOf(nbById(sec.notebookId)).find(g => g.id === sec.groupId) || null;
 // un gruppo può stare dentro un macro-argomento (sottoargomento); solo due livelli
-const groupParent = (nb, g) => (g && g.parentId ? groupsOf(nb).find(x => x.id === g.parentId && !x.parentId) || null : null);
+// v3.40: fino a tre livelli — macro-argomento › sottoargomento › sottoargomento
+const GROUP_MAX_DEPTH = 3;
+// antenati di un gruppo, dal più esterno; si ferma su catene rotte o circolari
+function groupAncestors(nb, g) {
+  const out = [];
+  if (!g) return out;
+  const all = groupsOf(nb);
+  const seen = new Set([g.id]);
+  let cur = g;
+  while (cur && cur.parentId && out.length < GROUP_MAX_DEPTH - 1) {
+    const p = all.find(x => x.id === cur.parentId);
+    if (!p || seen.has(p.id)) break;
+    seen.add(p.id);
+    out.unshift(p);
+    cur = p;
+  }
+  return out;
+}
+const groupDepth = (nb, g) => groupAncestors(nb, g).length + 1;
+const groupParent = (nb, g) => { const a = groupAncestors(nb, g); return a.length ? a[a.length - 1] : null; };
 const topGroups = nb => groupsOf(nb).filter(g => !groupParent(nb, g));
-const subGroups = (nb, g) => groupsOf(nb).filter(x => x.parentId === g.id && !groupParent(nb, g));
+const subGroups = (nb, g) => (g && groupDepth(nb, g) < GROUP_MAX_DEPTH ? groupsOf(nb).filter(x => x.id !== g.id && groupParent(nb, x)?.id === g.id) : []);
+// il gruppo e tutti quelli dentro, a qualunque livello
+const groupTreeIds = (nb, g) => { const ids = new Set([g.id]); subGroups(nb, g).forEach(x => groupTreeIds(nb, x).forEach(i => ids.add(i))); return ids; };
+// quanti livelli scende un gruppo (1 se non ha sottoargomenti)
+const groupHeight = (nb, g) => 1 + Math.max(0, ...subGroups(nb, g).map(x => groupHeight(nb, x)));
+const groupWord = (nb, g) => (groupDepth(nb, g) === 1 ? 'macro-argomento' : 'sottoargomento');
 function groupPathOf(sec) {
   const nb = nbById(sec.notebookId);
   const g = groupOf(sec);
   if (!g) return [];
-  const p = groupParent(nb, g);
-  return p ? [p, g] : [g];
+  return [...groupAncestors(nb, g), g];
 }
 const groupPathText = sec => groupPathOf(sec).map(g => g.name).join(' › ');
 // Niente spoiler: una sezione si apre in Cloze se ha termini nascosti, altrimenti in Leggi
@@ -1216,16 +1239,19 @@ function viewNotebook(id) {
   ].filter(Boolean).join(', ');
   const groupBlock = g => {
     const gs = secs.filter(s => s.groupId === g.id);
-    const subs = groupParent(nb, g) ? [] : subGroups(nb, g);
-    const all = secs.filter(s => s.groupId === g.id || subs.some(x => x.id === s.groupId));
+    const subs = subGroups(nb, g);
+    const tree = groupTreeIds(nb, g);
+    const all = secs.filter(s => tree.has(s.groupId));
     const gd = all.filter(isDue).length;
-    const isSub = !!groupParent(nb, g);
+    const depth = groupDepth(nb, g);
+    const isSub = depth > 1;
     const meta = [
       subs.length ? `${subs.length} ${subs.length === 1 ? 'sottoargomento' : 'sottoargomenti'}` : '',
-      gs.length ? `${gs.length} ${gs.length === 1 ? 'sezione' : 'sezioni'}` : ''
+      gs.length ? `${gs.length} ${gs.length === 1 ? 'sezione' : 'sezioni'}` : '',
+      subs.length && all.length > gs.length ? `${all.length} in tutto` : ''
     ].filter(Boolean).join(', ') || 'Ancora vuoto';
     return `
-      <section class="grp fold ${isSub ? 'sub-grp' : ''}" data-fold="${g.id}" data-g="${g.id}">
+      <section class="grp fold ${isSub ? 'sub-grp' : ''} ${depth === 3 ? 'lvl3' : ''}" data-fold="${g.id}" data-g="${g.id}">
         <div class="grp-head">
           <button class="fold-btn" type="button" data-name="${esc(g.name)}">${CHEVRON}</button>
           <span class="grp-main">
@@ -1327,19 +1353,21 @@ function viewNotebook(id) {
     const g = groups[gi];
     if (!g) return;
     const parent = groupParent(nb, g);
-    const sibs = groups.filter(x => (parent ? x.parentId === parent.id : !groupParent(nb, x)));
+    const sibs = groups.filter(x => (groupParent(nb, x)?.id || null) === (parent ? parent.id : null));
     const si = sibs.indexOf(g);
     const nIn = secs.filter(s => s.groupId === g.id).length;
-    const kids = parent ? [] : subGroups(nb, g);
-    const word = parent ? 'sottoargomento' : 'macro-argomento';
+    const kids = subGroups(nb, g);
+    const depth = groupDepth(nb, g);
+    const word = groupWord(nb, g);
     const choice = await actionSheet(g.name, [
       { key: 'add', label: 'Aggiungi sezioni esistenti' },
       { key: 'write', label: 'Scrivi una sezione qui' },
-      ...(parent ? [] : [{ key: 'sub', label: 'Nuovo sottoargomento' }]),
+      ...(depth < GROUP_MAX_DEPTH ? [{ key: 'sub', label: depth === 1 ? 'Nuovo sottoargomento' : 'Nuovo sottoargomento (3° livello)' }] : []),
       { key: 'import', label: 'Importa qui' },
       { key: 'exam', label: 'Simulazione d’esame su questo argomento' },
       { key: 'listen', label: 'Ascolta in sequenza' },
       { key: 'rename', label: 'Rinomina' },
+      { key: 'move', label: 'Sposta dentro un altro argomento' },
       { key: 'up', label: 'Sposta su', disabled: si <= 0 },
       { key: 'down', label: 'Sposta giù', disabled: si === sibs.length - 1 },
       { key: 'delete', label: `Elimina il ${word}`, danger: true }
@@ -1357,8 +1385,27 @@ function viewNotebook(id) {
     if (choice === 'import') return go(`#/import/${id}/${g.id}`);
     if (choice === 'exam') { examRun = null; return go(`#/exam/${id}/${g.id}`); }
     if (choice === 'listen') {
-      const ids = new Set([g.id, ...groupsOf(nb).filter(x => x.parentId === g.id).map(x => x.id)]);
+      const ids = groupTreeIds(nb, g);
       return Playlist.start(nbReadingOrder(nb).filter(s => ids.has(s.groupId)), g.name);
+    }
+    if (choice === 'move') {
+      // può andare dove i suoi livelli ci stanno ancora (al massimo tre in tutto)
+      const h = groupHeight(nb, g);
+      const own = groupTreeIds(nb, g);
+      const pathName = x => [...groupAncestors(nb, x), x].map(y => y.name).join(' › ');
+      const cands = groups.filter(x => !own.has(x.id) && x.id !== parent?.id && groupDepth(nb, x) + h <= GROUP_MAX_DEPTH);
+      const opts = [
+        ...(parent ? [{ key: '__top', label: 'Al primo livello (macro-argomento)' }] : []),
+        ...cands.map(x => ({ key: x.id, label: `Dentro ${pathName(x)}` }))
+      ];
+      if (!opts.length) { toast(h >= GROUP_MAX_DEPTH ? 'Ha già tre livelli: può stare solo al primo livello' : 'Non c’è un altro argomento in cui spostarlo'); return; }
+      const to = await actionSheet(`Sposta “${g.name}”`, opts);
+      if (!to) return;
+      if (to === '__top') delete g.parentId; else g.parentId = to;
+      await saveNotebook(nb);
+      if (to !== '__top') foldSet(foldKey, foldGet(foldKey).filter(x => x !== to));
+      toast(to === '__top' ? 'Ora è un macro-argomento' : `Spostato dentro ${groups.find(x => x.id === to)?.name}`);
+      return route();
     }
     if (choice === 'rename') {
       const name = await modal({ title: `Rinomina il ${word}`, input: true, value: g.name, confirm: 'Rinomina' });
@@ -1380,18 +1427,18 @@ function viewNotebook(id) {
       const ok = await modal({
         title: `Eliminare il ${word}?`,
         text: [
-          nIn ? `Le sue ${nIn} sezioni restano nel notebook${parent ? `, dentro ${parent.name}` : ', senza macro-argomento'}.` : 'Non perdi nessuna sezione.',
-          kids.length ? `I suoi ${kids.length} sottoargomenti diventano macro-argomenti.` : ''
+          nIn ? `${nIn === 1 ? 'La sua sezione resta' : `Le sue ${nIn} sezioni restano`} nel notebook${parent ? `, dentro ${parent.name}` : ', senza macro-argomento'}.` : 'Non perdi nessuna sezione.',
+          kids.length ? (parent ? `${kids.length === 1 ? 'Il suo sottoargomento sale' : `I suoi ${kids.length} sottoargomenti salgono`} dentro ${parent.name}.` : `${kids.length === 1 ? 'Il suo sottoargomento diventa un macro-argomento' : `I suoi ${kids.length} sottoargomenti diventano macro-argomenti`}.`) : ''
         ].filter(Boolean).join(' '),
         confirm: 'Elimina', danger: true
       });
       if (!ok) return;
       for (const s of secs.filter(x => x.groupId === g.id)) { s.groupId = parent ? parent.id : null; await saveSection(s); }
-      kids.forEach(k => { delete k.parentId; });
+      kids.forEach(k => { if (parent) k.parentId = parent.id; else delete k.parentId; });
       nb.groups = groups.filter(x => x.id !== g.id);
       await saveNotebook(nb);
       foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
-      toast(parent ? 'Sottoargomento eliminato' : 'Macro-argomento eliminato');
+      toast(depth > 1 ? 'Sottoargomento eliminato' : 'Macro-argomento eliminato');
       route();
     }
   });
@@ -1454,10 +1501,12 @@ function viewNotebook(id) {
 
 async function createGroupFlow(nb, parentId = null) {
   const parent = parentId ? groupsOf(nb).find(x => x.id === parentId) : null;
+  const pDepth = parent ? groupDepth(nb, parent) : 0;
+  if (parent && pDepth >= GROUP_MAX_DEPTH) { toast('Si arriva al massimo a tre livelli'); return null; }
   const name = await modal(parent ? {
-    title: 'Nuovo sottoargomento',
-    text: `Dentro ${parent.name}. Raccoglie alcune sezioni del macro-argomento.`,
-    input: true, placeholder: 'Es. Valvulopatie', confirm: 'Crea'
+    title: pDepth === 1 ? 'Nuovo sottoargomento' : 'Nuovo sottoargomento (3° livello)',
+    text: `Dentro ${[...groupAncestors(nb, parent), parent].map(x => x.name).join(' › ')}. Raccoglie alcune sezioni${pDepth === 1 ? ' del macro-argomento' : ' del sottoargomento'}.`,
+    input: true, placeholder: pDepth === 1 ? 'Es. Valvulopatie' : 'Es. Stenosi aortica', confirm: 'Crea'
   } : {
     title: 'Nuovo macro-argomento',
     text: 'Un grande tema del notebook, per esempio un apparato o un capitolo. Dentro puoi creare sottoargomenti e metterci le sezioni.',
@@ -2305,7 +2354,8 @@ function modeQuiz(sec, body) {
 /* Modifica */
 function groupOptions(nb, selected) {
   const opt = (g, label) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(label)}</option>`;
-  return `<option value="">Nessuno</option>${topGroups(nb).map(g => opt(g, g.name) + subGroups(nb, g).map(s => opt(s, `${g.name} › ${s.name}`)).join('')).join('')}<option value="__new">Nuovo macro-argomento…</option>`;
+  const walk = (g, prefix) => opt(g, prefix + g.name) + subGroups(nb, g).map(x => walk(x, `${prefix}${g.name} › `)).join('');
+  return `<option value="">Nessuno</option>${topGroups(nb).map(g => walk(g, '')).join('')}<option value="__new">Nuovo macro-argomento…</option>`;
 }
 // Il menu dei macro-argomenti: la voce "Nuovo…" chiede il nome e lo crea subito
 function bindGroupSelect(select, getNb, onPick = () => {}) {
@@ -5122,6 +5172,18 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.41: selezione più precisa con la penna', `
+      <ul>
+        <li>La barra con Modifica, Cloze e i colori ora compare <strong>solo quando hai finito di selezionare</strong> (alzi la penna o il dito e la selezione resta ferma un attimo). Prima compariva subito, sotto la punta: trascinandoci sopra, il browser allungava la selezione fino in fondo. Vale in Leggi, nel Cloze e nel lettore PDF.</li>
+        <li>Se poi sposti le maniglie della selezione, la barra si nasconde e ricompare appena ti fermi.</li>
+      </ul>`)}
+    ${sec('Novità della 3.40: terzo livello nei notebook', `
+      <ul>
+        <li>Dentro un sottoargomento puoi crearne un altro: <strong>macro-argomento › sottoargomento › sottoargomento</strong>, per esempio Cardiologia › Valvulopatie › Stenosi aortica. Dal menu “Opzioni” di un sottoargomento: <strong>Nuovo sottoargomento (3° livello)</strong>.</li>
+        <li><strong>Sposta dentro un altro argomento</strong> (stesso menu) porta un gruppo, con le sue sezioni e i suoi sottoargomenti, dentro un altro, o di nuovo al primo livello: così riorganizzi quello che hai già senza ricreare niente. L’app ti propone solo i posti dove i livelli restano tre al massimo.</li>
+        <li>Eliminando un gruppo, i suoi sottoargomenti salgono di un livello e le sue sezioni passano al gruppo sopra.</li>
+        <li>Tutto il resto segue i tre livelli: il percorso in cima alla sezione, i menu “Macro-argomento” in Modifica e in Importa, la simulazione d’esame e l’ascolto in sequenza di un gruppo (che includono tutti i livelli sotto), l’ordine Precedente/Successiva e l’import “Per argomenti” dentro un gruppo.</li>
+      </ul>`)}
     ${sec('Novità della 3.39: domande d’esame, ascolto in sequenza, figure del PDF', `
       <ul>
         <li><strong>Domande d’esame</strong> (barra laterale o Altro): la banca delle domande uscite, con materia, docente, anno, argomento e quante volte sono uscite. Si importano da un foglio <strong>Excel o CSV</strong> scegliendo le colonne; le domande ripetute si sommano. Filtri per materia, docente, anno; allenamento dalle più frequenti o da quelle che sbagli; esportazione in Excel per condividerle.</li>
@@ -5589,6 +5651,29 @@ function readingToolsHtml() {
     <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>`;
 }
 
+/* v3.41: la barra della selezione compare solo a selezione finita.
+   Se compariva mentre trascinavi la penna o il dito, la punta ci passava sopra
+   e il browser allungava la selezione fino in fondo alla pagina. */
+const SelGesture = {
+  down: false,
+  subs: new Set(),
+  init() {
+    document.addEventListener('pointerdown', e => {
+      if (e.target.closest && e.target.closest('.rt-bar, .rt-menu')) return;
+      this.down = true;
+    }, true);
+    const up = () => { if (!this.down) return; this.down = false; this.subs.forEach(f => f()); };
+    document.addEventListener('pointerup', up, true);
+    document.addEventListener('pointercancel', up, true);
+  }
+};
+// mostra la barra quando la selezione è ferma e nessun dito o penna sta trascinando
+function stableSelection(bar, check, { delay = 380 } = {}) {
+  let t = 0;
+  const later = () => { clearTimeout(t); t = setTimeout(() => { if (!SelGesture.down && check()) bar.hidden = false; }, delay); };
+  SelGesture.subs.add(later);
+  return { changed() { bar.hidden = true; later(); }, cancel() { clearTimeout(t); }, done() { clearTimeout(t); SelGesture.subs.delete(later); } };
+}
 function setupReadingTools(container, sec) {
   const bar = document.createElement('div');
   bar.className = 'sel-bar rt-bar';
@@ -5623,10 +5708,12 @@ function setupReadingTools(container, sec) {
     const listText = lis.length > 1 ? lis.map(li => '- ' + li.textContent.trim()).join('\n') : '';
     return { text: text.trim(), occurrence, listText };
   };
+  const stable = stableSelection(bar, () => { const c = capture(); if (c) last = c; return !!c; });
   const onSel = () => {
     const c = capture();
-    if (c) { clearTimeout(hideTimer); last = c; bar.hidden = false; }
-    else if (!bar.hidden) { clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 700); }
+    if (c) { clearTimeout(hideTimer); last = c; stable.changed(); }
+    else if (!bar.hidden) { stable.cancel(); clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 700); }
+    else stable.cancel();
   };
   const closeMenu = () => { menu.hidden = true; };
   const act = async kind => {
@@ -5715,6 +5802,7 @@ function setupReadingTools(container, sec) {
   window.addEventListener('scroll', closeMenu, { passive: true });
   addCleanup(() => {
     clearTimeout(hideTimer);
+    stable.done();
     document.removeEventListener('selectionchange', onSel);
     document.removeEventListener('pointerdown', onDocDown, true);
     document.removeEventListener('keydown', onKey);
@@ -8039,11 +8127,14 @@ function viewPdf(id, pageParam) {
   document.body.append(bar, menu);
   let lastSel = null;
   let hideTimer = null;
+  const pdfStable = stableSelection(bar, () => { if (R.tool !== 'select') return false; const s = readSelection(); if (s) lastSel = s; return !!s; });
+  addCleanup(() => pdfStable.done());
   const onSel = () => {
     if (R.tool !== 'select') return;
     const s = readSelection();
-    if (s) { clearTimeout(hideTimer); lastSel = s; bar.hidden = false; }
-    else if (!bar.hidden) { clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 600); }
+    if (s) { clearTimeout(hideTimer); lastSel = s; pdfStable.changed(); }
+    else if (!bar.hidden) { pdfStable.cancel(); clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 600); }
+    else pdfStable.cancel();
   };
   const newAnnotsFromSel = (s, type, color) => [...s.byPage.entries()].map(([n, rects], i) => ({
     id: uid(), type, color, page: n, rects, text: i === 0 ? s.text.slice(0, 2000) : '', created: Date.now()
@@ -9814,7 +9905,7 @@ function examScope(nbId, gid) {
   const nb = nbById(nbId);
   if (!nb) return null;
   const g = gid ? groupsOf(nb).find(x => x.id === gid) : null;
-  const ids = g ? new Set([g.id, ...subGroups(nb, g).map(x => x.id)]) : null;
+  const ids = g ? groupTreeIds(nb, g) : null;
   const secs = secsOf(nb.id).filter(s => !ids || ids.has(s.groupId));
   return { nb, g, secs, key: `${nb.id}/${g ? g.id : ''}`, name: g ? `${nb.name} › ${g.name}` : nb.name };
 }
@@ -11429,6 +11520,7 @@ async function init() {
   setupPwa();
   ShDock.init();
   Nav.init();
+  SelGesture.init();
   NavHide.init();
   Resume.init();
   Pad.init();
@@ -11904,10 +11996,8 @@ function nbReadingOrder(nb) {
   const out = [];
   const seen = new Set();
   const add = list => list.forEach(s => { if (!seen.has(s.id)) { seen.add(s.id); out.push(s); } });
-  topGroups(nb).forEach(g => {
-    add(secs.filter(s => s.groupId === g.id));
-    subGroups(nb, g).forEach(sg => add(secs.filter(s => s.groupId === sg.id)));
-  });
+  const walk = g => { add(secs.filter(s => s.groupId === g.id)); subGroups(nb, g).forEach(walk); };
+  topGroups(nb).forEach(walk);
   add(secs);
   return out;
 }
@@ -14931,7 +15021,7 @@ const TUT_KEY = 'nb-tutorial-done';
 const TUTORIAL = [
   { icon: '👋', title: 'Benvenuta nel Notebook', html: `Qui trasformi appunti, PDF e slide in materiale da <b>ripassare attivamente</b>: cloze, domande, flashcard, ripetizione a voce.<br><br>Ti bastano due minuti per il giro completo.` },
   { icon: '📲', title: 'Mettilo sulla schermata Home', html: `Così si apre come una vera app e i dati restano al sicuro.<br><br><b>Android:</b> Altro → Impostazioni → <b>Installa l’app</b>, oppure in Chrome menu <b>⋮</b> → <b>Installa app</b>.<br><b>iPhone:</b> in <b>Safari</b> tasto <b>Condividi</b> → <b>Aggiungi alla schermata Home</b>.` },
-  { icon: '📒', title: '1. Notebook e argomenti', html: `Crea un <b>notebook</b> per ogni materia.<br><br>Dentro puoi dividerlo in <b>macro-argomenti</b> e <b>sottoargomenti</b>; le <b>sezioni</b> sono i singoli argomenti che studi e ripassi.` },
+  { icon: '📒', title: '1. Notebook e argomenti', html: `Crea un <b>notebook</b> per ogni materia.<br><br>Dentro puoi dividerlo in <b>macro-argomenti</b> e <b>sottoargomenti</b>, fino a tre livelli; le <b>sezioni</b> sono i singoli argomenti che studi e ripassi.` },
   { icon: '📥', title: '2. Importa', html: `In <b>Importa</b> incolli un testo, carichi un PDF o una mappa XMind e l’app crea le sezioni.<br><br>Un PDF lo dividi ogni tot pagine, a intervalli scelti o <b>per argomenti</b>, leggendo i titoli. Con una chiave AI (Impostazioni) i testi vengono anche formattati, con cloze e domande.` },
   { icon: '🧠', title: '3. Studia una sezione', html: `In alto trovi le schede:<br><br><b>Cloze</b> nasconde i termini chiave · <b>Leggi</b> · <b>Mappe</b> · <b>Pagina bianca</b> e <b>Orale</b>: ripeti e confronta, segnando col semaforo · <b>Domande</b> · <b>Flashcard</b> · <b>Video</b> · <b>Modifica</b>.<br><br>Seleziona del testo in Leggi per evidenziarlo o farne un cloze o una flashcard.` },
   { icon: '🔁', title: '4. Ripassa', html: `Finita una sezione, scegli in fondo:<br><br><b>Segna come studiata in StudyHub</b>: i ripassi li pianifica StudyHub.<br><b>Ripassa nel Notebook</b>: li trovi nella scheda Ripasso.<br><br>Dopo ogni prova tocca <b>Di nuovo</b>, <b>Difficile</b>, <b>Bene</b> o <b>Facile</b>: l’app decide quando riproportela.` },
@@ -14999,7 +15089,7 @@ const HELP = {
   modes: { t: 'Le schede della sezione', b: `<b>Cloze</b>: i termini chiave sono nascosti, toccali per scoprirli.<br><b>Leggi</b>: gli appunti; selezionando il testo evidenzi o crei cloze e flashcard.<br><b>Mappe</b>: gli appunti come mappa concettuale.<br><b>Pagina bianca</b>: scrivi tutto quello che ricordi, poi confronti.<br><b>Orale</b>: ripeti a voce come all’esame, poi confronti.<br><b>Domande</b>, <b>Flashcard</b>, <b>Video</b>, <b>Modifica</b>.<br><br>Nei casi clinici c’è anche <b>Risolvi</b>: il caso si scopre una parte alla volta.<br><br>Quando confronti, segna col semaforo: tocca il pallino accanto ai titoli o il margine sinistro.` },
   // Pagine
   notebooks: { t: 'I tuoi notebook', b: `Un notebook per ogni materia. Toccane uno per vedere macro-argomenti e sezioni; da qui ne crei di nuovi.` },
-  notebook: { t: 'Il notebook', b: `Le sezioni divise in <b>macro-argomenti</b> e <b>sottoargomenti</b>. Il menu “⋯” di un gruppo serve per aggiungere sezioni, crearne di nuove, importare lì o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
+  notebook: { t: 'Il notebook', b: `Le sezioni divise in <b>macro-argomenti</b> e <b>sottoargomenti</b>, fino a <b>tre livelli</b> (per esempio Cardiologia › Valvulopatie › Stenosi aortica). Con “Sposta dentro un altro argomento” riorganizzi i gruppi che hai già. Il menu “⋯” di un gruppo serve per aggiungere sezioni, crearne di nuove, importare lì o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
   review: { t: 'Ripasso', b: `Le sezioni da ripassare oggi nel Notebook (quelle mandate a StudyHub le pianifica StudyHub).<br><br>Dopo ogni prova valuta con Di nuovo, Difficile, Bene o Facile: l’app decide quando riproportela.` },
   cardsPage: { t: 'Flashcard', b: `Le flashcard da ripassare di tutti i notebook. Gira la carta, poi valuta quanto la sapevi.<br><br>Le crei selezionando il testo in Leggi, con l’AI o a mano.` },
   pdfs: { t: 'PDF', b: `La tua libreria di PDF, collegati ai notebook o alle singole sezioni. Nel lettore puoi evidenziare, scrivere a mano, mettere segnalibri e trascinare parti negli appunti.` },
@@ -16305,7 +16395,9 @@ async function ensureTopicGroup(job, path) {
   const nb = nbById(job.nbId);
   if (!nb) return job.groupId;
   const base = job.groupId ? groupsOf(nb).find(g => g.id === job.groupId) : null;
-  if (base && groupParent(nb, base)) return base.id;          // dentro un sottoargomento non si scende oltre
+  // si scende al massimo fino al terzo livello: dentro un gruppo profondo uso solo i titoli più vicini
+  const room = GROUP_MAX_DEPTH - (base ? groupDepth(nb, base) : 0);
+  if (room <= 0) return base.id;
   const same = (a, b) => foldAccents(a).trim() === foldAccents(b).trim();
   const find = (name, parentId) => groupsOf(nb).find(g => same(g.name, name) && (g.parentId || null) === (parentId || null));
   const make = (name, parentId) => {
@@ -16315,14 +16407,8 @@ async function ensureTopicGroup(job, path) {
     job.groupsChanged = true;
     return g;
   };
-  let target;
-  if (base) {
-    const name = path[path.length - 1];
-    target = find(name, base.id) || make(name, base.id);
-  } else {
-    const macro = find(path[0], null) || make(path[0], null);
-    target = path[1] ? (find(path[1], macro.id) || make(path[1], macro.id)) : macro;
-  }
+  let target = base;
+  for (const name of path.slice(-room)) target = find(name, target ? target.id : null) || make(name, target ? target.id : null);
   if (job.groupsChanged) { await saveNotebook(nb); job.groupsChanged = false; }
   return target.id;
 }
