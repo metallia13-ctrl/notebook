@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.41';
+const APP_VERSION = '3.42';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -5172,6 +5172,12 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.42: barra della selezione di lato', `
+      <ul>
+        <li>Quando selezioni del testo, la barra con Modifica, Cloze, colori, Glossario, Nota clinica e Flashcard si mette <strong>di lato</strong>, nello spazio libero accanto agli appunti e all’altezza della selezione, in colonna. Non copre più il testo né le maniglie della selezione.</li>
+        <li>Se di lato non c’è spazio (telefono, pannelli aperti), va <strong>in alto</strong>, sotto le schede. Nel lettore PDF sta in alto, sotto gli strumenti.</li>
+        <li>Il riquadro di Google che compare in basso con la parola selezionata è “Tocca per cercare” di Chrome: l’app non lo può spegnere, si disattiva da Chrome → Impostazioni → Servizi Google.</li>
+      </ul>`)}
     ${sec('Novità della 3.41: selezione più precisa con la penna', `
       <ul>
         <li>La barra con Modifica, Cloze e i colori ora compare <strong>solo quando hai finito di selezionare</strong> (alzi la penna o il dito e la selezione resta ferma un attimo). Prima compariva subito, sotto la punta: trascinandoci sopra, il browser allungava la selezione fino in fondo. Vale in Leggi, nel Cloze e nel lettore PDF.</li>
@@ -5667,10 +5673,47 @@ const SelGesture = {
     document.addEventListener('pointercancel', up, true);
   }
 };
+// v3.42: la barra va di lato, nello spazio libero accanto al testo, all’altezza della
+// selezione; se di lato non c’è posto, in alto sotto le schede. Mai sopra il testo.
+function placeSelBar(bar, container) {
+  bar.classList.remove('rt-side', 'rt-top');
+  bar.style.left = bar.style.top = '';
+  const art = container.getBoundingClientRect();
+  const leftEdge = window.innerWidth >= 900 && !document.body.classList.contains('nav-hidden') ? 232 : 0;
+  let rightEdge = window.innerWidth;
+  ['.split-dock', '.pad-dock', '.sh-dock'].forEach(sel => {
+    const d = document.querySelector(sel);
+    if (!d || d.hidden) return;
+    const r = d.getBoundingClientRect();
+    if (r.height > window.innerHeight * 0.5 && r.left > art.left) rightEdge = Math.min(rightEdge, r.left);
+  });
+  const W = 136;
+  const spaceR = rightEdge - art.right - 10;
+  const spaceL = art.left - leftEdge - 10;
+  const sel = document.getSelection();
+  const rect = sel && sel.rangeCount ? sel.getRangeAt(0).getBoundingClientRect() : null;
+  const tabs = document.querySelector('#view .tabs');
+  const topMin = Math.max(8, tabs ? tabs.getBoundingClientRect().bottom + 8 : 8);
+  if (Math.max(spaceR, spaceL) >= W) {
+    bar.classList.add('rt-side');
+    const h = bar.offsetHeight || 360;
+    const y = rect && rect.height ? rect.top - 6 : topMin;
+    const bottomMax = window.innerHeight - (window.innerWidth < 900 ? 92 : 8);
+    bar.style.top = `${Math.round(Math.max(topMin, Math.min(bottomMax - h, y)))}px`;
+    bar.style.left = `${Math.round(spaceR >= W ? art.right + Math.min(22, (spaceR - W) / 2) : art.left - W - Math.min(22, (spaceL - W) / 2))}px`;
+  } else if (rect && rect.height && rect.top < topMin + 70) {
+    // selezione proprio in alto: la barra resta in basso, lontano dal testo scelto
+    bar.style.left = `${Math.round((art.left + art.right) / 2)}px`;
+  } else {
+    bar.classList.add('rt-top');
+    bar.style.top = `${Math.round(topMin)}px`;
+    bar.style.left = `${Math.round((art.left + art.right) / 2)}px`;
+  }
+}
 // mostra la barra quando la selezione è ferma e nessun dito o penna sta trascinando
-function stableSelection(bar, check, { delay = 380 } = {}) {
+function stableSelection(bar, check, { delay = 380, place = null } = {}) {
   let t = 0;
-  const later = () => { clearTimeout(t); t = setTimeout(() => { if (!SelGesture.down && check()) bar.hidden = false; }, delay); };
+  const later = () => { clearTimeout(t); t = setTimeout(() => { if (!SelGesture.down && check()) { bar.hidden = false; if (place) place(); } }, delay); };
   SelGesture.subs.add(later);
   return { changed() { bar.hidden = true; later(); }, cancel() { clearTimeout(t); }, done() { clearTimeout(t); SelGesture.subs.delete(later); } };
 }
@@ -5708,7 +5751,12 @@ function setupReadingTools(container, sec) {
     const listText = lis.length > 1 ? lis.map(li => '- ' + li.textContent.trim()).join('\n') : '';
     return { text: text.trim(), occurrence, listText };
   };
-  const stable = stableSelection(bar, () => { const c = capture(); if (c) last = c; return !!c; });
+  const stable = stableSelection(bar, () => { const c = capture(); if (c) last = c; return !!c; }, { place: () => placeSelBar(bar, container) });
+  // scorrendo, la barra segue la selezione
+  let rafPlace = 0;
+  const onScrollPlace = () => { if (bar.hidden || rafPlace) return; rafPlace = requestAnimationFrame(() => { rafPlace = 0; if (!bar.hidden) placeSelBar(bar, container); }); };
+  window.addEventListener('scroll', onScrollPlace, { passive: true });
+  addCleanup(() => window.removeEventListener('scroll', onScrollPlace));
   const onSel = () => {
     const c = capture();
     if (c) { clearTimeout(hideTimer); last = c; stable.changed(); }
@@ -8127,7 +8175,10 @@ function viewPdf(id, pageParam) {
   document.body.append(bar, menu);
   let lastSel = null;
   let hideTimer = null;
-  const pdfStable = stableSelection(bar, () => { if (R.tool !== 'select') return false; const s = readSelection(); if (s) lastSel = s; return !!s; });
+  const pdfStable = stableSelection(bar, () => { if (R.tool !== 'select') return false; const s = readSelection(); if (s) lastSel = s; return !!s; }, {
+    // nel PDF le pagine occupano tutto: la barra va in alto, sotto gli strumenti
+    place: () => { const r = scroller.getBoundingClientRect(); bar.classList.add('rt-top'); bar.style.top = `${Math.round(r.top + 8)}px`; bar.style.left = `${Math.round(r.left + r.width / 2)}px`; }
+  });
   addCleanup(() => pdfStable.done());
   const onSel = () => {
     if (R.tool !== 'select') return;
