@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.43';
+const APP_VERSION = '3.44';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -5172,6 +5172,12 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.44: sposta un paragrafo in un’altra sezione', `
+      <ul>
+        <li>Seleziona del testo in Leggi o nel Cloze e tocca <strong>↗ Sposta</strong> nella barra. L’app prende il blocco intero dove hai selezionato: un <strong>titolo con tutto quello che contiene</strong> (fino al titolo successivo dello stesso livello), le <strong>voci di elenco</strong> toccate con le loro sottovoci, un paragrafo o una tabella. Prima di spostare vedi l’anteprima.</li>
+        <li>Scegli la sezione di arrivo (prima quelle dello stesso notebook) e dove metterlo: in fondo, all’inizio o dentro uno dei suoi titoli. Se c’è un titolo con lo stesso nome, è già proposto; i titoli spostati scendono di livello quando finiscono dentro un altro titolo.</li>
+        <li>“Lasciane una copia anche qui” copia invece di spostare. Dopo lo spostamento, <strong>Annulla</strong> nel messaggio rimette tutto com’era.</li>
+      </ul>`)}
     ${sec('Novità della 3.43: una sola barra, a sinistra', `
       <ul>
         <li>Sul tablet, tenere premuto con la penna o col dito apriva anche il menu pensato per il tasto destro del mouse, e le barre diventavano due. Ora con penna e dita compare solo la barra; il menu resta per il mouse.</li>
@@ -5651,6 +5657,7 @@ function wrapSelectionInTextarea(ta, open, close) {
 function readingToolsHtml() {
   return `
     <button type="button" class="rt-btn rt-edit" data-rt="edit" title="Apre Modifica con il cursore su questo testo">✎ Modifica</button>
+    <button type="button" class="rt-btn" data-rt="move" title="Sposta il paragrafo, il titolo o le voci selezionate in un’altra sezione">↗ Sposta</button>
     <button type="button" class="rt-btn" data-rt="cloze" title="Nascondi nel Cloze">Cloze</button>
     <span class="rt-colors" role="group" aria-label="Evidenzia">
       ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key}" data-rt="${c.key}" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}
@@ -5660,6 +5667,163 @@ function readingToolsHtml() {
     <button type="button" class="rt-btn" data-rt="gloss" title="Aggiungi al glossario">Glossario</button>
     <button type="button" class="rt-btn" data-rt="clin" title="Crea una nota clinica">Nota clinica</button>
     <button type="button" class="rt-btn rt-card" data-rt="card">Flashcard</button>`;
+}
+
+/* =====================================================================
+   v3.44: spostare un paragrafo in un’altra sezione
+   Dal testo selezionato trovo il blocco intero negli appunti: un titolo con
+   tutto quello che contiene, le voci di elenco toccate (con le loro sottovoci),
+   un paragrafo, una tabella. Lo tolgo da qui e lo metto nella sezione scelta.
+   ===================================================================== */
+const mvIsList = l => /^\s*([-*+]|\d+[.)])\s/.test(l);
+const indentOf = l => (l.match(/^\s*/)[0].replace(/\t/g, '  ')).length;
+const headingLevel = l => { const m = l.match(/^(#{1,6})\s/); return m ? m[1].length : 0; };
+function moveRangeOf(md, start, end) {
+  const lines = md.split('\n');
+  const offs = [];
+  let o = 0;
+  lines.forEach(l => { offs.push(o); o += l.length + 1; });
+  const lineAt = pos => { let i = 0; while (i + 1 < offs.length && offs[i + 1] <= pos) i++; return i; };
+  let a = lineAt(start), b = lineAt(Math.max(start, end - 1));
+  // dentro un blocco di codice: lo prendo tutto
+  const fenceOpen = i => lines.slice(0, i).filter(l => /^\s*```/.test(l)).length % 2 === 1;
+  const blank = i => !lines[i] || !lines[i].trim();
+  if (fenceOpen(a) || /^\s*```/.test(lines[a])) { let k = a; while (k > 0 && !/^\s*```/.test(lines[k])) k--; a = k; }
+  if (fenceOpen(b + 1) || (/^\s*```/.test(lines[b]) && fenceOpen(b))) { let k = b + 1; while (k < lines.length && !/^\s*```/.test(lines[k])) k++; b = Math.min(lines.length - 1, k); }
+  const hl = headingLevel(lines[a]);
+  if (hl) {
+    // un titolo porta con sé tutto fino al titolo successivo dello stesso livello o superiore
+    let k = a + 1;
+    while (k < lines.length) { const h = headingLevel(lines[k]); if (h && h <= hl && !fenceOpen(k)) break; k++; }
+    b = Math.max(b, k - 1);
+  } else {
+    // inizio: la voce di elenco o il paragrafo dove comincia la selezione
+    let k = a;
+    while (k > 0 && !blank(k - 1) && !mvIsList(lines[k]) && !headingLevel(lines[k - 1]) && !/^\|/.test(lines[k])) k--;
+    if (/^\|/.test(lines[a])) { k = a; while (k > 0 && /^\|/.test(lines[k - 1])) k--; }
+    a = k;
+  }
+  // fine: la voce (con le sottovoci), il paragrafo o la tabella dove finisce
+  if (/^\|/.test(lines[b])) { while (b + 1 < lines.length && /^\|/.test(lines[b + 1])) b++; }
+  else {
+    let s = b;
+    while (s > a && !mvIsList(lines[s]) && !blank(s - 1)) s--;
+    if (mvIsList(lines[s])) {
+      const ind = indentOf(lines[s]);
+      let k = s + 1;
+      while (k < lines.length && !blank(k) && (mvIsList(lines[k]) ? indentOf(lines[k]) > ind : indentOf(lines[k]) > ind || !headingLevel(lines[k]) && !mvIsList(lines[k]) && indentOf(lines[k]) > 0)) k++;
+      b = Math.max(b, k - 1);
+    } else if (!hl) {
+      while (b + 1 < lines.length && !blank(b + 1) && !headingLevel(lines[b + 1]) && !mvIsList(lines[b + 1])) b++;
+    }
+  }
+  const from = offs[a];
+  const to = b + 1 < offs.length ? offs[b + 1] : md.length;
+  let text = md.slice(from, to).replace(/\s+$/, '');
+  // voci di elenco annidate: le riporto a sinistra, così nell’altra sezione sono un elenco normale
+  const ls = text.split('\n');
+  const minInd = Math.min(...ls.filter(l => l.trim()).map(indentOf));
+  if (minInd > 0 && mvIsList(ls[0])) text = ls.map(l => l.replace(new RegExp(`^ {0,${minInd}}`), '')).join('\n');
+  return { from, to, text, heading: hl ? lines[a].replace(/^#+\s*/, '') : '' };
+}
+const joinMd = (left, right) => {
+  const l = left.replace(/\s+$/, ''), r = right.replace(/^\s+/, '');
+  return l && r ? `${l}\n\n${r}` : (l || r);
+};
+// dove inserire nella sezione di arrivo: all’inizio, in fondo, o dentro un titolo
+function headingsOf(md) {
+  const out = [];
+  let fence = false;
+  let o = 0;
+  md.split('\n').forEach(l => {
+    if (/^\s*```/.test(l)) fence = !fence;
+    const h = !fence && headingLevel(l);
+    if (h) out.push({ level: h, title: l.replace(/^#+\s*/, '').trim(), at: o });
+    o += l.length + 1;
+  });
+  return out;
+}
+function insertInto(md, text, where) {
+  if (where === 'start') return joinMd(text, md);
+  if (where === 'end' || !where) return joinMd(md, text);
+  const hs = headingsOf(md);
+  const i = hs.findIndex(h => String(h.at) === String(where));
+  if (i < 0) return joinMd(md, text);
+  const h = hs[i];
+  const next = hs.slice(i + 1).find(x => x.level <= h.level);
+  const cut = next ? next.at : md.length;
+  // i titoli spostati scendono sotto il titolo scelto
+  const top = Math.min(...text.split('\n').map(headingLevel).filter(Boolean), 99);
+  const shift = top < 99 && top <= h.level ? h.level + 1 - top : 0;
+  const body = shift ? text.split('\n').map(l => { const lv = headingLevel(l); return lv ? `${'#'.repeat(Math.min(6, lv + shift))}${l.slice(lv)}` : l; }).join('\n') : text;
+  return joinMd(joinMd(md.slice(0, cut), body), md.slice(cut));
+}
+async function moveBlockFlow(sec, selText, occurrence) {
+  const r0 = findSourceRange(sec.md, selText, occurrence);
+  if (!r0) { toast('Non ritrovo il testo selezionato negli appunti: prova a selezionarne un pezzo più corto', 'err'); return false; }
+  const blk = moveRangeOf(sec.md, r0.start, r0.end);
+  if (!blk.text.trim()) return false;
+  const others = state.sections.filter(s => s.id !== sec.id)
+    .sort((a, b) => (b.notebookId === sec.notebookId) - (a.notebookId === sec.notebookId) || (b.updated || 0) - (a.updated || 0));
+  const where = s => [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › ');
+  return new Promise(resolve => {
+    let target = null;
+    const sh = openSheet(`
+      <h2>Sposta in un’altra sezione</h2>
+      <p class="sheet-sub">${blk.heading ? `Il titolo “${esc(blk.heading)}” con tutto quello che contiene.` : 'Il blocco intero dove hai selezionato: il paragrafo, le voci di elenco con le loro sottovoci, la tabella.'}</p>
+      <div class="mv-prev notes">${renderMd(blk.text)}</div>
+      <div id="mvPick">
+        <input type="search" class="input search" id="mvQ" placeholder="Cerca la sezione di arrivo" aria-label="Cerca la sezione di arrivo">
+        <ul class="list pick-list" id="mvList"></ul>
+      </div>
+      <div id="mvWhere" hidden>
+        <p class="mv-to"></p>
+        <label class="field"><span>Dove</span><select class="input" id="mvPos"></select></label>
+        <label class="check"><input type="checkbox" id="mvCopy"><span>Lasciane una copia anche qui</span></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-mv="no">Annulla</button>
+        <button class="btn ghost" type="button" data-mv="back" hidden>Cambia sezione</button>
+        <button class="btn primary" type="button" data-mv="ok" hidden>Sposta</button>
+      </div>`, { label: 'Sposta in un’altra sezione', onClose: v => resolve(!!v) });
+    const draw = () => {
+      const f = foldAccents($('#mvQ', sh.el).value.trim());
+      $('#mvList', sh.el).innerHTML = others.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60)
+        .map(s => `<li><button type="button" class="row" data-mvs="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
+    };
+    draw();
+    $('#mvQ', sh.el).addEventListener('input', draw);
+    const pick = s => {
+      target = s;
+      $('#mvPick', sh.el).hidden = true;
+      $('#mvWhere', sh.el).hidden = false;
+      $('[data-mv="ok"]', sh.el).hidden = false;
+      $('[data-mv="back"]', sh.el).hidden = false;
+      $('.mv-to', sh.el).innerHTML = `In <strong>${esc(s.title)}</strong> <span class="muted-inline">${esc(where(s))}</span>`;
+      const hs = headingsOf(s.md || '');
+      $('#mvPos', sh.el).innerHTML = `<option value="end">In fondo</option><option value="start">All’inizio</option>${hs.map(h => `<option value="${h.at}">${'\u00a0\u00a0'.repeat(h.level - 1)}Dentro “${esc(h.title)}”</option>`).join('')}`;
+      // se esiste un titolo con lo stesso nome, lo propongo
+      const same = blk.heading && hs.find(h => foldAccents(h.title) === foldAccents(blk.heading));
+      if (same) $('#mvPos', sh.el).value = String(same.at);
+    };
+    $('#mvList', sh.el).addEventListener('click', e => { const b = e.target.closest('[data-mvs]'); if (b) pick(secById(b.dataset.mvs)); });
+    $('[data-mv="no"]', sh.el).onclick = () => sh.close(false);
+    $('[data-mv="back"]', sh.el).onclick = () => { $('#mvPick', sh.el).hidden = false; $('#mvWhere', sh.el).hidden = true; $('[data-mv="ok"]', sh.el).hidden = true; $('[data-mv="back"]', sh.el).hidden = true; };
+    $('[data-mv="ok"]', sh.el).onclick = async () => {
+      if (!target) return;
+      const copy = $('#mvCopy', sh.el).checked;
+      const before = { src: sec.md, dst: target.md };
+      target.md = `${insertInto(target.md || '', blk.text, $('#mvPos', sh.el).value).replace(/\s+$/, '')}\n`;
+      if (!copy) sec.md = `${joinMd(sec.md.slice(0, blk.from), sec.md.slice(blk.to)).replace(/\s+$/, '')}\n`;
+      await saveSection(target);
+      if (!copy) await saveSection(sec);
+      sh.close(true);
+      const tgt = target;
+      toast(`${copy ? 'Copiato' : 'Spostato'} in “${tgt.title}”`, '', { label: 'Annulla', fn: async () => { tgt.md = before.dst; sec.md = before.src; await saveSection(tgt); await saveSection(sec); toast('Spostamento annullato'); route(); } });
+      route();
+    };
+    setTimeout(() => $('#mvQ', sh.el)?.focus(), 40);
+  });
 }
 
 /* v3.41: la barra della selezione compare solo a selezione finita.
@@ -5790,6 +5954,7 @@ function setupReadingTools(container, sec) {
       await clinicSheet(null, { title: sec.title, body: c.listText || c.text, nbId: sec.notebookId, sectionId: sec.id });
       return;
     }
+    if (kind === 'move') { await moveBlockFlow(sec, c.text, c.occurrence); return; }
     if (kind === 'edit') {
       const r0 = findSourceRange(sec.md, c.text, c.occurrence);
       editJump = { secId: sec.id, start: r0 ? r0.start : -1, end: r0 ? r0.end : -1, text: c.text };

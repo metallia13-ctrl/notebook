@@ -3464,3 +3464,8 @@ body.pl-on .pad-fab { bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
 .rt-bar.rt-side .rt-dot { width: 24px; height: 24px; }
 .rt-bar.rt-side .rt-u, .rt-bar.rt-side [data-rt="none"] { width: 28px; }
 .nav a svg { flex: none; }
+
+/* v3.44: spostare un paragrafo */
+.mv-prev { max-height: 26vh; overflow: auto; margin: 6px 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); font-size: 0.9em; }
+.mv-prev > :first-child { margin-top: 0; }
+.mv-to { margin: 4px 0 8px; }
