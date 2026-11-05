@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.44';
+const APP_VERSION = '3.45';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -5172,6 +5172,12 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
+    ${sec('Novità della 3.45: correzioni del lettore PDF', `
+      <ul>
+        <li><strong>Zoom</strong>: con due dita o Ctrl + rotellina resta fermo sul punto che stai guardando. Prima, nei PDF lunghi, più eri avanti più lo zoom ti faceva saltare di pagine.</li>
+        <li><strong>Evidenziare col dito o con la penna</strong>: con lo strumento Evidenzia (o Sottolinea, Barra), se selezioni tenendo premuto e allarghi con le maniglie, l’app non evidenzia più da sola a metà: compare la barra con i colori e tocchi quello che vuoi quando la selezione è giusta. Con la penna evidenzia appena la alzi dopo aver trascinato; con il mouse come prima.</li>
+        <li><strong>Affianca con PDF pesanti</strong>: se il PDF è lo stesso del lettore, il pannello usa quello già aperto invece di caricarne una seconda copia; disegna una pagina alla volta (prima le più vicine), ne tiene poche in memoria e chiude davvero il PDF quando cambi o chiudi il pannello. Prima i PDF aperti si accumulavano e il tablet si bloccava.</li>
+      </ul>`)}
     ${sec('Novità della 3.44: sposta un paragrafo in un’altra sezione', `
       <ul>
         <li>Seleziona del testo in Leggi o nel Cloze e tocca <strong>↗ Sposta</strong> nella barra. L’app prende il blocco intero dove hai selezionato: un <strong>titolo con tutto quello che contiene</strong> (fino al titolo successivo dello stesso livello), le <strong>voci di elenco</strong> toccate con le loro sottovoci, un paragrafo o una tabella. Prima di spostare vedi l’anteprima.</li>
@@ -8352,13 +8358,15 @@ function viewPdf(id, pageParam) {
   document.body.append(bar, menu);
   let lastSel = null;
   let hideTimer = null;
-  const pdfStable = stableSelection(bar, () => { if (R.tool !== 'select') return false; const s = readSelection(); if (s) lastSel = s; return !!s; }, {
+  const textTool = () => ['hl', 'ul', 'st'].includes(R.tool);
+  const barTool = () => R.tool === 'select' || (textTool() && SelGesture.lastType !== 'mouse');
+  const pdfStable = stableSelection(bar, () => { if (!barTool()) return false; const s = readSelection(); if (s) lastSel = s; return !!s; }, {
     // nel PDF le pagine occupano tutto: la barra va in alto, sotto gli strumenti
     place: () => { const r = scroller.getBoundingClientRect(); bar.classList.add('rt-top'); bar.style.top = `${Math.round(r.top + 8)}px`; bar.style.left = `${Math.round(r.left + r.width / 2)}px`; }
   });
   addCleanup(() => pdfStable.done());
   const onSel = () => {
-    if (R.tool !== 'select') return;
+    if (!barTool()) return;
     const s = readSelection();
     if (s) { clearTimeout(hideTimer); lastSel = s; pdfStable.changed(); }
     else if (!bar.hidden) { pdfStable.cancel(); clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 600); }
@@ -8535,11 +8543,26 @@ function viewPdf(id, pageParam) {
     addAnnots(newAnnotsFromSel(s, R.tool, R.color));
     document.getSelection()?.removeAllRanges();
   };
-  pagesEl.addEventListener('mouseup', () => { clearTimeout(textToolTimer); textToolTimer = setTimeout(applyTextTool, 30); });
+  // v3.45: con il mouse evidenzia appena rilasci; con la penna quando la alzi dopo aver
+  // trascinato; col dito (pressione lunga e maniglie) non evidenzia più da solo a metà:
+  // compare la barra con i colori e scegli tu quando.
+  pagesEl.addEventListener('mouseup', () => { if (SelGesture.lastType !== 'mouse') return; clearTimeout(textToolTimer); textToolTimer = setTimeout(applyTextTool, 30); });
+  // con la penna: se hai trascinato evidenzio subito; se hai solo tenuto premuto
+  // (poi allarghi con le maniglie) aspetto che tu scelga il colore dalla barra
+  let penFrom = null;
+  pagesEl.addEventListener('pointerdown', e => { penFrom = e.pointerType === 'pen' ? [e.clientX, e.clientY] : null; }, true);
+  pagesEl.addEventListener('pointerup', e => {
+    if (e.pointerType !== 'pen' || !penFrom) return;
+    const dragged = Math.hypot(e.clientX - penFrom[0], e.clientY - penFrom[1]) > 12;
+    penFrom = null;
+    if (!dragged) return;
+    // timer a parte: il selectionchange che arriva subito dopo non deve annullarlo
+    setTimeout(applyTextTool, 60);
+  });
   document.addEventListener('selectionchange', () => {
     if (!['hl', 'ul', 'st'].includes(R.tool)) return;
     clearTimeout(textToolTimer);
-    textToolTimer = setTimeout(applyTextTool, 1100);
+    if (SelGesture.lastType === 'mouse') textToolTimer = setTimeout(applyTextTool, 1100);
   });
   const eraseAt = e => {
     const hit = document.elementFromPoint(e.clientX, e.clientY);
@@ -9274,11 +9297,10 @@ function viewPdf(id, pageParam) {
     pagesEl.style.transform = '';
     pagesEl.style.transformOrigin = '';
     if (Math.abs(p.k - 1) < 0.03) return;
-    zoomTo(p.z0 * p.k);
-    const k2 = R.zoom / p.z0;
-    scroller.scrollLeft = (p.sl + p.mx) * k2 - p.mx;
-    scroller.scrollTop = (p.st + p.my) * k2 - p.my;
-    renderAround();
+    // il punto tra le dita, misurato prima dello zoom
+    scroller.scrollTop = p.st;
+    scroller.scrollLeft = p.sl;
+    zoomTo(p.z0 * p.k, anchorAt(p.mx, p.my));
   };
   scroller.addEventListener('touchend', endPinch);
   scroller.addEventListener('touchcancel', endPinch);
@@ -9286,26 +9308,33 @@ function viewPdf(id, pageParam) {
     if (!e.ctrlKey || !R.doc) return;
     e.preventDefault();
     const r = scroller.getBoundingClientRect();
-    const mx = e.clientX - r.left;
-    const my = e.clientY - r.top;
-    const cx = scroller.scrollLeft + mx;
-    const cy = scroller.scrollTop + my;
-    const z0 = R.zoom;
-    zoomTo(z0 * Math.exp(-e.deltaY * 0.01));
-    const k2 = R.zoom / z0;
-    scroller.scrollLeft = cx * k2 - mx;
-    scroller.scrollTop = cy * k2 - my;
+    zoomTo(R.zoom * Math.exp(-e.deltaY * 0.01), anchorAt(e.clientX - r.left, e.clientY - r.top));
   }, { passive: false });
-  const zoomTo = z => {
-    const keep = R.cur;
-    const el = pageEl(keep);
-    const frac = el ? (scroller.scrollTop - pageTop(el)) / el.offsetHeight : 0;
+  // v3.45: lo zoom resta ancorato al punto della pagina sotto le dita o il puntatore.
+  // Prima moltiplicava lo scorrimento per lo zoom, ma gli spazi tra le pagine non
+  // si ingrandiscono: più si era avanti nel PDF, più si saltava di pagine.
+  const anchorAt = (mx, my) => {
+    const y = scroller.scrollTop + my;
+    const els = pagesEl.children;
+    let lo = 0, hi = els.length - 1, ans = 0;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (els[mid].offsetTop <= y) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+    const el = els[ans];
+    if (!el) return null;
+    return { n: +el.dataset.p, fy: (y - el.offsetTop) / Math.max(1, el.offsetHeight), fx: (scroller.scrollLeft + mx - el.offsetLeft) / Math.max(1, el.offsetWidth), mx, my };
+  };
+  const restoreAnchor = a => {
+    const el = a && pageEl(a.n);
+    if (!el) return;
+    scroller.scrollTop = el.offsetTop + a.fy * el.offsetHeight - a.my;
+    scroller.scrollLeft = Math.max(0, el.offsetLeft + a.fx * el.offsetWidth - a.mx);
+  };
+  const zoomTo = (z, anchor) => {
+    const a = anchor || anchorAt(scroller.clientWidth / 2, scroller.clientHeight * 0.35);
     R.zoom = Math.max(0.5, Math.min(3, +z.toFixed(3)));
     meta.zoom = R.zoom;
     saveSoon();
     applySizes();
-    const el2 = pageEl(keep);
-    if (el2) scroller.scrollTop = pageTop(el2) + frac * el2.offsetHeight;
+    restoreAnchor(a);
     renderAround();
   };
   app.addEventListener('click', e => {
@@ -9368,6 +9397,9 @@ function viewPdf(id, pageParam) {
     R.thumbIo?.disconnect();
     bar.remove();
     menu.remove();
+    // se Affianca mostrava lo stesso PDF, gli do una copia sua prima di chiudere questa
+    if (PdfShared.doc === R.doc) { PdfShared.id = ''; PdfShared.doc = null; }
+    if (Split.pdf && Split.pdf.shared && Split.pdf.doc === R.doc) { const it = { ...Split.item, page: Split.curPage || Split.item.page }; Split.pdf = null; setTimeout(() => Split.show(it), 0); }
     try { R.doc?.destroy(); } catch { /* già chiuso */ }
   });
   setTool('select');
@@ -9389,6 +9421,8 @@ function viewPdf(id, pageParam) {
       const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
       if (R.destroyed) { doc.destroy(); return; }
       R.doc = doc;
+      PdfShared.id = meta.id;
+      PdfShared.doc = doc;
       if (doc.numPages !== meta.pages) { meta.pages = doc.numPages; saveSoon(); }
       const p1 = await doc.getPage(1);
       R.base = p1.getViewport({ scale: 1 });
@@ -13115,6 +13149,8 @@ function pickSectionSheet(title, preferId = '') {
    Di fianco anche sul tablet in verticale (da 700 px), sotto sul telefono.
    Il pannello mostra in sola lettura; “Apri qui” lo porta nella pagina principale.
    ===================================================================== */
+// il documento del lettore PDF aperto, che Affianca può riusare
+const PdfShared = { id: '', doc: null };
 const Split = {
   KEY: 'nb-split',
   el: null,
@@ -13236,7 +13272,7 @@ const Split = {
     if (item.kind === 'sec') {
       const sec = secById(item.id);
       if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
-      this.pdf = null;
+      this.dropDoc();
       $('.split-kind', this.el).textContent = [nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ') || 'Sezione';
       $('.split-name', this.el).textContent = sec.title;
       body.innerHTML = sec.md.trim() ? `<article class="notes split-notes">${renderMd(sec.md)}</article>` : '<p class="hint">Questa sezione è ancora vuota.</p>';
@@ -13251,10 +13287,18 @@ const Split = {
     $('.split-name', this.el).textContent = meta.name;
     body.innerHTML = '<p class="hint split-wait">Apro il PDF…</p>';
     try {
-      const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
-      if (!rec || !rec.blob) throw new Error('Questo PDF non è ancora su questo dispositivo: aprilo una volta dalla libreria PDF per scaricarlo.');
-      const pdf = await openPdf(new File([rec.blob], `${meta.name}.pdf`, { type: 'application/pdf' }));
-      if (this.item !== item) return;
+      this.dropDoc();
+      let pdf;
+      // se lo stesso PDF è già aperto nel lettore, uso quello: niente seconda copia in memoria
+      if (PdfShared.id === meta.id && PdfShared.doc) pdf = { doc: PdfShared.doc, pages: PdfShared.doc.numPages, shared: true };
+      else {
+        const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+        if (!rec || !rec.blob) throw new Error('Questo PDF non è ancora su questo dispositivo: aprilo una volta dalla libreria PDF per scaricarlo.');
+        await ensurePdfJs();
+        const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await rec.blob.arrayBuffer()) }).promise;
+        pdf = { doc, pages: doc.numPages, shared: false };
+      }
+      if (this.item !== item) { if (!pdf.shared) pdf.doc.destroy(); return; }
       this.pdf = pdf;
       const first = await pdf.doc.getPage(1);
       const vp = first.getViewport({ scale: 1 });
@@ -13268,12 +13312,19 @@ const Split = {
       sel.innerHTML = `<option value="">Segnalibri…</option>${bms.map(b => `<option value="${b.page}">p. ${b.page} · ${esc(b.title)}</option>`).join('')}`;
       body.innerHTML = `<div class="split-pages">${Array.from({ length: pdf.pages }, (_, i) => `<div class="split-page" data-p="${i + 1}"><canvas></canvas><span class="split-pn">${i + 1}</span></div>`).join('')}</div>`;
       this.layoutPdf();
-      this.io = new IntersectionObserver(ens => ens.forEach(en => { if (en.isIntersecting) this.renderPage(+en.target.dataset.p); }), { root: body, rootMargin: '600px 0px' });
+      this.io = new IntersectionObserver(ens => ens.forEach(en => { if (en.isIntersecting) this.queue(+en.target.dataset.p); }), { root: body, rootMargin: '300px 0px' });
       $$('.split-page', body).forEach(p => this.io.observe(p));
       this.goPage(item.page || meta.lastPage || 1, true);
     } catch (err) {
       body.innerHTML = `<div class="empty"><p>${esc(err.message || 'Non riesco ad aprire il PDF.')}</p></div>`;
     }
+  },
+  // il PDF aperto solo per il pannello si chiude davvero, così la memoria si libera
+  dropDoc() {
+    const p = this.pdf;
+    this.pdf = null;
+    this.waitQ = [];
+    if (p && !p.shared) { try { p.doc.destroy(); } catch { /* già chiuso */ } }
   },
   layoutPdf() {
     if (!this.pdf || !this.el) return;
@@ -13281,10 +13332,34 @@ const Split = {
     const w = Math.max(200, (body.clientWidth - 24) * this.zoom);
     $$('.split-page', body).forEach(p => { p.style.width = `${w}px`; p.style.height = `${Math.round(w * this.ratio)}px`; });
     $('[data-sp="z0"]', this.el).textContent = `${Math.round(this.zoom * 100)}%`;
-    // le pagine già disegnate si ridisegnano alla nuova misura quando servono
-    this.rendered.forEach((v, n) => { if (v !== w) { this.rendered.delete(n); const el = $(`.split-page[data-p="${n}"]`, body); if (el && this.visible(el)) this.renderPage(n); } });
+    // mentre trascini il bordo non ridisegno a ogni passo: aspetto che ti fermi
+    clearTimeout(this.relayT);
+    this.relayT = setTimeout(() => {
+      this.rendered.forEach((v, n) => { if (v !== w) { this.rendered.delete(n); const el = $(`.split-page[data-p="${n}"]`, body); if (el && this.visible(el)) this.queue(n); } });
+    }, 250);
   },
-  visible(el) { const b = $('.split-body', this.el).getBoundingClientRect(); const r = el.getBoundingClientRect(); return r.bottom > b.top - 600 && r.top < b.bottom + 600; },
+  visible(el) { const b = $('.split-body', this.el).getBoundingClientRect(); const r = el.getBoundingClientRect(); return r.bottom > b.top - 300 && r.top < b.bottom + 300; },
+  // una pagina alla volta: con PDF pesanti disegnarne tante insieme bloccava il tablet
+  waitQ: [],
+  qBusy: false,
+  queue(n) {
+    if (!this.waitQ.includes(n)) this.waitQ.push(n);
+    this.pump();
+  },
+  async pump() {
+    if (this.qBusy) return;
+    this.qBusy = true;
+    try {
+      while (this.waitQ.length && this.pdf) {
+        // prima le pagine più vicine a quella che stai guardando
+        const cur = this.curPage || 1;
+        this.waitQ.sort((a, b) => Math.abs(a - cur) - Math.abs(b - cur));
+        const n = this.waitQ.shift();
+        const el = $(`.split-page[data-p="${n}"]`, this.el);
+        if (el && this.visible(el)) await this.renderPage(n);
+      }
+    } finally { this.qBusy = false; }
+  },
   async renderPage(n) {
     if (!this.pdf) return;
     const el = $(`.split-page[data-p="${n}"]`, this.el);
@@ -13297,7 +13372,7 @@ const Split = {
       const page = await pdf.doc.getPage(n);
       if (pdf !== this.pdf) return;
       const base = page.getViewport({ scale: 1 });
-      const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
       const vp = page.getViewport({ scale: (w * dpr) / base.width });
       const cv = document.createElement('canvas');
       cv.width = Math.round(vp.width);
@@ -13306,9 +13381,9 @@ const Split = {
       if (this.rendered.get(n) !== w) return;
       $('canvas', el).replaceWith(cv);
       // tengo in memoria solo le pagine vicine
-      if (this.rendered.size > 14) {
+      if (this.rendered.size > 6) {
         const cur = this.curPage || n;
-        [...this.rendered.keys()].filter(k => Math.abs(k - cur) > 7).forEach(k => {
+        [...this.rendered.keys()].filter(k => Math.abs(k - cur) > 3).forEach(k => {
           this.rendered.delete(k);
           const c = $(`.split-page[data-p="${k}"] canvas`, this.el);
           if (c) c.replaceWith(document.createElement('canvas'));
@@ -13365,7 +13440,7 @@ const Split = {
     this.el.hidden = true;
     document.body.classList.remove('split-open');
     if (this.io) { this.io.disconnect(); this.io = null; }
-    this.pdf = null;
+    this.dropDoc();
     this.rendered.clear();
     $('.split-body', this.el).innerHTML = '';
     setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
