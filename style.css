@@ -3469,3 +3469,19 @@ body.pl-on .pad-fab { bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
 .mv-prev { max-height: 26vh; overflow: auto; margin: 6px 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); font-size: 0.9em; }
 .mv-prev > :first-child { margin-top: 0; }
 .mv-to { margin: 4px 0 8px; }
+
+/* =====================================================================
+   v3.46: score clinici, diario, protezione dei dati, novità
+   ===================================================================== */
+.sc-items { display: grid; gap: 2px 12px; }
+.sc-chk { align-items: flex-start; }
+.sc-chk span { line-height: 1.35; }
+.sc-what { margin-top: -4px; }
+.sc .field { margin-bottom: 6px; }
+.sp-proc { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) 4.5em auto; gap: 6px; margin-bottom: 6px; }
+@media (max-width: 520px) { .sp-proc { grid-template-columns: minmax(0, 1fr) 4.5em auto; } .sp-proc [data-pf="k"] { grid-column: 1 / -1; grid-row: 2; } }
+.guard-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; margin: -6px 0 16px; padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); border-radius: var(--r-lg); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
+.guard-banner > span:first-child { flex: 1 1 260px; }
+.notes.changes h3 { margin-top: 14px; font-size: 1rem; }
+.notes.changes h3:first-child { margin-top: 0; }
+.notes.changes { max-height: 60vh; overflow: auto; }

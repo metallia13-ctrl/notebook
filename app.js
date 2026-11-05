@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.45';
+const APP_VERSION = '3.46';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1094,7 +1094,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'diary', 'scores'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1145,6 +1145,8 @@ function route() {
     case 'lab': return viewLab(p1, p2);
     case 'semei': return viewSemei();
     case 'examq': return viewExamQ(p1);
+    case 'micro': case 'atlas': case 'diary': return viewSpecial(p0, p1);
+    case 'scores': return viewScores();
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
     case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
     case 'split': location.replace('#/notebooks'); setTimeout(() => Split.pick(), 0); return;
@@ -1173,6 +1175,7 @@ function viewNotebooks() {
       <h1>I tuoi notebook</h1>
       ${nbs.length ? '<button class="btn primary" data-act="new-nb">Nuovo notebook</button>' : ''}
     </header>
+    ${DataGuard.bannerHtml()}
     ${Resume.target() ? `<a class="resume-card" href="#/resume"><span class="resume-ic" aria-hidden="true">↺</span><span class="row-main"><span class="row-sub">Riprendi da dove eri</span><span class="row-title">${esc(Resume.target().sec.title)}</span></span></a>` : ''}
     ${nbs.length && todayBits.length ? `
       <a class="today" href="${dueSecs ? '#/review' : '#/study/all'}">
@@ -1223,6 +1226,7 @@ function viewNotebook(id) {
   if (!nb) return notFound('Questo notebook');
   if (nb.kind === 'cases') { location.replace('#/cases'); return; }
   if (nb.kind === 'semei') { location.replace('#/semei'); return; }
+  if (SPECIALS[nb.kind]) { location.replace(`#/${SPECIALS[nb.kind].route}`); return; }
   const secs = secsOf(id);
   const due = secs.filter(isDue).length;
   const nbCards = cardsOf(id);
@@ -1613,6 +1617,7 @@ function viewSection(id, mode) {
   }
   const caseSec = isCase(sec);
   const semSec = isSemei(sec);
+  const spCfg = specialOf(sec);
   const modes = caseSec ? [['case', 'Risolvi'], ...MODES] : MODES;
   if (!modes.some(([m]) => m === mode)) mode = openMode(sec);
   const nb = nbById(sec.notebookId);
@@ -1620,10 +1625,11 @@ function viewSection(id, mode) {
     ? '<a class="back" href="#/review">Ripasso</a>'
     : caseSec ? '<a class="back" href="#/cases">Casi clinici</a>'
     : semSec ? '<a class="back" href="#/semei">Semeiotica</a>'
+    : spCfg ? `<a class="back" href="#/${spCfg.route}">${esc(spCfg.name)}</a>`
     : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
   // “Torna a…”: la pagina da cui sei arrivato, se non è già quella del percorso
   const from = Nav.from();
-  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : semSec ? '#/semei' : `#/nb/${sec.notebookId}`;
+  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : semSec ? '#/semei' : spCfg ? `#/${spCfg.route}` : `#/nb/${sec.notebookId}`;
   const prevLabel = from && Nav.key(from) !== Nav.key(location.hash) && Nav.key(from) !== Nav.key(crumbHref) ? Nav.label(from) : '';
   const back = `<div class="back-row">${prevLabel ? `<a class="back back-prev" href="${esc(from)}" data-nav-back title="Torna alla pagina di prima">${esc(prevLabel)}</a>` : ''}${crumb}</div>`;
   const order = nb ? nbReadingOrder(nb) : [];
@@ -1636,12 +1642,14 @@ function viewSection(id, mode) {
       <h1>${esc(sec.title)}</h1>
       ${caseSec && caseMetaBits(sec).length ? `<p class="meta case-meta">${esc(caseMetaBits(sec).join(' · '))}</p>` : ''}
       ${semSec && semeiMetaBits(sec).length ? `<p class="meta case-meta">${esc(semeiMetaBits(sec).join(' · '))}</p>` : ''}
+      ${spCfg && specialMetaBits(sec).length ? `<p class="meta case-meta">${esc(specialMetaBits(sec).join(' · '))}</p>` : ''}
       <p class="meta">${esc(srsLabel(sec))}</p>
       ${sec.incomplete ? `<button class="inc-chip" type="button" data-act="inc" title="Cosa manca">⚠ Incompleta${incompleteNote(sec) ? `: ${esc(incompleteNote(sec).slice(0, 60))}${incompleteNote(sec).length > 60 ? '…' : ''}` : ''}</button>` : ''}
       ${tagChips(tagsOf(sec))}
       <div class="sec-extra">
         ${caseSec ? '<button class="btn sm" type="button" data-act="case-meta">Dati del caso</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button><button class="btn sm" type="button" data-act="case-pdf">＋ PDF</button>' : ''}
         ${semSec ? '<button class="btn sm" type="button" data-act="semei-meta">Dati della scheda</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>' : ''}
+        ${spCfg ? `<button class="btn sm" type="button" data-act="sp-meta">${spCfg.kind === 'diary' ? 'Dati della giornata' : 'Dati della scheda'}</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>` : ''}
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length + pdfRefsOf(sec).length ? ` (${pdfsOf(sec.id).length + pdfRefsOf(sec).length})` : ''}</a>
         <a class="btn sm" href="#/split" title="Apri di fianco un’altra sezione o un PDF">⇆ Affianca</a>
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
@@ -1663,6 +1671,7 @@ function viewSection(id, mode) {
   on('[data-act="inc"]', 'click', async () => { if (await toggleIncomplete(sec, () => saveSection(sec), caseSec ? 'caso' : 'sezione')) route(); });
   on('[data-act="case-meta"]', 'click', async () => { if (await caseSheet(sec)) { toast('Dati del caso salvati'); route(); } });
   on('[data-act="semei-meta"]', 'click', async () => { if (await semeiSheet(sec)) { toast('Dati della scheda salvati'); route(); } });
+  on('[data-act="sp-meta"]', 'click', async () => { if (await specialSheet(spCfg, sec)) { toast('Dati salvati'); route(); } });
   on('[data-act="case-photo"]', 'click', async () => { if (await addPhotosTo(sec)) route(); });
   on('[data-act="case-pdf"]', 'click', async () => { if (await addPdfTo(sec)) route(); });
   // Cambiare scheda non riempie la cronologia: il tasto Indietro torna al notebook.
@@ -3344,6 +3353,7 @@ function viewSettings() {
         <label class="btn">Importa un backup<input type="file" id="bkFile" accept=".nbbackup,application/octet-stream,application/json,.json" hidden></label>
       </div>
       <p class="hint" id="bkSize"></p>
+      <p class="hint" id="bkGuard"></p>
       <p class="hint" id="usage"></p>
     </section>
 
@@ -3540,6 +3550,7 @@ function viewSettings() {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 60000);
       toast(`Backup pronto (${fmtSize(blob.size)})`);
+      DataGuard.markBackup();
     } catch (err) {
       toast(err.message || 'Backup non riuscito', 'err');
     } finally {
@@ -3548,6 +3559,14 @@ function viewSettings() {
     }
   };
   on('[data-act="export-full"]', 'click', e => runExport(true, e.currentTarget));
+  DataGuard.status().then(st2 => {
+    const el = $('#bkGuard');
+    if (!el) return;
+    const lb = DataGuard.lastBackup();
+    el.textContent = [st2.persisted === true ? 'Archivio protetto: il browser non lo cancella per fare spazio.' : st2.persisted === false ? 'Archivio non ancora protetto dal browser: tieni un backup o Drive attivo.' : '',
+      st2.usage ? `Spazio usato: ${fmtSize(st2.usage)}${st2.quota ? ` su ${fmtSize(st2.quota)} disponibili` : ''}.` : '',
+      lb ? `Ultimo backup scaricato: ${new Date(lb).toLocaleDateString('it-IT')}.` : 'Nessun backup scaricato da questo dispositivo.'].filter(Boolean).join(' ');
+  });
   on('[data-act="export-light"]', 'click', e => runExport(false, e.currentTarget));
   $('#bkFile').addEventListener('change', async e => {
     const file = e.target.files[0];
@@ -5172,18 +5191,7 @@ function viewGuide() {
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
       <p>Per formattare con l’AI serve una chiave API (Impostazioni → Intelligenza artificiale). L’abbonamento Gemini dell’app non basta: la chiave si crea gratis su Google AI Studio.</p>`, true)}
-    ${sec('Novità della 3.45: correzioni del lettore PDF', `
-      <ul>
-        <li><strong>Zoom</strong>: con due dita o Ctrl + rotellina resta fermo sul punto che stai guardando. Prima, nei PDF lunghi, più eri avanti più lo zoom ti faceva saltare di pagine.</li>
-        <li><strong>Evidenziare col dito o con la penna</strong>: con lo strumento Evidenzia (o Sottolinea, Barra), se selezioni tenendo premuto e allarghi con le maniglie, l’app non evidenzia più da sola a metà: compare la barra con i colori e tocchi quello che vuoi quando la selezione è giusta. Con la penna evidenzia appena la alzi dopo aver trascinato; con il mouse come prima.</li>
-        <li><strong>Affianca con PDF pesanti</strong>: se il PDF è lo stesso del lettore, il pannello usa quello già aperto invece di caricarne una seconda copia; disegna una pagina alla volta (prima le più vicine), ne tiene poche in memoria e chiude davvero il PDF quando cambi o chiudi il pannello. Prima i PDF aperti si accumulavano e il tablet si bloccava.</li>
-      </ul>`)}
-    ${sec('Novità della 3.44: sposta un paragrafo in un’altra sezione', `
-      <ul>
-        <li>Seleziona del testo in Leggi o nel Cloze e tocca <strong>↗ Sposta</strong> nella barra. L’app prende il blocco intero dove hai selezionato: un <strong>titolo con tutto quello che contiene</strong> (fino al titolo successivo dello stesso livello), le <strong>voci di elenco</strong> toccate con le loro sottovoci, un paragrafo o una tabella. Prima di spostare vedi l’anteprima.</li>
-        <li>Scegli la sezione di arrivo (prima quelle dello stesso notebook) e dove metterlo: in fondo, all’inizio o dentro uno dei suoi titoli. Se c’è un titolo con lo stesso nome, è già proposto; i titoli spostati scendono di livello quando finiscono dentro un altro titolo.</li>
-        <li>“Lasciane una copia anche qui” copia invece di spostare. Dopo lo spostamento, <strong>Annulla</strong> nel messaggio rimette tutto com’era.</li>
-      </ul>`)}
+    ${CHANGES.map(c => sec(`Novità della ${c.v}: ${esc(c.title)}`, c.html)).join('')}
     ${sec('Novità della 3.43: una sola barra, a sinistra', `
       <ul>
         <li>Sul tablet, tenere premuto con la penna o col dito apriva anche il menu pensato per il tasto destro del mouse, e le barre diventavano due. Ora con penna e dita compare solo la barra; il menu resta per il mouse.</li>
@@ -7096,6 +7104,10 @@ function takeSharedText() {
    ===================================================================== */
 
 const ICONS = {
+  scores: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  micro: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>',
+  atlas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2-6 3 12 3-9 2 3h6"/></svg>',
+  diary: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 3v18M11 8h6M11 12h6M11 16h4"/></svg>',
   examq: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9.5 9a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4V13M12 16.5v.2"/></svg>',
   split: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M12 4v16"/><path d="m6.5 10.5 2 1.5-2 1.5M17.5 10.5l-2 1.5 2 1.5"/></svg>',
   resume: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 8v4l3 2"/></svg>',
@@ -7154,6 +7166,10 @@ const MORE_ITEMS = [
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
   ['examq', 'Domande d’esame', 'Le domande uscite agli esami, anche da Excel: frequenza, docenti, allenamento'],
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
+  ['scores', 'Score clinici', 'CHA₂DS₂-VASc, Wells, CURB-65, qSOFA, NEWS2, Glasgow, Child-Pugh, MELD'],
+  ['micro', 'Microbiologia', 'Una scheda per ogni microrganismo, con foto e video'],
+  ['atlas', 'Atlante', 'ECG, emogas, Rx torace e altre immagini da imparare a leggere'],
+  ['diary', 'Diario di tirocinio', 'Giornate, reparti, tutor e procedure sommate'],
   ['lab', 'Medicina di laboratorio', 'Esami con range, cause e uso diagnostico; referti, calcoli e allenamento'],
   ['semei', 'Semeiotica', 'Manovre, segni e punti di repere, clinica e chirurgica, con foto e video'],
   ['incomplete', 'Da completare', 'Sezioni, casi e note che hai segnato come incompleti'],
@@ -11788,6 +11804,14 @@ async function init() {
   Pad.init();
   Split.init();
   initHelp();
+  DataGuard.protect();
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-guard="later"]');
+    if (!b) return;
+    try { localStorage.setItem(DataGuard.KEY_SNOOZE, String(Date.now() + 7 * 86400000)); } catch { /* niente */ }
+    b.closest('.guard-banner')?.remove();
+  });
+  setTimeout(showChangesIfNew, 900);
   Tracker.start();
   applyBlueLight();
   watchKeyboard();
@@ -12237,7 +12261,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { scores: 'Score clinici', micro: 'Microbiologia', atlas: 'Atlante', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {
@@ -12491,6 +12515,428 @@ const PdfRefHint = {
   set(x) { this.cur = { ...x, t: Date.now() }; },
   take(pdfId) { const c = this.cur; this.cur = null; return c && c.pdfId === pdfId && Date.now() - c.t < 15000 ? c : null; }
 };
+
+/* =====================================================================
+   v3.46: Microbiologia, Atlante (ECG, emogas, Rx), Diario di tirocinio
+   Come la semeiotica: ogni scheda è una sezione di un notebook speciale,
+   con tutte le modalità di studio, foto con etichette, video, fonti.
+   Partono vuoti: i contenuti li scrivi tu.
+   ===================================================================== */
+const SPECIALS = {
+  micro: {
+    kind: 'micro', route: 'micro', name: 'Microbiologia', noun: 'microrganismo',
+    lede: 'Una scheda per ogni microrganismo: caratteristiche, virulenza, malattie, diagnosi e terapia. Le malattie infettive restano nelle note cliniche.',
+    typeLabel: 'Tipo', types: { batterio: 'Batterio', virus: 'Virus', fungo: 'Fungo', parassita: 'Parassita', prione: 'Prione' },
+    groupLabel: 'Gruppo', groupPh: 'Es. Cocchi Gram+, Herpesviridae',
+    namePh: 'Es. Staphylococcus aureus',
+    parts: () => ['Caratteristiche', 'Habitat e trasmissione', 'Fattori di virulenza', 'Malattie', 'Diagnosi di laboratorio', 'Terapia e resistenze', 'Prevenzione', 'Note']
+  },
+  atlas: {
+    kind: 'atlas', route: 'atlas', name: 'Atlante', noun: 'tracciato o immagine',
+    lede: 'ECG, emogasanalisi, Rx torace e altre immagini da imparare a leggere: carica la foto, segna le etichette, scrivi l’interpretazione.',
+    typeLabel: 'Esame', types: { ecg: 'ECG', ega: 'Emogasanalisi', rx: 'Rx torace', eco: 'Ecografia', tc: 'TC o RM', altro: 'Altro' },
+    groupLabel: 'Quadro', groupPh: 'Es. Blocchi di branca, Acidosi metabolica',
+    namePh: 'Es. Blocco di branca sinistra',
+    parts: t => ({
+      ecg: ['Tracciato', 'Ritmo e frequenza', 'Asse', 'Onde, intervalli e segmenti', 'Interpretazione', 'Quadro clinico', 'Note'],
+      ega: ['Valori', 'Disturbo primario', 'Compenso', 'Gap anionico', 'Interpretazione', 'Cause possibili', 'Note'],
+      rx: ['Immagine', 'Proiezione e qualità', 'Reperti', 'Interpretazione', 'Diagnosi differenziale', 'Note']
+    }[t] || ['Immagine', 'Reperti', 'Interpretazione', 'Note'])
+  },
+  diary: {
+    kind: 'diary', route: 'diary', name: 'Diario di tirocinio', noun: 'giornata',
+    lede: 'Una pagina per ogni giornata di tirocinio: reparto, tutor, casi visti, procedure e cosa hai imparato. Le procedure si sommano da sole.',
+    namePh: 'Es. Medicina interna, primo giorno',
+    parts: () => ['Cosa ho visto', 'Casi', 'Cosa ho imparato', 'Da approfondire']
+  }
+};
+const specialNb = kind => state.notebooks.find(n => n.kind === kind);
+async function ensureSpecialNb(cfg) {
+  let nb = specialNb(cfg.kind);
+  if (!nb) { nb = { id: uid(), name: cfg.name, kind: cfg.kind, created: Date.now() }; await saveNotebook(nb); }
+  return nb;
+}
+const specialOf = sec => { if (!sec) return null; const nb = nbById(sec.notebookId); return nb && SPECIALS[nb.kind] ? SPECIALS[nb.kind] : null; };
+const spData = sec => (sec.sp && typeof sec.sp === 'object' ? sec.sp : (sec.sp = {}));
+function specialMetaBits(sec) {
+  const cfg = specialOf(sec);
+  if (!cfg) return [];
+  const d = spData(sec);
+  if (cfg.kind === 'diary') {
+    const procs = (d.procs || []).reduce((a, p) => a + (+p.c || 0), 0);
+    return [d.date ? fmtDay(d.date) : '', d.ward, d.tutor ? `tutor ${d.tutor}` : '', procs ? `${procs} procedure` : ''].filter(Boolean);
+  }
+  return [cfg.types[d.type], d.group].filter(Boolean);
+}
+const PROC_KINDS = [['eseguita', 'Eseguita da me'], ['assistita', 'Assistita'], ['osservata', 'Osservata']];
+function specialSheet(cfg, sec = null) {
+  return new Promise(resolve => {
+    const d = sec ? { ...spData(sec) } : (cfg.kind === 'diary' ? { date: todayStr(), procs: [] } : { type: Object.keys(cfg.types)[0], group: '' });
+    const nb = specialNb(cfg.kind);
+    const others = nb ? secsOf(nb.id) : [];
+    const used = k => [...new Set(others.map(s => s.sp?.[k]).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+    const procNames = [...new Set(others.flatMap(s => (s.sp?.procs || []).map(p => p.n)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+    let procs = (d.procs || []).map(p => ({ ...p }));
+    const isDiary = cfg.kind === 'diary';
+    const sh = openSheet(`
+      <h2>${sec ? (isDiary ? 'Dati della giornata' : 'Dati della scheda') : (isDiary ? 'Nuova giornata di tirocinio' : `Nuova scheda: ${cfg.noun}`)}</h2>
+      <label class="field"><span>${isDiary ? 'Titolo' : 'Nome'}</span><input class="input" id="spTitle" value="${esc(sec?.title || (isDiary ? `Tirocinio ${fmtDay(d.date)}` : ''))}" placeholder="${esc(cfg.namePh)}"></label>
+      ${isDiary ? `
+        <div class="grid2">
+          <label class="field"><span>Data</span><input class="input" type="date" id="spDate" value="${esc(d.date || todayStr())}"></label>
+          <label class="field"><span>Reparto</span><input class="input" id="spWard" value="${esc(d.ward || '')}" list="spWards" placeholder="Es. Medicina interna"><datalist id="spWards">${used('ward').map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
+        </div>
+        <label class="field"><span>Tutor</span><input class="input" id="spTutor" value="${esc(d.tutor || '')}" list="spTutors"><datalist id="spTutors">${used('tutor').map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
+        <div class="field"><span class="lbl">Procedure</span><div id="spProcs"></div><button class="btn sm ghost" type="button" data-sx="proc">+ Aggiungi una procedura</button>
+          <datalist id="spProcNames">${procNames.map(x => `<option value="${esc(x)}">`).join('')}</datalist></div>` : `
+        <div class="grid2">
+          <label class="field"><span>${cfg.typeLabel}</span><select class="input" id="spType">${Object.entries(cfg.types).map(([k, l]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field"><span>${cfg.groupLabel}</span><input class="input" id="spGroup" value="${esc(d.group || '')}" list="spGroups" placeholder="${esc(cfg.groupPh)}"><datalist id="spGroups">${used('group').map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
+        </div>`}
+      ${sec ? '' : `<label class="check"><input type="checkbox" id="spTpl" checked><span id="spTplTxt"></span></label>`}
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-sx="no">Annulla</button>
+        <button class="btn primary" type="button" data-sx="ok">${sec ? 'Salva' : 'Crea'}</button>
+      </div>`, { label: cfg.name, onClose: v => resolve(v || null) });
+    const tplTxt = () => { const t = $('#spTplTxt', sh.el); if (t) t.textContent = `Prepara i titoli: ${cfg.parts($('#spType', sh.el)?.value).join(', ')}`; };
+    tplTxt();
+    $('#spType', sh.el)?.addEventListener('change', tplTxt);
+    const drawProcs = () => {
+      const box = $('#spProcs', sh.el);
+      if (!box) return;
+      box.innerHTML = procs.map((p, i) => `<div class="sp-proc" data-pi="${i}">
+        <input class="input" data-pf="n" value="${esc(p.n || '')}" list="spProcNames" placeholder="Es. Prelievo venoso" aria-label="Procedura">
+        <select class="input" data-pf="k" aria-label="Come">${PROC_KINDS.map(([k, l]) => `<option value="${k}" ${p.k === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <input class="input num" data-pf="c" type="number" min="1" value="${esc(p.c || 1)}" inputmode="numeric" aria-label="Quante volte">
+        <button class="btn sm ghost" type="button" data-pdel="${i}" aria-label="Togli">✕</button></div>`).join('') || '<p class="hint">Nessuna procedura in questa giornata.</p>';
+    };
+    const readProcs = () => $$('.sp-proc', sh.el).forEach(row => { const p = procs[+row.dataset.pi]; $$('[data-pf]', row).forEach(i => { p[i.dataset.pf] = i.dataset.pf === 'c' ? Math.max(1, +i.value || 1) : i.value.trim(); }); });
+    drawProcs();
+    // il titolo proposto segue la data finché non lo cambi tu
+    const dateIn = $('#spDate', sh.el);
+    if (dateIn && !sec) {
+      let auto = $('#spTitle', sh.el).value;
+      dateIn.addEventListener('change', () => { const t = $('#spTitle', sh.el); if (t.value === auto) { auto = `Tirocinio ${fmtDay(dateIn.value || todayStr())}`; t.value = auto; } });
+    }
+    sh.el.addEventListener('click', async e => {
+      const del = e.target.closest('[data-pdel]');
+      if (del) { readProcs(); procs.splice(+del.dataset.pdel, 1); drawProcs(); return; }
+      const b = e.target.closest('[data-sx]');
+      if (!b) return;
+      if (b.dataset.sx === 'no') { sh.close(null); return; }
+      if (b.dataset.sx === 'proc') { readProcs(); procs.push({ n: '', k: 'eseguita', c: 1 }); drawProcs(); $$('.sp-proc [data-pf="n"]', sh.el).pop()?.focus(); return; }
+      if (b.dataset.sx === 'ok') {
+        const title = $('#spTitle', sh.el).value.trim();
+        if (!title) { toast('Scrivi il nome'); $('#spTitle', sh.el).focus(); return; }
+        readProcs();
+        const data = isDiary
+          ? { date: $('#spDate', sh.el).value || todayStr(), ward: $('#spWard', sh.el).value.trim(), tutor: $('#spTutor', sh.el).value.trim(), procs: procs.filter(p => p.n) }
+          : { type: $('#spType', sh.el).value, group: $('#spGroup', sh.el).value.trim() };
+        let s = sec;
+        if (!s) {
+          const nbx = await ensureSpecialNb(cfg);
+          const tpl = $('#spTpl', sh.el)?.checked;
+          s = newSection(nbx.id, { title, md: tpl ? cfg.parts(data.type).map(p => `## ${p}\n\n`).join('') : '' });
+        } else s.title = title;
+        s.sp = { ...spData(s), ...data };
+        await saveSection(s);
+        sh.close(s);
+      }
+    });
+    setTimeout(() => $('#spTitle', sh.el)?.focus(), 40);
+  });
+}
+const spState = {};
+function viewSpecial(kind, p1) {
+  const cfg = SPECIALS[kind];
+  const nb = specialNb(kind);
+  const all = nb ? secsOf(nb.id) : [];
+  const st = spState[kind] || (spState[kind] = { q: '', type: '', group: '' });
+  const isDiary = kind === 'diary';
+  if (isDiary && p1 === 'procs') return viewDiaryProcs(cfg, all);
+  setView(`
+    <header class="page-head">
+      <div><h1>${cfg.name}</h1><p class="lede">${cfg.lede}</p></div>
+      <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button>
+    </header>
+    ${isDiary ? `<nav class="tabs" aria-label="Diario"><a href="#/diary" class="tab on" aria-current="page">Giornate${all.length ? ` (${all.length})` : ''}</a><a href="#/diary/procs" class="tab">Procedure</a></nav>` : ''}
+    ${all.length ? `
+      <div class="inline semei-tools">
+        <input type="search" class="input search" id="spQ" placeholder="Cerca" aria-label="Cerca" value="${esc(st.q)}">
+        ${isDiary ? '' : '<button class="btn" type="button" data-act="sp-random" title="Apre una scheda a caso in modalità Orale">Esercitati</button>'}
+      </div>
+      ${isDiary ? '' : `<div class="tag-cloud" aria-label="Filtra">${Object.entries(cfg.types).filter(([k]) => all.some(s => s.sp?.type === k)).map(([k, l]) => `<button type="button" class="tag ${st.type === k ? 'on' : ''}" data-spt="${k}" aria-pressed="${st.type === k}">${l}</button>`).join('')}</div>`}
+      <div id="spList"></div>` : `
+      <div class="empty"><p>${isDiary ? 'Ancora nessuna giornata. Creane una al termine di ogni turno: bastano pochi minuti, e alla fine del tirocinio hai l’elenco di casi e procedure.' : `Ancora nessuna scheda. Creane una per ogni ${cfg.noun}: i titoli sono già pronti, poi aggiungi foto (anche come esercizio delle etichette) e video.`}</p>
+        <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button></div>`}
+  `);
+  on('[data-act="sp-new"]', 'click', async () => { const s = await specialSheet(cfg); if (s) { toast(isDiary ? 'Giornata creata' : 'Scheda creata'); go(`#/sec/${s.id}/edit`); } });
+  const filtered = () => {
+    const toks = foldAccents(st.q).split(/\s+/).filter(Boolean);
+    return all.filter(s => (!st.type || s.sp?.type === st.type) && (!toks.length || toks.every(t => foldAccents(`${s.title} ${s.md} ${Object.values(s.sp || {}).filter(v => typeof v === 'string').join(' ')} ${(s.sp?.procs || []).map(p => p.n).join(' ')}`).includes(t))));
+  };
+  const draw = () => {
+    const box = $('#spList');
+    if (!box) return;
+    const list = filtered();
+    const groups = new Map();
+    const keyOf = s => (isDiary ? (s.sp?.date || '').slice(0, 7) : (s.sp?.group || 'Senza gruppo'));
+    list.sort((a, b) => (isDiary ? String(b.sp?.date || '').localeCompare(String(a.sp?.date || '')) : a.title.localeCompare(b.title, 'it')));
+    list.forEach(s => { const k = keyOf(s); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); });
+    const label = k => (isDiary ? (k ? new Date(`${k}-01T12:00`).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }) : 'Senza data') : k);
+    const keys = [...groups.keys()].sort((a, b) => (isDiary ? b.localeCompare(a) : (a === 'Senza gruppo') - (b === 'Senza gruppo') || a.localeCompare(b, 'it')));
+    box.innerHTML = list.length ? keys.map(k => `<h2 class="sub">${esc(label(k))}</h2><ul class="list">${groups.get(k).map(s => {
+      const nImg = imageRefs(s.md).length;
+      const bits = [...specialMetaBits(s), nImg ? `${nImg} foto` : '', s.incomplete ? '⚠ incompleta' : ''].filter(Boolean);
+      return `<li><a class="row" href="#/sec/${s.id}/read"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(bits.join(' · '))}</span></span>${isDiary ? '' : statusPill(s)}</a></li>`;
+    }).join('')}</ul>`).join('') : '<p class="hint">Niente corrisponde.</p>';
+  };
+  draw();
+  $('#spQ')?.addEventListener('input', e => { st.q = e.target.value; draw(); });
+  on('[data-spt]', 'click', e => { const k = e.currentTarget.dataset.spt; st.type = st.type === k ? '' : k; $$('[data-spt]').forEach(b => { b.classList.toggle('on', b.dataset.spt === st.type); b.setAttribute('aria-pressed', b.dataset.spt === st.type); }); draw(); });
+  on('[data-act="sp-random"]', 'click', () => {
+    const list = filtered().filter(s => String(s.md || '').replace(/^##.*$/gm, '').trim());
+    if (!list.length) { toast('Nessuna scheda scritta tra quelle filtrate'); return; }
+    go(`#/sec/${list[Math.floor(Math.random() * list.length)].id}/oral`);
+  });
+}
+// Totale delle procedure del tirocinio, per reparto e per modo
+function viewDiaryProcs(cfg, all) {
+  const tot = new Map();
+  all.forEach(s => (s.sp?.procs || []).forEach(p => {
+    const k = foldAccents(p.n).trim();
+    if (!k) return;
+    const r = tot.get(k) || { n: p.n, eseguita: 0, assistita: 0, osservata: 0, wards: new Set(), last: '' };
+    r[p.k || 'eseguita'] += +p.c || 1;
+    if (s.sp?.ward) r.wards.add(s.sp.ward);
+    if ((s.sp?.date || '') > r.last) r.last = s.sp.date;
+    tot.set(k, r);
+  }));
+  const rows = [...tot.values()].sort((a, b) => (b.eseguita + b.assistita + b.osservata) - (a.eseguita + a.assistita + a.osservata));
+  setView(`
+    <header class="page-head"><div><h1>${cfg.name}</h1><p class="lede">Tutte le procedure delle tue giornate, sommate.</p></div></header>
+    <nav class="tabs" aria-label="Diario"><a href="#/diary" class="tab">Giornate (${all.length})</a><a href="#/diary/procs" class="tab on" aria-current="page">Procedure</a></nav>
+    ${rows.length ? `<div class="notes"><div class="table-wrap"><table><thead><tr><th>Procedura</th><th>Eseguite</th><th>Assistite</th><th>Osservate</th><th>Reparti</th><th>Ultima</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td>${esc(r.n)}</td><td class="num">${r.eseguita || ''}</td><td class="num">${r.assistita || ''}</td><td class="num">${r.osservata || ''}</td><td>${esc([...r.wards].join(', '))}</td><td>${r.last ? esc(fmtDay(r.last)) : ''}</td></tr>`).join('')}
+    </tbody></table></div></div>
+    <p class="hint">Le procedure si aggiungono nei dati di ogni giornata (“Dati della giornata”).</p>` : '<div class="empty"><p>Ancora nessuna procedura. Aggiungile nei dati di una giornata: nome, se l’hai eseguita, assistita o osservata, e quante volte.</p></div>'}
+  `);
+}
+
+/* ---------- Score clinici ----------
+   Strumenti di studio: punteggi e soglie come nelle linee guida citate sotto ogni
+   score (fonte: Claude, da verificare). In reparto si ricontrolla sempre. */
+const yes = (k, label, pts = 1) => ({ k, label, type: 'check', pts });
+const opt = (k, label, opts) => ({ k, label, type: 'select', opts });
+const SCORES = [
+  { id: 'cha2ds2vasc', title: 'CHA₂DS₂-VASc', cat: 'Cardiologia', what: 'Rischio di ictus nella fibrillazione atriale',
+    items: [yes('c', 'Scompenso cardiaco o disfunzione ventricolare sinistra'), yes('h', 'Ipertensione'), opt('a', 'Età', [['Sotto i 65 anni', 0], ['65–74 anni', 1], ['75 anni o più', 2]]), yes('d', 'Diabete'), yes('s', 'Ictus, TIA o tromboembolia precedenti', 2), yes('v', 'Malattia vascolare (infarto, arteriopatia periferica, placca aortica)'), yes('f', 'Sesso femminile')],
+    read: (n, v) => { const m = n - (v.f ? 1 : 0); return m >= 2 ? 'Anticoagulante orale raccomandato.' : m === 1 ? 'Anticoagulante da considerare.' : 'Rischio basso: di solito nessun anticoagulante.'; },
+    src: 'ESC 2020. Le linee guida ESC 2024 usano CHA₂DS₂-VA, senza il punto per il sesso: le soglie qui sopra lo tolgono già dal calcolo.' },
+  { id: 'hasbled', title: 'HAS-BLED', cat: 'Cardiologia', what: 'Rischio di sanguinamento in terapia anticoagulante',
+    items: [yes('h', 'Ipertensione non controllata (sistolica oltre 160 mmHg)'), yes('r', 'Funzione renale alterata (dialisi, trapianto, creatinina ≥ 2,26 mg/dL)'), yes('l', 'Funzione epatica alterata (cirrosi o bilirubina > 2× e transaminasi > 3×)'), yes('s', 'Ictus precedente'), yes('b', 'Sanguinamento maggiore precedente o predisposizione'), yes('i', 'INR labile'), yes('e', 'Età sopra i 65 anni'), yes('d', 'Farmaci (antiaggreganti, FANS)'), yes('a', 'Alcol (8 o più unità a settimana)')],
+    read: n => (n >= 3 ? 'Rischio alto: correggi i fattori modificabili e controlla più spesso. Non è da solo un motivo per non anticoagulare.' : 'Rischio basso o intermedio.'),
+    src: 'Pisters 2010, ripreso da ESC.' },
+  { id: 'wellsep', title: 'Wells per embolia polmonare', cat: 'Emergenza', what: 'Probabilità clinica di embolia polmonare',
+    items: [yes('dvt', 'Segni e sintomi di trombosi venosa profonda', 3), yes('alt', 'L’embolia è la diagnosi più probabile', 3), yes('hr', 'Frequenza cardiaca sopra 100', 1.5), yes('imm', 'Immobilizzazione 3 o più giorni o chirurgia nelle 4 settimane', 1.5), yes('prev', 'Embolia o trombosi precedenti', 1.5), yes('hem', 'Emottisi'), yes('ca', 'Tumore attivo')],
+    read: n => `${n > 4 ? 'Embolia probabile: angio-TC.' : 'Embolia improbabile: D-dimero, se negativo la esclude.'} In tre classi: ${n < 2 ? 'bassa' : n <= 6 ? 'intermedia' : 'alta'} probabilità.`,
+    src: 'Wells 2000; classi a due livelli (soglia 4) e a tre livelli (2 e 6).' },
+  { id: 'wellstvp', title: 'Wells per trombosi venosa profonda', cat: 'Emergenza', what: 'Probabilità clinica di TVP',
+    items: [yes('ca', 'Tumore attivo'), yes('par', 'Paralisi, paresi o gesso recente all’arto inferiore'), yes('bed', 'Allettamento 3 o più giorni o chirurgia maggiore nelle 12 settimane'), yes('ten', 'Dolorabilità lungo il decorso delle vene profonde'), yes('leg', 'Edema di tutta la gamba'), yes('calf', 'Polpaccio più grande di 3 cm rispetto all’altro'), yes('pit', 'Edema improntabile solo nella gamba sintomatica'), yes('col', 'Circoli collaterali superficiali (non varici)'), yes('prev', 'TVP precedente'), yes('alt', 'Diagnosi alternativa almeno altrettanto probabile', -2)],
+    read: n => (n >= 2 ? 'TVP probabile: ecografia.' : 'TVP improbabile: D-dimero, se negativo la esclude.'),
+    src: 'Wells 2003, versione a due livelli.' },
+  { id: 'curb65', title: 'CURB-65', cat: 'Pneumologia', what: 'Gravità della polmonite acquisita in comunità',
+    items: [yes('c', 'Confusione di nuova insorgenza'), yes('u', 'Urea sopra 7 mmol/L (azotemia sopra circa 42 mg/dL)'), yes('r', 'Frequenza respiratoria 30 o più'), yes('b', 'Pressione sistolica sotto 90 o diastolica 60 o meno'), yes('a', 'Età 65 anni o più')],
+    read: n => (n <= 1 ? 'Rischio basso: di solito terapia a domicilio.' : n === 2 ? 'Rischio intermedio: valuta il ricovero.' : `Polmonite grave: ricovero${n >= 4 ? ', valuta la terapia intensiva' : ''}.`),
+    src: 'British Thoracic Society (Lim 2003).' },
+  { id: 'qsofa', title: 'qSOFA', cat: 'Emergenza', what: 'Sospetto di sepsi fuori dalla terapia intensiva',
+    items: [yes('r', 'Frequenza respiratoria 22 o più'), yes('m', 'Alterazione dello stato mentale (GCS sotto 15)'), yes('b', 'Pressione sistolica 100 o meno')],
+    read: n => (n >= 2 ? 'Rischio alto di esito sfavorevole: cerca disfunzioni d’organo (SOFA) e tratta come possibile sepsi.' : 'Rischio più basso, ma non esclude la sepsi.'),
+    src: 'Sepsis-3 (Singer 2016). Le linee guida Surviving Sepsis 2021 sconsigliano di usarlo da solo come screening.' },
+  { id: 'news2', title: 'NEWS2', cat: 'Emergenza', what: 'Allerta per il peggioramento clinico',
+    items: [
+      opt('rr', 'Frequenza respiratoria', [['12–20', 0], ['9–11', 1], ['21–24', 2], ['8 o meno', 3], ['25 o più', 3]]),
+      opt('spo2', 'SpO₂ (scala 1)', [['96% o più', 0], ['94–95%', 1], ['92–93%', 2], ['91% o meno', 3]]),
+      opt('o2', 'Ossigeno', [['Aria ambiente', 0], ['Ossigeno', 2]]),
+      opt('sbp', 'Pressione sistolica', [['111–219', 0], ['101–110', 1], ['91–100', 2], ['90 o meno', 3], ['220 o più', 3]]),
+      opt('hr', 'Frequenza cardiaca', [['51–90', 0], ['41–50', 1], ['91–110', 1], ['111–130', 2], ['40 o meno', 3], ['131 o più', 3]]),
+      opt('cons', 'Coscienza', [['Vigile', 0], ['Nuova confusione, risponde alla voce, al dolore o non risponde', 3]]),
+      opt('t', 'Temperatura', [['36,1–38,0 °C', 0], ['35,1–36,0 °C', 1], ['38,1–39,0 °C', 1], ['39,1 °C o più', 2], ['35,0 °C o meno', 3]])
+    ],
+    read: (n, v, it) => (n >= 7 ? 'Rischio alto: valutazione urgente da un team di emergenza.' : n >= 5 ? 'Rischio medio: valutazione urgente del medico.' : it.some(x => x.p === 3) ? 'Un parametro a 3: valutazione urgente del medico.' : 'Rischio basso: monitoraggio di routine.'),
+    src: 'Royal College of Physicians 2017.' },
+  { id: 'gcs', title: 'Glasgow Coma Scale', cat: 'Neurologia', what: 'Livello di coscienza',
+    items: [
+      opt('e', 'Apertura degli occhi', [['Spontanea', 4], ['Alla voce', 3], ['Al dolore', 2], ['Nessuna', 1]]),
+      opt('v', 'Risposta verbale', [['Orientata', 5], ['Confusa', 4], ['Parole inappropriate', 3], ['Suoni incomprensibili', 2], ['Nessuna', 1]]),
+      opt('m', 'Risposta motoria', [['Esegue i comandi', 6], ['Localizza il dolore', 5], ['Retrae al dolore', 4], ['Flessione anomala (decorticazione)', 3], ['Estensione (decerebrazione)', 2], ['Nessuna', 1]])
+    ],
+    read: n => (n <= 8 ? 'Trauma cranico grave; con 8 o meno si protegge di solito la via aerea.' : n <= 12 ? 'Compromissione moderata.' : 'Compromissione lieve o assente.'),
+    src: 'Teasdale e Jennett 1974. Si riporta anche per componenti, per esempio E4 V5 M6.' },
+  { id: 'childpugh', title: 'Child-Pugh', cat: 'Epatologia', what: 'Gravità della cirrosi',
+    items: [
+      opt('bil', 'Bilirubina', [['Sotto 2 mg/dL', 1], ['2–3 mg/dL', 2], ['Sopra 3 mg/dL', 3]]),
+      opt('alb', 'Albumina', [['Sopra 3,5 g/dL', 1], ['2,8–3,5 g/dL', 2], ['Sotto 2,8 g/dL', 3]]),
+      opt('inr', 'INR', [['Sotto 1,7', 1], ['1,7–2,3', 2], ['Sopra 2,3', 3]]),
+      opt('asc', 'Ascite', [['Assente', 1], ['Lieve', 2], ['Moderata o grave', 3]]),
+      opt('enc', 'Encefalopatia', [['Assente', 1], ['Grado I–II', 2], ['Grado III–IV', 3]])
+    ],
+    read: n => `Classe ${n <= 6 ? 'A' : n <= 9 ? 'B' : 'C'} (A 5–6, B 7–9, C 10–15).`,
+    src: 'Pugh 1973.' },
+  { id: 'meld', title: 'MELD e MELD-Na', cat: 'Epatologia', what: 'Gravità della malattia epatica terminale',
+    items: [{ k: 'bil', label: 'Bilirubina', type: 'num', unit: 'mg/dL' }, { k: 'inr', label: 'INR', type: 'num', unit: '' }, { k: 'cr', label: 'Creatinina', type: 'num', unit: 'mg/dL' }, { k: 'na', label: 'Sodio, per il MELD-Na', type: 'num', unit: 'mEq/L' }, yes('dial', 'Dialisi almeno 2 volte nell’ultima settimana', 0)],
+    calc: v => {
+      if ([v.bil, v.inr, v.cr].some(x => x === null)) return null;
+      const lo = x => Math.max(1, x);
+      const cr = v.dial ? 4 : Math.min(4, lo(v.cr));
+      const m = Math.round(10 * (0.957 * Math.log(cr) + 0.378 * Math.log(lo(v.bil)) + 1.12 * Math.log(lo(v.inr)) + 0.643));
+      let out = `MELD <strong>${m}</strong>`;
+      if (v.na !== null) {
+        const na = Math.max(125, Math.min(137, v.na));
+        const mn = m > 11 ? Math.round(m + 1.32 * (137 - na) - 0.033 * m * (137 - na)) : m;
+        out += ` · MELD-Na <strong>${mn}</strong>`;
+      }
+      return `${out}.`;
+    },
+    src: 'Formula UNOS: i valori sotto 1 contano come 1, la creatinina al massimo 4; il sodio tra 125 e 137 e la correzione solo con MELD sopra 11.' }
+];
+const scoreState = { q: '', cat: '' };
+function viewScores() {
+  const cats = [...new Set(SCORES.map(s => s.cat))];
+  setView(`
+    <header class="page-head"><div><h1>Score clinici</h1><p class="lede">I punteggi più usati in reparto, con le soglie sotto. Strumenti di studio: la fonte sono io, Claude, sulle linee guida citate; verifica sempre.</p></div>
+      <a class="btn" href="#/lab/calc">Calcoli di laboratorio</a></header>
+    <input type="search" class="input search" id="scQ" placeholder="Cerca uno score" aria-label="Cerca uno score" value="${esc(scoreState.q)}">
+    <div class="tag-cloud">${cats.map(c => `<button type="button" class="tag ${scoreState.cat === c ? 'on' : ''}" data-scc="${esc(c)}" aria-pressed="${scoreState.cat === c}">${esc(c)}</button>`).join('')}</div>
+    <div class="lab-calcs sc-list" id="scList"></div>
+  `);
+  const card = s => `
+    <section class="lab-calc sc" data-sc="${s.id}">
+      <h2 class="sub">${s.title}</h2>
+      <p class="hint sc-what">${s.what}</p>
+      <div class="sc-items">${s.items.map(it => it.type === 'check'
+        ? `<label class="check sc-chk"><input type="checkbox" data-k="${it.k}"><span>${esc(it.label)}${it.pts !== 1 && it.pts ? ` <span class="muted-inline">${it.pts > 0 ? '+' : ''}${String(it.pts).replace('.', ',')}</span>` : ''}</span></label>`
+        : it.type === 'select'
+          ? `<label class="field"><span>${esc(it.label)}</span><select class="input" data-k="${it.k}">${it.opts.map(([l, p], i) => `<option value="${i}">${esc(l)} (${p})</option>`).join('')}</select></label>`
+          : `<label class="field"><span>${esc(it.label)}${it.unit ? ` <span class="muted-inline">${it.unit}</span>` : ''}</span><input class="input num" data-k="${it.k}" inputmode="decimal"></label>`).join('')}</div>
+      <p class="lab-calc-out sc-out" aria-live="polite"></p>
+      <p class="hint">Fonte: Claude, da ${esc(s.src)}</p>
+    </section>`;
+  const draw = () => {
+    const f = foldAccents(scoreState.q);
+    const list = SCORES.filter(s => (!scoreState.cat || s.cat === scoreState.cat) && (!f || foldAccents(`${s.title} ${s.what} ${s.cat}`).includes(f)));
+    $('#scList').innerHTML = list.map(card).join('') || '<p class="hint">Nessuno score corrisponde.</p>';
+    $$('.sc', $('#scList')).forEach(box => {
+      const s = SCORES.find(x => x.id === box.dataset.sc);
+      const upd = () => {
+        const v = {};
+        const parts = [];
+        s.items.forEach(it => {
+          const el = $(`[data-k="${it.k}"]`, box);
+          if (it.type === 'check') { v[it.k] = el.checked; if (el.checked) parts.push({ k: it.k, p: it.pts }); }
+          else if (it.type === 'select') { const [, p] = it.opts[+el.value]; v[it.k] = p; parts.push({ k: it.k, p }); }
+          else v[it.k] = labNum(el.value);
+        });
+        let html;
+        if (s.calc) html = s.calc(v);
+        else {
+          const n = parts.reduce((a, x) => a + x.p, 0);
+          html = `Punteggio <strong>${String(n).replace('.', ',')}</strong>. ${s.read(n, v, parts)}`;
+        }
+        $('.sc-out', box).innerHTML = html || '';
+      };
+      box.addEventListener('input', upd);
+      box.addEventListener('change', upd);
+      if (!s.calc) upd();
+    });
+  };
+  draw();
+  $('#scQ').addEventListener('input', e => { scoreState.q = e.target.value; draw(); });
+  on('[data-scc]', 'click', e => { const c = e.currentTarget.dataset.scc; scoreState.cat = scoreState.cat === c ? '' : c; $$('[data-scc]').forEach(b => { b.classList.toggle('on', b.dataset.scc === scoreState.cat); b.setAttribute('aria-pressed', b.dataset.scc === scoreState.cat); }); draw(); });
+}
+
+/* ---------- Protezione dei dati e promemoria del backup ---------- */
+const DataGuard = {
+  KEY_BK: 'nb-last-backup',
+  KEY_SNOOZE: 'nb-backup-snooze',
+  lastBackup() { return +localStorage.getItem(this.KEY_BK) || 0; },
+  markBackup() { try { localStorage.setItem(this.KEY_BK, String(Date.now())); } catch { /* niente */ } },
+  async protect() {
+    // chiedo al browser di non cancellare mai l’archivio dell’app quando manca spazio
+    try { if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch { /* non tutti i browser */ }
+  },
+  async status() {
+    const out = { persisted: null, usage: 0, quota: 0 };
+    try { if (navigator.storage?.persisted) out.persisted = await navigator.storage.persisted(); } catch { /* niente */ }
+    try { if (navigator.storage?.estimate) { const e = await navigator.storage.estimate(); out.usage = e.usage || 0; out.quota = e.quota || 0; } } catch { /* niente */ }
+    return out;
+  },
+  // cosa dire nella pagina dei notebook: nulla, se è tutto a posto
+  reminder() {
+    if (!state.sections.length || state.sections.length < 5) return null;
+    if (Date.now() < (+localStorage.getItem(this.KEY_SNOOZE) || 0)) return null;
+    const day = 86400000;
+    if (Sync.configured()) {
+      const last = Sync.meta().lastSync || 0;
+      if (Date.now() - last > 3 * day) return { kind: 'sync', days: last ? Math.floor((Date.now() - last) / day) : null };
+      return null;
+    }
+    const bk = this.lastBackup();
+    if (!bk || Date.now() - bk > 14 * day) return { kind: 'backup', days: bk ? Math.floor((Date.now() - bk) / day) : null };
+    return null;
+  },
+  bannerHtml() {
+    const r = this.reminder();
+    if (!r) return '';
+    const txt = r.kind === 'sync'
+      ? `Drive non si sincronizza ${r.days === null ? 'da quando l’hai configurato' : `da ${r.days} giorni`}: i dati nuovi sono solo su questo dispositivo.`
+      : `${r.days === null ? 'Non hai ancora fatto un backup' : `L’ultimo backup è di ${r.days} giorni fa`}: se perdi il dispositivo, perdi gli appunti.`;
+    return `<div class="guard-banner" role="status"><span>${txt}</span><span class="inline">
+      <a class="btn sm primary" href="#/settings" data-guard="go">${r.kind === 'sync' ? 'Controlla Drive' : 'Fai il backup'}</a>
+      <button class="btn sm ghost" type="button" data-guard="later">Più tardi</button></span></div>`;
+  },
+  bind(root) {
+    const b = root.querySelector('[data-guard="later"]');
+    if (b) b.addEventListener('click', () => { try { localStorage.setItem(this.KEY_SNOOZE, String(Date.now() + 7 * 86400000)); } catch { /* niente */ } b.closest('.guard-banner').remove(); });
+  }
+};
+
+/* ---------- Novità dopo ogni aggiornamento ---------- */
+const CHANGES = [
+  { v: "3.46", title: "score clinici, microbiologia, atlante, diario, protezione dei dati", html: `      <ul>
+        <li><strong>Score clinici</strong> (Altro o barra laterale): CHA₂DS₂-VASc, HAS-BLED, Wells per embolia e per TVP, CURB-65, qSOFA, NEWS2, Glasgow, Child-Pugh, MELD e MELD-Na, con il punteggio che si aggiorna mentre spunti e la lettura delle soglie. La fonte sono io (Claude), sulle linee guida citate sotto ogni score.</li>
+        <li><strong>Microbiologia</strong>: una scheda per microrganismo (batterio, virus, fungo, parassita, prione), raggruppate come vuoi tu (per esempio Cocchi Gram+), con i titoli pronti: caratteristiche, virulenza, malattie, diagnosi, terapia e resistenze, prevenzione. Parte vuota.</li>
+        <li><strong>Atlante</strong>: ECG, emogas, Rx torace, ecografie, TC e altro. Carichi l’immagine, ne fai l’esercizio delle etichette e scrivi la lettura; per ECG, emogas e Rx i titoli seguono l’ordine di lettura. Parte vuoto.</li>
+        <li><strong>Diario di tirocinio</strong>: una pagina per giornata con data, reparto, tutor e procedure (eseguite, assistite, osservate, quante volte); la scheda <strong>Procedure</strong> le somma tutte.</li>
+        <li><strong>Protezione dei dati</strong>: l’app chiede al browser di non cancellare mai il suo archivio. Se non usi Drive e non fai un backup da due settimane, o se Drive non si sincronizza da tre giorni, nella pagina dei notebook compare un avviso. In Impostazioni → Backup vedi lo spazio usato e se l’archivio è protetto.</li>
+        <li>Da ora, dopo ogni aggiornamento compare una finestra con le <strong>novità</strong>.</li>
+      </ul>` },
+  { v: "3.45", title: "correzioni del lettore PDF", html: `      <ul>
+        <li><strong>Zoom</strong>: con due dita o Ctrl + rotellina resta fermo sul punto che stai guardando. Prima, nei PDF lunghi, più eri avanti più lo zoom ti faceva saltare di pagine.</li>
+        <li><strong>Evidenziare col dito o con la penna</strong>: con lo strumento Evidenzia (o Sottolinea, Barra), se selezioni tenendo premuto e allarghi con le maniglie, l’app non evidenzia più da sola a metà: compare la barra con i colori e tocchi quello che vuoi quando la selezione è giusta. Con la penna evidenzia appena la alzi dopo aver trascinato; con il mouse come prima.</li>
+        <li><strong>Affianca con PDF pesanti</strong>: se il PDF è lo stesso del lettore, il pannello usa quello già aperto invece di caricarne una seconda copia; disegna una pagina alla volta (prima le più vicine), ne tiene poche in memoria e chiude davvero il PDF quando cambi o chiudi il pannello. Prima i PDF aperti si accumulavano e il tablet si bloccava.</li>
+      </ul>` },
+  { v: "3.44", title: "sposta un paragrafo in un’altra sezione", html: `      <ul>
+        <li>Seleziona del testo in Leggi o nel Cloze e tocca <strong>↗ Sposta</strong> nella barra. L’app prende il blocco intero dove hai selezionato: un <strong>titolo con tutto quello che contiene</strong> (fino al titolo successivo dello stesso livello), le <strong>voci di elenco</strong> toccate con le loro sottovoci, un paragrafo o una tabella. Prima di spostare vedi l’anteprima.</li>
+        <li>Scegli la sezione di arrivo (prima quelle dello stesso notebook) e dove metterlo: in fondo, all’inizio o dentro uno dei suoi titoli. Se c’è un titolo con lo stesso nome, è già proposto; i titoli spostati scendono di livello quando finiscono dentro un altro titolo.</li>
+        <li>“Lasciane una copia anche qui” copia invece di spostare. Dopo lo spostamento, <strong>Annulla</strong> nel messaggio rimette tutto com’era.</li>
+      </ul>` }
+];
+const verNum = v => String(v || '0').split('.').map(Number).reduce((a, x, i) => a + x / Math.pow(1000, i), 0);
+function showChangesIfNew() {
+  const KEY = 'nb-seen-version';
+  let seen = '';
+  try { seen = localStorage.getItem(KEY) || ''; localStorage.setItem(KEY, APP_VERSION); } catch { return; }
+  if (!seen || verNum(seen) >= verNum(APP_VERSION)) return;
+  const news = CHANGES.filter(c => verNum(c.v) > verNum(seen)).slice(0, 4);
+  if (!news.length) return;
+  const sh = openSheet(`
+    <h2>Novità della versione ${APP_VERSION}</h2>
+    <div class="notes changes">${news.map(c => `<h3>${esc(c.v)}: ${esc(c.title)}</h3>${c.html}`).join('')}</div>
+    <p class="hint">Tutte le novità precedenti sono nella Guida.</p>
+    <div class="modal-actions"><a class="btn ghost" href="#/guide" data-x>Apri la Guida</a><button class="btn primary" type="button" data-x>Ho capito</button></div>`, { label: 'Novità' });
+  $$('[data-x]', sh.el).forEach(b => b.addEventListener('click', () => sh.close()));
+}
 
 /* =====================================================================
    v3.39: Banca delle domande d’esame
@@ -15406,6 +15852,10 @@ const HELP = {
   links: { t: 'Link utili', b: `I siti che usi di più, a portata di tocco. Tieni premuto o usa Modifica per cambiarli.` },
   exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
+  scores: { t: 'Score clinici', b: `Spunta i criteri o scegli i valori: il punteggio e la sua lettura si aggiornano subito. Sotto ogni score c’è la fonte (sono io, Claude, sulle linee guida citate). Servono per studiare e per capire come ragionano in reparto: le decisioni vere si prendono con il medico.` },
+  micro: { t: 'Microbiologia', b: `Una scheda per microrganismo, con tipo (batterio, virus, fungo, parassita, prione) e un gruppo scelto da te. I titoli sono già pronti; le malattie infettive restano nelle note cliniche. Ogni scheda ha tutte le modalità di studio, foto con etichette e video. <b>Esercitati</b> ne apre una a caso in Orale.` },
+  atlas: { t: 'Atlante', b: `ECG, emogas, Rx e altre immagini da imparare a leggere. Carica l’immagine con <b>＋ Foto</b>, poi fanne l’esercizio delle etichette o l’image occlusion. Per ECG, emogas e Rx i titoli seguono l’ordine di lettura (ritmo, asse, onde… / pH, disturbo primario, compenso…).` },
+  diary: { t: 'Diario di tirocinio', b: `Una pagina per ogni giornata: data, reparto, tutor e le <b>procedure</b> (eseguite, assistite, osservate, quante volte). Scrivi casi e cose imparate sotto i titoli pronti. La scheda <b>Procedure</b> fa il totale, con i reparti e l’ultima volta.` },
   examq: { t: 'Domande d’esame', b: `La banca delle domande uscite agli esami. Ogni domanda ha materia, argomenti collegati, risposta o traccia, e le volte in cui è uscita (docente, anno, data, fonte): quando esce di nuovo si somma, così l’elenco “Le più frequenti” ti dice cosa chiedono di più.<br><br><b>Importa da Excel</b>: un foglio .xlsx (anche scaricato da Google Fogli) o un CSV, una domanda per riga. Scegli quali colonne sono domanda, risposta, materia, argomento, docente, anno, data, fonte e tag; “Scarica il modello” ti dà un foglio già pronto. Le domande uguali si sommano e gli argomenti si collegano da soli quando il titolo di una sezione compare nella domanda.<br><br><b>Allenati</b> sulle domande filtrate: le più frequenti, quelle di un docente o di un anno, quelle che sbagli. In ogni sezione, in fondo a Leggi, trovi le domande uscite su quell’argomento.` },
   split: { t: 'Affianca', b: `Apre di fianco una <b>sezione</b> o un <b>PDF</b>, mentre nella pagina principale resta quello che stai guardando: due sezioni, una sezione e le slide, due PDF, o un PDF accanto al lettore PDF.<br><br>Sul tablet e sul computer sta a destra (anche col tablet in verticale), sul telefono sotto. Trascina il bordo per dargli più o meno spazio.<br><br>Nel PDF: pagine ‹ ›, zoom (anche con due dita), salto ai segnalibri. <b>Cambia</b> mostra un’altra cosa, <b>Apri qui</b> la porta nella pagina principale.` },
   pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Quando scrivi con la penna il palmo non lascia segni e con le dita scorri il foglio; <b>✍︎ Solo penna</b> lo attiva da subito.<br><br><b>Gomma della penna</b>: tieni premuto il pulsante laterale (S Pen) o gira la penna dalla parte della gomma (Staedtler Noris digital, Wacom, Surface). <b>Tocco con due dita</b>: annulla l’ultimo tratto (comodo con Apple Pencil, che non ha la gomma).` },
@@ -15449,6 +15899,10 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Medicina di laboratorio', key: 'lab' },
   { sel: '.page-head h1', text: 'Semeiotica', key: 'semei' },
   { sel: '.page-head h1', text: 'Domande d’esame', key: 'examq' },
+  { sel: '.page-head h1', text: 'Score clinici', key: 'scores' },
+  { sel: '.page-head h1', text: 'Microbiologia', key: 'micro' },
+  { sel: '.page-head h1', text: 'Atlante', key: 'atlas' },
+  { sel: '.page-head h1', text: 'Diario di tirocinio', key: 'diary' },
   { sel: '.page-head h1', text: 'Leggi un referto', key: 'labRef' },
   { sel: '.page-head h1', text: 'Calcoli di laboratorio', key: 'labCalc' },
   { sel: '.page-head h1', text: 'Allenati', key: 'labQuiz', hash: /^#\/lab/ },
