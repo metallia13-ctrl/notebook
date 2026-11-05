@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.48';
+const APP_VERSION = '3.50';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1147,6 +1147,7 @@ function route() {
     case 'examq': return viewExamQ(p1);
     case 'micro': case 'atlas': case 'diary': return viewSpecial(p0, p1);
     case 'scores': return viewScores();
+    case 'print': return viewPrint(p1, p2);
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
     case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
     case 'split': location.replace('#/notebooks'); setTimeout(() => Split.pick(), 0); return;
@@ -1475,10 +1476,12 @@ function viewNotebook(id) {
   on('[data-act="nb-more"]', 'click', async () => {
     const choice = await actionSheet(nb.name, [
       { key: 'listen', label: 'Ascolta tutto il notebook' },
+      { key: 'print', label: 'Stampa o salva in PDF' },
       { key: 'rename', label: 'Rinomina il notebook' },
       { key: 'delete', label: 'Elimina il notebook', danger: true }
     ]);
     if (choice === 'listen') Playlist.start(nbReadingOrder(nb), nb.name);
+    if (choice === 'print') go(`#/print/nb/${nb.id}`);
     if (choice === 'rename') renameNb();
     if (choice === 'delete') deleteNb();
   });
@@ -1595,7 +1598,7 @@ function pickSectionsSheet(nb, g) {
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['video', 'Video'], ['edit', 'Modifica']];
+const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['video', 'Video'], ['audio', 'Audio'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
   if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
@@ -1652,6 +1655,7 @@ function viewSection(id, mode) {
         ${spCfg ? `<button class="btn sm" type="button" data-act="sp-meta">${spCfg.kind === 'diary' ? 'Dati della giornata' : 'Dati della scheda'}</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>` : ''}
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length + pdfRefsOf(sec).length ? ` (${pdfsOf(sec.id).length + pdfRefsOf(sec).length})` : ''}</a>
         <a class="btn sm" href="#/split" title="Apri di fianco un’altra sezione o un PDF">⇆ Affianca</a>
+        ${sec.md.trim() ? `<a class="btn sm" href="#/print/sec/${sec.id}" title="Stampa la sezione o salvala in PDF">Stampa</a>` : ''}
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
@@ -1683,7 +1687,7 @@ function viewSection(id, mode) {
     tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
   }
   const body = $('#modeBody');
-  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, edit: modeEdit, case: modeCase }[mode])(sec, body);
+  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, audio: modeAudio, edit: modeEdit, case: modeCase }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -1893,6 +1897,7 @@ function modeRead(sec, body) {
     markGlossary(notesEl);
     bindGlossaryClicks(notesEl);
     setupReadingTools(notesEl, sec);
+    linkStamps(notesEl, sec);
     setupNotesInk(notesEl, sec, $('[data-act="ink"]', body));
     setupListen(notesEl, $('[data-act="listen"]', body), readFolds);
     const lo = $('[data-act="listen-on"]', body);
@@ -3356,6 +3361,7 @@ function viewSettings() {
       </div>
       <p class="hint" id="bkSize"></p>
       <p class="hint" id="bkGuard"></p>
+      <div class="actions"><button class="btn sm" type="button" data-act="persist">Proteggi l’archivio</button></div>
       <p class="hint" id="usage"></p>
     </section>
 
@@ -3561,8 +3567,11 @@ function viewSettings() {
     }
   };
   on('[data-act="export-full"]', 'click', e => runExport(true, e.currentTarget));
+  on('[data-act="persist"]', 'click', async () => { await askPersist(); route(); });
   DataGuard.status().then(st2 => {
     const el = $('#bkGuard');
+    const pb = $('[data-act="persist"]');
+    if (pb && st2.persisted === true) pb.hidden = true;
     if (!el) return;
     const lb = DataGuard.lastBackup();
     el.textContent = [st2.persisted === true ? 'Archivio protetto: il browser non lo cancella per fare spazio.' : st2.persisted === false ? 'Archivio non ancora protetto dal browser: tieni un backup o Drive attivo.' : '',
@@ -4326,9 +4335,10 @@ function modeCards(sec, body) {
     <p class="hint">Copri le etichette di uno schema: ogni riquadro diventa una flashcard. Puoi anche toccare un’immagine in Leggi.</p>
     <div class="row-actions"><button class="btn sm" data-act="io-new">Scegli l’immagine</button></div>
     ${cards.length ? `
-      <h2 class="sub">${cards.length} ${cards.length === 1 ? 'flashcard' : 'flashcard'} in questa sezione</h2>
-      <ul class="list">${cards.map(cardRow).join('')}</ul>` : ''}
+      <div class="cs-head"><h2 class="sub">${cards.length} flashcard in questa sezione</h2><span id="csHostS"></span></div>
+      <ul class="list" id="cardListS">${cards.map(cardRow).join('')}</ul>` : ''}
   `;
+  if (cards.length) bindCardSelect($('#cardListS', body), () => cardsOfSection(sec.id), $('#csHostS', body));
   on('[data-act="new-card"]', 'click', async () => {
     const c = await openCardSheet({ sectionId: sec.id, notebookId: sec.notebookId });
     if (c) route();
@@ -4437,7 +4447,7 @@ function viewDeck(nbId) {
     ${cards.length ? `
       <div class="deck-counts">${countsHtml(cnt)}</div>
       ${COUNTS_LEGEND}
-      ${cards.length > 5 ? '<input type="search" class="input search" id="cardSearch" placeholder="Cerca tra le flashcard" aria-label="Cerca tra le flashcard">' : ''}
+      <div class="cs-head">${cards.length > 5 ? '<input type="search" class="input search" id="cardSearch" placeholder="Cerca tra le flashcard" aria-label="Cerca tra le flashcard">' : ''}<span id="csHost"></span></div>
       <ul class="list" id="cardList">${cards.slice(0, LIMIT).map(cardRow).join('')}</ul>
       ${cards.length > LIMIT ? `<p class="hint" id="moreHint">Mostro le prime ${LIMIT}: usa la ricerca per trovare le altre.</p>` : ''}` : `
       <div class="empty"><p>Nessuna flashcard in questo notebook. Selezionando del testo in una sezione puoi crearne una in un attimo.</p></div>`}
@@ -4446,6 +4456,7 @@ function viewDeck(nbId) {
     const c = await openCardSheet({ notebookId: nb.id });
     if (c) route();
   });
+  bindCardSelect($('#cardList'), () => cardsOf(nbId), $('#csHost'));
   const search = $('#cardSearch');
   if (search) search.addEventListener('input', () => {
     const q = search.value.trim().toLowerCase();
@@ -11892,6 +11903,7 @@ async function init() {
     b.closest('.guard-banner')?.remove();
   });
   setTimeout(showChangesIfNew, 900);
+  setTimeout(pruneAudio, 8000);
   Tracker.start();
   applyBlueLight();
   watchKeyboard();
@@ -12597,6 +12609,532 @@ const PdfRefHint = {
 };
 
 /* =====================================================================
+   v3.50: Audio nelle sezioni
+   Carichi un file o registri la lezione; il lettore resta in basso mentre
+   cambi scheda (Leggi, Modifica…), così scrivi ascoltando. Segnalibri con
+   nome e minuto; “⏱ 12:34” nel testo porta a quel punto dell’audio.
+   I file audio restano sul dispositivo (archivio a parte); nella sezione,
+   che si sincronizza, ci sono nome, durata e segnalibri.
+   ===================================================================== */
+const AudioDB = {
+  db: null,
+  open() {
+    if (this.db) return Promise.resolve(this.db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('nb-audio', 1);
+      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains('files')) r.result.createObjectStore('files'); };
+      r.onsuccess = () => { this.db = r.result; res(this.db); };
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async get(k) { const db = await this.open(); return new Promise(res => { const q = db.transaction('files').objectStore('files').get(k); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); },
+  async put(k, v) { const db = await this.open(); return new Promise((res, rej) => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').put(v, k); tx.oncomplete = () => res(true); tx.onerror = () => rej(tx.error || new Error('Spazio non sufficiente per salvare l’audio')); }); },
+  async del(k) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('files', 'readwrite'); tx.objectStore('files').delete(k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); },
+  async keys() { const db = await this.open(); return new Promise(res => { const q = db.transaction('files').objectStore('files').getAllKeys(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); }); }
+};
+const audiosOf = sec => (Array.isArray(sec.audios) ? sec.audios : (sec.audios = []));
+const fmtT = s => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}` : `${m}:${String(x).padStart(2, '0')}`; };
+const parseT = str => { const p = String(str).split(':').map(Number); return p.some(Number.isNaN) ? null : p.reduce((a, x) => a * 60 + x, 0); };
+async function audioDuration(blob) {
+  return new Promise(res => {
+    const a = new Audio();
+    const url = URL.createObjectURL(blob);
+    const done = v => { URL.revokeObjectURL(url); res(v); };
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => {
+      // alcune registrazioni webm non dicono la durata finché non le si scorre fino in fondo
+      if (Number.isFinite(a.duration)) return done(a.duration);
+      a.currentTime = 1e7;
+      a.ontimeupdate = () => { a.ontimeupdate = null; done(Number.isFinite(a.duration) ? a.duration : 0); };
+    };
+    a.onerror = () => done(0);
+    a.src = url;
+  });
+}
+async function addAudioFile(sec, file, extra = {}) {
+  if (!file || !(file.type.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|oga|opus|webm|flac)$/i.test(file.name))) { toast('Questo file non sembra un audio', 'err'); return null; }
+  const id = uid();
+  try { await AudioDB.put(id, file); } catch (err) { toast(err.message || 'Non riesco a salvare l’audio', 'err'); return null; }
+  const rec = { id, name: extra.name || file.name.replace(/\.[^.]+$/, ''), size: file.size, type: file.type, duration: await audioDuration(file), marks: extra.marks || [], created: Date.now() };
+  audiosOf(sec).push(rec);
+  await saveSection(sec);
+  return rec;
+}
+// tolgo dall’archivio i file audio che nessuna sezione usa più
+async function pruneAudio() {
+  try {
+    const used = new Set(state.sections.flatMap(s => (s.audios || []).map(a => a.id)));
+    if (AudioRec.active) used.add(AudioRec.id);
+    for (const k of await AudioDB.keys()) if (!used.has(k)) await AudioDB.del(k);
+  } catch { /* niente */ }
+}
+
+/* ---------- Lettore: uno solo, resta in basso tra una pagina e l’altra ---------- */
+const AudioPlayer = {
+  el: null, bar: null, secId: '', aId: '', url: '', saveT: 0,
+  sec() { return secById(this.secId); },
+  rec() { const s = this.sec(); return s ? audiosOf(s).find(a => a.id === this.aId) : null; },
+  isOn() { return !!this.aId; },
+  build() {
+    if (this.bar) return;
+    this.el = new Audio();
+    this.el.preload = 'metadata';
+    const bar = document.createElement('div');
+    bar.className = 'ink-bar au-bar';
+    bar.setAttribute('role', 'region');
+    bar.setAttribute('aria-label', 'Lettore audio');
+    bar.innerHTML = `
+      <div class="au-top">
+        <button type="button" class="btn sm primary au-play" data-au="play" aria-label="Riproduci">▶</button>
+        <div class="au-info"><b class="au-name"></b><small class="au-time">0:00</small></div>
+        <button type="button" class="btn sm ghost" data-au="close" aria-label="Chiudi il lettore">✕</button>
+      </div>
+      <div class="au-ctl">
+        <button type="button" class="btn sm ghost" data-au="back" aria-label="Indietro di 10 secondi" title="−10 s">−10</button>
+        <button type="button" class="btn sm ghost" data-au="fwd" aria-label="Avanti di 30 secondi" title="+30 s">+30</button>
+        <select class="input ink-size" data-au-rate aria-label="Velocità">${[0.75, 1, 1.25, 1.5, 1.75, 2].map(r => `<option value="${r}">${String(r).replace('.', ',')}×</option>`).join('')}</select>
+        <button type="button" class="btn sm" data-au="mark" title="Segnalibro in questo punto (Alt+B)">＋ Segnalibro</button>
+        <button type="button" class="btn sm ghost" data-au="stamp" title="Scrive il minuto nel testo che stai modificando (Alt+T)">⏱ Nel testo</button>
+        <button type="button" class="btn sm ghost" data-au="open" title="Apri la scheda Audio della sezione">Audio</button>
+      </div>
+      <div class="au-track"><input type="range" class="au-seek" min="0" max="1000" value="0" step="1" aria-label="Posizione"><div class="au-ticks"></div></div>`;
+    document.body.append(bar);
+    this.bar = bar;
+    bar.hidden = true;
+    // i pulsanti non tolgono il cursore dal testo che stai scrivendo
+    bar.addEventListener('pointerdown', e => { if (e.target.closest('button')) e.preventDefault(); });
+    bar.addEventListener('click', e => { const b = e.target.closest('[data-au]'); if (b) this.act(b.dataset.au); const tk = e.target.closest('[data-tick]'); if (tk) this.seek(+tk.dataset.tick); });
+    $('[data-au-rate]', bar).addEventListener('change', e => { this.el.playbackRate = +e.target.value; S().audioRate = +e.target.value; Settings.save(); });
+    const seek = $('.au-seek', bar);
+    seek.addEventListener('input', () => { if (this.el.duration) this.el.currentTime = (+seek.value / 1000) * this.el.duration; });
+    this.el.addEventListener('timeupdate', () => this.paintTime());
+    this.el.addEventListener('play', () => this.paintPlay());
+    this.el.addEventListener('pause', () => { this.paintPlay(); this.savePos(); });
+    this.el.addEventListener('loadedmetadata', () => { this.paintTicks(); const r = this.rec(); if (r && !r.duration && Number.isFinite(this.el.duration)) { r.duration = this.el.duration; this.saveSoon(); } });
+    this.el.addEventListener('ended', () => this.paintPlay());
+    document.addEventListener('keydown', e => {
+      if (!this.isOn() || !e.altKey || e.ctrlKey || e.metaKey) return;
+      if (e.key === 'b' || e.key === 'B') { e.preventDefault(); this.act('mark'); }
+      if (e.key === 't' || e.key === 'T') { e.preventDefault(); this.act('stamp'); }
+      if (e.key === 'p' || e.key === 'P') { e.preventDefault(); this.act('play'); }
+    });
+  },
+  async load(sec, aId, { at = null, play = true } = {}) {
+    this.build();
+    const rec = audiosOf(sec).find(a => a.id === aId);
+    if (!rec) return false;
+    const f = await AudioDB.get(aId);
+    if (!f) { toast('Questo audio non è su questo dispositivo: ricaricalo dalla scheda Audio della sezione', 'err'); return false; }
+    if (typeof Playlist !== 'undefined' && Playlist.active()) Playlist.stop(true);
+    if (this.url) URL.revokeObjectURL(this.url);
+    this.url = URL.createObjectURL(f);
+    this.secId = sec.id;
+    this.aId = aId;
+    this.el.src = this.url;
+    this.el.playbackRate = +(S().audioRate || 1);
+    $('[data-au-rate]', this.bar).value = String(S().audioRate || 1);
+    $('.au-name', this.bar).textContent = `${rec.name} · ${sec.title}`;
+    this.bar.hidden = false;
+    document.body.classList.add('au-on');
+    await new Promise(r => { if (this.el.readyState >= 1) r(); else this.el.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 1500); });
+    this.el.currentTime = at !== null ? at : (rec.pos || 0);
+    if ('mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: rec.name, artist: sec.title, album: nbById(sec.notebookId)?.name || 'Notebook' });
+        navigator.mediaSession.setActionHandler('seekbackward', () => this.act('back'));
+        navigator.mediaSession.setActionHandler('seekforward', () => this.act('fwd'));
+      } catch { /* niente */ }
+    }
+    if (play) this.el.play().catch(() => {});
+    this.paintTicks();
+    this.paintTime();
+    return true;
+  },
+  // dal testo: va al minuto nell’audio della sezione (quello aperto, se è suo, se no il primo)
+  async seekSection(sec, t) {
+    if (this.isOn() && this.secId === sec.id) { this.seek(t); this.el.play().catch(() => {}); return; }
+    const a = audiosOf(sec)[0];
+    if (!a) { toast('Questa sezione non ha audio'); return; }
+    await this.load(sec, a.id, { at: t });
+  },
+  seek(t) { if (this.el) { this.el.currentTime = Math.max(0, t); this.paintTime(); } },
+  paintPlay() { const b = $('.au-play', this.bar); b.textContent = this.el.paused ? '▶' : '❚❚'; b.setAttribute('aria-label', this.el.paused ? 'Riproduci' : 'Pausa'); },
+  paintTime() {
+    const d = this.el.duration || this.rec()?.duration || 0;
+    $('.au-time', this.bar).textContent = `${fmtT(this.el.currentTime)} / ${fmtT(d)}`;
+    if (d) $('.au-seek', this.bar).value = String(Math.round((this.el.currentTime / d) * 1000));
+    if (Math.abs((this.rec()?.pos || 0) - this.el.currentTime) > 15) this.savePos();
+  },
+  paintTicks() {
+    const r = this.rec();
+    const d = this.el.duration || r?.duration || 0;
+    $('.au-ticks', this.bar).innerHTML = r && d ? r.marks.map(m => `<button type="button" class="au-tick" data-tick="${m.t}" style="left:${(m.t / d) * 100}%" title="${esc(fmtT(m.t))} ${esc(m.label || '')}" aria-label="Vai a ${esc(fmtT(m.t))}"></button>`).join('') : '';
+  },
+  savePos() { const r = this.rec(); if (r) { r.pos = Math.floor(this.el.currentTime); this.saveSoon(); } },
+  saveSoon() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { const s = this.sec(); if (s) saveSection(s); }, 800); },
+  async act(a) {
+    if (a === 'play') { if (this.el.paused) this.el.play().catch(() => {}); else this.el.pause(); return; }
+    if (a === 'back') { this.seek(this.el.currentTime - 10); return; }
+    if (a === 'fwd') { this.seek(this.el.currentTime + 30); return; }
+    if (a === 'close') { this.savePos(); this.el.pause(); this.aId = ''; this.bar.hidden = true; document.body.classList.remove('au-on'); return; }
+    if (a === 'open') { go(`#/sec/${this.secId}/audio`); return; }
+    if (a === 'mark') {
+      const r = this.rec();
+      if (!r) return;
+      const m = { id: uid(), t: Math.floor(this.el.currentTime), label: '' };
+      r.marks.push(m);
+      r.marks.sort((x, y) => x.t - y.t);
+      this.saveSoon();
+      this.paintTicks();
+      AudioMode.refresh();
+      toast(`Segnalibro a ${fmtT(m.t)}`, '', { label: 'Dagli un nome', fn: async () => { const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: '', placeholder: 'Es. Chiede all’esame', confirm: 'Salva' }); if (v) { m.label = String(v).trim(); this.saveSoon(); this.paintTicks(); AudioMode.refresh(); } } });
+      return;
+    }
+    if (a === 'stamp') insertStamp(this.el.currentTime);
+  }
+};
+// scrive “⏱ 12:34” dove stai scrivendo (anteprima di Modifica, codice, blocco di testo)
+function insertStamp(t) {
+  const txt = `⏱ ${fmtT(t)} `;
+  const ae = document.activeElement;
+  if (ae && (ae.isContentEditable || ae.closest?.('[contenteditable="true"]'))) { document.execCommand('insertText', false, txt); return; }
+  if (ae && (ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text'))) {
+    ae.setRangeText(txt, ae.selectionStart, ae.selectionEnd, 'end');
+    ae.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  navigator.clipboard?.writeText(txt.trim()).catch(() => {});
+  toast(`Metti il cursore nel testo (in Modifica) per scrivere ${txt.trim()}; intanto l’ho copiato`);
+}
+// in Leggi, i “⏱ 12:34” diventano pulsanti che portano a quel punto
+function linkStamps(article, sec) {
+  if (!audiosOf(sec).length) return;
+  const re = /⏱\s?((?:\d{1,2}:)?\d{1,2}:\d{2})/g;
+  const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) if (re.test(walker.currentNode.nodeValue)) nodes.push(walker.currentNode);
+  nodes.forEach(n => {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    n.nodeValue.replace(re, (m, t, i) => {
+      frag.append(n.nodeValue.slice(last, i));
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ts-jump';
+      b.dataset.t = parseT(t);
+      b.textContent = `⏱ ${t}`;
+      b.title = 'Ascolta da qui';
+      frag.append(b);
+      last = i + m.length;
+      return m;
+    });
+    frag.append(n.nodeValue.slice(last));
+    n.replaceWith(frag);
+  });
+  article.addEventListener('click', e => { const b = e.target.closest('.ts-jump'); if (b) AudioPlayer.seekSection(sec, +b.dataset.t); });
+}
+
+/* ---------- Registratore ---------- */
+const AudioRec = {
+  active: false, mr: null, chunks: [], start: 0, paused: 0, pauseAt: 0, marks: [], secId: '', id: '', bar: null, wake: null, tick: 0,
+  elapsed() { return ((this.pauseAt || Date.now()) - this.start - this.paused) / 1000; },
+  async begin(sec) {
+    if (this.active) { toast('Stai già registrando'); return; }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') { toast('Questo browser non sa registrare audio', 'err'); return; }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true } }); }
+    catch { toast('Serve il permesso del microfono: consentilo nelle impostazioni del browser', 'err'); return; }
+    const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find(t => MediaRecorder.isTypeSupported?.(t)) || '';
+    this.mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 48000 } : undefined);
+    this.chunks = [];
+    this.marks = [];
+    this.secId = sec.id;
+    this.id = uid();
+    this.start = Date.now();
+    this.paused = 0;
+    this.pauseAt = 0;
+    this.active = true;
+    this.mr.ondataavailable = e => { if (e.data && e.data.size) this.chunks.push(e.data); };
+    this.mr.start(5000);
+    try { if (navigator.wakeLock) this.wake = await navigator.wakeLock.request('screen'); } catch { this.wake = null; }
+    if (AudioPlayer.isOn()) AudioPlayer.el.pause();
+    this.showBar();
+  },
+  showBar() {
+    if (!this.bar) {
+      const bar = document.createElement('div');
+      bar.className = 'ink-bar au-bar rec-bar';
+      bar.innerHTML = `<span class="rec-dot" aria-hidden="true"></span><b class="rec-t">0:00</b><small class="rec-where"></small>
+        <button type="button" class="btn sm" data-rc="mark" title="Segnalibro in questo punto (Alt+B)">＋ Segnalibro</button>
+        <button type="button" class="btn sm ghost" data-rc="stamp" title="Scrive il minuto nel testo (Alt+T)">⏱ Nel testo</button>
+        <button type="button" class="btn sm ghost" data-rc="pause">Pausa</button>
+        <button type="button" class="btn sm danger-solid" data-rc="stop">■ Ferma e salva</button>`;
+      document.body.append(bar);
+      bar.addEventListener('pointerdown', e => { if (e.target.closest('button')) e.preventDefault(); });
+      bar.addEventListener('click', e => { const b = e.target.closest('[data-rc]'); if (b) this.act(b.dataset.rc); });
+      document.addEventListener('keydown', e => {
+        if (!this.active || !e.altKey) return;
+        if (e.key === 'b' || e.key === 'B') { e.preventDefault(); e.stopImmediatePropagation(); this.act('mark'); }
+        if (e.key === 't' || e.key === 'T') { e.preventDefault(); e.stopImmediatePropagation(); this.act('stamp'); }
+      }, true);
+      window.addEventListener('pagehide', () => { if (this.active) this.stop(true); });
+      this.bar = bar;
+    }
+    this.bar.hidden = false;
+    document.body.classList.add('au-on');
+    $('.rec-where', this.bar).textContent = secById(this.secId)?.title || '';
+    clearInterval(this.tick);
+    this.tick = setInterval(() => { $('.rec-t', this.bar).textContent = fmtT(this.elapsed()); }, 500);
+  },
+  act(a) {
+    if (a === 'mark') { const t = Math.floor(this.elapsed()); this.marks.push({ id: uid(), t, label: '' }); toast(`Segnalibro a ${fmtT(t)}: il nome lo dai dopo, nella scheda Audio`); }
+    if (a === 'stamp') insertStamp(this.elapsed());
+    if (a === 'pause') {
+      if (this.mr.state === 'recording') { this.mr.pause(); this.pauseAt = Date.now(); $('[data-rc="pause"]', this.bar).textContent = 'Riprendi'; this.bar.classList.add('paused'); }
+      else { this.mr.resume(); this.paused += Date.now() - this.pauseAt; this.pauseAt = 0; $('[data-rc="pause"]', this.bar).textContent = 'Pausa'; this.bar.classList.remove('paused'); }
+    }
+    if (a === 'stop') this.stop();
+  },
+  async stop(quiet = false) {
+    if (!this.active) return;
+    this.active = false;
+    clearInterval(this.tick);
+    const dur = this.elapsed();
+    await new Promise(r => { this.mr.onstop = r; try { this.mr.stop(); } catch { r(); } });
+    this.mr.stream.getTracks().forEach(t => t.stop());
+    try { await this.wake?.release(); } catch { /* niente */ }
+    this.wake = null;
+    this.bar.hidden = true;
+    if (!AudioPlayer.isOn()) document.body.classList.remove('au-on');
+    const sec = secById(this.secId);
+    const blob = new Blob(this.chunks, { type: this.mr.mimeType || 'audio/webm' });
+    this.chunks = [];
+    if (!sec || !blob.size) { if (!quiet) toast('Registrazione vuota', 'err'); return; }
+    const ext = /mp4/.test(blob.type) ? 'm4a' : 'webm';
+    const name = `Registrazione ${new Date().toLocaleDateString('it-IT')} ${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
+    const file = new File([blob], `${name}.${ext}`, { type: blob.type });
+    try { await AudioDB.put(this.id, file); } catch (err) { toast(err.message || 'Non riesco a salvare la registrazione', 'err'); return; }
+    audiosOf(sec).push({ id: this.id, name, size: file.size, type: file.type, duration: dur, marks: this.marks, created: Date.now(), recorded: true });
+    await saveSection(sec);
+    if (!quiet) toast(`Registrazione salvata (${fmtT(dur)}, ${this.marks.length} segnalibri)`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/audio`) });
+    AudioMode.refresh();
+  }
+};
+
+/* ---------- Scheda Audio della sezione ---------- */
+const AudioMode = { refresh() { const h = location.hash; if (/^#\/sec\/[^/]+\/audio/.test(h) && !$('#modalRoot').children.length && !document.activeElement?.matches('input, textarea')) { const y = window.scrollY; route(); window.scrollTo(0, y); } } };
+function modeAudio(sec, body) {
+  const list = audiosOf(sec);
+  body.innerHTML = `
+    <div class="row-actions">
+      <label class="btn primary file-btn">Carica un audio<input type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.webm,.flac" multiple hidden id="auFile"></label>
+      <button class="btn" type="button" data-act="au-rec">● Registra</button>
+    </div>
+    <p class="hint">Il lettore resta in basso anche se passi a Leggi o Modifica: scrivi mentre ascolti. <strong>＋ Segnalibro</strong> segna il punto (Alt+B al computer), <strong>⏱ Nel testo</strong> scrive il minuto dove hai il cursore (Alt+T): in Leggi quel minuto diventa un pulsante che fa ripartire l’audio da lì. I file audio restano su questo dispositivo; nome, durata e segnalibri si sincronizzano con la sezione.</p>
+    ${list.length ? list.map(a => `
+      <section class="au-item" data-aid="${a.id}">
+        <div class="au-head">
+          <button type="button" class="btn sm primary" data-a="play" aria-label="Ascolta ${esc(a.name)}">▶</button>
+          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrato' : '', new Date(a.created).toLocaleDateString('it-IT')].filter(Boolean).join(' · ')}<span class="au-miss" hidden> · non su questo dispositivo</span></small></div>
+          <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
+        </div>
+        ${a.marks.length ? `<ol class="au-marks">${a.marks.map(m => `<li><button type="button" class="link-btn" data-mt="${m.t}">${fmtT(m.t)}</button> <span class="au-ml">${esc(m.label || 'Senza nome')}</span>
+          <button type="button" class="btn sm ghost" data-mr="${m.id}" aria-label="Rinomina">✎</button><button type="button" class="btn sm ghost" data-md="${m.id}" aria-label="Elimina il segnalibro">✕</button></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti.</p>'}
+      </section>`).join('') : '<div class="empty"><p>Nessun audio in questa sezione. Carica la registrazione di una lezione, oppure registra adesso.</p></div>'}
+  `;
+  // file mancanti su questo dispositivo (registrati altrove)
+  AudioDB.keys().then(keys => { const have = new Set(keys); $$('.au-item', body).forEach(it => { $('.au-miss', it).hidden = have.has(it.dataset.aid); }); });
+  $('#auFile', body).addEventListener('change', async e => {
+    const files = [...e.target.files];
+    let n = 0;
+    for (const f of files) if (await addAudioFile(sec, f)) n++;
+    if (n) { toast(n === 1 ? 'Audio aggiunto' : `${n} audio aggiunti`); route(); }
+  });
+  on('[data-act="au-rec"]', 'click', () => AudioRec.begin(sec), body);
+  body.addEventListener('click', async e => {
+    const it = e.target.closest('.au-item');
+    if (!it) return;
+    const a = list.find(x => x.id === it.dataset.aid);
+    if (!a) return;
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.a === 'play') { await AudioPlayer.load(sec, a.id); return; }
+    if (b.dataset.mt !== undefined) { if (AudioPlayer.aId === a.id) { AudioPlayer.seek(+b.dataset.mt); AudioPlayer.el.play().catch(() => {}); } else await AudioPlayer.load(sec, a.id, { at: +b.dataset.mt }); return; }
+    if (b.dataset.mr) { const m = a.marks.find(x => x.id === b.dataset.mr); const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: m.label || '', confirm: 'Salva', allowEmpty: true }); if (v !== null && v !== undefined) { m.label = String(v).trim(); await saveSection(sec); route(); } return; }
+    if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveSection(sec); AudioPlayer.paintTicks?.(); route(); return; }
+    if (b.dataset.a === 'menu') {
+      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Scarica il file' }, { key: 'del', label: 'Elimina l’audio', danger: true }]);
+      if (ch === 'rename') { const v = await modal({ title: 'Rinomina l’audio', input: true, value: a.name, confirm: 'Salva' }); if (v) { a.name = String(v).trim(); await saveSection(sec); route(); } }
+      if (ch === 'save') { const f = await AudioDB.get(a.id); if (f) downloadBlob(f, f.name || `${a.name}.webm`); else toast('Il file non è su questo dispositivo', 'err'); }
+      if (ch === 'reload') {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = 'audio/*';
+        inp.onchange = async () => { const f = inp.files[0]; if (!f) return; await AudioDB.put(a.id, f); a.size = f.size; if (!a.duration) a.duration = await audioDuration(f); await saveSection(sec); toast('File ricollegato: i segnalibri restano'); route(); };
+        inp.click();
+      }
+      if (ch === 'del') {
+        if (!(await modal({ title: 'Eliminare l’audio?', text: 'Spariscono il file e i suoi segnalibri. I minuti scritti nel testo restano, ma non portano più a niente.', confirm: 'Elimina', danger: true }))) return;
+        if (AudioPlayer.aId === a.id) AudioPlayer.act('close');
+        sec.audios = list.filter(x => x.id !== a.id);
+        await saveSection(sec);
+        await AudioDB.del(a.id);
+        route();
+      }
+    }
+  });
+}
+
+/* =====================================================================
+   v3.49: selezione multipla delle flashcard, stampa e PDF, protezione dati
+   ===================================================================== */
+// Selezione di più flashcard in un elenco: tocca “Seleziona”, poi le righe;
+// al computer Maiusc + clic prende tutte quelle in mezzo.
+function bindCardSelect(listEl, getCards, btnHost) {
+  if (!listEl || !btnHost) return;
+  let on = false;
+  let picked = new Set();
+  let lastIdx = -1;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn sm ghost';
+  btn.textContent = 'Seleziona';
+  btnHost.append(btn);
+  const bar = document.createElement('div');
+  bar.className = 'ink-bar cs-bar';
+  bar.hidden = true;
+  bar.setAttribute('role', 'toolbar');
+  bar.setAttribute('aria-label', 'Flashcard selezionate');
+  bar.innerHTML = `
+    <b class="cs-n" aria-live="polite"></b>
+    <button type="button" class="btn sm ghost" data-cs="all">Tutte</button>
+    <button type="button" class="btn sm ghost" data-cs="none">Nessuna</button>
+    <button type="button" class="btn sm ghost" data-cs="dup" title="Seleziona le flashcard con lo stesso fronte di un’altra, lasciando la prima">Doppioni</button>
+    <button type="button" class="btn sm danger-solid" data-cs="del">Elimina</button>
+    <button type="button" class="btn sm ghost" data-cs="end">Fine</button>`;
+  document.body.append(bar);
+  addCleanup(() => bar.remove());
+  const rows = () => $$('li[data-id]', listEl);
+  const paint = () => {
+    rows().forEach(li => {
+      li.classList.toggle('cs-on', picked.has(li.dataset.id));
+      let box = $('.cs-box', li);
+      if (on && !box) { li.insertAdjacentHTML('afterbegin', '<span class="cs-box" aria-hidden="true"></span>'); }
+      if (!on && box) box.remove();
+    });
+    listEl.classList.toggle('cs-mode', on);
+    bar.hidden = !on;
+    $('.cs-n', bar).textContent = `${picked.size} selezionate`;
+    $('[data-cs="del"]', bar).disabled = !picked.size;
+    btn.textContent = on ? 'Fine selezione' : 'Seleziona';
+  };
+  const set = v => { on = v; if (!on) { picked = new Set(); lastIdx = -1; } paint(); };
+  btn.addEventListener('click', () => set(!on));
+  // l’elenco si ridisegna con la ricerca: ripasso i segni
+  new MutationObserver(() => { if (on) paint(); }).observe(listEl, { childList: true });
+  listEl.addEventListener('click', e => {
+    if (!on) return;
+    const li = e.target.closest('li[data-id]');
+    if (!li) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const all = rows();
+    const idx = all.indexOf(li);
+    if (e.shiftKey && lastIdx >= 0) {
+      const [a, b] = [Math.min(lastIdx, idx), Math.max(lastIdx, idx)];
+      all.slice(a, b + 1).forEach(x => picked.add(x.dataset.id));
+    } else if (picked.has(li.dataset.id)) picked.delete(li.dataset.id);
+    else picked.add(li.dataset.id);
+    lastIdx = idx;
+    paint();
+  }, true);
+  bar.addEventListener('click', async e => {
+    const b = e.target.closest('[data-cs]');
+    if (!b) return;
+    const k = b.dataset.cs;
+    if (k === 'end') { set(false); return; }
+    if (k === 'all') { rows().forEach(li => picked.add(li.dataset.id)); paint(); return; }
+    if (k === 'none') { picked = new Set(); paint(); return; }
+    if (k === 'dup') {
+      const seen = new Set();
+      let n = 0;
+      getCards().forEach(c => {
+        if (c.type === 'occlusion') return;
+        const key = foldAccents(plainText(c.front || '', 400)).replace(/\s+/g, ' ').trim();
+        if (!key) return;
+        if (seen.has(key)) { picked.add(c.id); n++; } else seen.add(key);
+      });
+      paint();
+      toast(n ? `${n} doppioni selezionati: resta la prima di ognuna` : 'Nessun doppione');
+      return;
+    }
+    if (k === 'del') {
+      const list = getCards().filter(c => picked.has(c.id));
+      if (!list.length) return;
+      if (!(await modal({ title: `Eliminare ${list.length} flashcard?`, text: 'Spariscono su tutti i tuoi dispositivi, con i loro ripassi.', confirm: 'Elimina', danger: true }))) return;
+      await removeRecords(list.map(rec => ({ store: 'cards', rec })));
+      toast(`${list.length} flashcard eliminate`);
+      set(false);
+      route();
+    }
+  });
+  document.addEventListener('keydown', e => { if (on && e.key === 'Escape' && !$('#modalRoot').children.length) set(false); });
+}
+
+/* ---------- Stampa o salva in PDF ----------
+   Una pagina pulita con gli appunti (cloze visibili, titoli aperti, immagini),
+   poi la finestra di stampa del sistema: lì scegli la stampante o “Salva come PDF”. */
+function viewPrint(kind, id) {
+  let title = '', secs = [];
+  if (kind === 'sec') { const s = secById(id); if (!s) return notFound('Questa sezione'); title = s.title; secs = [s]; }
+  else if (kind === 'nb') {
+    const nb = nbById(id);
+    if (!nb) return notFound('Questo notebook');
+    title = nb.name;
+    secs = nbReadingOrder(nb).filter(s => String(s.md || '').trim());
+  } else return notFound('Questa pagina');
+  const back = kind === 'sec' ? `#/sec/${id}/read` : `#/nb/${id}`;
+  const nbName = kind === 'sec' ? nbById(secs[0].notebookId)?.name || '' : '';
+  setView(`
+    <div class="print-tools">
+      <a class="back" href="${back}">Torna indietro</a>
+      <div class="inline">
+        <label class="check"><input type="checkbox" id="prCz"><span>Nascondi i cloze (per esercitarti su carta)</span></label>
+        <button class="btn primary" type="button" data-act="print">Stampa o salva in PDF</button>
+      </div>
+      <p class="hint">Nella finestra di stampa scegli la stampante oppure “Salva come PDF”. ${kind === 'nb' ? `${secs.length} sezioni, ognuna da una pagina nuova.` : ''}</p>
+    </div>
+    <article class="print-doc">
+      <header class="print-head"><h1>${esc(title)}</h1>${nbName ? `<p class="meta">${esc(nbName)}${groupPathText(secs[0]) ? ` › ${esc(groupPathText(secs[0]))}` : ''}</p>` : ''}</header>
+      ${secs.map((s, i) => `
+        <section class="print-sec">
+          ${kind === 'nb' ? `<h1 class="print-sec-t">${esc(s.title)}</h1>${groupPathText(s) ? `<p class="meta">${esc(groupPathText(s))}</p>` : ''}` : ''}
+          <div class="notes">${renderMd(s.md)}</div>
+          ${sourcesOf(s).length ? `<p class="print-src">Fonti: ${sourcesOf(s).map(esc).join('; ')}</p>` : ''}
+        </section>`).join('')}
+    </article>`);
+  document.body.classList.add('print-page');
+  addCleanup(() => document.body.classList.remove('print-page', 'print-hide-cz'));
+  $('#prCz').onchange = e => document.body.classList.toggle('print-hide-cz', e.target.checked);
+  $('[data-act="print"]').onclick = async () => {
+    // aspetto che le immagini siano caricate, se no escono vuote
+    const imgs = $$('.print-doc img');
+    await Promise.race([Promise.all(imgs.map(im => (im.complete && im.naturalWidth ? null : new Promise(r => { im.addEventListener('load', r, { once: true }); im.addEventListener('error', r, { once: true }); })))), sleep(4000)]);
+    window.print();
+  };
+}
+
+/* ---------- Protezione dell’archivio, su richiesta ---------- */
+async function askPersist() {
+  if (!navigator.storage || !navigator.storage.persist) { toast('Questo browser non permette di proteggere l’archivio: tieni attivo Drive o fai un backup ogni tanto', 'err'); return false; }
+  let ok = false;
+  try { ok = (await navigator.storage.persisted()) || (await navigator.storage.persist()); } catch { ok = false; }
+  if (ok) toast('Archivio protetto: il browser non lo cancellerà per fare spazio');
+  else toast('Il browser per ora non lo concede: di solito lo fa quando installi l’app sulla schermata Home o la usi spesso. Intanto tieni attivo Drive o fai un backup', 'err');
+  return ok;
+}
+
+/* =====================================================================
    v3.46: Microbiologia, Atlante (ECG, emogas, Rx), Diario di tirocinio
    Come la semeiotica: ogni scheda è una sezione di un notebook speciale,
    con tutte le modalità di studio, foto con etichette, video, fonti.
@@ -12983,6 +13521,18 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.50", title: "audio nelle sezioni, con segnalibri", html: `      <ul>
+        <li>Ogni sezione ha la scheda <strong>Audio</strong>: <strong>Carica un audio</strong> (mp3, m4a, wav, ogg…) oppure <strong>● Registra</strong> la lezione direttamente.</li>
+        <li>Il <strong>lettore resta in basso</strong> anche quando passi a Leggi o Modifica: scrivi gli appunti mentre ascolti. Avanti e indietro, velocità da 0,75× a 2×, barra con i segnalibri; riprende da dove eri rimasta.</li>
+        <li><strong>＋ Segnalibro</strong> segna il punto (Alt+B al computer), anche mentre registri; poi gli dai un nome. Nella scheda Audio i segnalibri si toccano per ripartire da lì.</li>
+        <li><strong>⏱ Nel testo</strong> (Alt+T) scrive il minuto, per esempio “⏱ 12:34”, dove hai il cursore in Modifica; in Leggi diventa un pulsante che fa ripartire l’audio da quel punto.</li>
+        <li>I file audio restano su questo dispositivo (sono grandi per Drive e per il backup); nome, durata e segnalibri si sincronizzano con la sezione. Su un altro dispositivo puoi ricollegare lo stesso file e ritrovi i segnalibri.</li>
+      </ul>` },
+  { v: "3.49", title: "più flashcard insieme, stampa e PDF, protezione dell’archivio", html: `      <ul>
+        <li><strong>Selezione multipla delle flashcard</strong>: nell’elenco di un mazzo (Flashcard → notebook) o nella scheda Flashcard di una sezione tocca <strong>Seleziona</strong>, poi le flashcard da eliminare. Al computer Maiusc + clic prende tutte quelle in mezzo. Nella barra in basso: Tutte, Nessuna, <strong>Doppioni</strong> (le flashcard con lo stesso fronte, lasciando la prima) ed <strong>Elimina</strong>.</li>
+        <li><strong>Stampa o salva in PDF</strong>: il pulsante Stampa in cima a una sezione, oppure “Stampa o salva in PDF” nel menu Altro del notebook per stamparlo tutto (ogni sezione da una pagina nuova). Nella finestra di stampa scegli la stampante o “Salva come PDF”. Puoi nascondere i cloze per esercitarti su carta.</li>
+        <li><strong>Proteggi l’archivio</strong> in Impostazioni → Backup: chiede al browser di non cancellare mai i dati dell’app quando manca spazio. Se il browser non lo concede (Chrome lo fa di solito dopo che installi l’app sulla schermata Home o la usi spesso), tieni attivo Drive o fai un backup.</li>
+      </ul>` },
   { v: "3.48", title: "più parti insieme per il cloze", html: `      <ul>
         <li><strong>Al computer</strong>: seleziona la prima parte, poi tieni premuto <strong>Ctrl</strong> (⌘ sul Mac) mentre selezioni le altre. Le parti tenute da parte restano segnate con un riquadro tratteggiato; alla fine tocca <strong>Cloze</strong> (o un colore, la sottolineatura, ✕) e vale per tutte. Un clic normale ricomincia da capo, Esc le lascia perdere.</li>
         <li><strong>Sul tablet e sul telefono</strong>: seleziona una parte e tocca <strong>＋ Altra parte</strong> nella barra; poi seleziona la successiva, e così via. Il pulsante mostra quante parti hai; “✕ N parti” le lascia perdere.</li>
