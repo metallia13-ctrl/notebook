@@ -3494,3 +3494,9 @@ body.pl-on .pad-fab { bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
 .sh-topics .row { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .sh-topics .row.on { background: var(--accent-soft); border-radius: var(--r); }
 .warn-hint { color: var(--warn); }
+
+/* v3.48: parti tenute da parte per il cloze */
+::highlight(nb-pending) { background-color: rgba(125, 211, 252, 0.32); text-decoration: underline dashed rgba(125, 211, 252, 0.95); text-underline-offset: 3px; }
+.rt-btn.rt-add { color: var(--accent); }
+.rt-btn.rt-pend { color: var(--warn); }
+.rt-btn[hidden] { display: none; }

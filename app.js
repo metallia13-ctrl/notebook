@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.47';
+const APP_VERSION = '3.48';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -5675,6 +5675,8 @@ function wrapSelectionInTextarea(ta, open, close) {
    --------------------------------------------------------------------- */
 function readingToolsHtml() {
   return `
+    <button type="button" class="rt-btn rt-pend" data-rt="clearpend" hidden title="Lascia perdere le parti tenute da parte">✕ <span class="rt-pend-n"></span></button>
+    <button type="button" class="rt-btn rt-add" data-rt="add" title="Tiene da parte questa selezione: selezionane un’altra e poi scegli Cloze o un colore per tutte. Al computer: tieni premuto Ctrl (⌘ sul Mac) mentre selezioni">＋ Altra parte</button>
     <button type="button" class="rt-btn rt-edit" data-rt="edit" title="Apre Modifica con il cursore su questo testo">✎ Modifica</button>
     <button type="button" class="rt-btn" data-rt="move" title="Sposta il paragrafo, il titolo o le voci selezionate in un’altra sezione">↗ Sposta</button>
     <button type="button" class="rt-btn" data-rt="cloze" title="Nascondi nel Cloze">Cloze</button>
@@ -5928,6 +5930,29 @@ function setupReadingTools(container, sec) {
 
   let last = null; // { text, occurrence, listText }
   let hideTimer = null;
+  // v3.48: più parti insieme. Ctrl (⌘) mentre selezioni, oppure “＋ Altra parte”;
+  // le parti tenute da parte si vedono con un riquadro tratteggiato
+  let pending = [];
+  const hlOk = typeof Highlight !== 'undefined' && window.CSS && CSS.highlights;
+  const paintPending = () => {
+    if (hlOk) { if (pending.length) CSS.highlights.set('nb-pending', new Highlight(...pending.map(p => p.range))); else CSS.highlights.delete('nb-pending'); }
+    [bar, menu].forEach(el => {
+      const b = $('[data-rt="clearpend"]', el);
+      b.hidden = !pending.length;
+      $('.rt-pend-n', b).textContent = `${pending.length} ${pending.length === 1 ? 'parte' : 'parti'}`;
+      $('[data-rt="add"]', el).textContent = pending.length ? `＋ Altra parte (${pending.length + 1})` : '＋ Altra parte';
+    });
+  };
+  const addPending = () => {
+    const sel = document.getSelection();
+    const c = capture();
+    if (!c || !sel.rangeCount) return false;
+    if (pending.some(p => p.c.text === c.text && p.c.occurrence === c.occurrence)) return false;
+    pending.push({ c, range: sel.getRangeAt(0).cloneRange() });
+    paintPending();
+    return true;
+  };
+  const clearPending = () => { pending = []; paintPending(); };
   const capture = () => {
     const sel = document.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
@@ -5954,17 +5979,66 @@ function setupReadingTools(container, sec) {
   const onSel = () => {
     const c = capture();
     if (c) { clearTimeout(hideTimer); last = c; stable.changed(); }
+    else if (pending.length) { stable.cancel(); clearTimeout(hideTimer); bar.hidden = false; placeSelBar(bar, container); }
     else if (!bar.hidden) { stable.cancel(); clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 700); }
     else stable.cancel();
   };
+  // al computer: Ctrl (⌘) premuto quando inizi una nuova selezione tiene da parte quella di prima;
+  // un clic normale col mouse ricomincia da capo
+  const onMultiDown = e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (e.ctrlKey || e.metaKey) { addPending(); return; }
+    if (pending.length) clearPending();
+  };
+  container.addEventListener('pointerdown', onMultiDown, true);
   const closeMenu = () => { menu.hidden = true; };
   const act = async kind => {
+    if (kind === 'add') {
+      if (addPending()) { last = null; document.getSelection()?.removeAllRanges(); toast(SelGesture.touchy() ? 'Tenuta da parte: seleziona la prossima' : 'Tenuta da parte: seleziona la prossima (o tieni premuto Ctrl mentre selezioni)'); }
+      return;
+    }
+    if (kind === 'clearpend') { clearPending(); if (!capture()) bar.hidden = true; return; }
     clearTimeout(hideTimer);
     bar.hidden = true;
     closeMenu();
-    const c = last;
+    const cur = capture() || last;
+    const pieces = [...pending.map(p => p.c), ...(cur && !pending.some(p => p.c.text === cur.text && p.c.occurrence === cur.occurrence) ? [cur] : [])];
+    clearPending();
+    const c = cur || pieces[pieces.length - 1];
     if (!c) return;
     document.getSelection()?.removeAllRanges();
+    if (pieces.length > 1 && !['gloss', 'clin', 'move', 'edit', 'card'].includes(kind)) {
+      // tutte le parti in un colpo, dalla più in fondo, così le posizioni prima non cambiano
+      const rs = [];
+      let lost = 0;
+      pieces.forEach(pc => { const r = findSourceRange(sec.md, pc.text, pc.occurrence); if (r && !(kind === 'cloze' && /\n\s*\n/.test(sec.md.slice(r.start, r.end)))) rs.push(r); else lost++; });
+      rs.sort((a, b) => b.start - a.start);
+      const keep = rs.filter((r, i) => i === 0 || r.end <= rs[i - 1].start);
+      lost += rs.length - keep.length;
+      if (!keep.length) { toast('Non riesco a trovare queste parti negli appunti', 'err'); return; }
+      const prevMd = sec.md;
+      let md = sec.md;
+      keep.forEach(r => { md = applyMarkToMd(md, r, kind); });
+      if (md === prevMd) return;
+      sec.md = md;
+      await saveSection(sec);
+      const y = window.scrollY;
+      route();
+      window.scrollTo(0, y);
+      toast(`${kind === 'cloze' ? 'Cloze' : kind === 'none' ? 'Formattazione tolta' : 'Fatto'} su ${keep.length} parti${lost ? ` (${lost} non trovate)` : ''}`, '', {
+        label: 'Annulla',
+        fn: async () => {
+          if (sec.md !== md) { toast('Non posso annullare: gli appunti sono cambiati nel frattempo', 'err'); return; }
+          sec.md = prevMd;
+          await saveSection(sec);
+          const yy = window.scrollY;
+          route();
+          window.scrollTo(0, yy);
+        }
+      });
+      return;
+    }
+    if (pieces.length > 1 && (kind === 'card' || kind === 'clin')) c.listText = pieces.map(p => `- ${p.text}`).join('\n');
     if (kind === 'gloss') {
       if (await glossarySheet(null, { term: c.text.slice(0, 80), nbId: sec.notebookId })) { const y = window.scrollY; route(); window.scrollTo(0, y); }
       return;
@@ -6038,7 +6112,7 @@ function setupReadingTools(container, sec) {
     menu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - h - 8))}px`;
   };
   const onDocDown = e => { if (!menu.hidden && !menu.contains(e.target)) closeMenu(); };
-  const onKey = e => { if (e.key === 'Escape') closeMenu(); };
+  const onKey = e => { if (e.key === 'Escape') { closeMenu(); if (pending.length) { clearPending(); if (!capture()) bar.hidden = true; } } };
   document.addEventListener('selectionchange', onSel);
   container.addEventListener('contextmenu', onContext);
   document.addEventListener('pointerdown', onDocDown, true);
@@ -6047,6 +6121,7 @@ function setupReadingTools(container, sec) {
   addCleanup(() => {
     clearTimeout(hideTimer);
     stable.done();
+    if (hlOk) CSS.highlights.delete('nb-pending');
     document.removeEventListener('selectionchange', onSel);
     document.removeEventListener('pointerdown', onDocDown, true);
     document.removeEventListener('keydown', onKey);
@@ -12908,6 +12983,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.48", title: "più parti insieme per il cloze", html: `      <ul>
+        <li><strong>Al computer</strong>: seleziona la prima parte, poi tieni premuto <strong>Ctrl</strong> (⌘ sul Mac) mentre selezioni le altre. Le parti tenute da parte restano segnate con un riquadro tratteggiato; alla fine tocca <strong>Cloze</strong> (o un colore, la sottolineatura, ✕) e vale per tutte. Un clic normale ricomincia da capo, Esc le lascia perdere.</li>
+        <li><strong>Sul tablet e sul telefono</strong>: seleziona una parte e tocca <strong>＋ Altra parte</strong> nella barra; poi seleziona la successiva, e così via. Il pulsante mostra quante parti hai; “✕ N parti” le lascia perdere.</li>
+        <li>Anche Flashcard e Nota clinica usano tutte le parti, come elenco puntato. Shift resta per allungare una selezione, come sempre.</li>
+      </ul>` },
   { v: "3.47", title: "StudyHub: scegli sempre materia e argomento", html: `      <ul>
         <li>“Segna come studiata in StudyHub” chiede <strong>sempre</strong> la materia e l’argomento. La materia proposta è quella usata l’ultima volta per quel notebook, oppure quella con il nome più simile: maiuscole, accenti, virgole e spazi non contano più. Prima, se il nome non era identico, proponeva “Nuova materia” e bastava un tocco per crearne una doppia.</li>
         <li><strong>Nuova materia</strong> non è mai scelta da sola: devi selezionarla e scriverne il nome; se ne esiste già una simile, l’app te lo dice e ti propone di usare quella.</li>
