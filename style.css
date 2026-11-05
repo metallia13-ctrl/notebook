@@ -3485,3 +3485,12 @@ body.pl-on .pad-fab { bottom: calc(160px + env(safe-area-inset-bottom, 0px)); }
 .notes.changes h3 { margin-top: 14px; font-size: 1rem; }
 .notes.changes h3:first-child { margin-top: 0; }
 .notes.changes { max-height: 60vh; overflow: auto; }
+
+/* v3.47: scelta di materia e argomento in StudyHub */
+.sh-how { margin: 6px 0 10px; }
+.sh-how [aria-checked="true"] { background: var(--accent-soft); color: var(--accent); }
+.sh-how button:disabled { opacity: 0.45; }
+.sh-topics { max-height: 32vh; overflow: auto; }
+.sh-topics .row { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.sh-topics .row.on { background: var(--accent-soft); border-radius: var(--r); }
+.warn-hint { color: var(--warn); }

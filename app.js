@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.46';
+const APP_VERSION = '3.47';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1867,6 +1867,7 @@ function modeRead(sec, body) {
         <p>${esc(studyhubStatusText(sec))}</p>
         <div class="inline">
           ${sec.studyhub.status !== 'received' ? '<a class="btn sm" href="#/studyhub" data-sh-open>Apri StudyHub qui accanto</a>' : ''}
+          <button class="btn ghost sm" data-act="sh-relink">Cambia materia o argomento</button>
           <button class="btn ghost sm" data-act="unlink">Riporta i ripassi nel Notebook</button>
         </div>
       </div>` : !sec.srs?.due && sec.md.trim() ? `
@@ -1907,6 +1908,7 @@ function modeRead(sec, body) {
     if (bl.length) notesEl.insertAdjacentHTML('afterend', `<h2 class="sub backlinks">Pagine che rimandano qui</h2><ul class="list">${bl.map(s => sectionRow(s, { showNb: true })).join('')}</ul>`);
   }
   on('[data-act="studied"]', 'click', async () => { if (await markStudiedInStudyHub(sec)) route(); }, body);
+  on('[data-act="sh-relink"]', 'click', async () => { if (await markStudiedInStudyHub(sec, { relink: true })) route(); }, body);
   on('[data-act="unlink"]', 'click', async () => {
     const ok = await modal({ title: 'Riportare i ripassi nel Notebook?', text: 'StudyHub riceverà la richiesta di togliere l’argomento e il Notebook lo pianificherà per domani.', confirm: 'Riporta' });
     if (!ok) return;
@@ -3892,10 +3894,12 @@ function deepLink(sec, mode = defaultMode(sec)) {
   return `${location.origin}${location.pathname}#/sec/${sec.id}/${mode}`;
 }
 // Ritorna false se scegli Annulla nella finestra di StudyHub
-async function markStudiedInStudyHub(sec) {
+async function markStudiedInStudyHub(sec, { relink = false } = {}) {
   const nb = nbById(sec.notebookId);
-  const place = await shPlaceSheet(sec);
+  const place = await shPlaceSheet(sec, { relink });
   if (place === false) return false;
+  // per spostarla: StudyHub prima la scollega (e toglie l’argomento se l’aveva creato il Notebook), poi la rimette dove hai scelto
+  if (relink) Bridge.send({ type: 'topic-unlinked', sectionId: sec.id, notebookId: sec.notebookId, subject: nb?.name || '', topic: sec.title });
   Bridge.send({
     type: 'topic-studied',
     sectionId: sec.id,
@@ -3909,6 +3913,7 @@ async function markStudiedInStudyHub(sec) {
   });
   sec.studyhub = { status: 'pending', since: todayStr() };
   await saveSection(sec);
+  if (relink) { toast(`Spostata in StudyHub: ${place.shSubject}`, '', ShDock.isOpen() ? undefined : { label: 'Apri StudyHub', fn: () => ShDock.open() }); return true; }
   if (ShDock.isOpen()) toast('Segnata come studiata: StudyHub pianificherà i ripassi');
   else toast('Segnata come studiata: StudyHub pianificherà i ripassi', '', { label: 'Apri StudyHub', fn: () => ShDock.open() });
   return true;
@@ -12903,6 +12908,13 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.47", title: "StudyHub: scegli sempre materia e argomento", html: `      <ul>
+        <li>“Segna come studiata in StudyHub” chiede <strong>sempre</strong> la materia e l’argomento. La materia proposta è quella usata l’ultima volta per quel notebook, oppure quella con il nome più simile: maiuscole, accenti, virgole e spazi non contano più. Prima, se il nome non era identico, proponeva “Nuova materia” e bastava un tocco per crearne una doppia.</li>
+        <li><strong>Nuova materia</strong> non è mai scelta da sola: devi selezionarla e scriverne il nome; se ne esiste già una simile, l’app te lo dice e ti propone di usare quella.</li>
+        <li>Per l’argomento scegli tra <strong>Argomento che c’è già</strong> (con la ricerca, e quello con lo stesso nome già evidenziato) e <strong>Nuovo argomento</strong>, di cui puoi cambiare il nome e scegliere dove metterlo.</li>
+        <li>Per le sezioni finite nella materia sbagliata: nella sezione, <strong>Cambia materia o argomento</strong> la sposta dove vuoi; l’argomento che il Notebook aveva creato nella materia sbagliata sparisce. La materia doppia, ormai vuota, la elimini da StudyHub.</li>
+        <li>Se il Notebook non vede le materie di StudyHub (non l’hai mai aperto in questo browser), te lo dice e ti fa aprire StudyHub prima di segnare.</li>
+      </ul>` },
   { v: "3.46", title: "score clinici, microbiologia, atlante, diario, protezione dei dati", html: `      <ul>
         <li><strong>Score clinici</strong> (Altro o barra laterale): CHA₂DS₂-VASc, HAS-BLED, Wells per embolia e per TVP, CURB-65, qSOFA, NEWS2, Glasgow, Child-Pugh, MELD e MELD-Na, con il punteggio che si aggiorna mentre spunti e la lettura delle soglie. La fonte sono io (Claude), sulle linee guida citate sotto ogni score.</li>
         <li><strong>Microbiologia</strong>: una scheda per microrganismo (batterio, virus, fungo, parassita, prione), raggruppate come vuoi tu (per esempio Cocchi Gram+), con i titoli pronti: caratteristiche, virulenza, malattie, diagnosi, terapia e resistenze, prevenzione. Parte vuota.</li>
@@ -17201,67 +17213,165 @@ function shTree(sub) {
   walk('', 0);
   return out;
 }
-function shPlaceSheet(sec) {
+// v3.47: nomi confrontati senza maiuscole, accenti, punteggiatura e spazi doppi;
+// se sono quasi uguali (stesse parole importanti) li considero la stessa materia
+const shKey = x => foldAccents(String(x || '')).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const SH_STOP = new Set(['e', 'ed', 'di', 'del', 'della', 'dei', 'delle', 'degli', 'il', 'lo', 'la', 'i', 'gli', 'le', 'a', 'in', 'con', 'per', 'da', 'su']);
+function shSimilar(a, b) {
+  const A = shKey(a), B = shKey(b);
+  if (!A || !B) return 0;
+  if (A === B) return 1;
+  // contano tutte le parole, numeri compresi (Fisiologia I e II restano diverse), tranne articoli e preposizioni
+  const words = k => new Set(k.split(' ').filter(w => w && !SH_STOP.has(w)));
+  const wa = words(A), wb = words(B);
+  if (!wa.size || !wb.size) return 0;
+  let inter = 0;
+  wa.forEach(w => { if (wb.has(w)) inter++; });
+  return inter / Math.max(wa.size, wb.size);
+}
+const shBest = (list, want, key = x => x, min = 0.6) => {
+  let best = null, sc = 0;
+  list.forEach(x => { const v = shSimilar(key(x), want); if (v > sc) { sc = v; best = x; } });
+  return sc >= min ? best : null;
+};
+// Chiede sempre materia e argomento. Restituisce false se annulli.
+function shPlaceSheet(sec, { relink = false } = {}) {
   return new Promise(resolve => {
     const d = shData();
     const subs = d ? Object.keys(d.subjects) : [];
-    if (!subs.length) { resolve(null); return; }   // StudyHub non ancora aperto qui: decide lui dal nome
     const nb = nbById(sec.notebookId);
     const macro = groupOf(sec)?.name || '';
-    const remembered = nb && nb.shSubject && subs.includes(nb.shSubject) ? nb.shSubject : null;
-    let subName = remembered || subs.find(n => shNorm(n) === shNorm(nb?.name)) || (nb ? '' : subs[0]);
-    const newName = (nb?.name || 'Notebook').trim();
+    if (!subs.length) {
+      // StudyHub non ancora aperto in questo browser: non vedo le sue materie
+      const sh = openSheet(`
+        <h2>${relink ? 'Cambia materia in StudyHub' : 'Segna come studiata in StudyHub'}</h2>
+        <p class="hint">Non vedo le materie di StudyHub su questo dispositivo: succede se non l’hai ancora aperto qui, o se lo usi in un altro browser. Aprilo una volta (anche qui accanto) e riprova, così scegli dalla lista.</p>
+        <label class="field"><span>Oppure scrivi il nome esatto della materia</span><input class="input" id="shSubTxt" value="${esc(nb?.shSubject || nb?.name || '')}"></label>
+        <label class="field"><span>Nome dell’argomento</span><input class="input" id="shTopTxt" value="${esc(sec.title)}"></label>
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" data-sh-pick="no">Annulla</button>
+          <button class="btn" type="button" data-sh-pick="open">Apri StudyHub</button>
+          <button class="btn primary" type="button" data-sh-pick="ok">Segna lo stesso</button>
+        </div>`, { label: 'StudyHub', onClose: v => resolve(v === undefined || v === null ? false : v) });
+      $('[data-sh-pick="no"]', sh.el).onclick = () => sh.close(false);
+      $('[data-sh-pick="open"]', sh.el).onclick = () => { sh.close(false); ShDock.open(); toast('Quando StudyHub è aperto, tocca di nuovo “Segna come studiata”'); };
+      $('[data-sh-pick="ok"]', sh.el).onclick = async () => {
+        const name = $('#shSubTxt', sh.el).value.trim();
+        if (!name) { toast('Scrivi il nome della materia'); return; }
+        if (nb && nb.shSubject !== name) { nb.shSubject = name; await saveNotebook(nb); }
+        sh.close({ shSubject: name, topic: $('#shTopTxt', sh.el).value.trim() || sec.title });
+      };
+      return;
+    }
+    // la materia: quella usata l’ultima volta per questo notebook, poi la più simile al nome
+    const remembered = nb?.shSubject && (subs.find(n => n === nb.shSubject) || shBest(subs, nb.shSubject, x => x, 0.95));
+    let subName = remembered || shBest(subs, nb?.name || '') || shBest(subs, macro) || '';
     const ind = n => '\u00a0\u00a0\u00a0'.repeat(n);
     const sh = openSheet(`
-      <h2>Segna come studiata in StudyHub</h2>
-      <p class="hint">“${esc(sec.title)}” entra in StudyHub, che da oggi ne pianifica i ripassi.</p>
+      <h2>${relink ? 'Cambia materia o argomento in StudyHub' : 'Segna come studiata in StudyHub'}</h2>
+      <p class="hint">“${esc(sec.title)}” ${relink ? 'si sposta dove scegli; dalla materia di prima viene tolto se l’aveva creato il Notebook.' : 'entra in StudyHub, che da oggi ne pianifica i ripassi.'}</p>
       <label class="field"><span>Materia in StudyHub</span>
         <select class="input" id="shSub">
+          <option value="" ${subName ? '' : 'selected'} disabled>Scegli la materia…</option>
           ${subs.map(n => `<option value="${esc(n)}" ${n === subName ? 'selected' : ''}>${esc(n)}</option>`).join('')}
-          ${subs.some(n => shNorm(n) === shNorm(newName)) ? '' : `<option value="" ${subName ? '' : 'selected'}>Nuova materia: ${esc(newName)}</option>`}
+          <option value="__new">Nuova materia…</option>
         </select></label>
-      <label class="field"><span>Dove</span><select class="input" id="shPos"></select></label>
+      <div id="shNewBox" hidden>
+        <label class="field"><span>Nome della nuova materia</span><input class="input" id="shNewName" value="${esc((nb?.name || '').trim())}"></label>
+        <p class="hint warn-hint" id="shNewWarn" hidden></p>
+      </div>
+      <div class="seg sh-how" role="radiogroup" aria-label="Argomento">
+        <button type="button" role="radio" data-how="link">Argomento che c’è già</button>
+        <button type="button" role="radio" data-how="new">Nuovo argomento</button>
+      </div>
+      <div id="shLinkBox">
+        <input type="search" class="input search" id="shTopQ" placeholder="Cerca l’argomento in StudyHub" aria-label="Cerca l’argomento">
+        <ul class="list pick-list sh-topics" id="shTopList"></ul>
+      </div>
+      <div id="shNewTopBox" hidden>
+        <label class="field"><span>Nome dell’argomento</span><input class="input" id="shTopName" value="${esc(sec.title)}"></label>
+        <label class="field"><span>Dentro</span><select class="input" id="shParent"></select></label>
+      </div>
       <p class="hint" id="shPosHint"></p>
       <div class="modal-actions">
         <button class="btn ghost" type="button" data-sh-pick="no">Annulla</button>
-        <button class="btn primary" type="button" data-sh-pick="ok">Segna come studiata</button>
-      </div>`, { label: 'Segna come studiata in StudyHub', onClose: v => resolve(v === undefined || v === null ? false : v) });
-    const pos = $('#shPos', sh.el);
-    const hint = $('#shPosHint', sh.el);
-    const draw = () => {
-      const sub = subName ? d.subjects[subName] : null;
-      const tree = shTree(sub);
-      const free = tree.filter(x => !x.kids && !(x.t.nb && x.t.nb.sec && x.t.nb.sec !== sec.id));
-      const same = free.find(x => shNorm(x.t.name) === shNorm(sec.title));
-      const macroHit = tree.find(x => shNorm(x.t.name) === shNorm(macro));
-      const pick = same ? `link:${same.t.id}` : macroHit ? `new:${macroHit.t.id}` : 'new:';
-      pos.innerHTML = `
-        <optgroup label="Argomento nuovo">
-          <option value="new:">Tra gli argomenti principali</option>
-          ${tree.map(x => `<option value="new:${esc(x.t.id)}">${ind(x.depth)}Dentro “${esc(x.t.name)}”</option>`).join('')}
-        </optgroup>
-        ${free.length ? `<optgroup label="Argomento che c’è già">
-          ${free.map(x => `<option value="link:${esc(x.t.id)}">${ind(x.depth)}${esc(x.t.name)}${x.t.status === 'todo' ? ' (da studiare)' : ''}</option>`).join('')}
-        </optgroup>` : ''}`;
-      pos.value = pick;
-      showHint();
+        <button class="btn primary" type="button" data-sh-pick="ok">${relink ? 'Sposta' : 'Segna come studiata'}</button>
+      </div>`, { label: 'StudyHub', onClose: v => resolve(v === undefined || v === null ? false : v) });
+    let how = 'new';
+    let topicId = '';
+    const subObj = () => (subName && subName !== '__new' ? d.subjects[subName] : null);
+    const freeOf = tree => tree.filter(x => !x.kids && !(x.t.nb && x.t.nb.sec && x.t.nb.sec !== sec.id));
+    const setHow = v => {
+      how = v;
+      $$('[data-how]', sh.el).forEach(b => b.setAttribute('aria-checked', String(b.dataset.how === v)));
+      $('#shLinkBox', sh.el).hidden = v !== 'link';
+      $('#shNewTopBox', sh.el).hidden = v !== 'new';
+      hint();
     };
-    const showHint = () => {
-      hint.textContent = pos.value.startsWith('link:')
-        ? 'Lo colleghi a un argomento che hai già: se era da studiare parte oggi, se lo ripassi già resta com’è.'
-        : `Crea in StudyHub l’argomento “${sec.title}”.`;
+    const drawTopics = () => {
+      const tree = shTree(subObj());
+      const free = freeOf(tree);
+      const f = shKey($('#shTopQ', sh.el).value);
+      const list = free.filter(x => !f || shKey(x.t.name).includes(f)).slice(0, 80);
+      $('#shTopList', sh.el).innerHTML = list.map(x => `<li><button type="button" class="row ${x.t.id === topicId ? 'on' : ''}" data-top="${esc(x.t.id)}"><span class="row-main"><span class="row-title">${ind(x.depth)}${esc(x.t.name)}</span>${x.t.status === 'todo' ? '<span class="row-sub">da studiare</span>' : ''}</span></button></li>`).join('')
+        || `<li class="hint">${subObj() ? 'Nessun argomento libero con questo nome.' : 'Scegli prima la materia.'}</li>`;
     };
-    draw();
-    $('#shSub', sh.el).addEventListener('change', e => { subName = e.target.value; draw(); });
-    pos.addEventListener('change', showHint);
+    const drawSub = () => {
+      const isNew = subName === '__new';
+      $('#shNewBox', sh.el).hidden = !isNew;
+      const tree = shTree(subObj());
+      const free = freeOf(tree);
+      // l’argomento: quello con lo stesso nome (o quasi) se c’è, altrimenti uno nuovo dentro il macro-argomento
+      const same = shBest(free, sec.title, x => x.t.name, 0.8);
+      topicId = same ? same.t.id : '';
+      const macroHit = shBest(tree.filter(x => x.kids || !x.t.nb), macro, x => x.t.name, 0.8);
+      $('#shParent', sh.el).innerHTML = `<option value="">Tra gli argomenti principali</option>${tree.filter(x => !(x.t.nb && x.t.nb.sec)).map(x => `<option value="${esc(x.t.id)}" ${macroHit && macroHit.t.id === x.t.id ? 'selected' : ''}>${ind(x.depth)}${esc(x.t.name)}</option>`).join('')}`;
+      $('[data-how="link"]', sh.el).disabled = isNew || !free.length;
+      setHow(!isNew && same ? 'link' : 'new');
+      drawTopics();
+      if (isNew) warnNew();
+    };
+    const warnNew = () => {
+      const v = $('#shNewName', sh.el).value;
+      const sim = shBest(subs, v, x => x, 0.6);
+      const w = $('#shNewWarn', sh.el);
+      w.hidden = !sim;
+      if (sim) w.innerHTML = `In StudyHub c’è già “${esc(sim)}”. <button type="button" class="link-btn" data-use="${esc(sim)}">Usa quella</button>`;
+    };
+    const hint = () => {
+      const t = topicId && shTree(subObj()).find(x => x.t.id === topicId);
+      $('#shPosHint', sh.el).textContent = !subName ? 'Scegli la materia in cui segnarla.'
+        : how === 'link' ? (t ? `La colleghi a “${t.t.name}”: se era da studiare parte oggi, se la ripassi già resta com’è.` : 'Tocca l’argomento a cui collegarla.')
+        : `In StudyHub nasce l’argomento “${$('#shTopName', sh.el).value.trim() || sec.title}”${subName === '__new' ? ', in una materia nuova' : ''}.`;
+    };
+    drawSub();
+    $('#shSub', sh.el).addEventListener('change', e => { subName = e.target.value; drawSub(); hint(); });
+    $('#shNewName', sh.el).addEventListener('input', warnNew);
+    $('#shTopName', sh.el).addEventListener('input', hint);
+    $('#shTopQ', sh.el).addEventListener('input', drawTopics);
+    sh.el.addEventListener('click', e => {
+      const hb = e.target.closest('[data-how]');
+      if (hb && !hb.disabled) { setHow(hb.dataset.how); return; }
+      const tb = e.target.closest('[data-top]');
+      if (tb) { topicId = tb.dataset.top; drawTopics(); hint(); return; }
+      const ub = e.target.closest('[data-use]');
+      if (ub) { subName = ub.dataset.use; $('#shSub', sh.el).value = subName; drawSub(); hint(); }
+    });
     $('[data-sh-pick="no"]', sh.el).onclick = () => sh.close(false);
     $('[data-sh-pick="ok"]', sh.el).onclick = async () => {
-      const [kind, id] = pos.value.split(':');
-      const chosen = subName || newName;
+      if (!subName) { toast('Scegli la materia'); $('#shSub', sh.el).focus(); return; }
+      let chosen = subName;
+      if (subName === '__new') {
+        chosen = $('#shNewName', sh.el).value.trim();
+        if (!chosen) { toast('Scrivi il nome della nuova materia'); return; }
+        const sim = shBest(subs, chosen, x => x, 0.6);
+        if (sim && !(await modal({ title: 'Creare una materia nuova?', text: `In StudyHub c’è già “${sim}”. Vuoi davvero una materia separata “${chosen}”?`, confirm: 'Sì, nuova materia', cancel: `Usa “${sim}”` }))) chosen = sim;
+      }
+      if (how === 'link' && !topicId) { toast('Tocca l’argomento a cui collegarla, oppure scegli “Nuovo argomento”'); return; }
       if (nb && nb.shSubject !== chosen) { nb.shSubject = chosen; await saveNotebook(nb); }
-      sh.close(kind === 'link'
-        ? { shSubject: chosen, shPlace: 'link', shTopicId: id }
-        : { shSubject: chosen, shPlace: 'new', shParentId: id || '' });
+      sh.close(how === 'link'
+        ? { shSubject: chosen, shPlace: 'link', shTopicId: topicId }
+        : { shSubject: chosen, shPlace: 'new', shParentId: $('#shParent', sh.el).value || '', topic: $('#shTopName', sh.el).value.trim() || sec.title });
     };
   });
 }
