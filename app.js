@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.50';
+const APP_VERSION = '3.52';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1094,7 +1094,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'diary', 'scores'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'diary', 'scores'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1145,7 +1145,7 @@ function route() {
     case 'lab': return viewLab(p1, p2);
     case 'semei': return viewSemei();
     case 'examq': return viewExamQ(p1);
-    case 'micro': case 'atlas': case 'diary': return viewSpecial(p0, p1);
+    case 'micro': case 'atlas': case 'anat': case 'diary': return viewSpecial(p0, p1);
     case 'scores': return viewScores();
     case 'print': return viewPrint(p1, p2);
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
@@ -1646,6 +1646,7 @@ function viewSection(id, mode) {
       ${caseSec && caseMetaBits(sec).length ? `<p class="meta case-meta">${esc(caseMetaBits(sec).join(' · '))}</p>` : ''}
       ${semSec && semeiMetaBits(sec).length ? `<p class="meta case-meta">${esc(semeiMetaBits(sec).join(' · '))}</p>` : ''}
       ${spCfg && specialMetaBits(sec).length ? `<p class="meta case-meta">${esc(specialMetaBits(sec).join(' · '))}</p>` : ''}
+      ${spCfg && (sec.sp?.links || []).map(secById).filter(Boolean).length ? `<p class="meta sp-linked">Collegata a: ${(sec.sp.links || []).map(secById).filter(Boolean).map(x => `<a href="#/sec/${x.id}/read">${esc(x.title)}</a>`).join(', ')}</p>` : ''}
       <p class="meta">${esc(srsLabel(sec))}</p>
       ${sec.incomplete ? `<button class="inc-chip" type="button" data-act="inc" title="Cosa manca">⚠ Incompleta${incompleteNote(sec) ? `: ${esc(incompleteNote(sec).slice(0, 60))}${incompleteNote(sec).length > 60 ? '…' : ''}` : ''}</button>` : ''}
       ${tagChips(tagsOf(sec))}
@@ -1909,7 +1910,7 @@ function modeRead(sec, body) {
         Playlist.start(order.slice(Math.max(0, order.indexOf(sec))), nb ? nb.name : '');
       });
     }
-    const bl = backlinksOf(sec);
+    const bl = [...backlinksOf(sec), ...state.sections.filter(x => x.id !== sec.id && (x.sp?.links || []).includes(sec.id))].filter((x, i, a) => a.indexOf(x) === i);
     if (bl.length) notesEl.insertAdjacentHTML('afterend', `<h2 class="sub backlinks">Pagine che rimandano qui</h2><ul class="list">${bl.map(s => sectionRow(s, { showNb: true })).join('')}</ul>`);
   }
   on('[data-act="studied"]', 'click', async () => { if (await markStudiedInStudyHub(sec)) route(); }, body);
@@ -3277,7 +3278,18 @@ function viewSettings() {
         <input class="input" type="number" id="stNew" min="0" max="500" value="${st.newPerDay}" inputmode="numeric"></label>
       <label class="check"><input type="checkbox" id="stAskNote" ${st.askNote ? 'checked' : ''}>
         <span>Quando premi “Di nuovo”, chiedimi una nota sul perché</span></label>
-      <p class="hint">Passi di apprendimento come Anki: 1 e 10 minuti, poi 1 giorno; con “Facile” 4 giorni.</p>
+      <h3 class="sub">Intervalli</h3>
+      <p class="hint">Partono come in Anki: passi di 1 e 10 minuti, poi 1 giorno con “Bene”; 4 giorni con “Facile” su una carta nuova. Le modifiche valgono dalle prossime risposte.</p>
+      <div class="grid2 anki-set">
+        <label class="field"><span>Passi di apprendimento <span class="muted-inline">minuti, es. 1 10 (anche 1h, 1d)</span></span><input class="input" id="akLearn" value="${esc(fmtSteps(ANKI.learnSteps))}"></label>
+        <label class="field"><span>Passi dopo un errore</span><input class="input" id="akRelearn" value="${esc(fmtSteps(ANKI.relearnSteps))}"></label>
+        <label class="field"><span>Primo intervallo con “Bene” <span class="muted-inline">giorni</span></span><input class="input" type="number" min="1" max="30" id="akGrad" value="${ANKI.gradIvl}" inputmode="numeric"></label>
+        <label class="field"><span>Primo intervallo con “Facile” <span class="muted-inline">giorni</span></span><input class="input" type="number" min="1" max="30" id="akEasy" value="${ANKI.easyIvl}" inputmode="numeric"></label>
+        <label class="field"><span>Facilità iniziale <span class="muted-inline">%</span></span><input class="input" type="number" min="130" max="500" step="10" id="akEase" value="${Math.round(ANKI.startEase * 100)}" inputmode="numeric"></label>
+        <label class="field"><span>Bonus “Facile” <span class="muted-inline">%</span></span><input class="input" type="number" min="100" max="300" step="5" id="akBonus" value="${Math.round(ANKI.easyBonus * 100)}" inputmode="numeric"></label>
+        <label class="field"><span>Intervallo massimo <span class="muted-inline">giorni</span></span><input class="input" type="number" min="1" max="36500" id="akMax" value="${ANKI.maxIvl}" inputmode="numeric"></label>
+      </div>
+      <div class="actions"><button class="btn sm ghost" type="button" data-act="anki-reset">Ripristina i valori di Anki</button></div>
     </section>
 
     <section class="block">
@@ -3454,6 +3466,25 @@ function viewSettings() {
     btn.hidden = true;
     if (choice && choice.outcome === 'accepted') toast('App installata');
   });
+  const saveAnki = () => {
+    const ls = parseSteps($('#akLearn').value), rs = parseSteps($('#akRelearn').value);
+    if (!ls.length || ls.some(x => !(x > 0))) { toast('Passi di apprendimento non validi: scrivi i minuti separati da spazi, es. 1 10', 'err'); return; }
+    if (!rs.length || rs.some(x => !(x > 0))) { toast('Passi dopo un errore non validi: es. 10', 'err'); return; }
+    st.anki = {
+      learnSteps: ls, relearnSteps: rs,
+      gradIvl: Math.min(30, Math.max(1, +$('#akGrad').value || 1)),
+      easyIvl: Math.min(30, Math.max(1, +$('#akEasy').value || 1)),
+      startEase: Math.min(5, Math.max(1.3, (+$('#akEase').value || 250) / 100)),
+      easyBonus: Math.min(3, Math.max(1, (+$('#akBonus').value || 130) / 100)),
+      maxIvl: Math.min(36500, Math.max(1, +$('#akMax').value || 36500))
+    };
+    if (st.anki.easyIvl < st.anki.gradIvl) { st.anki.easyIvl = st.anki.gradIvl; $('#akEasy').value = st.anki.easyIvl; toast('“Facile” non può essere più corto di “Bene”: l’ho messo uguale'); }
+    Settings.save();
+    applyAnkiSettings();
+    toast('Intervalli salvati: valgono dalle prossime risposte');
+  };
+  ['#akLearn', '#akRelearn', '#akGrad', '#akEasy', '#akEase', '#akBonus', '#akMax'].forEach(sel => $(sel)?.addEventListener('change', saveAnki));
+  on('[data-act="anki-reset"]', 'click', () => { delete st.anki; Settings.save(); applyAnkiSettings(); toast('Valori di Anki ripristinati'); route(); });
   $('#stNew').addEventListener('change', e => {
     const v = Math.min(500, Math.max(0, parseInt(e.target.value, 10) || 0));
     e.target.value = v;
@@ -3625,6 +3656,23 @@ const ANKI = {
   minEase: 1.3,
   maxIvl: 36500
 };
+// v3.51: i valori di Anki restano quelli di partenza; si possono cambiare in Impostazioni
+const ANKI_DEFAULTS = JSON.parse(JSON.stringify(ANKI));
+function applyAnkiSettings() {
+  const a = (S && S().anki) || {};
+  Object.assign(ANKI, ANKI_DEFAULTS);
+  const steps = v => (Array.isArray(v) && v.length && v.every(x => x > 0) ? v.slice(0, 6) : null);
+  if (steps(a.learnSteps)) ANKI.learnSteps = steps(a.learnSteps);
+  if (steps(a.relearnSteps)) ANKI.relearnSteps = steps(a.relearnSteps);
+  if (+a.gradIvl >= 1) ANKI.gradIvl = Math.round(+a.gradIvl);
+  if (+a.easyIvl >= 1) ANKI.easyIvl = Math.round(+a.easyIvl);
+  if (+a.startEase >= 1.3) ANKI.startEase = +a.startEase;
+  if (+a.easyBonus >= 1) ANKI.easyBonus = +a.easyBonus;
+  if (+a.maxIvl >= 1) ANKI.maxIvl = Math.round(+a.maxIvl);
+}
+// “1 10”, “1m 10m 1h”, “1d”: tutto in minuti
+const parseSteps = t => String(t || '').trim().split(/[\s,;]+/).filter(Boolean).map(x => { const m = x.match(/^(\d+(?:[.,]\d+)?)\s*(m|min|h|d|g)?$/i); if (!m) return NaN; const n = +m[1].replace(',', '.'); const u = (m[2] || 'm').toLowerCase(); return Math.round(n * (u === 'h' ? 60 : u === 'd' || u === 'g' ? 1440 : 1)); });
+const fmtSteps = a => a.map(m => (m % 1440 === 0 ? `${m / 1440}d` : m % 60 === 0 && m >= 60 ? `${m / 60}h` : `${m}m`)).join(' ');
 const LEARN_AHEAD = 20 * 60000;
 const CARD_GRADES = [
   { key: 'again', label: 'Di nuovo' },
@@ -7198,6 +7246,7 @@ const ICONS = {
   scores: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   micro: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>',
   atlas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2-6 3 12 3-9 2 3h6"/></svg>',
+  anat: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M8 10h8M12 14l-3 7M12 14l3 7"/></svg>',
   diary: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 3v18M11 8h6M11 12h6M11 16h4"/></svg>',
   examq: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9.5 9a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4V13M12 16.5v.2"/></svg>',
   split: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M12 4v16"/><path d="m6.5 10.5 2 1.5-2 1.5M17.5 10.5l-2 1.5 2 1.5"/></svg>',
@@ -7259,7 +7308,8 @@ const MORE_ITEMS = [
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
   ['scores', 'Score clinici', 'CHA₂DS₂-VASc, Wells, CURB-65, qSOFA, NEWS2, Glasgow, Child-Pugh, MELD'],
   ['micro', 'Microbiologia', 'Una scheda per ogni microrganismo, con foto e video'],
-  ['atlas', 'Atlante', 'ECG, emogas, Rx torace e altre immagini da imparare a leggere'],
+  ['anat', 'Atlante di anatomia', 'Le tavole e le immagini di anatomia che usi di più, con etichette, tag e collegamenti'],
+  ['atlas', 'Atlante diagnostico', 'ECG, emogas, Rx torace e altre immagini da imparare a leggere'],
   ['diary', 'Diario di tirocinio', 'Giornate, reparti, tutor e procedure sommate'],
   ['lab', 'Medicina di laboratorio', 'Esami con range, cause e uso diagnostico; referti, calcoli e allenamento'],
   ['semei', 'Semeiotica', 'Manovre, segni e punti di repere, clinica e chirurgica, con foto e video'],
@@ -10637,7 +10687,7 @@ async function buildBackup(withPdf) {
   try { folds = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'); } catch { /* niente */ }
   const st = S();
   const prefs = {};
-  ['theme', 'readFont', 'readSize', 'readSpacing', 'pagesPerSection', 'newPerDay', 'aiCloze', 'aiQuestions', 'showImages', 'keepPdfImages'].forEach(k => { if (st[k] !== undefined) prefs[k] = st[k]; });
+  ['theme', 'readFont', 'readSize', 'readSpacing', 'pagesPerSection', 'newPerDay', 'aiCloze', 'aiQuestions', 'showImages', 'keepPdfImages', 'anki'].forEach(k => { if (st[k] !== undefined) prefs[k] = st[k]; });
   const header = {
     app: 'studyhub-notebook', version: 5, exported: new Date().toISOString(), appVersion: APP_VERSION,
     notebooks: state.notebooks, sections: state.sections, cards: state.cards, links: state.links,
@@ -11896,6 +11946,10 @@ async function init() {
   Split.init();
   initHelp();
   DataGuard.protect();
+  applyAnkiSettings();
+  // il vecchio “Atlante” diventa “Atlante diagnostico”
+  const oldAtlas = state.notebooks.find(n => n.kind === 'atlas' && n.name === 'Atlante');
+  if (oldAtlas) { oldAtlas.name = 'Atlante diagnostico'; saveNotebook(oldAtlas); }
   document.addEventListener('click', e => {
     const b = e.target.closest('[data-guard="later"]');
     if (!b) return;
@@ -12353,7 +12407,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { scores: 'Score clinici', micro: 'Microbiologia', atlas: 'Atlante', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { scores: 'Score clinici', micro: 'Microbiologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {
@@ -13142,7 +13196,7 @@ async function askPersist() {
    ===================================================================== */
 const SPECIALS = {
   micro: {
-    kind: 'micro', route: 'micro', name: 'Microbiologia', noun: 'microrganismo',
+    kind: 'micro', route: 'micro', name: 'Microbiologia', noun: 'microrganismo', links: true,
     lede: 'Una scheda per ogni microrganismo: caratteristiche, virulenza, malattie, diagnosi e terapia. Le malattie infettive restano nelle note cliniche.',
     typeLabel: 'Tipo', types: { batterio: 'Batterio', virus: 'Virus', fungo: 'Fungo', parassita: 'Parassita', prione: 'Prione' },
     groupLabel: 'Gruppo', groupPh: 'Es. Cocchi Gram+, Herpesviridae',
@@ -13150,7 +13204,7 @@ const SPECIALS = {
     parts: () => ['Caratteristiche', 'Habitat e trasmissione', 'Fattori di virulenza', 'Malattie', 'Diagnosi di laboratorio', 'Terapia e resistenze', 'Prevenzione', 'Note']
   },
   atlas: {
-    kind: 'atlas', route: 'atlas', name: 'Atlante', noun: 'tracciato o immagine',
+    kind: 'atlas', route: 'atlas', name: 'Atlante diagnostico', noun: 'tracciato o immagine', links: true,
     lede: 'ECG, emogasanalisi, Rx torace e altre immagini da imparare a leggere: carica la foto, segna le etichette, scrivi l’interpretazione.',
     typeLabel: 'Esame', types: { ecg: 'ECG', ega: 'Emogasanalisi', rx: 'Rx torace', eco: 'Ecografia', tc: 'TC o RM', altro: 'Altro' },
     groupLabel: 'Quadro', groupPh: 'Es. Blocchi di branca, Acidosi metabolica',
@@ -13160,6 +13214,14 @@ const SPECIALS = {
       ega: ['Valori', 'Disturbo primario', 'Compenso', 'Gap anionico', 'Interpretazione', 'Cause possibili', 'Note'],
       rx: ['Immagine', 'Proiezione e qualità', 'Reperti', 'Interpretazione', 'Diagnosi differenziale', 'Note']
     }[t] || ['Immagine', 'Reperti', 'Interpretazione', 'Note'])
+  },
+  anat: {
+    kind: 'anat', route: 'anat', name: 'Atlante di anatomia', noun: 'immagine', links: true, grid: true,
+    lede: 'Le tavole e le immagini di anatomia che usi di più: carica la figura, segna le strutture con le etichette, aggiungi tag e collegamenti alle sezioni del notebook.',
+    typeLabel: 'Apparato', types: { osteo: 'Osteologia', artro: 'Artrologia', mio: 'Miologia', cardio: 'Cardiovascolare', resp: 'Respiratorio', dig: 'Digerente', uro: 'Urinario', gen: 'Genitale', snc: 'Sistema nervoso centrale', snp: 'Sistema nervoso periferico', sensi: 'Organi di senso', endo: 'Endocrino', linfo: 'Linfatico', cute: 'Tegumentario', topo: 'Anatomia topografica', altro: 'Altro' },
+    groupLabel: 'Regione', groupPh: 'Es. Arto superiore, Mediastino',
+    namePh: 'Es. Plesso brachiale',
+    parts: () => ['Immagine', 'Strutture', 'Rapporti', 'Vascolarizzazione e innervazione', 'Correlazioni cliniche', 'Note']
   },
   diary: {
     kind: 'diary', route: 'diary', name: 'Diario di tirocinio', noun: 'giornata',
@@ -13195,6 +13257,7 @@ function specialSheet(cfg, sec = null) {
     const used = k => [...new Set(others.map(s => s.sp?.[k]).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
     const procNames = [...new Set(others.flatMap(s => (s.sp?.procs || []).map(p => p.n)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
     let procs = (d.procs || []).map(p => ({ ...p }));
+    let links = [...(d.links || [])];
     const isDiary = cfg.kind === 'diary';
     const sh = openSheet(`
       <h2>${sec ? (isDiary ? 'Dati della giornata' : 'Dati della scheda') : (isDiary ? 'Nuova giornata di tirocinio' : `Nuova scheda: ${cfg.noun}`)}</h2>
@@ -13211,6 +13274,10 @@ function specialSheet(cfg, sec = null) {
           <label class="field"><span>${cfg.typeLabel}</span><select class="input" id="spType">${Object.entries(cfg.types).map(([k, l]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
           <label class="field"><span>${cfg.groupLabel}</span><input class="input" id="spGroup" value="${esc(d.group || '')}" list="spGroups" placeholder="${esc(cfg.groupPh)}"><datalist id="spGroups">${used('group').map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
         </div>`}
+      <label class="field"><span>Tag, separati da virgole</span><input class="input" id="spTags" value="${esc(tagsOf(sec || {}).join(', '))}" placeholder="Es. esame, da ripassare" list="spTagList"><datalist id="spTagList">${[...new Set(others.flatMap(x => tagsOf(x)))].map(t => `<option value="${esc(t)}">`).join('')}</datalist></label>
+      ${cfg.links ? `<div class="field"><span class="lbl">Collegata a</span><div class="tags" id="spLinks"></div>
+        <input type="search" class="input" id="spLinkQ" placeholder="＋ Collega una sezione: scrivi il titolo" aria-label="Collega una sezione del notebook" autocomplete="off">
+        <ul class="list pick-list sp-link-res" id="spLinkRes"></ul></div>` : ''}
       ${sec ? '' : `<label class="check"><input type="checkbox" id="spTpl" checked><span id="spTplTxt"></span></label>`}
       <div class="modal-actions">
         <button class="btn ghost" type="button" data-sx="no">Annulla</button>
@@ -13230,6 +13297,18 @@ function specialSheet(cfg, sec = null) {
     };
     const readProcs = () => $$('.sp-proc', sh.el).forEach(row => { const p = procs[+row.dataset.pi]; $$('[data-pf]', row).forEach(i => { p[i.dataset.pf] = i.dataset.pf === 'c' ? Math.max(1, +i.value || 1) : i.value.trim(); }); });
     drawProcs();
+    const drawLinks = () => {
+      const box = $('#spLinks', sh.el);
+      if (!box) return;
+      box.innerHTML = links.map(secById).filter(Boolean).map(x => `<span class="tag">${esc(x.title)} <button type="button" class="tag-x" data-unlink="${x.id}" aria-label="Scollega ${esc(x.title)}">×</button></span>`).join('') || '<span class="hint">Nessuna</span>';
+    };
+    drawLinks();
+    $('#spLinkQ', sh.el)?.addEventListener('input', e => {
+      const f = foldAccents(e.target.value.trim());
+      const where = x => [nbById(x.notebookId)?.name, groupPathText(x)].filter(Boolean).join(' › ');
+      const hits = f ? state.sections.filter(x => x.id !== sec?.id && !links.includes(x.id) && !SPECIALS[nbById(x.notebookId)?.kind] && foldAccents(`${x.title} ${where(x)}`).includes(f)).slice(0, 8) : [];
+      $('#spLinkRes', sh.el).innerHTML = hits.map(x => `<li><button type="button" class="row" data-linkto="${x.id}"><span class="row-main"><span class="row-title">${esc(x.title)}</span><span class="row-sub">${esc(where(x))}</span></span></button></li>`).join('') || (f ? '<li class="hint">Nessuna sezione con questo titolo.</li>' : '');
+    });
     // il titolo proposto segue la data finché non lo cambi tu
     const dateIn = $('#spDate', sh.el);
     if (dateIn && !sec) {
@@ -13239,6 +13318,10 @@ function specialSheet(cfg, sec = null) {
     sh.el.addEventListener('click', async e => {
       const del = e.target.closest('[data-pdel]');
       if (del) { readProcs(); procs.splice(+del.dataset.pdel, 1); drawProcs(); return; }
+      const ul = e.target.closest('[data-unlink]');
+      if (ul) { links = links.filter(x => x !== ul.dataset.unlink); drawLinks(); return; }
+      const lr = e.target.closest('[data-linkto]');
+      if (lr) { if (!links.includes(lr.dataset.linkto)) links.push(lr.dataset.linkto); drawLinks(); $('#spLinkQ', sh.el).value = ''; $('#spLinkRes', sh.el).innerHTML = ''; return; }
       const b = e.target.closest('[data-sx]');
       if (!b) return;
       if (b.dataset.sx === 'no') { sh.close(null); return; }
@@ -13249,7 +13332,7 @@ function specialSheet(cfg, sec = null) {
         readProcs();
         const data = isDiary
           ? { date: $('#spDate', sh.el).value || todayStr(), ward: $('#spWard', sh.el).value.trim(), tutor: $('#spTutor', sh.el).value.trim(), procs: procs.filter(p => p.n) }
-          : { type: $('#spType', sh.el).value, group: $('#spGroup', sh.el).value.trim() };
+          : { type: $('#spType', sh.el).value, group: $('#spGroup', sh.el).value.trim(), links };
         let s = sec;
         if (!s) {
           const nbx = await ensureSpecialNb(cfg);
@@ -13257,6 +13340,7 @@ function specialSheet(cfg, sec = null) {
           s = newSection(nbx.id, { title, md: tpl ? cfg.parts(data.type).map(p => `## ${p}\n\n`).join('') : '' });
         } else s.title = title;
         s.sp = { ...spData(s), ...data };
+        s.tags = parseTags($('#spTags', sh.el).value);
         await saveSection(s);
         sh.close(s);
       }
@@ -13269,7 +13353,9 @@ function viewSpecial(kind, p1) {
   const cfg = SPECIALS[kind];
   const nb = specialNb(kind);
   const all = nb ? secsOf(nb.id) : [];
-  const st = spState[kind] || (spState[kind] = { q: '', type: '', group: '' });
+  const st = spState[kind] || (spState[kind] = { q: '', type: '', group: '', tag: '' });
+  const allTags = [...new Set(all.flatMap(x => tagsOf(x)))].sort((a, b) => a.localeCompare(b, 'it'));
+  if (st.tag && !allTags.includes(st.tag)) st.tag = '';
   const isDiary = kind === 'diary';
   if (isDiary && p1 === 'procs') return viewDiaryProcs(cfg, all);
   setView(`
@@ -13284,6 +13370,7 @@ function viewSpecial(kind, p1) {
         ${isDiary ? '' : '<button class="btn" type="button" data-act="sp-random" title="Apre una scheda a caso in modalità Orale">Esercitati</button>'}
       </div>
       ${isDiary ? '' : `<div class="tag-cloud" aria-label="Filtra">${Object.entries(cfg.types).filter(([k]) => all.some(s => s.sp?.type === k)).map(([k, l]) => `<button type="button" class="tag ${st.type === k ? 'on' : ''}" data-spt="${k}" aria-pressed="${st.type === k}">${l}</button>`).join('')}</div>`}
+      ${allTags.length ? `<div class="tag-cloud sp-tags" aria-label="Filtra per tag">${allTags.map(t => `<button type="button" class="tag ${st.tag === t ? 'on' : ''}" data-sptag="${esc(t)}" aria-pressed="${st.tag === t}">#${esc(t)}</button>`).join('')}</div>` : ''}
       <div id="spList"></div>` : `
       <div class="empty"><p>${isDiary ? 'Ancora nessuna giornata. Creane una al termine di ogni turno: bastano pochi minuti, e alla fine del tirocinio hai l’elenco di casi e procedure.' : `Ancora nessuna scheda. Creane una per ogni ${cfg.noun}: i titoli sono già pronti, poi aggiungi foto (anche come esercizio delle etichette) e video.`}</p>
         <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button></div>`}
@@ -13291,7 +13378,7 @@ function viewSpecial(kind, p1) {
   on('[data-act="sp-new"]', 'click', async () => { const s = await specialSheet(cfg); if (s) { toast(isDiary ? 'Giornata creata' : 'Scheda creata'); go(`#/sec/${s.id}/edit`); } });
   const filtered = () => {
     const toks = foldAccents(st.q).split(/\s+/).filter(Boolean);
-    return all.filter(s => (!st.type || s.sp?.type === st.type) && (!toks.length || toks.every(t => foldAccents(`${s.title} ${s.md} ${Object.values(s.sp || {}).filter(v => typeof v === 'string').join(' ')} ${(s.sp?.procs || []).map(p => p.n).join(' ')}`).includes(t))));
+    return all.filter(s => (!st.type || s.sp?.type === st.type) && (!st.tag || tagsOf(s).includes(st.tag)) && (!toks.length || toks.every(t => foldAccents(`${s.title} ${s.md} ${Object.values(s.sp || {}).filter(v => typeof v === 'string').join(' ')} ${(s.sp?.procs || []).map(p => p.n).join(' ')} ${tagsOf(s).join(' ')}`).includes(t))));
   };
   const draw = () => {
     const box = $('#spList');
@@ -13303,14 +13390,18 @@ function viewSpecial(kind, p1) {
     list.forEach(s => { const k = keyOf(s); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); });
     const label = k => (isDiary ? (k ? new Date(`${k}-01T12:00`).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }) : 'Senza data') : k);
     const keys = [...groups.keys()].sort((a, b) => (isDiary ? b.localeCompare(a) : (a === 'Senza gruppo') - (b === 'Senza gruppo') || a.localeCompare(b, 'it')));
-    box.innerHTML = list.length ? keys.map(k => `<h2 class="sub">${esc(label(k))}</h2><ul class="list">${groups.get(k).map(s => {
+    box.innerHTML = list.length ? keys.map(k => cfg.grid ? `<h2 class="sub">${esc(label(k))}</h2><div class="anat-grid">${groups.get(k).map(s => {
+      const im = imageRefs(s.md)[0];
+      return `<a class="anat-card" href="#/sec/${s.id}/read">${im ? `<img class="nb-img" data-img="${im}" alt="">` : '<span class="anat-none">Nessuna immagine</span>'}<span class="anat-t">${esc(s.title)}</span><span class="anat-s">${esc([cfg.types[s.sp?.type], ...tagsOf(s).map(t => `#${t}`)].filter(Boolean).join(' · '))}</span></a>`;
+    }).join('')}</div>` : `<h2 class="sub">${esc(label(k))}</h2><ul class="list">${groups.get(k).map(s => {
       const nImg = imageRefs(s.md).length;
-      const bits = [...specialMetaBits(s), nImg ? `${nImg} foto` : '', s.incomplete ? '⚠ incompleta' : ''].filter(Boolean);
+      const bits = [...specialMetaBits(s), nImg ? `${nImg} foto` : '', ...tagsOf(s).map(t => `#${t}`), s.incomplete ? '⚠ incompleta' : ''].filter(Boolean);
       return `<li><a class="row" href="#/sec/${s.id}/read"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(bits.join(' · '))}</span></span>${isDiary ? '' : statusPill(s)}</a></li>`;
     }).join('')}</ul>`).join('') : '<p class="hint">Niente corrisponde.</p>';
   };
   draw();
   $('#spQ')?.addEventListener('input', e => { st.q = e.target.value; draw(); });
+  on('[data-sptag]', 'click', e => { const k = e.currentTarget.dataset.sptag; st.tag = st.tag === k ? '' : k; $$('[data-sptag]').forEach(b => { b.classList.toggle('on', b.dataset.sptag === st.tag); b.setAttribute('aria-pressed', b.dataset.sptag === st.tag); }); draw(); });
   on('[data-spt]', 'click', e => { const k = e.currentTarget.dataset.spt; st.type = st.type === k ? '' : k; $$('[data-spt]').forEach(b => { b.classList.toggle('on', b.dataset.spt === st.type); b.setAttribute('aria-pressed', b.dataset.spt === st.type); }); draw(); });
   on('[data-act="sp-random"]', 'click', () => {
     const list = filtered().filter(s => String(s.md || '').replace(/^##.*$/gm, '').trim());
@@ -13521,6 +13612,15 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.52", title: "Atlante di anatomia; l’Atlante diventa Atlante diagnostico", html: `      <ul>
+        <li><strong>Atlante di anatomia</strong> (barra laterale o Altro): una scheda per tavola o struttura, con apparato (osteologia, miologia, cardiovascolare, sistema nervoso…) e regione scelta da te. L’elenco mostra le immagini in miniatura. Carica la figura con ＋ Foto e fanne l’esercizio delle etichette o l’image occlusion.</li>
+        <li><strong>Tag</strong> nei dati della scheda, per filtrare l’elenco (vale anche per microbiologia, atlante diagnostico e diario). <strong>Collegamenti</strong>: “Collega una sezione del notebook” unisce la scheda ai tuoi appunti; nella scheda vedi “Collegata a”, nella sezione collegata la trovi tra le “Pagine che rimandano qui”.</li>
+        <li>Il vecchio <strong>Atlante</strong> (ECG, emogas, Rx) ora si chiama <strong>Atlante diagnostico</strong>: le schede restano tutte lì.</li>
+      </ul>` },
+  { v: "3.51", title: "intervalli delle flashcard modificabili", html: `      <ul>
+        <li>Gli intervalli erano già identici a quelli di Anki, compresi i 4 giorni di “Facile” su una carta nuova. Ora li puoi cambiare in <strong>Impostazioni → Flashcard → Intervalli</strong>: passi di apprendimento, passi dopo un errore, primo intervallo con “Bene” e con “Facile”, facilità iniziale, bonus di “Facile”, intervallo massimo.</li>
+        <li>Se 4 giorni ti sembrano troppi per una carta appena vista, metti “Facile” a 2 o 3. “Ripristina i valori di Anki” torna a quelli di partenza. Le modifiche valgono dalle prossime risposte; i pulsanti del ripasso mostrano già i nuovi intervalli.</li>
+      </ul>` },
   { v: "3.50", title: "audio nelle sezioni, con segnalibri", html: `      <ul>
         <li>Ogni sezione ha la scheda <strong>Audio</strong>: <strong>Carica un audio</strong> (mp3, m4a, wav, ogg…) oppure <strong>● Registra</strong> la lezione direttamente.</li>
         <li>Il <strong>lettore resta in basso</strong> anche quando passi a Leggi o Modifica: scrivi gli appunti mentre ascolti. Avanti e indietro, velocità da 0,75× a 2×, barra con i segnalibri; riprende da dove eri rimasta.</li>
@@ -16461,7 +16561,7 @@ const HELP = {
   backupModels: { t: 'Modelli di riserva', b: `Con la chiave gratuita ogni modello ha un suo numero di richieste al giorno. Quando il modello principale le finisce, l’app passa da sola al primo modello di riserva, fino all’azzeramento del giorno dopo (verso le 8 o le 9 del mattino).<br><br>Puoi scriverne più d’uno, separati da virgola. Lascia vuoto per non usarne.` },
   prompts: { t: 'Prompt per l’AI', b: `Sono le istruzioni che l’app dà all’AI per ogni lavoro: formattare, creare flashcard, valutare l’orale…<br><br>Puoi riscriverle a tuo gusto (per esempio “usa più tabelle” o “domande da esame orale”). “Ripristina” torna al testo di partenza.` },
   sync: { t: 'Sincronizzazione con Google Drive', b: `Tiene uguali i dati su telefono e computer, salvandoli in una cartella del tuo Google Drive tramite il tuo script di Apps Script.<br><br>Su ogni dispositivo servono lo stesso <b>indirizzo dell’app web</b> (finisce con /exec) e la stessa <b>frase segreta</b>.<br><br>Le chiavi dell’AI non vengono sincronizzate. Se usi un solo dispositivo, basta il backup.` },
-  cardsSet: { t: 'Flashcard', b: `<b>Nuove al giorno</b>: quante flashcard mai viste ti propone ogni giorno per ogni notebook, così il ripasso non esplode.<br><br>La <b>nota del “Di nuovo”</b> ti chiede perché hai sbagliato: ti aiuta a riconoscere gli errori che ripeti.` },
+  cardsSet: { t: 'Flashcard', b: `<b>Nuove al giorno</b>: quante flashcard mai viste ti propone ogni giorno per ogni notebook, così il ripasso non esplode.<br><br>La <b>nota del “Di nuovo”</b> ti chiede perché hai sbagliato: ti aiuta a riconoscere gli errori che ripeti.<br><br><b>Intervalli</b>: partono come in Anki. I <b>passi di apprendimento</b> sono le ripetizioni dello stesso giorno per una carta nuova (1 e 10 minuti); dopo l’ultimo, “Bene” la manda al <b>primo intervallo</b> (1 giorno). “Facile” su una carta nuova salta i passi e la manda subito a 4 giorni: se ti sembra troppo, abbassalo a 2 o 3. Poi ogni intervallo si moltiplica per la <b>facilità</b> (250%: circa 2,5 volte), che scende quando sbagli o premi “Difficile” e sale con “Facile”.` },
   images: { t: 'Immagini', b: `Quante immagini hai salvato e quanto spazio occupano.<br><br>“Elimina le immagini non usate” toglie quelle che non compaiono più in nessuna sezione o flashcard.` },
   studyhub: { t: 'StudyHub', b: `Il collegamento con il tuo planner. Quando segni una sezione come studiata, StudyHub la riceve e ne pianifica i ripassi; i voti dati qui gli arrivano.<br><br>Dal menu puoi aprire StudyHub <b>qui accanto</b> (in basso sul telefono). Lascia vuoto l’indirizzo per usare quello di sempre.` },
   importSet: { t: 'Importazione', b: `Il numero di pagine per sezione proposto quando importi un PDF “ogni tot pagine”. Lo puoi sempre cambiare al momento.` },
@@ -16496,7 +16596,8 @@ const HELP = {
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
   scores: { t: 'Score clinici', b: `Spunta i criteri o scegli i valori: il punteggio e la sua lettura si aggiornano subito. Sotto ogni score c’è la fonte (sono io, Claude, sulle linee guida citate). Servono per studiare e per capire come ragionano in reparto: le decisioni vere si prendono con il medico.` },
   micro: { t: 'Microbiologia', b: `Una scheda per microrganismo, con tipo (batterio, virus, fungo, parassita, prione) e un gruppo scelto da te. I titoli sono già pronti; le malattie infettive restano nelle note cliniche. Ogni scheda ha tutte le modalità di studio, foto con etichette e video. <b>Esercitati</b> ne apre una a caso in Orale.` },
-  atlas: { t: 'Atlante', b: `ECG, emogas, Rx e altre immagini da imparare a leggere. Carica l’immagine con <b>＋ Foto</b>, poi fanne l’esercizio delle etichette o l’image occlusion. Per ECG, emogas e Rx i titoli seguono l’ordine di lettura (ritmo, asse, onde… / pH, disturbo primario, compenso…).` },
+  anat: { t: 'Atlante di anatomia', b: `Le immagini di anatomia che usi di più: una scheda per tavola o struttura, con apparato e regione scelti da te. Carica l’immagine con <b>＋ Foto</b> e fanne l’esercizio delle etichette (rimetti i nomi al posto giusto) o l’image occlusion.<br><br><b>Tag</b>: li scrivi nei dati della scheda e li usi per filtrare l’elenco. <b>Collegamenti</b>: “Collega una sezione” la unisce agli appunti del notebook; nella sezione collegata, in fondo a Leggi, trovi l’immagine tra le “Pagine che rimandano qui”.` },
+  atlas: { t: 'Atlante diagnostico', b: `ECG, emogas, Rx e altre immagini da imparare a leggere. Carica l’immagine con <b>＋ Foto</b>, poi fanne l’esercizio delle etichette o l’image occlusion. Per ECG, emogas e Rx i titoli seguono l’ordine di lettura (ritmo, asse, onde… / pH, disturbo primario, compenso…).` },
   diary: { t: 'Diario di tirocinio', b: `Una pagina per ogni giornata: data, reparto, tutor e le <b>procedure</b> (eseguite, assistite, osservate, quante volte). Scrivi casi e cose imparate sotto i titoli pronti. La scheda <b>Procedure</b> fa il totale, con i reparti e l’ultima volta.` },
   examq: { t: 'Domande d’esame', b: `La banca delle domande uscite agli esami. Ogni domanda ha materia, argomenti collegati, risposta o traccia, e le volte in cui è uscita (docente, anno, data, fonte): quando esce di nuovo si somma, così l’elenco “Le più frequenti” ti dice cosa chiedono di più.<br><br><b>Importa da Excel</b>: un foglio .xlsx (anche scaricato da Google Fogli) o un CSV, una domanda per riga. Scegli quali colonne sono domanda, risposta, materia, argomento, docente, anno, data, fonte e tag; “Scarica il modello” ti dà un foglio già pronto. Le domande uguali si sommano e gli argomenti si collegano da soli quando il titolo di una sezione compare nella domanda.<br><br><b>Allenati</b> sulle domande filtrate: le più frequenti, quelle di un docente o di un anno, quelle che sbagli. In ogni sezione, in fondo a Leggi, trovi le domande uscite su quell’argomento.` },
   split: { t: 'Affianca', b: `Apre di fianco una <b>sezione</b> o un <b>PDF</b>, mentre nella pagina principale resta quello che stai guardando: due sezioni, una sezione e le slide, due PDF, o un PDF accanto al lettore PDF.<br><br>Sul tablet e sul computer sta a destra (anche col tablet in verticale), sul telefono sotto. Trascina il bordo per dargli più o meno spazio.<br><br>Nel PDF: pagine ‹ ›, zoom (anche con due dita), salto ai segnalibri. <b>Cambia</b> mostra un’altra cosa, <b>Apri qui</b> la porta nella pagina principale.` },
@@ -16543,7 +16644,8 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Domande d’esame', key: 'examq' },
   { sel: '.page-head h1', text: 'Score clinici', key: 'scores' },
   { sel: '.page-head h1', text: 'Microbiologia', key: 'micro' },
-  { sel: '.page-head h1', text: 'Atlante', key: 'atlas' },
+  { sel: '.page-head h1', text: 'Atlante diagnostico', key: 'atlas' },
+  { sel: '.page-head h1', text: 'Atlante di anatomia', key: 'anat' },
   { sel: '.page-head h1', text: 'Diario di tirocinio', key: 'diary' },
   { sel: '.page-head h1', text: 'Leggi un referto', key: 'labRef' },
   { sel: '.page-head h1', text: 'Calcoli di laboratorio', key: 'labCalc' },
