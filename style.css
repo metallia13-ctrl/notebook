@@ -3615,3 +3615,33 @@ body.au-on .view { padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px)
 .pc-table.quiz td.covered { background: repeating-linear-gradient(135deg, var(--surface-2) 0 8px, transparent 8px 16px); }
 .split-map { padding: 10px 12px 30px; }
 .split-map .map-bar { flex-wrap: wrap; }
+
+/* v3.54: note cliniche più ricche, diagnosi differenziale */
+.cn-group { margin: 6px 0; border: 1px solid var(--line); border-radius: var(--r); padding: 0 12px; }
+.cn-group > summary { cursor: pointer; padding: 10px 0; font-weight: 700; }
+.cn-group[open] { padding-bottom: 8px; }
+.cn-row { margin: 12px 0; }
+.cn-row > h3 { margin: 0 0 4px; font-size: 0.95rem; color: var(--accent); }
+.cn-row .notes > :first-child { margin-top: 0; }
+.cn-row .notes > :last-child { margin-bottom: 0; }
+.cn-dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 6px; }
+.cn-dl dt { color: var(--muted); }
+.cn-dl dd { margin: 0; }
+.cn-exams { gap: 8px 16px; }
+.cn-ddx { margin: 4px 0; padding-left: 1.2em; }
+.cn-ddx li { margin: 3px 0; }
+.cn-ddx small { color: var(--muted); }
+.dx-syms { margin: 6px 0 12px; }
+.dx-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; margin: 10px 0; }
+.dx-opt { justify-content: flex-start; text-align: left; white-space: normal; min-height: 44px; }
+.dx-opt[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.dx-opt.ok { border-color: #22c55e; background: color-mix(in srgb, #22c55e 16%, var(--surface)); }
+.dx-opt.ko { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, var(--surface)); }
+.dx-res { font-weight: 750; }
+.dx-res.ok { color: #22c55e; }
+.dx-res.ko { color: var(--danger); }
+.seg [aria-checked="true"] { background: var(--accent-soft); color: var(--accent); }
+
+/* v3.56: evidenziare le scansioni, blocco note */
+.ann-area.live { opacity: 0.85; }
+.pad-bg svg { width: 19px; height: 19px; }

@@ -2,11 +2,11 @@
    - file dell'app: prima la rete (così vedi subito gli aggiornamenti), poi la copia salvata se sei offline
    - librerie e font dai CDN: prima la copia salvata (hanno versioni fisse)
    - chiamate all'AI e a Drive: mai toccate */
-const VERSION = 'nb-3.53';
+const VERSION = 'nb-3.56';
 const APP_CACHE = `${VERSION}-app`;
 const CDN_CACHE = 'nb-cdn-1';
 const SHARE_CACHE = 'nb-share';
-const APP_FILES = ['./', './index.html', './app.js', './style.css', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
+const APP_FILES = ['./', './index.html', './01-base.js', './02-notebook.js', './03-flashcard.js', './04-pdf.js', './05-clinica.js', './06-app.js', './style.css', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 const CDN_FILES = [
   'https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js'
