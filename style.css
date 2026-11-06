@@ -3598,3 +3598,20 @@ body.au-on .view { padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px)
 .sp-link-res { margin-top: 4px; max-height: 30vh; overflow: auto; }
 .sp-link-res .row { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 #spLinkQ { margin-top: 6px; }
+
+/* v3.53: confronto dei farmaci, mappe in Affianca */
+.pc-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 18px; }
+.pc-tools .field { min-width: 220px; }
+.pc-pick { margin: 6px 0 12px; }
+.pc-table { table-layout: auto; }
+.pc-table th[scope="row"] { position: sticky; left: 0; z-index: 1; background: var(--surface-2); min-width: 120px; max-width: 160px; white-space: normal; }
+.pc-table td { min-width: 200px; max-width: 320px; vertical-align: top; }
+.pc-table td > :first-child { margin-top: 0; }
+.pc-table td > :last-child { margin-bottom: 0; }
+.pc-table td ul, .pc-table td ol { padding-left: 1.1em; }
+.pc-table thead th a { color: inherit; }
+.pc-table.quiz td.covered { cursor: pointer; }
+.pc-table.quiz td.covered > * { visibility: hidden; }
+.pc-table.quiz td.covered { background: repeating-linear-gradient(135deg, var(--surface-2) 0 8px, transparent 8px 16px); }
+.split-map { padding: 10px 12px 30px; }
+.split-map .map-bar { flex-wrap: wrap; }

@@ -7,7 +7,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.52';
+const APP_VERSION = '3.53';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -1094,7 +1094,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'diary', 'scores'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1145,7 +1145,7 @@ function route() {
     case 'lab': return viewLab(p1, p2);
     case 'semei': return viewSemei();
     case 'examq': return viewExamQ(p1);
-    case 'micro': case 'atlas': case 'anat': case 'diary': return viewSpecial(p0, p1);
+    case 'micro': case 'atlas': case 'anat': case 'pharma': case 'diary': return viewSpecial(p0, p1);
     case 'scores': return viewScores();
     case 'print': return viewPrint(p1, p2);
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
@@ -7246,6 +7246,7 @@ const ICONS = {
   scores: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   micro: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>',
   atlas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2-6 3 12 3-9 2 3h6"/></svg>',
+  pharma: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="9" width="18" height="7" rx="3.5" transform="rotate(-35 12 12.5)"/><path d="M9.2 7.4l5.6 8"/></svg>',
   anat: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M8 10h8M12 14l-3 7M12 14l3 7"/></svg>',
   diary: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 3v18M11 8h6M11 12h6M11 16h4"/></svg>',
   examq: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M9.5 9a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4V13M12 16.5v.2"/></svg>',
@@ -7308,6 +7309,7 @@ const MORE_ITEMS = [
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
   ['scores', 'Score clinici', 'CHA₂DS₂-VASc, Wells, CURB-65, qSOFA, NEWS2, Glasgow, Child-Pugh, MELD'],
   ['micro', 'Microbiologia', 'Una scheda per ogni microrganismo, con foto e video'],
+  ['pharma', 'Farmacologia', 'Una scheda per farmaco, per classe, con la tabella di confronto'],
   ['anat', 'Atlante di anatomia', 'Le tavole e le immagini di anatomia che usi di più, con etichette, tag e collegamenti'],
   ['atlas', 'Atlante diagnostico', 'ECG, emogas, Rx torace e altre immagini da imparare a leggere'],
   ['diary', 'Diario di tirocinio', 'Giornate, reparti, tutor e procedure sommate'],
@@ -12407,7 +12409,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { scores: 'Score clinici', micro: 'Microbiologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { scores: 'Score clinici', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {
@@ -13223,6 +13225,14 @@ const SPECIALS = {
     namePh: 'Es. Plesso brachiale',
     parts: () => ['Immagine', 'Strutture', 'Rapporti', 'Vascolarizzazione e innervazione', 'Correlazioni cliniche', 'Note']
   },
+  pharma: {
+    kind: 'pharma', route: 'pharma', name: 'Farmacologia', noun: 'farmaco', links: true,
+    lede: 'Una scheda per ogni farmaco, raggruppati per classe, con i titoli pronti. Nella scheda Confronta i farmaci di una classe diventano una tabella, titolo per titolo.',
+    typeLabel: 'Area', types: { cardio: 'Cardiovascolare', snc: 'Sistema nervoso', anti: 'Antimicrobici', analg: 'Analgesici e antinfiammatori', endo: 'Endocrino e metabolismo', resp: 'Respiratorio', gi: 'Gastrointestinale', emato: 'Sangue e coagulazione', onco: 'Oncologia e immunologia', anest: 'Anestesia', altro: 'Altro' },
+    groupLabel: 'Classe', groupPh: 'Es. Beta-bloccanti, ACE-inibitori',
+    namePh: 'Es. Metoprololo',
+    parts: () => ['Meccanismo d’azione', 'Farmacocinetica', 'Indicazioni', 'Effetti avversi', 'Controindicazioni', 'Interazioni', 'Monitoraggio', 'Gravidanza e allattamento', 'Sovradosaggio e antidoto', 'Note']
+  },
   diary: {
     kind: 'diary', route: 'diary', name: 'Diario di tirocinio', noun: 'giornata',
     lede: 'Una pagina per ogni giornata di tirocinio: reparto, tutor, casi visti, procedure e cosa hai imparato. Le procedure si sommano da sole.',
@@ -13246,7 +13256,7 @@ function specialMetaBits(sec) {
     const procs = (d.procs || []).reduce((a, p) => a + (+p.c || 0), 0);
     return [d.date ? fmtDay(d.date) : '', d.ward, d.tutor ? `tutor ${d.tutor}` : '', procs ? `${procs} procedure` : ''].filter(Boolean);
   }
-  return [cfg.types[d.type], d.group].filter(Boolean);
+  return [d.proto ? '★ prototipo' : '', cfg.types[d.type], d.group].filter(Boolean);
 }
 const PROC_KINDS = [['eseguita', 'Eseguita da me'], ['assistita', 'Assistita'], ['osservata', 'Osservata']];
 function specialSheet(cfg, sec = null) {
@@ -13274,6 +13284,7 @@ function specialSheet(cfg, sec = null) {
           <label class="field"><span>${cfg.typeLabel}</span><select class="input" id="spType">${Object.entries(cfg.types).map(([k, l]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
           <label class="field"><span>${cfg.groupLabel}</span><input class="input" id="spGroup" value="${esc(d.group || '')}" list="spGroups" placeholder="${esc(cfg.groupPh)}"><datalist id="spGroups">${used('group').map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
         </div>`}
+      ${cfg.kind === 'pharma' ? `<label class="check"><input type="checkbox" id="spProto" ${d.proto ? 'checked' : ''}><span>Prototipo della classe (nel confronto va per primo)</span></label>` : ''}
       <label class="field"><span>Tag, separati da virgole</span><input class="input" id="spTags" value="${esc(tagsOf(sec || {}).join(', '))}" placeholder="Es. esame, da ripassare" list="spTagList"><datalist id="spTagList">${[...new Set(others.flatMap(x => tagsOf(x)))].map(t => `<option value="${esc(t)}">`).join('')}</datalist></label>
       ${cfg.links ? `<div class="field"><span class="lbl">Collegata a</span><div class="tags" id="spLinks"></div>
         <input type="search" class="input" id="spLinkQ" placeholder="＋ Collega una sezione: scrivi il titolo" aria-label="Collega una sezione del notebook" autocomplete="off">
@@ -13332,7 +13343,7 @@ function specialSheet(cfg, sec = null) {
         readProcs();
         const data = isDiary
           ? { date: $('#spDate', sh.el).value || todayStr(), ward: $('#spWard', sh.el).value.trim(), tutor: $('#spTutor', sh.el).value.trim(), procs: procs.filter(p => p.n) }
-          : { type: $('#spType', sh.el).value, group: $('#spGroup', sh.el).value.trim(), links };
+          : { type: $('#spType', sh.el).value, group: $('#spGroup', sh.el).value.trim(), links, ...(cfg.kind === 'pharma' ? { proto: !!$('#spProto', sh.el)?.checked } : {}) };
         let s = sec;
         if (!s) {
           const nbx = await ensureSpecialNb(cfg);
@@ -13358,12 +13369,14 @@ function viewSpecial(kind, p1) {
   if (st.tag && !allTags.includes(st.tag)) st.tag = '';
   const isDiary = kind === 'diary';
   if (isDiary && p1 === 'procs') return viewDiaryProcs(cfg, all);
+  if (kind === 'pharma' && p1 === 'compare') return viewPharmaCompare(cfg, all);
   setView(`
     <header class="page-head">
       <div><h1>${cfg.name}</h1><p class="lede">${cfg.lede}</p></div>
       <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button>
     </header>
     ${isDiary ? `<nav class="tabs" aria-label="Diario"><a href="#/diary" class="tab on" aria-current="page">Giornate${all.length ? ` (${all.length})` : ''}</a><a href="#/diary/procs" class="tab">Procedure</a></nav>` : ''}
+    ${kind === 'pharma' ? `<nav class="tabs" aria-label="Farmacologia"><a href="#/pharma" class="tab on" aria-current="page">Farmaci${all.length ? ` (${all.length})` : ''}</a><a href="#/pharma/compare" class="tab">Confronta</a></nav>` : ''}
     ${all.length ? `
       <div class="inline semei-tools">
         <input type="search" class="input search" id="spQ" placeholder="Cerca" aria-label="Cerca" value="${esc(st.q)}">
@@ -13386,7 +13399,7 @@ function viewSpecial(kind, p1) {
     const list = filtered();
     const groups = new Map();
     const keyOf = s => (isDiary ? (s.sp?.date || '').slice(0, 7) : (s.sp?.group || 'Senza gruppo'));
-    list.sort((a, b) => (isDiary ? String(b.sp?.date || '').localeCompare(String(a.sp?.date || '')) : a.title.localeCompare(b.title, 'it')));
+    list.sort((a, b) => (isDiary ? String(b.sp?.date || '').localeCompare(String(a.sp?.date || '')) : (!!b.sp?.proto - !!a.sp?.proto) || a.title.localeCompare(b.title, 'it')));
     list.forEach(s => { const k = keyOf(s); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); });
     const label = k => (isDiary ? (k ? new Date(`${k}-01T12:00`).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }) : 'Senza data') : k);
     const keys = [...groups.keys()].sort((a, b) => (isDiary ? b.localeCompare(a) : (a === 'Senza gruppo') - (b === 'Senza gruppo') || a.localeCompare(b, 'it')));
@@ -13407,6 +13420,66 @@ function viewSpecial(kind, p1) {
     const list = filtered().filter(s => String(s.md || '').replace(/^##.*$/gm, '').trim());
     if (!list.length) { toast('Nessuna scheda scritta tra quelle filtrate'); return; }
     go(`#/sec/${list[Math.floor(Math.random() * list.length)].id}/oral`);
+  });
+}
+// Confronto tra farmaci: righe = i titoli delle schede, colonne = i farmaci scelti.
+// Il contenuto viene dagli appunti stessi, senza scriverlo due volte.
+function mdSectionsOf(md) {
+  const out = new Map();
+  let cur = null, buf = [];
+  const push = () => { if (cur !== null) { const t = buf.join('\n').trim(); if (t) out.set(cur.key, { title: cur.title, md: t }); } };
+  String(md || '').split('\n').forEach(line => {
+    const h = line.match(/^#{1,2}\s+(.+?)\s*$/);
+    if (h) { push(); cur = { key: foldAccents(h[1]).replace(/[^a-z0-9]+/g, ' ').trim(), title: h[1].trim() }; buf = []; }
+    else if (cur) buf.push(line);
+  });
+  push();
+  return out;
+}
+const pharmaCmp = { cls: '', picked: null, quiz: false, shown: new Set() };
+function viewPharmaCompare(cfg, all) {
+  const classes = [...new Set(all.map(s => s.sp?.group).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+  if (!pharmaCmp.cls && classes.length) pharmaCmp.cls = classes[0];
+  const inCls = c => all.filter(s => (s.sp?.group || '') === c).sort((a, b) => (!!b.sp?.proto - !!a.sp?.proto) || a.title.localeCompare(b.title, 'it'));
+  if (!pharmaCmp.picked || ![...pharmaCmp.picked].every(id => all.some(s => s.id === id))) pharmaCmp.picked = new Set(inCls(pharmaCmp.cls).map(s => s.id));
+  setView(`
+    <header class="page-head"><div><h1>${cfg.name}</h1><p class="lede">I farmaci uno accanto all’altro, titolo per titolo: le righe sono i titoli delle schede (meccanismo, effetti avversi…), le colonne i farmaci.</p></div></header>
+    <nav class="tabs" aria-label="Farmacologia"><a href="#/pharma" class="tab">Farmaci (${all.length})</a><a href="#/pharma/compare" class="tab on" aria-current="page">Confronta</a></nav>
+    ${all.length < 2 ? '<div class="empty"><p>Servono almeno due schede di farmaci per confrontarli. Creale nella scheda Farmaci, con la stessa classe.</p><a class="btn primary" href="#/pharma">Vai ai farmaci</a></div>' : `
+      <div class="pc-tools">
+        <label class="field"><span>Classe</span><select class="input" id="pcCls">${classes.map(c => `<option ${c === pharmaCmp.cls ? 'selected' : ''}>${esc(c)}</option>`).join('')}<option value="__any" ${pharmaCmp.cls === '__any' ? 'selected' : ''}>Farmaci scelti da me</option></select></label>
+        <label class="check"><input type="checkbox" id="pcQuiz" ${pharmaCmp.quiz ? 'checked' : ''}><span>Ripassa: copri le celle, tocca per scoprirle</span></label>
+      </div>
+      <div class="tag-cloud pc-pick" aria-label="Farmaci nel confronto">${(pharmaCmp.cls === '__any' ? all.slice().sort((a, b) => a.title.localeCompare(b.title, 'it')) : inCls(pharmaCmp.cls)).map(s => `<button type="button" class="tag ${pharmaCmp.picked.has(s.id) ? 'on' : ''}" data-pcp="${s.id}" aria-pressed="${pharmaCmp.picked.has(s.id)}">${s.sp?.proto ? '★ ' : ''}${esc(s.title)}</button>`).join('')}</div>
+      <div id="pcTable"></div>`}
+  `);
+  if (all.length < 2) return;
+  const draw = () => {
+    const drugs = all.filter(s => pharmaCmp.picked.has(s.id)).sort((a, b) => (!!b.sp?.proto - !!a.sp?.proto) || a.title.localeCompare(b.title, 'it'));
+    const box = $('#pcTable');
+    if (drugs.length < 1) { box.innerHTML = '<p class="hint">Scegli almeno un farmaco qui sopra.</p>'; return; }
+    const secs = drugs.map(d => mdSectionsOf(d.md));
+    // prima i titoli del modello, poi gli altri titoli presenti nelle schede
+    const keys = cfg.parts().map(t => foldAccents(t).replace(/[^a-z0-9]+/g, ' ').trim());
+    const extra = [];
+    secs.forEach(m => m.forEach((v, k) => { if (!keys.includes(k) && !extra.includes(k)) extra.push(k); }));
+    const rows = [...keys, ...extra].filter(k => secs.some(m => m.has(k)));
+    const titleOf = k => { for (const m of secs) if (m.has(k)) return m.get(k).title; return cfg.parts().find(t => foldAccents(t).replace(/[^a-z0-9]+/g, ' ').trim() === k) || k; };
+    box.innerHTML = rows.length ? `<div class="notes pc-wrap"><div class="table-wrap"><table class="pc-table ${pharmaCmp.quiz ? 'quiz' : ''}">
+      <thead><tr><th></th>${drugs.map(d => `<th><a href="#/sec/${d.id}/read">${d.sp?.proto ? '★ ' : ''}${esc(d.title)}</a></th>`).join('')}</tr></thead>
+      <tbody>${rows.map(k => `<tr><th scope="row">${esc(titleOf(k))}</th>${secs.map((m, i) => { const v = m.get(k); const cid = `${drugs[i].id}|${k}`; return `<td class="${v && pharmaCmp.quiz && !pharmaCmp.shown.has(cid) ? 'covered' : ''}" data-cell="${esc(cid)}">${v ? renderMd(v.md) : '<span class="muted-inline">—</span>'}</td>`; }).join('')}</tr>`).join('')}</tbody>
+    </table></div></div>
+    <p class="hint">Le celle vengono dagli appunti di ogni scheda: per cambiarle modifica la scheda del farmaco. Una riga per ogni titolo, nell’ordine del modello.</p>` : '<p class="hint">Le schede scelte non hanno ancora testo sotto i titoli.</p>';
+  };
+  draw();
+  $('#pcCls').addEventListener('change', e => { pharmaCmp.cls = e.target.value; pharmaCmp.picked = new Set(pharmaCmp.cls === '__any' ? [] : inCls(pharmaCmp.cls).map(s => s.id)); pharmaCmp.shown.clear(); route(); });
+  $('#pcQuiz').addEventListener('change', e => { pharmaCmp.quiz = e.target.checked; pharmaCmp.shown.clear(); draw(); });
+  on('[data-pcp]', 'click', e => { const id = e.currentTarget.dataset.pcp; if (pharmaCmp.picked.has(id)) pharmaCmp.picked.delete(id); else pharmaCmp.picked.add(id); e.currentTarget.classList.toggle('on', pharmaCmp.picked.has(id)); e.currentTarget.setAttribute('aria-pressed', pharmaCmp.picked.has(id)); draw(); });
+  $('#pcTable').addEventListener('click', e => {
+    const td = e.target.closest('td[data-cell]');
+    if (!td || !pharmaCmp.quiz) return;
+    if (pharmaCmp.shown.has(td.dataset.cell)) pharmaCmp.shown.delete(td.dataset.cell); else pharmaCmp.shown.add(td.dataset.cell);
+    td.classList.toggle('covered', !pharmaCmp.shown.has(td.dataset.cell) && !td.querySelector('.muted-inline'));
   });
 }
 // Totale delle procedure del tirocinio, per reparto e per modo
@@ -13612,6 +13685,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.53", title: "Farmacologia con il confronto; mappe in Affianca", html: `      <ul>
+        <li><strong>Farmacologia</strong> (barra laterale o Altro): una scheda per farmaco, con area, <strong>classe</strong> e segno di <strong>prototipo</strong>, e i titoli pronti (meccanismo, farmacocinetica, indicazioni, effetti avversi, controindicazioni, interazioni, monitoraggio, gravidanza, sovradosaggio e antidoto). Tag e collegamenti alle sezioni come negli atlanti.</li>
+        <li>La scheda <strong>Confronta</strong> mette i farmaci di una classe (o quelli che scegli) in una <strong>tabella</strong>: una riga per titolo, una colonna per farmaco, il prototipo per primo. Il testo viene dalle schede, quindi non lo scrivi due volte. Con <strong>Ripassa</strong> le celle si coprono e le scopri toccandole.</li>
+        <li><strong>Mappe in Affianca</strong>: in ⇆ Affianca c’è la scheda <strong>Mappa</strong>. Scegli la sezione (prima quella che stai leggendo, o quella del PDF aperto) e nel pannello hai tutta la scheda Mappe: crei la mappa, la modifichi mentre leggi il PDF o gli appunti e da Altro la scarichi come file XMind.</li>
+      </ul>` },
   { v: "3.52", title: "Atlante di anatomia; l’Atlante diventa Atlante diagnostico", html: `      <ul>
         <li><strong>Atlante di anatomia</strong> (barra laterale o Altro): una scheda per tavola o struttura, con apparato (osteologia, miologia, cardiovascolare, sistema nervoso…) e regione scelta da te. L’elenco mostra le immagini in miniatura. Carica la figura con ＋ Foto e fanne l’esercizio delle etichette o l’image occlusion.</li>
         <li><strong>Tag</strong> nei dati della scheda, per filtrare l’elenco (vale anche per microbiologia, atlante diagnostico e diario). <strong>Collegamenti</strong>: “Collega una sezione del notebook” unisce la scheda ai tuoi appunti; nella scheda vedi “Collegata a”, nella sezione collegata la trovi tra le “Pagine che rimandano qui”.</li>
@@ -14457,6 +14535,21 @@ const Split = {
     if (this.io) { this.io.disconnect(); this.io = null; }
     this.rendered.clear();
     $('.split-pdfbar', this.el).hidden = item.kind !== 'pdf';
+    if (item.kind === 'map') {
+      // la scheda Mappe di una sezione, intera: crei, modifichi e scarichi l’XMind mentre leggi
+      const sec = secById(item.id);
+      if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
+      this.dropDoc();
+      $('.split-kind', this.el).textContent = `Mappe · ${[nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ')}`;
+      $('.split-name', this.el).textContent = sec.title;
+      body.innerHTML = '';
+      const box = document.createElement('div');
+      box.className = 'mode-body split-map';
+      body.append(box);
+      modeMap(sec, box);
+      body.scrollTop = 0;
+      return;
+    }
     if (item.kind === 'sec') {
       const sec = secById(item.id);
       if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
@@ -14616,7 +14709,7 @@ const Split = {
       const it = this.item;
       if (!it) return;
       this.close();
-      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : `#/pdf/${it.id}/${this.curPage || it.page || 1}`);
+      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${this.curPage || it.page || 1}`);
     } else if (a === 'prev') this.goPage((this.curPage || 1) - 1);
     else if (a === 'next') this.goPage((this.curPage || 1) + 1);
     else if (a === 'z+') this.setZoom(this.zoom * 1.25);
@@ -14655,6 +14748,7 @@ const Split = {
         <div class="seg" role="tablist" aria-label="Cosa affiancare">
           <button type="button" role="tab" data-spt="sec" aria-selected="${tab === 'sec'}">Sezione</button>
           <button type="button" role="tab" data-spt="pdf" aria-selected="${tab === 'pdf'}">PDF</button>
+          <button type="button" role="tab" data-spt="map" aria-selected="${tab === 'map'}">Mappa</button>
         </div>
         <input type="search" class="input search" id="spQ" placeholder="Cerca" aria-label="Cerca">
         <ul class="list pick-list sp-list" id="spList"></ul>
@@ -14662,6 +14756,13 @@ const Split = {
       const list = $('#spList', sh.el);
       const draw = () => {
         const f = foldAccents($('#spQ', sh.el).value.trim());
+        if (tab === 'map') {
+          // prima la sezione che stai leggendo (o quella del PDF), poi quelle con mappe
+          const cands = [...(here ? [here] : []), ...state.sections.filter(s => s !== here).sort((a, b) => mapsOf(b).length - mapsOf(a).length || (b.updated || 0) - (a.updated || 0))];
+          const hits = cands.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60);
+          list.innerHTML = hits.map(s => { const n = mapsOf(s).length; return `<li><button type="button" class="row" data-spi="map:${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))} · ${n ? `${n} ${n === 1 ? 'mappa' : 'mappe'}` : 'nessuna mappa: la crei lì'}${s === here ? ' · quella che stai leggendo' : ''}</span></span></button></li>`; }).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
+          return;
+        }
         if (tab === 'sec') {
           const hits = secs.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60);
           list.innerHTML = hits.map(s => `<li><button type="button" class="row" data-spi="sec:${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
@@ -16596,6 +16697,7 @@ const HELP = {
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
   scores: { t: 'Score clinici', b: `Spunta i criteri o scegli i valori: il punteggio e la sua lettura si aggiornano subito. Sotto ogni score c’è la fonte (sono io, Claude, sulle linee guida citate). Servono per studiare e per capire come ragionano in reparto: le decisioni vere si prendono con il medico.` },
   micro: { t: 'Microbiologia', b: `Una scheda per microrganismo, con tipo (batterio, virus, fungo, parassita, prione) e un gruppo scelto da te. I titoli sono già pronti; le malattie infettive restano nelle note cliniche. Ogni scheda ha tutte le modalità di studio, foto con etichette e video. <b>Esercitati</b> ne apre una a caso in Orale.` },
+  pharma: { t: 'Farmacologia', b: `Una scheda per farmaco con area, <b>classe</b> (per esempio Beta-bloccanti) e, se vuoi, il segno di <b>prototipo</b>. I titoli sono già pronti: meccanismo, farmacocinetica, indicazioni, effetti avversi, controindicazioni, interazioni, monitoraggio, gravidanza, sovradosaggio e antidoto.<br><br><b>Confronta</b> mette i farmaci di una classe (o quelli che scegli tu) in una tabella: una riga per titolo, una colonna per farmaco, con il testo preso dalle schede. Con <b>Ripassa</b> le celle si coprono e le scopri toccandole.` },
   anat: { t: 'Atlante di anatomia', b: `Le immagini di anatomia che usi di più: una scheda per tavola o struttura, con apparato e regione scelti da te. Carica l’immagine con <b>＋ Foto</b> e fanne l’esercizio delle etichette (rimetti i nomi al posto giusto) o l’image occlusion.<br><br><b>Tag</b>: li scrivi nei dati della scheda e li usi per filtrare l’elenco. <b>Collegamenti</b>: “Collega una sezione” la unisce agli appunti del notebook; nella sezione collegata, in fondo a Leggi, trovi l’immagine tra le “Pagine che rimandano qui”.` },
   atlas: { t: 'Atlante diagnostico', b: `ECG, emogas, Rx e altre immagini da imparare a leggere. Carica l’immagine con <b>＋ Foto</b>, poi fanne l’esercizio delle etichette o l’image occlusion. Per ECG, emogas e Rx i titoli seguono l’ordine di lettura (ritmo, asse, onde… / pH, disturbo primario, compenso…).` },
   diary: { t: 'Diario di tirocinio', b: `Una pagina per ogni giornata: data, reparto, tutor e le <b>procedure</b> (eseguite, assistite, osservate, quante volte). Scrivi casi e cose imparate sotto i titoli pronti. La scheda <b>Procedure</b> fa il totale, con i reparti e l’ultima volta.` },
@@ -16646,6 +16748,7 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Microbiologia', key: 'micro' },
   { sel: '.page-head h1', text: 'Atlante diagnostico', key: 'atlas' },
   { sel: '.page-head h1', text: 'Atlante di anatomia', key: 'anat' },
+  { sel: '.page-head h1', text: 'Farmacologia', key: 'pharma' },
   { sel: '.page-head h1', text: 'Diario di tirocinio', key: 'diary' },
   { sel: '.page-head h1', text: 'Leggi un referto', key: 'labRef' },
   { sel: '.page-head h1', text: 'Calcoli di laboratorio', key: 'labCalc' },
