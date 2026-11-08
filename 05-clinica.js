@@ -161,6 +161,74 @@ function cnSearchLinks(title) {
     ['Linee guida', `https://www.google.com/search?q=linee+guida+${q}`]
   ];
 }
+/* ---------- v3.58: algoritmi nelle note cliniche ----------
+   Si scrivono come un elenco con i rientri (un passo per riga, i rami rientrati
+   sotto); “Sì: …”, “No: …” o “Se …: …” all’inizio di un ramo diventano
+   l’etichetta della freccia. L’app li disegna come diagramma dall’alto in basso. */
+function algoTree(md, title) {
+  const tree = mdToMapTree(md, title || 'Algoritmo');
+  // un solo passo di partenza: è lui la cima del diagramma
+  if (tree.c && tree.c.length === 1 && !tree.n) return tree.c[0];
+  return tree;
+}
+function algoSvg(md, title) {
+  const root = algoTree(md, title);
+  if (!root || !root.t) return '';
+  const GX = 22, GY = 58, MAXW = 170;
+  const lay = (n, depth) => {
+    let t = String(n.t || '').trim();
+    let edge = '';
+    const m = t.match(/^((?:sì|si|no|se [^:]{1,40}|[<>≤≥=][^:]{0,20}|[^:]{1,32}))\s*:\s*(.+)$/i);
+    if (depth > 0 && m && m[1].length <= 42) { edge = m[1].trim(); t = m[2].trim(); }
+    const w = mapWrap(t || ' ', MAXW);
+    const node = { t, edge, q: /\?\s*$/.test(t), lines: w.lines, w: Math.ceil(w.width) + 22, h: w.lines.length * 18 + 14, depth, kids: (n.c || []).map(k => lay(k, depth + 1)) };
+    node.sub = node.kids.length ? Math.max(node.w, node.kids.reduce((a, k) => a + k.sub, 0) + GX * (node.kids.length - 1)) : node.w;
+    return node;
+  };
+  const r = lay(root, 0);
+  const rowH = [];
+  const meas = n => { rowH[n.depth] = Math.max(rowH[n.depth] || 0, n.h); n.kids.forEach(meas); };
+  meas(r);
+  const rowY = [16];
+  for (let d = 1; d < rowH.length; d++) rowY[d] = rowY[d - 1] + rowH[d - 1] + GY;
+  const place = (n, left) => {
+    n.x = left + n.sub / 2 - n.w / 2;
+    n.y = rowY[n.depth];
+    let x = left + (n.sub - (n.kids.reduce((a, k) => a + k.sub, 0) + GX * Math.max(0, n.kids.length - 1))) / 2;
+    n.kids.forEach(k => { place(k, x); x += k.sub + GX; });
+  };
+  place(r, 16);
+  const W = r.sub + 32, H = rowY[rowY.length - 1] + rowH[rowH.length - 1] + 20;
+  const links = [], boxes = [];
+  const walk = n => {
+    n.kids.forEach(k => {
+      const x1 = n.x + n.w / 2, y1 = n.y + n.h, x2 = k.x + k.w / 2, y2 = k.y;
+      const my = (y1 + y2) / 2;
+      links.push(`<path d="M${x1} ${y1}C${x1} ${my} ${x2} ${my} ${x2} ${y2 - 6}" marker-end="url(#algoArrow)"/>`);
+      // l’etichetta sta subito sopra il riquadro a cui porta, larga al massimo quanto il suo spazio
+      if (k.edge) {
+        const room = Math.max(40, k.sub + GX - 6);
+        let lab = k.edge;
+        while (lab.length > 3 && lab.length * 6.6 + 16 > room) lab = lab.slice(0, -1);
+        if (lab !== k.edge) lab = `${lab.trim()}…`;
+        const lw = Math.min(room, lab.length * 6.6 + 16);
+        links.push(`<g class="al-edge" transform="translate(${x2} ${y2 - 22})"><title>${esc(k.edge)}</title><rect x="${-lw / 2}" y="-10" width="${lw}" height="20" rx="10"/><text text-anchor="middle" y="4">${esc(lab)}</text></g>`);
+      }
+      walk(k);
+    });
+    boxes.push(`<g class="al-node ${n.q ? 'q' : ''} ${n.kids.length ? '' : 'end'} ${n.depth === 0 ? 'al-top' : ''}" transform="translate(${n.x} ${n.y})"><rect width="${n.w}" height="${n.h}" rx="${n.q ? 14 : 8}"/>${n.lines.map((l, i) => `<text x="${n.w / 2}" text-anchor="middle" y="${20 + i * 18}">${esc(l)}</text>`).join('')}</g>`);
+  };
+  walk(r);
+  return `<div class="algo-scroll" data-w="${W}" title="Tocca per ingrandire o rimpicciolire"><svg class="algo-svg" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;max-width:${W}px;min-width:${Math.round(W * 0.62)}px" role="img" aria-label="Algoritmo: ${esc(r.t)}"><defs><marker id="algoArrow" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs><g class="al-links">${links.join('')}</g>${boxes.join('')}</svg></div>`;
+}
+const ALGO_EXAMPLE = `- Sospetta embolia polmonare: Wells
+  - Probabilità bassa o intermedia: D-dimero
+    - Negativo: embolia esclusa
+    - Positivo: angio-TC
+  - Probabilità alta: angio-TC
+    - Positiva: terapia anticoagulante
+    - Negativa: cerca altre cause`;
+
 function clinicSheet(entry = null, prefill = {}) {
   return new Promise(resolve => {
     const e = entry || {};
@@ -204,6 +272,11 @@ function clinicSheet(entry = null, prefill = {}) {
         ${ta('cnStage', 'Stadiazione o classificazione', e.staging, 2, 'Es. classi NYHA')}
         ${ta('cnProg', 'Prognosi', e.prognosis, 2)}`)}
       ${group('Terapia', ['therapy'], ta('cnTher', 'Terapia, anche in Markdown', e.therapy, 4, 'Es. - prima linea: …'))}
+      <details class="cn-group" ${(e.algos || []).length ? 'open' : ''}><summary>Algoritmi</summary>
+        <p class="hint">Un passo per riga con il trattino; i rami vanno rientrati sotto il passo da cui partono. “Sì: …”, “No: …” o “Se …: …” all’inizio di un ramo diventano l’etichetta della freccia; una domanda (con il ?) diventa un rombo arrotondato.</p>
+        <div id="cnAlgos"></div>
+        <button class="btn sm ghost" type="button" data-algo-add>＋ Aggiungi un algoritmo</button>
+      </details>
       ${group('Note', ['body'], ta('cnBody', 'Note libere', e.body || prefill.body, 4))}
       ${group('Link e fonti', ['links'], `
         ${ta('cnLinks', 'Link utili, uno per riga (anche “Nome | indirizzo”)', (e.links || []).join('\n'), 2, 'Orphanet | https://www.orpha.net/…')}
@@ -216,6 +289,41 @@ function clinicSheet(entry = null, prefill = {}) {
         <button class="btn primary" type="button" data-cn-act="ok">Salva</button>
       </div>`, { label: 'Nota clinica', onClose: resolve });
     bindTagField(sh.el, 'cnSyms');
+    let algos = (e.algos || []).map(a => ({ ...a }));
+    const drawAlgos = () => {
+      $('#cnAlgos', sh.el).innerHTML = algos.map((a, i) => `<div class="cn-algo" data-ai="${i}">
+        <div class="cn-algo-head"><input class="input" data-af="t" value="${esc(a.t || '')}" placeholder="Titolo, es. Algoritmo diagnostico" aria-label="Titolo dell’algoritmo"><button class="btn sm ghost" type="button" data-algo-del="${i}" aria-label="Togli l’algoritmo">✕</button></div>
+        <textarea class="input algo-ta" data-af="md" rows="7" spellcheck="false" placeholder="${esc(ALGO_EXAMPLE)}">${esc(a.md || '')}</textarea>
+        <div class="algo-prev" aria-live="polite">${a.md ? algoSvg(a.md, a.t) : ''}</div></div>`).join('');
+    };
+    const readAlgos = () => $$('.cn-algo', sh.el).forEach(box => { const a = algos[+box.dataset.ai]; $$('[data-af]', box).forEach(i => { a[i.dataset.af] = i.value; }); });
+    drawAlgos();
+    $('#cnAlgos', sh.el).addEventListener('input', ev => {
+      const box = ev.target.closest('.cn-algo');
+      if (!box) return;
+      readAlgos();
+      const a = algos[+box.dataset.ai];
+      clearTimeout(box._t);
+      box._t = setTimeout(() => { $('.algo-prev', box).innerHTML = a.md.trim() ? algoSvg(a.md, a.t) : ''; }, 250);
+    });
+    // nell’area dell’algoritmo, Tab rientra di un livello (Maiusc+Tab torna indietro)
+    $('#cnAlgos', sh.el).addEventListener('keydown', ev => {
+      if (ev.key !== 'Tab' || !ev.target.classList.contains('algo-ta')) return;
+      ev.preventDefault();
+      const ta = ev.target, s0 = ta.selectionStart, e0 = ta.selectionEnd;
+      const start = ta.value.lastIndexOf('\n', s0 - 1) + 1;
+      const end = ta.value.indexOf('\n', e0); const stop = end < 0 ? ta.value.length : end;
+      const block = ta.value.slice(start, stop);
+      const out = ev.shiftKey ? block.replace(/^ {1,2}/gm, '') : block.replace(/^/gm, '  ');
+      ta.setRangeText(out, start, stop, 'select');
+      if (s0 === e0) { const d = out.length - block.length; ta.setSelectionRange(Math.max(start, s0 + (ev.shiftKey ? Math.max(d, -2) : 2)), Math.max(start, s0 + (ev.shiftKey ? Math.max(d, -2) : 2))); }
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    sh.el.addEventListener('click', ev => {
+      if (ev.target.closest('[data-algo-add]')) { readAlgos(); algos.push({ t: algos.length ? '' : 'Algoritmo diagnostico', md: '' }); drawAlgos(); $$('.cn-algo .algo-ta', sh.el).pop()?.focus(); return; }
+      const d = ev.target.closest('[data-algo-del]');
+      if (d) { readAlgos(); algos.splice(+d.dataset.algoDel, 1); drawAlgos(); }
+    });
     const drawDdx = () => {
       $('#cnDdx', sh.el).innerHTML = ddx.map(id => all.find(n => n.id === id)).filter(Boolean).map(n => `<span class="tag">${esc(n.title)} <button type="button" class="tag-x" data-unddx="${n.id}" aria-label="Togli ${esc(n.title)}">×</button></span>`).join('') || '<span class="hint">Nessuna nota collegata.</span>';
     };
@@ -252,6 +360,7 @@ function clinicSheet(entry = null, prefill = {}) {
         ddx, ddxText: v('#cnDdxText'),
         complications: v('#cnCompl'), staging: v('#cnStage'), prognosis: v('#cnProg'),
         therapy: v('#cnTher'), body: v('#cnBody'),
+        algos: ($$('.cn-algo', sh.el).forEach(box => { const a = algos[+box.dataset.ai]; $$('[data-af]', box).forEach(i => { a[i.dataset.af] = i.value; }); }), algos.filter(a => String(a.md || '').trim()).map(a => ({ t: String(a.t || '').trim(), md: a.md }))),
         links: $('#cnLinks', sh.el).value.split('\n').map(x => x.trim()).filter(Boolean)
       });
       rec.sources = $('#cnSrc', sh.el).value.split('\n').map(x => x.trim()).filter(Boolean);
@@ -297,6 +406,7 @@ function showClinicNote(id) {
       ${row('Stadiazione', md('staging'))}
       ${row('Prognosi', md('prognosis'))}
       ${row('Terapia', md('therapy'))}
+      ${(n.algos || []).map(a => `<div class="cn-row"><h3>${esc(a.t || 'Algoritmo')}</h3>${algoSvg(a.md, a.t)}</div>`).join('')}
       ${row('Note', md('body'))}
     </div>
     ${labExams().some(x => (x.clinic || []).includes(n.id)) ? `<div class="fonti fonti-mini"><h3>Esami di laboratorio</h3><div class="tags">${labExams().filter(x => (x.clinic || []).includes(n.id)).map(x => `<a class="tag" href="#/lab/${x.id}" data-g="lab">${esc(x.name)}</a>`).join('')}</div></div>` : ''}
@@ -313,6 +423,13 @@ function showClinicNote(id) {
   if (go2) go2.onclick = () => sh.close();
   $$('[data-g="lab"]', sh.el).forEach(a => { a.onclick = () => sh.close(); });
   $$('[data-cnopen]', sh.el).forEach(b => { b.onclick = () => { sh.close(); setTimeout(() => showClinicNote(b.dataset.cnopen), 0); }; });
+  // un tocco sul diagramma lo mostra a grandezza piena (si scorre), un altro lo rimette nella finestra
+  $$('.algo-scroll', sh.el).forEach(box => box.addEventListener('click', () => {
+    const svg = $('svg', box);
+    const big = box.classList.toggle('big');
+    svg.style.width = big ? `${box.dataset.w}px` : '100%';
+    svg.style.maxWidth = big ? 'none' : `${box.dataset.w}px`;
+  }));
   $('[data-g="edit"]', sh.el).onclick = async () => { sh.close(); if (await clinicSheet(n)) route(); };
 }
 let clinicSpec = '';

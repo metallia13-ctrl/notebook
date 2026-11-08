@@ -1246,6 +1246,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.58", title: "algoritmi nelle note cliniche, risposta con la tastiera nelle flashcard", html: `      <ul>
+        <li><strong>Algoritmi</strong> nelle note cliniche (Modifica → Algoritmi): scrivi i passi come un elenco con i rientri, un passo per riga e i rami sotto il passo da cui partono (Tab rientra). “Sì: …”, “No: …” o “Se …: …” all’inizio di un ramo diventano l’etichetta della freccia; una domanda con il ? diventa un rombo arrotondato. Mentre scrivi vedi il diagramma, e nella nota l’algoritmo compare disegnato dall’alto in basso. Puoi metterne più d’uno (diagnostico, terapeutico…).</li>
+        <li><strong>Flashcard con la tastiera</strong>: nel ripasso, accanto a “Lavagna”, c’è <strong>Scrivi con la tastiera</strong>. Scrivi la risposta, poi Mostra la risposta (anche Ctrl+Invio): la tua risposta compare sotto quella giusta, con in verde le parole importanti del retro che hai scritto e l’elenco di quelle che mancano, per aiutarti a darti il voto. Lavagna e tastiera si possono usare anche insieme.</li>
+      </ul>` },
   { v: "3.57", title: "cartelle, note a comparsa, semaforo nelle mappe", html: `      <ul>
         <li><strong>Cartelle</strong>: nella pagina di un notebook il primo livello (i macro-argomenti) è fatto di cartelle. Le tocchi per entrare: dentro trovi le sezioni e i sottoargomenti, con i pulsanti per scrivere una sezione, creare un sottoargomento o importare proprio lì. Il percorso in cima a una sezione riporta alla sua cartella. “Cerca nel notebook” trova le sezioni in tutte le cartelle.</li>
         <li><strong>Note a comparsa</strong>: seleziona del testo e tocca <strong>ⓘ Nota</strong> nella barra (o il pulsante ⓘ Nota in Modifica): dopo il testo compare una ⓘ che si apre con un tocco, come le note di XMind. Dalla nota aperta puoi modificarla o toglierla. Nel testo si scrivono così: ^[testo della nota].</li>

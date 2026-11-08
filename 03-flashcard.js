@@ -731,6 +731,7 @@ function renderStudy() {
     <article class="fcard study ${card.type === 'occlusion' ? 'is-io' : ''}">
       ${cardFaceHtml(card, session.revealed)}
       ${session.revealed && card.note ? `<p class="card-note"><strong>La tua nota sull’errore:</strong> ${esc(card.note)}</p>` : ''}
+      ${session.revealed && session.typedCard === card.id && String(session.typed || '').trim() ? typedCompareHtml(session.typed, card) : ''}
     </article>
     ${(() => {
       // Con l’occlusione, o con la lavagna aperta, “Mostra la risposta” sta sulla riga della lavagna
@@ -743,9 +744,11 @@ function renderStudy() {
       const board = `
         <div class="board">
           <div class="board-row">
+            <button class="btn sm ghost board-toggle" data-act="typeans" aria-expanded="${!!S().typeOpen}">${S().typeOpen ? 'Chiudi la tastiera' : 'Scrivi con la tastiera'}</button>
             <button class="btn sm ghost board-toggle" data-act="board" aria-expanded="${S().boardOpen}">${S().boardOpen ? (inline ? 'Chiudi lavagna' : 'Chiudi la lavagna') : inline ? 'Lavagna' : 'Lavagna: scrivi la risposta a mano'}</button>
             ${inline && !session.revealed ? '<button class="btn primary reveal-inline" data-act="reveal" aria-keyshortcuts="Space">Mostra la risposta</button>' : ''}
           </div>
+          ${S().typeOpen && card.type !== 'occlusion' && !session.revealed ? `<textarea class="input type-ans" id="typeAns" rows="3" placeholder="Scrivi qui la risposta, poi Mostra la risposta (Ctrl+Invio)" aria-label="La tua risposta">${esc(session.typedCard === card.id ? session.typed || '' : '')}</textarea>` : ''}
           ${S().boardOpen ? `<div class="board-wrap">${penToolsHtml({ colors: false })}<canvas class="board-canvas" id="boardCanvas" aria-label="Lavagna per scrivere la risposta"></canvas></div>` : ''}
         </div>`;
       if (inline) return grades + board;
@@ -762,6 +765,14 @@ function renderStudy() {
   `);
   on('[data-act="reveal"]', 'click', () => { session.revealed = true; renderStudy(); });
   on('[data-act="board"]', 'click', () => { S().boardOpen = !S().boardOpen; Settings.save(); renderStudy(); });
+  on('[data-act="typeans"]', 'click', () => { S().typeOpen = !S().typeOpen; Settings.save(); renderStudy(); if (S().typeOpen) setTimeout(() => $('#typeAns')?.focus(), 30); });
+  const typeAns = $('#typeAns');
+  if (typeAns) {
+    if (session.typedCard !== card.id) { session.typedCard = card.id; session.typed = ''; }
+    typeAns.addEventListener('input', () => { session.typed = typeAns.value; });
+    typeAns.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); session.revealed = true; renderStudy(); } });
+    if (!session.revealed && document.activeElement === document.body) typeAns.focus({ preventScroll: true });
+  }
   const boardCanvas = $('#boardCanvas');
   if (boardCanvas) {
     if (session.boardCard !== card.id) { session.boardCard = card.id; session.board = []; }
@@ -790,6 +801,26 @@ function renderStudy() {
   addCleanup(() => document.removeEventListener('keydown', onKey));
 }
 
+// v3.58: la risposta scritta con la tastiera accanto a quella giusta, con le parole
+// importanti del retro che hai scritto (verdi) e quelle che mancano
+const ANS_STOP = new Set('alla allo alle agli dalla dallo dalle dagli della dello delle degli nella nello nelle negli sulla sullo sulle sugli come anche quando perché perche sono essere viene vengono può possono questa questo queste questi quella quello quelle quelli loro molto più meno dopo prima senza sempre ogni altre altri altra altro solo cioè quindi però mentre dove tutti tutte tutto tutta hanno ha ho abbiamo hanno sia'.split(' '));
+function ansWords(t) { return (foldAccents(String(t || '')).match(/[a-z0-9]{4,}/g) || []).filter(w => !ANS_STOP.has(w)); }
+function typedCompareHtml(typed, card) {
+  const back = plainText(card.type === 'occlusion' ? '' : (card.back || ''), 4000);
+  const mine = new Set(ansWords(typed).map(w => w.slice(0, 6)));
+  const key = [...new Set(ansWords(back))];
+  const hit = key.filter(w => mine.has(w.slice(0, 6)));
+  // le parole che mancano, scritte come nel retro (con gli accenti)
+  const orig = new Map();
+  (String(back).match(/[A-Za-zÀ-ÿ0-9]{4,}/g) || []).forEach(w => { const f = foldAccents(w); if (!orig.has(f)) orig.set(f, w.toLowerCase()); });
+  const miss = key.filter(w => !mine.has(w.slice(0, 6))).map(w => orig.get(w) || w);
+  const marked = esc(typed).replace(/[A-Za-zÀ-ÿ0-9]{4,}/g, w => (key.some(k => k.slice(0, 6) === foldAccents(w).slice(0, 6)) ? `<mark class="ans-ok">${w}</mark>` : w));
+  return `<div class="typed-cmp">
+    <p class="typed-h">La tua risposta${key.length ? ` · <span class="muted-inline">${hit.length} parole importanti su ${key.length}</span>` : ''}</p>
+    <div class="typed-txt">${marked.replace(/\n/g, '<br>')}</div>
+    ${miss.length && key.length ? `<p class="typed-miss">Nel retro ci sono anche: ${miss.slice(0, 10).map(esc).join(', ')}${miss.length > 10 ? '…' : ''}</p>` : ''}
+  </div>`;
+}
 let answering = false;
 async function answerCard(grade) {
   if (answering) return;

@@ -3682,3 +3682,31 @@ body.au-on .view { padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px)
 .czm-dot { width: 34px; height: 34px; padding: 0; border: 3px solid transparent; border-radius: 50%; cursor: pointer; }
 .czm-dot.g { background: #22c55e; } .czm-dot.y { background: #facc15; } .czm-dot.o { background: #fb923c; } .czm-dot.r { background: #ef4444; }
 .czm-dot.on, .czm-dot:focus-visible { border-color: var(--text); outline: none; }
+
+/* =====================================================================
+   v3.58: algoritmi, risposta con la tastiera
+   ===================================================================== */
+.cn-algo { margin: 8px 0 12px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r); }
+.cn-algo-head { display: flex; gap: 6px; margin-bottom: 6px; }
+.cn-algo-head .input { flex: 1; }
+.algo-ta { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88rem; tab-size: 2; }
+.algo-prev { margin-top: 8px; }
+.algo-scroll { overflow: auto; max-width: 100%; padding: 4px 0; }
+.algo-svg { display: block; margin: 0 auto; font-family: var(--ui-font); }
+.algo-svg .al-links path { fill: none; stroke: var(--muted); stroke-width: 1.6; }
+.algo-svg marker path { fill: var(--muted); }
+.algo-svg .al-node rect { fill: var(--surface-2); stroke: var(--line); stroke-width: 1.5; }
+.algo-svg .al-node text { fill: var(--text); font-size: 13px; }
+.algo-svg .al-node.al-top rect { fill: var(--accent-soft); stroke: var(--accent); }
+.algo-svg .al-node.q rect { stroke: #eab308; stroke-width: 2; }
+.algo-svg .al-node.end rect { stroke: #22c55e; }
+.algo-svg .al-edge rect { fill: var(--surface); stroke: var(--line); }
+.algo-svg .al-edge text { fill: var(--accent); font-size: 11.5px; font-weight: 700; }
+.type-ans { width: 100%; margin: 8px 0; }
+.typed-cmp { margin-top: 14px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: var(--r); background: var(--surface-2); text-align: left; }
+.typed-h { margin: 0 0 4px; font-weight: 700; font-size: 0.9rem; }
+.typed-txt { white-space: normal; }
+.typed-txt mark.ans-ok { background: color-mix(in srgb, #22c55e 28%, transparent); color: inherit; border-radius: 3px; padding: 0 2px; }
+.typed-miss { margin: 6px 0 0; color: var(--muted); font-size: 0.88rem; }
+.algo-svg text { font-family: var(--ui-font); }
+.cn-row .algo-scroll { cursor: zoom-in; } .cn-row .algo-scroll.big { cursor: zoom-out; }
