@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.56';
+const APP_VERSION = '3.57';
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -469,10 +469,79 @@ const cleanHint = v => String(v || '').replace(/\s+/g, ' ').trim().replace(/==/g
 const splitHint = t => { const i = t.indexOf('::'); return i > 0 ? [t.slice(0, i), t.slice(i + 2).trim()] : [t, '']; };
 const stripCloze = md => (md || '').replace(clozeRe(), (m, t) => splitHint(t)[0]);
 
+const PNOTE_RE = /\^\[([^\]\n]{1,2000})\]/g;
+// la nota a comparsa: si apre vicino alla ⓘ; nelle sezioni si può modificare o togliere
+const PNote = {
+  pop: null,
+  close() { if (this.pop) { this.pop.remove(); this.pop = null; } },
+  open(el) {
+    this.close();
+    const text = decodeURIComponent(el.dataset.pn || '');
+    const m = location.hash.match(/^#\/sec\/([^/]+)/);
+    const sec = m && secById(m[1]);
+    const art = el.closest('#view .notes, #view .wy');
+    const all = art ? [...art.querySelectorAll('.pnote')] : [];
+    const idx = all.indexOf(el);
+    const canEdit = sec && idx >= 0 && !el.closest('[contenteditable="true"]');
+    const pop = document.createElement('div');
+    pop.className = 'pnote-pop';
+    pop.setAttribute('role', 'dialog');
+    pop.innerHTML = `<div class="notes">${renderMd(text)}</div>${canEdit ? '<div class="pnote-acts"><button type="button" class="btn sm ghost" data-pn-act="edit">Modifica</button><button type="button" class="btn sm ghost" data-pn-act="del">Togli</button></div>' : ''}`;
+    document.body.append(pop);
+    const r = el.getBoundingClientRect();
+    const w = Math.min(360, window.innerWidth - 16);
+    pop.style.width = `${w}px`;
+    pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
+    const below = r.bottom + 8;
+    pop.style.top = `${below + pop.offsetHeight > window.innerHeight - 8 ? Math.max(8, r.top - pop.offsetHeight - 8) : below}px`;
+    this.pop = pop;
+    pop.addEventListener('click', async e => {
+      const b = e.target.closest('[data-pn-act]');
+      if (!b || !canEdit) return;
+      // la nota numero idx della sezione, nell’ordine del testo
+      let n = -1;
+      const replaceNth = repl => sec.md.replace(PNOTE_RE, (mm, t) => (++n === idx ? repl(t) : mm));
+      if (b.dataset.pnAct === 'edit') {
+        this.close();
+        const v = await modal({ title: 'Nota a comparsa', input: true, multiline: true, value: text, confirm: 'Salva' });
+        if (!v || !String(v).trim()) return;
+        sec.md = replaceNth(() => `^[${String(v).replace(/\]/g, ')').replace(/\n+/g, ' ').trim()}]`);
+      } else {
+        this.close();
+        sec.md = replaceNth(() => '');
+      }
+      await saveSection(sec);
+      const y = window.scrollY;
+      route();
+      window.scrollTo(0, y);
+    });
+  },
+  init() {
+    document.addEventListener('click', e => {
+      const el = e.target.closest('.pnote');
+      if (el) { e.preventDefault(); e.stopPropagation(); if (this.pop && this.pop.dataset.for === el.dataset.pn) { this.close(); return; } this.open(el); if (this.pop) this.pop.dataset.for = el.dataset.pn; return; }
+      if (this.pop && !e.target.closest('.pnote-pop')) this.close();
+    }, true);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && this.pop) { this.close(); e.stopPropagation(); }
+      const el = e.target.closest && e.target.closest('.pnote');
+      if (el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); this.open(el); }
+    }, true);
+    window.addEventListener('hashchange', () => this.close());
+    window.addEventListener('scroll', () => this.close(), { passive: true });
+  }
+};
+// testo della nota da chiedere e pulire (una riga, senza parentesi quadre)
+async function askPnote(value = '') {
+  const v = await modal({ title: 'Nota a comparsa', text: 'Compare come ⓘ dopo il testo scelto: un tocco la apre. Utile per dettagli, esempi, eccezioni.', input: true, multiline: true, value, placeholder: 'Es. eccezione: nei bambini…', confirm: 'Aggiungi' });
+  return v && String(v).trim() ? String(v).replace(/\]/g, ')').replace(/\n+/g, ' ').trim() : null;
+}
 function renderMd(md) {
   const src = renderXrefs(extractHtmlBlocks(md || '')
     .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`));
-  const src2 = renderMarks(src).replace(clozeRe(), (m, t) => { const [term, hint] = splitHint(t); return `<mark class="cz"${hint ? ` data-hint="${esc(hint)}"` : ''}>${term}</mark>`; });
+  const src2 = renderMarks(src).replace(clozeRe(), (m, t) => { const [term, hint] = splitHint(t); return `<mark class="cz"${hint ? ` data-hint="${esc(hint)}"` : ''}>${term}</mark>`; })
+    // v3.57: note a comparsa, scritte ^[testo della nota]: una ⓘ che si apre con un tocco
+    .replace(PNOTE_RE, (m, t) => `<span class="pnote" role="button" tabindex="0" title="Nota" data-pn="${encodeURIComponent(t)}">ⓘ</span>`);
   let html;
   const mk = window.marked;
   if (mk && (mk.parse || typeof mk === 'function')) {
@@ -1136,7 +1205,7 @@ function route() {
   window.scrollTo(0, 0);
   if (back) Nav.restore();
   switch (p0) {
-    case 'nb': return viewNotebook(p1);
+    case 'nb': return viewNotebook(p1, p2);
     case 'sec': return p2 === 'pdf' ? go(`#/pdfs/${p1}`) : viewSection(p1, p2);
     case 'import': return viewImport(p1, p2);
     case 'review': return viewReview(p1 === 'exam');
@@ -3253,7 +3322,7 @@ const Nav = {
   label(h) {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
-    if (p[0] === 'nb') { const n = nbById(p[1]); return n ? `Torna a ${n.name}` : 'Indietro'; }
+    if (p[0] === 'nb') { const n = nbById(p[1]); const g = n && p[2] ? groupsOf(n).find(x => x.id === p[2]) : null; return g ? `Torna a ${g.name}` : n ? `Torna a ${n.name}` : 'Indietro'; }
     const names = { scores: 'Score clinici', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },

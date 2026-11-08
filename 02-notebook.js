@@ -65,7 +65,10 @@ function viewNotebooks() {
 /* ---------------------------------------------------------------------
    Vista: un notebook
    --------------------------------------------------------------------- */
-function viewNotebook(id) {
+// v3.57: il primo livello (i macro-argomenti) è fatto di cartelle: le apri e dentro trovi
+// le sezioni e i sottoargomenti. “#/nb/<id>/<cartella>” è la pagina di una cartella.
+const FOLDER_SVG = '<svg class="fc-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h4l2 2.2h7A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>';
+function viewNotebook(id, folderId = '') {
   const nb = nbById(id);
   if (!nb) return notFound('Questo notebook');
   if (nb.kind === 'cases') { location.replace('#/cases'); return; }
@@ -77,11 +80,13 @@ function viewNotebook(id) {
   const groups = groupsOf(nb);
   const gIds = new Set(groups.map(g => g.id));
   const loose = secs.filter(s => !gIds.has(s.groupId));
+  const folder = folderId ? groups.find(g => g.id === folderId && !groupParent(nb, g)) : null;
+  if (folderId && !folder) { location.replace(`#/nb/${id}`); return; }
   const foldKey = `nb:${id}`;
   const closed = new Set(foldGet(foldKey));
   const lede = [
     `${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}`,
-    topGroups(nb).length ? `${topGroups(nb).length} ${topGroups(nb).length === 1 ? 'macro-argomento' : 'macro-argomenti'}` : '',
+    topGroups(nb).length ? `${topGroups(nb).length} ${topGroups(nb).length === 1 ? 'cartella' : 'cartelle'}` : '',
     due ? `${due} da ripassare oggi` : '',
     nbCards.length ? `${nbCards.length} flashcard` : ''
   ].filter(Boolean).join(', ');
@@ -119,7 +124,53 @@ function viewNotebook(id) {
         </div>
       </section>`;
   };
-  setView(`
+  const folderCard = g => {
+    const tree = groupTreeIds(nb, g);
+    const all = secs.filter(s => tree.has(s.groupId));
+    const subs = subGroups(nb, g);
+    const gd = all.filter(isDue).length;
+    const meta = [all.length ? `${all.length} ${all.length === 1 ? 'sezione' : 'sezioni'}` : 'Vuota', subs.length ? `${subs.length} ${subs.length === 1 ? 'sottoargomento' : 'sottoargomenti'}` : ''].filter(Boolean).join(' · ');
+    return `<div class="folder-card" role="link" tabindex="0" data-open="${g.id}" aria-label="Apri la cartella ${esc(g.name)}">
+      ${FOLDER_SVG}
+      <span class="fc-main"><span class="fc-name">${esc(g.name)}</span><span class="fc-meta">${meta}</span></span>
+      ${gd ? `<span class="pill due">${gd}</span>` : ''}
+      <button class="btn ghost sm grp-more" type="button" data-gmenu="${g.id}" aria-label="Opzioni per ${esc(g.name)}">⋯</button>
+    </div>`;
+  };
+  if (folder) {
+    // pagina della cartella: le sue sezioni, poi i sottoargomenti come adesso
+    const tree = groupTreeIds(nb, folder);
+    const fsecs = secs.filter(s => tree.has(s.groupId));
+    const own = secs.filter(s => s.groupId === folder.id);
+    const subs = subGroups(nb, folder);
+    const fdue = fsecs.filter(isDue).length;
+    setView(`
+      <a class="back" href="#/nb/${id}">${esc(nb.name)}</a>
+      <header class="page-head">
+        <div>
+          <h1 class="folder-h1">${FOLDER_SVG}<span>${esc(folder.name)}</span></h1>
+          <p class="lede">${[`${fsecs.length} ${fsecs.length === 1 ? 'sezione' : 'sezioni'}`, subs.length ? `${subs.length} ${subs.length === 1 ? 'sottoargomento' : 'sottoargomenti'}` : '', fdue ? `${fdue} da ripassare oggi` : ''].filter(Boolean).join(', ')}</p>
+        </div>
+        <div class="actions">
+          <button class="btn primary" data-act="new-sec-here">Scrivi una sezione qui</button>
+          <button class="btn" data-act="new-sub-here">Nuovo sottoargomento</button>
+          <a class="btn" href="#/import/${id}/${folder.id}">Importa qui</a>
+          <button class="btn ghost" type="button" data-gmenu="${folder.id}">Opzioni</button>
+        </div>
+      </header>
+      ${fsecs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca in questa cartella" aria-label="Cerca in questa cartella">' : ''}
+      <div id="nbBody">
+        ${own.length ? `<ul class="list sec-list">${own.map(s => sectionRow(s)).join('')}</ul>` : ''}
+        ${subs.map(groupBlock).join('')}
+        ${own.length || subs.length ? '' : `
+          <div class="empty">
+            <p>Cartella vuota. Scrivi una sezione, importa qui un testo o un PDF, oppure sposta dentro sezioni che hai già.</p>
+            <button class="btn" type="button" data-gadd="${folder.id}">Aggiungi sezioni esistenti</button>
+          </div>`}
+      </div>
+      <p class="hint" id="noMatch" hidden>Nessuna sezione contiene questo testo.</p>
+    `);
+  } else setView(`
     <a class="back" href="#/notebooks">Tutti i notebook</a>
     <header class="page-head">
       <div>
@@ -130,31 +181,39 @@ function viewNotebook(id) {
         <a class="btn primary" href="#/import/${nb.id}">Importa</a>
         ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
         <button class="btn" data-act="new-sec">Scrivi una sezione</button>
-        <button class="btn" data-act="new-grp">Nuovo macro-argomento</button>
+        <button class="btn" data-act="new-grp">Nuova cartella</button>
         <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
         ${secs.length ? `<a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
         <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
     </header>
     ${secs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca nel notebook" aria-label="Cerca nel notebook">' : ''}
+    <div id="nbFound" hidden></div>
     <div id="nbBody">
-      ${topGroups(nb).map(groupBlock).join('')}
+      ${topGroups(nb).length ? `<div class="folder-grid">${topGroups(nb).map(folderCard).join('')}</div>` : ''}
       ${loose.length ? `
         <section class="grp-loose">
-          ${groups.length ? '<h2 class="sub">Senza macro-argomento</h2>' : ''}
+          ${groups.length ? '<h2 class="sub">Fuori dalle cartelle</h2>' : ''}
           <ul class="list sec-list">${loose.map(s => sectionRow(s)).join('')}</ul>
         </section>` : ''}
       ${!secs.length && !groups.length ? `
         <div class="empty">
-          <p>Notebook vuoto. Importa testo o un PDF, oppure scrivi una sezione a mano. Con i macro-argomenti (per esempio un apparato o un capitolo) raggruppi le sezioni, che diventano i micro-argomenti.</p>
+          <p>Notebook vuoto. Importa testo o un PDF, oppure scrivi una sezione a mano. Con le cartelle (i macro-argomenti: per esempio un apparato o un capitolo) raggruppi le sezioni; dentro una cartella puoi creare sottoargomenti.</p>
           <a class="btn primary" href="#/import/${nb.id}">Importa</a>
-          <button class="btn" data-act="new-grp">Nuovo macro-argomento</button>
+          <button class="btn" data-act="new-grp">Nuova cartella</button>
         </div>` : ''}
     </div>
     <p class="hint" id="noMatch" hidden>Nessuna sezione contiene questo testo.</p>
   `);
 
   const box = $('#nbBody');
+  // cartelle: un tocco le apre (non sul pulsante delle opzioni)
+  box.addEventListener('click', e => {
+    const fc = e.target.closest('[data-open]');
+    if (!fc || e.target.closest('[data-gmenu]')) return;
+    go(`#/nb/${id}/${fc.dataset.open}`);
+  });
+  box.addEventListener('keydown', e => { const fc = e.target.closest('[data-open]'); if (fc && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go(`#/nb/${id}/${fc.dataset.open}`); } });
   $$('.grp', box).forEach(g => setFold(g, closed.has(g.dataset.g)));
   const saveFolds = () => foldSet(foldKey, $$('.grp.closed', box).map(g => g.dataset.g));
   box.addEventListener('click', e => {
@@ -185,6 +244,8 @@ function viewNotebook(id) {
   };
 
   on('[data-act="new-sec"]', 'click', () => newSecIn(null));
+  on('[data-act="new-sec-here"]', 'click', () => newSecIn(folder.id));
+  on('[data-act="new-sub-here"]', 'click', async () => { const g = await createGroupFlow(nb, folder.id); if (g) { toast('Sottoargomento creato'); route(); } });
   on('[data-act="new-grp"]', 'click', async () => {
     const g = await createGroupFlow(nb);
     if (!g) return;
@@ -218,7 +279,7 @@ function viewNotebook(id) {
       { key: 'move', label: 'Sposta dentro un altro argomento' },
       { key: 'up', label: 'Sposta su', disabled: si <= 0 },
       { key: 'down', label: 'Sposta giù', disabled: si === sibs.length - 1 },
-      { key: 'delete', label: `Elimina il ${word}`, danger: true }
+      { key: 'delete', label: depth === 1 ? 'Elimina la cartella' : `Elimina il ${word}`, danger: true }
     ]);
     if (choice === 'sub') {
       const sg = await createGroupFlow(nb, g.id);
@@ -243,7 +304,7 @@ function viewNotebook(id) {
       const pathName = x => [...groupAncestors(nb, x), x].map(y => y.name).join(' › ');
       const cands = groups.filter(x => !own.has(x.id) && x.id !== parent?.id && groupDepth(nb, x) + h <= GROUP_MAX_DEPTH);
       const opts = [
-        ...(parent ? [{ key: '__top', label: 'Al primo livello (macro-argomento)' }] : []),
+        ...(parent ? [{ key: '__top', label: 'Al primo livello (diventa una cartella)' }] : []),
         ...cands.map(x => ({ key: x.id, label: `Dentro ${pathName(x)}` }))
       ];
       if (!opts.length) { toast(h >= GROUP_MAX_DEPTH ? 'Ha già tre livelli: può stare solo al primo livello' : 'Non c’è un altro argomento in cui spostarlo'); return; }
@@ -252,11 +313,11 @@ function viewNotebook(id) {
       if (to === '__top') delete g.parentId; else g.parentId = to;
       await saveNotebook(nb);
       if (to !== '__top') foldSet(foldKey, foldGet(foldKey).filter(x => x !== to));
-      toast(to === '__top' ? 'Ora è un macro-argomento' : `Spostato dentro ${groups.find(x => x.id === to)?.name}`);
+      toast(to === '__top' ? 'Ora è una cartella' : `Spostato dentro ${groups.find(x => x.id === to)?.name}`);
       return route();
     }
     if (choice === 'rename') {
-      const name = await modal({ title: `Rinomina il ${word}`, input: true, value: g.name, confirm: 'Rinomina' });
+      const name = await modal({ title: depth === 1 ? 'Rinomina la cartella' : `Rinomina il ${word}`, input: true, value: g.name, confirm: 'Rinomina' });
       if (!name) return;
       g.name = name;
       await saveNotebook(nb);
@@ -273,9 +334,9 @@ function viewNotebook(id) {
     }
     if (choice === 'delete') {
       const ok = await modal({
-        title: `Eliminare il ${word}?`,
+        title: depth === 1 ? 'Eliminare la cartella?' : `Eliminare il ${word}?`,
         text: [
-          nIn ? `${nIn === 1 ? 'La sua sezione resta' : `Le sue ${nIn} sezioni restano`} nel notebook${parent ? `, dentro ${parent.name}` : ', senza macro-argomento'}.` : 'Non perdi nessuna sezione.',
+          nIn ? `${nIn === 1 ? 'La sua sezione resta' : `Le sue ${nIn} sezioni restano`} nel notebook${parent ? `, dentro ${parent.name}` : ', fuori dalle cartelle'}.` : 'Non perdi nessuna sezione.',
           kids.length ? (parent ? `${kids.length === 1 ? 'Il suo sottoargomento sale' : `I suoi ${kids.length} sottoargomenti salgono`} dentro ${parent.name}.` : `${kids.length === 1 ? 'Il suo sottoargomento diventa un macro-argomento' : `I suoi ${kids.length} sottoargomenti diventano macro-argomenti`}.`) : ''
         ].filter(Boolean).join(' '),
         confirm: 'Elimina', danger: true
@@ -329,7 +390,18 @@ function viewNotebook(id) {
     if (choice === 'delete') deleteNb();
   });
   const search = $('#secSearch');
-  if (search) {
+  if (search && !folder) {
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      const found = $('#nbFound');
+      box.hidden = !!q;
+      found.hidden = !q;
+      if (!q) { $('#noMatch').hidden = true; return; }
+      const hits = secs.filter(s => (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q));
+      found.innerHTML = hits.length ? `<ul class="list sec-list">${hits.slice(0, 200).map(s => sectionRow(s)).join('')}</ul>` : '';
+      $('#noMatch').hidden = hits.length > 0;
+    });
+  } else if (search) {
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       box.classList.toggle('searching', !!q);
@@ -358,7 +430,7 @@ async function createGroupFlow(nb, parentId = null) {
     text: `Dentro ${[...groupAncestors(nb, parent), parent].map(x => x.name).join(' › ')}. Raccoglie alcune sezioni${pDepth === 1 ? ' del macro-argomento' : ' del sottoargomento'}.`,
     input: true, placeholder: pDepth === 1 ? 'Es. Valvulopatie' : 'Es. Stenosi aortica', confirm: 'Crea'
   } : {
-    title: 'Nuovo macro-argomento',
+    title: 'Nuova cartella',
     text: 'Un grande tema del notebook, per esempio un apparato o un capitolo. Dentro puoi creare sottoargomenti e metterci le sezioni.',
     input: true, placeholder: 'Es. Sistema cardiovascolare', confirm: 'Crea'
   });
@@ -413,7 +485,7 @@ function pickSectionsSheet(nb, g) {
         <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="psTitle">
           <h2 id="psTitle">Aggiungi a ${esc(g.name)}</h2>
           ${others.length ? `
-            <p class="sheet-sub">Scegli le sezioni da spostare in questo macro-argomento.</p>
+            <p class="sheet-sub">Scegli le sezioni da spostare qui.</p>
             <ul class="cand">${others.map(s => `
               <li><label class="check"><input type="checkbox" value="${s.id}">
                 <span><span class="cand-f">${esc(s.title)}</span>${where(s) ? `<span class="cand-b">Ora in ${esc(where(s))}</span>` : ''}</span></label></li>`).join('')}
@@ -472,10 +544,10 @@ function viewSection(id, mode) {
     : caseSec ? '<a class="back" href="#/cases">Casi clinici</a>'
     : semSec ? '<a class="back" href="#/semei">Semeiotica</a>'
     : spCfg ? `<a class="back" href="#/${spCfg.route}">${esc(spCfg.name)}</a>`
-    : `<a class="back" href="#/nb/${sec.notebookId}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
+    : `<a class="back" href="#/nb/${sec.notebookId}${groupPathOf(sec)[0] ? `/${groupPathOf(sec)[0].id}` : ''}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
   // “Torna a…”: la pagina da cui sei arrivato, se non è già quella del percorso
   const from = Nav.from();
-  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : semSec ? '#/semei' : spCfg ? `#/${spCfg.route}` : `#/nb/${sec.notebookId}`;
+  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : semSec ? '#/semei' : spCfg ? `#/${spCfg.route}` : `#/nb/${sec.notebookId}${groupPathOf(sec)[0] ? `/${groupPathOf(sec)[0].id}` : ''}`;
   const prevLabel = from && Nav.key(from) !== Nav.key(location.hash) && Nav.key(from) !== Nav.key(crumbHref) ? Nav.label(from) : '';
   const back = `<div class="back-row">${prevLabel ? `<a class="back back-prev" href="${esc(from)}" data-nav-back title="Torna alla pagina di prima">${esc(prevLabel)}</a>` : ''}${crumb}</div>`;
   const order = nb ? nbReadingOrder(nb) : [];
@@ -1215,7 +1287,7 @@ function modeQuiz(sec, body) {
 function groupOptions(nb, selected) {
   const opt = (g, label) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(label)}</option>`;
   const walk = (g, prefix) => opt(g, prefix + g.name) + subGroups(nb, g).map(x => walk(x, `${prefix}${g.name} › `)).join('');
-  return `<option value="">Nessuno</option>${topGroups(nb).map(g => walk(g, '')).join('')}<option value="__new">Nuovo macro-argomento…</option>`;
+  return `<option value="">Nessuno</option>${topGroups(nb).map(g => walk(g, '')).join('')}<option value="__new">Nuova cartella…</option>`;
 }
 // Il menu dei macro-argomenti: la voce "Nuovo…" chiede il nome e lo crea subito
 function bindGroupSelect(select, getNb, onPick = () => {}) {
@@ -1237,13 +1309,14 @@ function modeEdit(sec, body) {
   body.innerHTML = `
     <div class="grid2 ed-head">
       <label class="field"><span>Titolo del micro-argomento</span><input class="input" id="edTitle" value="${esc(sec.title)}"></label>
-      <label class="field"><span>Macro-argomento</span>
+      <label class="field"><span>Cartella o sottoargomento</span>
         <select class="input" id="edGroup">${groupOptions(nbById(sec.notebookId), groupOf(sec)?.id || '')}</select></label>
     </div>
     ${tagFieldHtml('edTags', tagsOf(sec))}
     <div class="edit-tools" role="toolbar" aria-label="Formattazione">
       <button class="btn sm" data-wrap="==" title="Nasconde il testo selezionato nella modalità Cloze">Cloze</button>
       <button class="btn sm" data-act="hint" title="Aggiunge un suggerimento al cloze dove si trova il cursore">Suggerimento</button>
+      <button class="btn sm" data-act="pnote" title="Una nota che compare come ⓘ dove hai il cursore: un tocco la apre">ⓘ Nota</button>
       <button class="btn sm" data-wrap="**">Grassetto</button>
       <button class="btn sm" data-mark="u">Sottolinea</button>
       <span class="hl-pick" role="group" aria-label="Evidenzia">${HL_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}</span>
@@ -1293,6 +1366,10 @@ function modeEdit(sec, body) {
     setTimeout(() => wy.jump(jmp), 80);
   }
   bindTagField(body, 'edTags');
+  on('[data-act="pnote"]', 'click', async () => {
+    const note = await askPnote();
+    if (note) insertAtCursor(ta, `^[${note}]`);
+  });
   on('[data-act="hint"]', 'click', async () => {
     const { selectionStart: s0, selectionEnd: s1 } = ta;
     let r = clozeAround(ta.value, s0);
@@ -1499,7 +1576,7 @@ function viewImport(nbParam, groupParam) {
           <button class="btn sm" data-act="new-nb" type="button">Nuovo</button>
         </div>
       </div>
-      <div class="field" id="imGroupBox"><label class="lbl" for="imGroup">Macro-argomento</label>
+      <div class="field" id="imGroupBox"><label class="lbl" for="imGroup">Cartella o sottoargomento</label>
         <select class="input" id="imGroup"></select>
       </div>
 
@@ -2223,6 +2300,7 @@ function readingToolsHtml() {
     <button type="button" class="rt-btn rt-add" data-rt="add" title="Tiene da parte questa selezione: selezionane un’altra e poi scegli Cloze o un colore per tutte. Al computer: tieni premuto Ctrl (⌘ sul Mac) mentre selezioni">＋ Altra parte</button>
     <button type="button" class="rt-btn rt-edit" data-rt="edit" title="Apre Modifica con il cursore su questo testo">✎ Modifica</button>
     <button type="button" class="rt-btn" data-rt="move" title="Sposta il paragrafo, il titolo o le voci selezionate in un’altra sezione">↗ Sposta</button>
+    <button type="button" class="rt-btn" data-rt="pnote" title="Aggiunge una nota che compare come ⓘ dopo il testo scelto">ⓘ Nota</button>
     <button type="button" class="rt-btn" data-rt="cloze" title="Nascondi nel Cloze">Cloze</button>
     <span class="rt-colors" role="group" aria-label="Evidenzia">
       ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key}" data-rt="${c.key}" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}
@@ -2592,6 +2670,19 @@ function setupReadingTools(container, sec) {
       return;
     }
     if (kind === 'move') { await moveBlockFlow(sec, c.text, c.occurrence); return; }
+    if (kind === 'pnote') {
+      const r = findSourceRange(sec.md, c.text, c.occurrence);
+      if (!r) { toast('Non trovo questo punto negli appunti: aggiungila da Modifica', 'err'); return; }
+      const note = await askPnote();
+      if (!note) return;
+      sec.md = `${sec.md.slice(0, r.end)}^[${note}]${sec.md.slice(r.end)}`;
+      await saveSection(sec);
+      const y = window.scrollY;
+      route();
+      window.scrollTo(0, y);
+      toast('Nota aggiunta: tocca la ⓘ per aprirla');
+      return;
+    }
     if (kind === 'edit') {
       const r0 = findSourceRange(sec.md, c.text, c.occurrence);
       editJump = { secId: sec.id, start: r0 ? r0.start : -1, end: r0 ? r0.end : -1, text: c.text };
@@ -3314,7 +3405,7 @@ function recordCzMark(sec, key, color, label, text, histKey = 'czHist') {
 // v3.24: contano anche i segni della ripetizione a voce e della pagina bianca
 function czWeakOf(sec) {
   const out = [];
-  [['cloze', 'czHist', 'czMarks', ''], ['recall', 'rcHist', 'rcMarks', 'rc|']].forEach(([kind, hk, mk, pre]) => {
+  [['cloze', 'czHist', 'czMarks', ''], ['recall', 'rcHist', 'rcMarks', 'rc|'], ['map', 'mpHist', 'mpMarks', 'mp|']].forEach(([kind, hk, mk, pre]) => {
     const hist = sec[hk] && typeof sec[hk] === 'object' ? sec[hk] : {};
     const now = sec[mk] && typeof sec[mk] === 'object' ? sec[mk] : {};
     Object.entries(hist).forEach(([key, e]) => {
@@ -3330,8 +3421,8 @@ function czWeakItemHtml(sec, w, { showSec = false } = {}) {
     <li class="czw-item" data-czw="${sec.id}" data-key="${esc(w.key)}">
       <span class="czw-dot ${w.cur}" aria-hidden="true"></span>
       <span class="czw-main">
-        <span class="czw-label">${showSec ? `<a href="#/sec/${sec.id}/${w.kind === 'recall' ? 'oral' : 'cloze'}">${esc(sec.title)}</a> › ` : ''}${esc(w.label || 'Paragrafo')}</span>
-        <span class="czw-sub">${w.bad} ${w.bad === 1 ? 'volta' : 'volte'} in rosso o arancio ${w.kind === 'recall' ? 'nelle ultime ripetizioni' : 'nelle ultime letture'}</span>
+        <span class="czw-label">${showSec ? `<a href="#/sec/${sec.id}/${w.kind === 'recall' ? 'oral' : w.kind === 'map' ? 'map' : 'cloze'}">${esc(sec.title)}</a> › ` : ''}${esc(w.label || 'Paragrafo')}</span>
+        <span class="czw-sub">${w.bad} ${w.bad === 1 ? 'volta' : 'volte'} in rosso o arancio ${w.kind === 'recall' ? 'nelle ultime ripetizioni' : w.kind === 'map' ? 'nel ripasso della mappa' : 'nelle ultime letture'}</span>
       </span>
       <span class="czw-acts">
         <button type="button" class="btn sm" data-czw-act="card">Crea flashcard</button>
@@ -3647,6 +3738,10 @@ function modeMap(sec, body) {
   let si = 0;
   let view = st.mapView || (window.innerWidth < 700 ? 'list' : 'map');
   let quiz = false;
+  // v3.57: semaforo nel ripasso delle mappe; le parti rosse e arancio diventano punti deboli
+  let rateFor = null;
+  const mpMarks = () => (sec.mpMarks && typeof sec.mpMarks === 'object' ? sec.mpMarks : (sec.mpMarks = {}));
+  const markKey = key => `${(maps[mi] || {}).id}|${si}|${key}`;
   let edit = false;
   let selNode = null;
   let undo = [];
@@ -3707,6 +3802,10 @@ function modeMap(sec, body) {
       <p class="hint map-hint">${edit
         ? (view === 'list' ? 'Scrivi direttamente sui nodi. Invio aggiunge un nodo accanto, Tab lo mette dentro quello sopra, Maiusc+Tab lo porta fuori, Canc su un nodo vuoto lo elimina.' : 'Tocca un nodo per sceglierlo e due volte per rinominarlo; trascinalo su un altro nodo per spostarlo lì dentro (sul telefono tieni premuto prima di trascinare).')
         : quiz ? 'Prova a ricordare ogni ramo, poi toccalo per scoprirlo; toccalo di nuovo per coprirlo.' : view === 'map' ? 'Tocca un nodo per chiudere o aprire i suoi rami; il pallino indica una nota. Zoom con due dita, Ctrl + rotellina o i pulsanti.' : 'Tocca la freccetta per chiudere o aprire un ramo.'}</p>
+      ${quiz && rateFor && findNode(sheet, rateFor) ? `<div class="mp-rate" role="group" aria-label="Com’è andata">
+        <span>Com’è andata con <b>${esc(findNode(sheet, rateFor).t)}</b>?</span>
+        ${CZ_MARKS.map(c => `<button type="button" class="czm-dot ${c} ${mpMarks()[markKey(rateFor)] === c ? 'on' : ''}" data-mpr="${c}" aria-label="${CZ_MARK_NAMES[c]}" title="${CZ_MARK_NAMES[c]}"></button>`).join('')}
+      </div>` : ''}
       <div id="mapBox" class="map-box ${quiz ? 'quiz' : ''} ${edit ? 'editing' : ''}"></div>`;
     view === 'map' ? drawSvg(sheet) : drawList(sheet);
   };
@@ -3729,10 +3828,11 @@ function modeMap(sec, body) {
       const kids = n.c || [];
       const isClosed = collapsed.has(n);
       const hidden = quiz && depth > 0 && !shown.has(key);
+      const mk = quiz && !hidden ? mpMarks()[markKey(key)] : '';
       return `<li class="ml-item d${Math.min(depth, 4)}" style="--h:${branchHue(path[1])}">
         <div class="ml-row ${edit && n === selNode ? 'sel' : ''}">
           ${kids.length ? `<button type="button" class="fold-btn" data-mtoggle="${key}" aria-expanded="${!isClosed}" aria-label="${isClosed ? 'Espandi' : 'Riduci'}">${CHEVRON}</button>` : '<span class="ml-dot" aria-hidden="true"></span>'}
-          <span class="ml-t ${hidden ? 'covered' : ''}" data-mkey="${key}" ${edit ? 'contenteditable="true" spellcheck="true" role="textbox" aria-label="Nodo"' : hidden ? 'role="button" tabindex="0" aria-label="Ramo coperto: tocca per scoprirlo"' : ''}>${esc(n.t)}</span>
+          <span class="ml-t ${hidden ? 'covered' : ''} ${mk ? `mk-${mk}` : ''}" data-mkey="${key}" ${edit ? 'contenteditable="true" spellcheck="true" role="textbox" aria-label="Nodo"' : hidden ? 'role="button" tabindex="0" aria-label="Ramo coperto: tocca per scoprirlo"' : ''}>${esc(n.t)}</span>
           ${n.n && !hidden ? `<button type="button" class="ml-note" data-mnote="${key}" aria-label="Nota">i</button>` : ''}
         </div>
         ${kids.length && !isClosed ? `<ul>${kids.map((c, k) => walk(c, [...path, k], depth + 1)).join('')}</ul>` : ''}
@@ -3785,10 +3885,10 @@ function modeMap(sec, body) {
       const covered = quiz && !isRoot && !shown.has(nd.key);
       const kidsN = (nd.n.c || []).length;
       nodes.push(`
-        <g class="mn ${isRoot ? 'root' : ''} d${Math.min(nd.depth, 3)} ${covered ? 'covered' : ''} ${edit && nd.n === selNode ? 'sel' : ''}" data-mkey="${nd.key}" style="--h:${hue}" transform="translate(${nd.x} ${nd.y})" role="button" tabindex="0" aria-label="${covered ? 'Ramo coperto' : esc(nd.n.t)}">
+        <g class="mn ${isRoot ? 'root' : ''} d${Math.min(nd.depth, 3)} ${covered ? 'covered' : ''} ${edit && nd.n === selNode ? 'sel' : ''} ${quiz && !covered && mpMarks()[markKey(nd.key)] ? `mk-${mpMarks()[markKey(nd.key)]}` : ''}" data-mkey="${nd.key}" style="--h:${hue}" transform="translate(${nd.x} ${nd.y})" role="button" tabindex="0" aria-label="${covered ? 'Ramo coperto' : esc(nd.n.t)}">
           <rect width="${nd.w}" height="${nd.h}" rx="${isRoot ? 14 : 10}"/>
           ${nd.lines.map((l, k) => `<text x="12" y="${21 + k * 19}">${esc(l)}</text>`).join('')}
-          ${nd.n.n && !covered ? `<circle class="mn-note" data-mnote="${nd.key}" cx="${nd.w - 2}" cy="2" r="6"/>` : ''}
+          ${nd.n.n && !covered ? `<g class="mn-note" data-mnote="${nd.key}" transform="translate(${nd.w - 4} -4)"><circle r="9"/><text text-anchor="middle" y="4">i</text><title>${esc(String(nd.n.n).slice(0, 200))}</title></g>` : ''}
           ${kidsN && collapsed.has(nd.n) ? `<g class="mn-more" data-mtoggle="${nd.key}" transform="translate(${nd.w + 6} ${nd.h / 2 - 9})"><rect width="${String(kidsN).length * 8 + 16}" height="18" rx="9"/><text x="8" y="13">+${kidsN}</text></g>` : ''}
         </g>`);
     };
@@ -4129,7 +4229,19 @@ function modeMap(sec, body) {
     }
     const me = e.target.closest('[data-me]');
     if (me) { op(me.dataset.me); return; }
-    if (e.target.closest('[data-act="map-quiz"]')) { quiz = !quiz; shown.clear(); draw(); return; }
+    if (e.target.closest('[data-act="map-quiz"]')) { quiz = !quiz; shown.clear(); rateFor = null; draw(); return; }
+    const mpr = e.target.closest('[data-mpr]');
+    if (mpr && rateFor) {
+      const n = findNode(sheet, rateFor);
+      const k = markKey(rateFor);
+      mpMarks()[k] = mpr.dataset.mpr;
+      const kids = (n?.c || []).map(x => x.t).join(', ');
+      recordCzMark(sec, k, mpr.dataset.mpr, `${m.name}: ${n ? n.t : ''}`, kids ? `${n.t}: ${kids}` : (n ? n.t : ''), 'mpHist');
+      saveSection(sec);
+      rateFor = null;
+      draw();
+      return;
+    }
     if (e.target.closest('[data-act="map-reveal"]')) {
       const all = (n, p) => { shown.add(keyOf(p)); (n.c || []).forEach((c, k) => all(c, [...p, k])); };
       all(sheet.root, [0]);
@@ -4155,7 +4267,7 @@ function modeMap(sec, body) {
       }
       if (quiz) {
         if (k === '0') return;
-        if (shown.has(k)) shown.delete(k); else shown.add(k);
+        if (shown.has(k)) { shown.delete(k); rateFor = null; } else { shown.add(k); rateFor = k; }
         draw();
         return;
       }
@@ -4665,7 +4777,7 @@ function pdfBmLinkSheet(meta, b) {
       <div id="blNew" hidden>
         <label class="field"><span>Titolo</span><input class="input" id="blTitle" value="${esc(b.title)}"></label>
         <label class="field"><span>Notebook</span><select class="input" id="blNb">${state.notebooks.filter(n => !n.kind).map(n => `<option value="${n.id}" ${nb && n.id === nb.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Macro-argomento</span><select class="input" id="blGroup"></select></label>
+        <label class="field"><span>Cartella o sottoargomento</span><select class="input" id="blGroup"></select></label>
       </div>
       <div class="modal-actions">
         <button class="btn ghost" type="button" data-bl="no">Annulla</button>
@@ -5263,6 +5375,7 @@ function listenTextOf(el) {
   if (el.tagName === 'TR') return [...el.children].map(td => td.textContent.trim()).filter(Boolean).join('; ');
   const c = el.cloneNode(true);
   c.querySelectorAll('ul, ol, button, .czm-btn').forEach(x => { if (el.tagName === 'LI' || !/^(UL|OL)$/.test(x.tagName)) x.remove(); });
+  c.querySelectorAll('.pnote').forEach(x => x.remove());
   return c.textContent.replace(/\s+/g, ' ').trim();
 }
 const Playlist = {
@@ -5507,6 +5620,7 @@ function wyInline(node) {
       out += href && href !== t ? `[${t}](${href})` : t;
       return;
     }
+    if (tag === 'SPAN' && cls.contains('pnote')) { out += `^[${decodeURIComponent(n.dataset.pn || '')}]`; return; }
     if (tag === 'SPAN' && cls.contains('xref')) { out += `[[${wyInline(n).trim()}]]`; return; }
     if (tag === 'CODE') { out += `\`${n.textContent}\``; return; }
     if (tag === 'SUP' || tag === 'SUB') { out += `<${tag.toLowerCase()}>${wyInline(n)}</${tag.toLowerCase()}>`; return; }
@@ -5756,6 +5870,25 @@ function setupWysiwyg(box, ta, tools) {
       if (!(x.r.startContainer.nodeType === 1 ? x.r.startContainer : x.r.startContainer.parentElement).closest('li')) { toast('Il rientro vale per le voci di un elenco'); return true; }
       document.execCommand(+d.indent > 0 ? 'indent' : 'outdent');
       markDirty(x.el);
+      return true;
+    }
+    if (d.act === 'pnote') {
+      const x = selIn();
+      if (!x) { toast('Metti il cursore nel testo dell’anteprima'); return true; }
+      const range = x.r.cloneRange();
+      const el = x.el;
+      askPnote().then(note => {
+        if (!note) return;
+        const sp = document.createElement('span');
+        sp.className = 'pnote';
+        sp.setAttribute('role', 'button');
+        sp.dataset.pn = encodeURIComponent(note);
+        sp.textContent = 'ⓘ';
+        range.collapse(false);
+        range.insertNode(sp);
+        dirty.add(el);
+        flush();
+      });
       return true;
     }
     if (d.act === 'hint') {

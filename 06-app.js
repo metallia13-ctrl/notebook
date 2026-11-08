@@ -1161,6 +1161,7 @@ async function init() {
   Resume.init();
   Pad.init();
   Split.init();
+  PNote.init();
   initHelp();
   DataGuard.protect();
   applyAnkiSettings();
@@ -1245,6 +1246,12 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.57", title: "cartelle, note a comparsa, semaforo nelle mappe", html: `      <ul>
+        <li><strong>Cartelle</strong>: nella pagina di un notebook il primo livello (i macro-argomenti) è fatto di cartelle. Le tocchi per entrare: dentro trovi le sezioni e i sottoargomenti, con i pulsanti per scrivere una sezione, creare un sottoargomento o importare proprio lì. Il percorso in cima a una sezione riporta alla sua cartella. “Cerca nel notebook” trova le sezioni in tutte le cartelle.</li>
+        <li><strong>Note a comparsa</strong>: seleziona del testo e tocca <strong>ⓘ Nota</strong> nella barra (o il pulsante ⓘ Nota in Modifica): dopo il testo compare una ⓘ che si apre con un tocco, come le note di XMind. Dalla nota aperta puoi modificarla o toglierla. Nel testo si scrivono così: ^[testo della nota].</li>
+        <li>Nelle <strong>mappe</strong> le note dei nodi hanno ora una ⓘ ben visibile (al computer, passandoci sopra, vedi anche l’inizio della nota).</li>
+        <li><strong>Semaforo nel ripasso delle mappe</strong>: quando scopri un ramo, scegli com’è andata (verde, giallo, arancio, rosso); il ramo si colora. I rami rimasti rossi o arancio in più ripassi diventano <strong>punti deboli</strong>, come nel Cloze: li trovi in fondo alla sezione, nel Ripasso e nella simulazione d’esame.</li>
+      </ul>` },
   { v: "3.56", title: "tasto Cancella, blocco note con lazo e quadretti, evidenziare le scansioni", html: `      <ul>
         <li>Con una tastiera collegata al tablet, <strong>Cancella</strong> in un campo già vuoto chiudeva la finestra (Android lo prendeva per “Indietro”). Ora non succede più.</li>
         <li><strong>Blocco note</strong>: il <strong>lazo</strong> circonda i tratti per selezionarli; poi li trascini dove vuoi, oppure li elimini con il cestino (o Canc). Lo <strong>sfondo</strong> si sceglie con il pulsante accanto: righe, quadretti o bianco.</li>
@@ -2437,7 +2444,7 @@ const HELP = {
   modes: { t: 'Le schede della sezione', b: `<b>Cloze</b>: i termini chiave sono nascosti, toccali per scoprirli.<br><b>Leggi</b>: gli appunti; selezionando il testo evidenzi o crei cloze e flashcard.<br><b>Mappe</b>: gli appunti come mappa concettuale.<br><b>Pagina bianca</b>: scrivi tutto quello che ricordi, poi confronti.<br><b>Orale</b>: ripeti a voce come all’esame, poi confronti.<br><b>Domande</b>, <b>Flashcard</b>, <b>Video</b>, <b>Modifica</b>.<br><br>Nei casi clinici c’è anche <b>Risolvi</b>: il caso si scopre una parte alla volta.<br><br>Quando confronti, segna col semaforo: tocca il pallino accanto ai titoli o il margine sinistro.` },
   // Pagine
   notebooks: { t: 'I tuoi notebook', b: `Un notebook per ogni materia. Toccane uno per vedere macro-argomenti e sezioni; da qui ne crei di nuovi.` },
-  notebook: { t: 'Il notebook', b: `Le sezioni divise in <b>macro-argomenti</b> e <b>sottoargomenti</b>, fino a <b>tre livelli</b> (per esempio Cardiologia › Valvulopatie › Stenosi aortica). Con “Sposta dentro un altro argomento” riorganizzi i gruppi che hai già. Il menu “⋯” di un gruppo serve per aggiungere sezioni, crearne di nuove, importare lì o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
+  notebook: { t: 'Il notebook', b: `Il primo livello è fatto di <b>cartelle</b> (i macro-argomenti, per esempio un apparato o un capitolo): tocchi una cartella per entrarci. Dentro ci sono le <b>sezioni</b> (le pagine con gli appunti) e i <b>sottoargomenti</b>, fino a <b>tre livelli</b> (per esempio Cardiologia › Valvulopatie › Stenosi aortica). Con “Sposta dentro un altro argomento” riorganizzi i gruppi che hai già. Il menu “⋯” di un gruppo serve per aggiungere sezioni, crearne di nuove, importare lì o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
   review: { t: 'Ripasso', b: `Le sezioni da ripassare oggi nel Notebook (quelle mandate a StudyHub le pianifica StudyHub).<br><br>Dopo ogni prova valuta con Di nuovo, Difficile, Bene o Facile: l’app decide quando riproportela.` },
   cardsPage: { t: 'Flashcard', b: `Le flashcard da ripassare di tutti i notebook. Gira la carta, poi valuta quanto la sapevi.<br><br>Le crei selezionando il testo in Leggi, con l’AI o a mano.` },
   pdfs: { t: 'PDF', b: `La tua libreria di PDF, collegati ai notebook o alle singole sezioni. Nel lettore puoi evidenziare, scrivere a mano, mettere segnalibri e trascinare parti negli appunti.` },
