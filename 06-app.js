@@ -1246,6 +1246,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.59", title: "modifica e rimanda nelle flashcard", html: `      <ul>
+        <li>Nel ripasso delle flashcard, <strong>✎ Modifica</strong> apre una finestra con fronte, retro e tag: salvi e continui il ripasso dallo stesso punto (“Editor completo” porta all’editor di prima).</li>
+        <li><strong>Rimanda…</strong> sposta la flashcard a domani, tra 2 o 3 giorni, tra una settimana o al giorno che scegli. Una flashcard già in ripasso torna quel giorno con il suo intervallo; una nuova resta fuori fino a quel giorno. “Annulla” nel messaggio la rimette subito.</li>
+        <li>Anche nella selezione multipla (Seleziona, nell’elenco delle flashcard) c’è <strong>Rimanda…</strong>, per spostare più flashcard pesanti insieme.</li>
+      </ul>` },
   { v: "3.58", title: "algoritmi nelle note cliniche, risposta con la tastiera nelle flashcard", html: `      <ul>
         <li><strong>Algoritmi</strong> nelle note cliniche (Modifica → Algoritmi): scrivi i passi come un elenco con i rientri, un passo per riga e i rami sotto il passo da cui partono (Tab rientra). “Sì: …”, “No: …” o “Se …: …” all’inizio di un ramo diventano l’etichetta della freccia; una domanda con il ? diventa un rombo arrotondato. Mentre scrivi vedi il diagramma, e nella nota l’algoritmo compare disegnato dall’alto in basso. Puoi metterne più d’uno (diagnostico, terapeutico…).</li>
         <li><strong>Flashcard con la tastiera</strong>: nel ripasso, accanto a “Lavagna”, c’è <strong>Scrivi con la tastiera</strong>. Scrivi la risposta, poi Mostra la risposta (anche Ctrl+Invio): la tua risposta compare sotto quella giusta, con in verde le parole importanti del retro che hai scritto e l’elenco di quelle che mancano, per aiutarti a darti il voto. Lavagna e tastiera si possono usare anche insieme.</li>

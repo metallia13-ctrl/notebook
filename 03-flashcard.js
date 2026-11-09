@@ -182,6 +182,8 @@ const cardById = id => state.cards.find(c => c.id === id);
 const cardsOf = nbId => state.cards.filter(c => c.notebookId === nbId).sort((a, b) => a.order - b.order);
 const cardsOfSection = secId => state.cards.filter(c => c.sectionId === secId).sort((a, b) => a.order - b.order);
 
+// v3.59: una flashcard nuova rimandata resta fuori dal ripasso fino al giorno scelto
+const cardHeld = c => c.srs && c.srs.state === 'new' && c.srs.holdUntil && c.srs.holdUntil > todayStr();
 function newLeftToday(nbId) {
   const t = todayStr();
   const used = state.cards.filter(c => c.notebookId === nbId && c.srs.introduced === t).length;
@@ -196,7 +198,7 @@ function cardCounts(list, { limitNew = true } = {}) {
   for (const c of list) {
     if (c.suspended) continue;
     const s = c.srs;
-    if (s.state === 'new') { newBy[c.notebookId] = (newBy[c.notebookId] || 0) + 1; }
+    if (s.state === 'new') { if (!cardHeld(c)) newBy[c.notebookId] = (newBy[c.notebookId] || 0) + 1; }
     else if (s.state === 'review') { if (s.due <= now) r++; }
     else if (s.due <= now + LEARN_AHEAD) l++;
   }
@@ -212,7 +214,7 @@ const COUNTS_LEGEND = '<p class="legend"><span class="c-new">Nuove</span><span c
 function cardStatusText(c) {
   if (c.suspended) return 'sospesa';
   const s = c.srs;
-  if (s.state === 'new') return 'nuova';
+  if (s.state === 'new') return cardHeld(c) ? `nuova, rimandata a ${fmtDay(s.holdUntil)}` : 'nuova';
   if (s.state !== 'review') return 'in apprendimento';
   return s.due <= Date.now() ? 'da ripassare oggi' : `prossimo ripasso ${fmtDue(localDateStr(new Date(s.due)))}`;
 }
@@ -662,7 +664,7 @@ function startSession(scope) {
   const now = Date.now();
   const cards = scopeCards(scope);
   const reviews = cards.filter(c => c.srs.state === 'review' && c.srs.due <= now).sort((a, b) => a.srs.due - b.srs.due || a.order - b.order);
-  let news = cards.filter(c => c.srs.state === 'new').sort((a, b) => a.order - b.order);
+  let news = cards.filter(c => c.srs.state === 'new' && !cardHeld(c)).sort((a, b) => a.order - b.order);
   if (!scope.startsWith('sec-')) {
     // limite giornaliero di nuove per notebook (in una sola sezione studi tutto)
     const left = {};
@@ -682,7 +684,7 @@ function pickNext() {
   if (learning.length && learning[0].srs.due <= now) return learning[0];
   while (session.queue.length) {
     const c = cardById(session.queue[0]);
-    if (c && !c.suspended && (c.srs.state === 'new' || (c.srs.state === 'review' && c.srs.due <= now))) return c;
+    if (c && !c.suspended && ((c.srs.state === 'new' && !cardHeld(c)) || (c.srs.state === 'review' && c.srs.due <= now))) return c;
     session.queue.shift();
   }
   if (learning.length && learning[0].srs.due <= now + LEARN_AHEAD) return learning[0];
@@ -694,7 +696,7 @@ function sessionCounts() {
   for (const id of session.queue) {
     const c = cardById(id);
     if (!c || c.suspended) continue;
-    if (c.srs.state === 'new') n++;
+    if (c.srs.state === 'new') { if (!cardHeld(c)) n++; }
     else if (c.srs.state === 'review' && c.srs.due <= now) r++;
   }
   const l = scopeCards(session.scope).filter(c => (c.srs.state === 'learning' || c.srs.state === 'relearning') && c.srs.due <= now + LEARN_AHEAD).length;
@@ -756,7 +758,8 @@ function renderStudy() {
     })()}
     <div class="study-tools">
       <button class="btn sm ghost" data-act="undo" ${session.undo.length ? '' : 'disabled'}>Annulla l’ultima</button>
-      <a class="btn sm ghost" href="#/card/${card.id}">Modifica</a>
+      <button class="btn sm ghost" data-act="cedit">✎ Modifica</button>
+      <button class="btn sm ghost" data-act="postpone">Rimanda…</button>
       <button class="btn sm ghost" data-act="suspend">Sospendi</button>
     </div>
     ${sec && session.revealed ? `<p class="source">Dalla sezione <a href="#/sec/${sec.id}/read">${esc(sec.title)}</a></p>` : ''}
@@ -783,6 +786,21 @@ function renderStudy() {
   }
   on('[data-g]', 'click', e => answerCard(e.currentTarget.dataset.g));
   on('[data-act="undo"]', 'click', undoAnswer);
+  on('[data-act="cedit"]', 'click', async () => {
+    if (await quickCardEdit(card)) renderStudy();
+  });
+  on('[data-act="postpone"]', 'click', async () => {
+    const day = await pickPostponeDay();
+    if (!day) return;
+    const prev = JSON.parse(JSON.stringify(card.srs));
+    postponeCard(card, day);
+    await saveCard(card);
+    session.queue = session.queue.filter(x => x !== card.id);
+    session.current = null;
+    session.revealed = false;
+    toast(`Rimandata a ${fmtDay(day)}`, '', { label: 'Annulla', fn: async () => { card.srs = prev; await saveCard(card); session.queue.unshift(card.id); session.current = null; renderStudy(); } });
+    renderStudy();
+  });
   on('[data-act="suspend"]', 'click', async () => {
     card.suspended = true;
     await saveCard(card);
@@ -820,6 +838,63 @@ function typedCompareHtml(typed, card) {
     <div class="typed-txt">${marked.replace(/\n/g, '<br>')}</div>
     ${miss.length && key.length ? `<p class="typed-miss">Nel retro ci sono anche: ${miss.slice(0, 10).map(esc).join(', ')}${miss.length > 10 ? '…' : ''}</p>` : ''}
   </div>`;
+}
+// Rimanda: le nuove restano fuori fino a quel giorno; le altre tornano quel giorno,
+// con l’intervallo e la facilità di prima (come “Imposta la data” di Anki)
+function postponeCard(c, day) {
+  if (c.srs.state === 'new') { c.srs.holdUntil = day; return; }
+  c.srs.due = new Date(`${day}T00:00:00`).getTime();
+}
+async function pickPostponeDay() {
+  const plus = n => { const d = new Date(); d.setDate(d.getDate() + n); return localDateStr(d); };
+  const ch = await actionSheet('Rimanda a', [
+    { key: plus(1), label: `Domani (${fmtDay(plus(1))})` },
+    { key: plus(2), label: `Tra 2 giorni (${fmtDay(plus(2))})` },
+    { key: plus(3), label: `Tra 3 giorni (${fmtDay(plus(3))})` },
+    { key: plus(7), label: `Tra una settimana (${fmtDay(plus(7))})` },
+    { key: 'pick', label: 'Scegli il giorno…' }
+  ]);
+  if (!ch) return null;
+  if (ch !== 'pick') return ch;
+  return new Promise(resolve => {
+    const sh = openSheet(`
+      <h2>Rimanda a</h2>
+      <label class="field"><span>Giorno</span><input class="input" type="date" id="ppDay" value="${plus(1)}" min="${plus(1)}"></label>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-pp="no">Annulla</button><button class="btn primary" type="button" data-pp="ok">Rimanda</button></div>`, { label: 'Rimanda', onClose: v => resolve(v || null) });
+    $('[data-pp="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-pp="ok"]', sh.el).onclick = () => { const v = $('#ppDay', sh.el).value; if (!v || v <= todayStr()) { toast('Scegli un giorno da domani in poi'); return; } sh.close(v); };
+  });
+}
+// Modifica senza lasciare il ripasso
+function quickCardEdit(c) {
+  return new Promise(resolve => {
+    const isIo = c.type === 'occlusion';
+    const sh = openSheet(`
+      <h2>Modifica la flashcard</h2>
+      ${isIo ? '' : `<label class="field"><span>Fronte</span><textarea class="input card-ta" id="qeFront" rows="3">${esc(c.front)}</textarea></label>`}
+      <label class="field"><span>${isIo ? 'Etichetta del riquadro' : 'Retro'}</span><textarea class="input card-ta" id="qeBack" rows="4">${esc(c.back || '')}</textarea></label>
+      ${tagFieldHtml('qeTags', tagsOf(c))}
+      <div class="modal-actions">
+        <a class="btn ghost" href="#/card/${c.id}" data-qe="full">Editor completo</a>
+        <button class="btn ghost" type="button" data-qe="no">Annulla</button>
+        <button class="btn primary" type="button" data-qe="ok">Salva</button>
+      </div>`, { label: 'Modifica la flashcard', onClose: v => resolve(!!v) });
+    bindTagField(sh.el, 'qeTags');
+    $('[data-qe="full"]', sh.el).onclick = () => { state.cardReturn = location.hash; sh.close(false); };
+    $('[data-qe="no"]', sh.el).onclick = () => sh.close(false);
+    $('[data-qe="ok"]', sh.el).onclick = async () => {
+      const f = $('#qeFront', sh.el);
+      if (f && !f.value.trim()) { toast('Il fronte non può essere vuoto'); f.focus(); return; }
+      if (f) c.front = f.value.trim();
+      c.back = $('#qeBack', sh.el).value.trim();
+      c.tags = parseTags($('#qeTags', sh.el).value);
+      c.updated = Date.now();
+      await saveCard(c);
+      toast('Flashcard salvata');
+      sh.close(true);
+    };
+    setTimeout(() => ($('#qeFront', sh.el) || $('#qeBack', sh.el)).focus(), 40);
+  });
 }
 let answering = false;
 async function answerCard(grade) {
@@ -1463,6 +1538,7 @@ function bindCardSelect(listEl, getCards, btnHost) {
     <button type="button" class="btn sm ghost" data-cs="all">Tutte</button>
     <button type="button" class="btn sm ghost" data-cs="none">Nessuna</button>
     <button type="button" class="btn sm ghost" data-cs="dup" title="Seleziona le flashcard con lo stesso fronte di un’altra, lasciando la prima">Doppioni</button>
+    <button type="button" class="btn sm ghost" data-cs="post">Rimanda…</button>
     <button type="button" class="btn sm danger-solid" data-cs="del">Elimina</button>
     <button type="button" class="btn sm ghost" data-cs="end">Fine</button>`;
   document.body.append(bar);
@@ -1479,6 +1555,7 @@ function bindCardSelect(listEl, getCards, btnHost) {
     bar.hidden = !on;
     $('.cs-n', bar).textContent = `${picked.size} selezionate`;
     $('[data-cs="del"]', bar).disabled = !picked.size;
+    $('[data-cs="post"]', bar).disabled = !picked.size;
     btn.textContent = on ? 'Fine selezione' : 'Seleziona';
   };
   const set = v => { on = v; if (!on) { picked = new Set(); lastIdx = -1; } paint(); };
@@ -1519,6 +1596,18 @@ function bindCardSelect(listEl, getCards, btnHost) {
       });
       paint();
       toast(n ? `${n} doppioni selezionati: resta la prima di ognuna` : 'Nessun doppione');
+      return;
+    }
+    if (k === 'post') {
+      const list = getCards().filter(c => picked.has(c.id));
+      if (!list.length) return;
+      const day = await pickPostponeDay();
+      if (!day) return;
+      list.forEach(c => postponeCard(c, day));
+      await saveCards(list);
+      toast(`${list.length} flashcard rimandate a ${fmtDay(day)}`);
+      set(false);
+      route();
       return;
     }
     if (k === 'del') {
