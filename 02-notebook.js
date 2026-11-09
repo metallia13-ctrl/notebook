@@ -155,6 +155,7 @@ function viewNotebook(id, folderId = '') {
           <button class="btn primary" data-act="new-sec-here">Scrivi una sezione qui</button>
           <button class="btn" data-act="new-sub-here">Nuovo sottoargomento</button>
           <a class="btn" href="#/import/${id}/${folder.id}">Importa qui</a>
+          ${fsecs.length ? `<a class="btn" href="#/viva/grp/${folder.id}">Interrogami</a>` : ''}
           <button class="btn ghost" type="button" data-gmenu="${folder.id}">Opzioni</button>
         </div>
       </header>
@@ -381,11 +382,13 @@ function viewNotebook(id, folderId = '') {
     const choice = await actionSheet(nb.name, [
       { key: 'listen', label: 'Ascolta tutto il notebook' },
       { key: 'print', label: 'Stampa o salva in PDF' },
+      { key: 'viva', label: 'Interrogazione con l’AI su tutto il notebook' },
       { key: 'rename', label: 'Rinomina il notebook' },
       { key: 'delete', label: 'Elimina il notebook', danger: true }
     ]);
     if (choice === 'listen') Playlist.start(nbReadingOrder(nb), nb.name);
     if (choice === 'print') go(`#/print/nb/${nb.id}`);
+    if (choice === 'viva') go(`#/viva/nb/${nb.id}`);
     if (choice === 'rename') renameNb();
     if (choice === 'delete') deleteNb();
   });
@@ -572,6 +575,7 @@ function viewSection(id, mode) {
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length + pdfRefsOf(sec).length ? ` (${pdfsOf(sec.id).length + pdfRefsOf(sec).length})` : ''}</a>
         <a class="btn sm" href="#/split" title="Apri di fianco un’altra sezione o un PDF">⇆ Affianca</a>
         ${sec.md.trim() ? `<a class="btn sm" href="#/print/sec/${sec.id}" title="Stampa la sezione o salvala in PDF">Stampa</a>` : ''}
+        ${sec.md.trim().length > 150 ? `<a class="btn sm" href="#/viva/sec/${sec.id}" title="Il professore (l’AI) ti interroga su questa sezione">Interrogami</a>` : ''}
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
@@ -1007,8 +1011,41 @@ function speak(text) {
   u.lang = 'it-IT';
   speechSynthesis.speak(u);
 }
+// v3.62: il vocabolario degli appunti aiuta il riconoscimento di Chrome con i termini
+// medici: tra le trascrizioni proposte sceglie quella con più parole degli appunti, e
+// corregge una parola quasi uguale a un termine lungo degli appunti (es. “purchinie” → “Purkinje”)
+function vocabFrom(md) {
+  const v = new Map();
+  (String(md || '').match(/[A-Za-zÀ-ÿ]{5,}/g) || []).forEach(w => { const f = foldAccents(w).toLowerCase(); if (!v.has(f)) v.set(f, w); });
+  return v;
+}
+function editDist(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) { cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); best = Math.min(best, cur[j]); }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function fixWithVocab(text, vocab) {
+  if (!vocab || !vocab.size) return text;
+  const long = [...vocab.keys()].filter(k => k.length >= 7);
+  return text.replace(/[A-Za-zÀ-ÿ]{6,}/g, w => {
+    const f = foldAccents(w).toLowerCase();
+    if (vocab.has(f)) return w;
+    const max = f.length >= 9 ? 2 : 1;
+    let best = null, bd = max + 1;
+    for (const k of long) { if (k[0] !== f[0]) continue; const d = editDist(f, k, max); if (d < bd) { bd = d; best = k; } }
+    return best ? vocab.get(best) : w;
+  });
+}
+const vocabScore = (t, vocab) => (String(t).match(/[A-Za-zÀ-ÿ]{5,}/g) || []).filter(w => vocab.has(foldAccents(w).toLowerCase())).length;
 // Ogni pausa chiude una frase: il riconoscimento ripartirà da solo finché non premi Stop
-function createDictation({ onText, onInterim = () => {}, onState = () => {} }) {
+function createDictation({ onText, onInterim = () => {}, onState = () => {}, vocab = null }) {
   if (!SpeechRec) return null;
   let rec = null;
   let want = false;
@@ -1019,12 +1056,18 @@ function createDictation({ onText, onInterim = () => {}, onState = () => {} }) {
     rec.lang = 'it-IT';
     rec.continuous = false;
     rec.interimResults = true;
-    rec.maxAlternatives = 1;
+    rec.maxAlternatives = vocab && vocab.size ? 5 : 1;
     rec.onresult = e => {
       let fin = '';
       let mid = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const t = e.results[i][0].transcript;
+        let t = e.results[i][0].transcript;
+        if (e.results[i].isFinal && vocab && vocab.size) {
+          // la trascrizione con più termini degli appunti (a parità, quella che Chrome preferisce)
+          let bs = vocabScore(t, vocab);
+          for (let k = 1; k < e.results[i].length; k++) { const alt = e.results[i][k].transcript; const sc = vocabScore(alt, vocab); if (sc > bs) { bs = sc; t = alt; } }
+          t = fixWithVocab(t, vocab);
+        }
         if (e.results[i].isFinal) fin += t; else mid += t;
       }
       if (fin.trim()) onText(fin.trim());
@@ -1118,6 +1161,7 @@ function modeBlank(sec, body, { oral = false } = {}) {
   if (micBtn) {
     const live = $('.oral-live', body);
     dict = createDictation({
+      vocab: vocabFrom(sec.md),
       onText: t => appendSpoken(ta, t),
       onInterim: t => { live.textContent = t; },
       onState: onNow => {
@@ -1246,6 +1290,7 @@ function modeQuiz(sec, body) {
       const out = $('.my-answer', body);
       let said = '';
       dict = createDictation({
+        vocab: vocabFrom(sec.md),
         onText: t => { said = `${said} ${t}`.trim(); out.hidden = false; out.textContent = said; },
         onInterim: t => { if (t) { out.hidden = false; out.textContent = `${said} ${t}`.trim(); } },
         onState: onNow => { qm.setAttribute('aria-pressed', onNow); $('span', qm).textContent = onNow ? 'Stop' : 'Rispondi a voce'; }

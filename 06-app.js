@@ -1033,6 +1033,7 @@ const MORE_ITEMS = [
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
   ['examq', 'Domande d’esame', 'Le domande uscite agli esami, anche da Excel: frequenza, docenti, allenamento'],
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
+  ['viva', 'Interrogazione', 'Il professore (l’AI) ti fa domande dai tuoi appunti e valuta le risposte a voce'],
   ['scores', 'Score clinici', 'CHA₂DS₂-VASc, Wells, CURB-65, qSOFA, NEWS2, Glasgow, Child-Pugh, MELD'],
   ['micro', 'Microbiologia', 'Una scheda per ogni microrganismo, con foto e video'],
   ['pharma', 'Farmacologia', 'Una scheda per farmaco, per classe, con la tabella di confronto'],
@@ -1103,9 +1104,31 @@ function watchKeyboard() {
   window.addEventListener('orientationchange', () => { setTimeout(() => { base = window.innerHeight; check(); }, 500); });
 }
 
+// v3.60: dentro Affianca l’app mostra solo il lettore PDF; i collegamenti verso altre
+// pagine si aprono nella finestra principale
+function initEmbed() {
+  document.body.classList.add('embed');
+  const toParent = hash => { try { parent.postMessage({ nbEmbed: 'nav', hash }, location.origin); } catch { /* niente */ } };
+  let lastPdf = location.hash.startsWith('#/pdf/') ? location.hash : '';
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href^="#/"]');
+    if (!a || a.getAttribute('href').startsWith('#/pdf/')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toParent(a.getAttribute('href'));
+  }, true);
+  window.addEventListener('hashchange', e => {
+    if (location.hash.startsWith('#/pdf/')) { lastPdf = location.hash; return; }
+    e.stopImmediatePropagation();
+    toParent(location.hash);
+    if (lastPdf) location.replace(lastPdf);
+  });
+}
 async function init() {
   Settings.load();
   applyTheme();
+  Live.init();
+  if (EMBED) initEmbed();
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (S().theme === 'auto') applyTheme(); });
   try {
     await DB.open();
@@ -1126,9 +1149,22 @@ async function init() {
   // I notebook della v1 non avevano la data di modifica: serve alla sincronizzazione
   const fix = state.notebooks.filter(n => !n.updated);
   if (fix.length) { fix.forEach(n => { n.updated = n.created || Date.now(); }); await DB.bulkPut('notebooks', fix); }
-  await Bridge.prune();
+  if (!EMBED) await Bridge.prune();
   updateBadge();
   window.addEventListener('hashchange', route);
+  // il lettore PDF dentro Affianca: avvio leggero, solo quello che serve al lettore
+  if (EMBED) {
+    const obs2 = new MutationObserver(list => list.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) { hydrateImages(n); hydrateHtmlBlocks(n); } })));
+    obs2.observe($('#view'), { childList: true, subtree: true });
+    obs2.observe($('#modalRoot'), { childList: true, subtree: true });
+    Nav.init();
+    SelGesture.init();
+    PNote.init();
+    applyAnkiSettings();
+    applyBlueLight();
+    route();
+    return;
+  }
   // Ricorda da dove apri una flashcard, per tornarci dopo averla modificata
   $('#view').addEventListener('click', e => {
     const a = e.target.closest('a[href^="#/card/"]');
@@ -1161,6 +1197,8 @@ async function init() {
   Resume.init();
   Pad.init();
   Split.init();
+  // dal lettore PDF dentro Affianca: un collegamento verso un’altra pagina si apre qui
+  window.addEventListener('message', e => { if (e.origin === location.origin && e.data && e.data.nbEmbed === 'nav' && typeof e.data.hash === 'string') go(e.data.hash); });
   PNote.init();
   initHelp();
   DataGuard.protect();
@@ -1246,6 +1284,20 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.62", title: "riconoscimento della voce più preciso con i termini medici", html: `      <ul>
+        <li>Nell’<strong>Interrogazione</strong>, se hai la chiave di Gemini, puoi scegliere il riconoscimento <strong>Gemini</strong>: la risposta si registra e Gemini la trascrive in italiano riconoscendo i termini medici e anatomici dei tuoi appunti, e la valuta nella stessa richiesta (non costa una richiesta in più). L’inizio e le pause si misurano dal suono, quindi sono più affidabili. Dopo la valutazione, “Cosa ha capito il professore” mostra la trascrizione.</li>
+        <li>Con il riconoscimento di <strong>Chrome</strong> (anche nell’Orale, nelle Domande e nella simulazione d’esame), l’app usa gli appunti della sezione come vocabolario: tra le trascrizioni proposte sceglie quella con più termini degli appunti e corregge le parole quasi uguali a un termine lungo (per esempio un nome anatomico storpiato).</li>
+      </ul>` },
+  { v: "3.61", title: "interrogazione con l’AI; indovina dall’immagine", html: `      <ul>
+        <li><strong>Interrogazione</strong> (barra laterale, pulsante <strong>Interrogami</strong> in una sezione o in una cartella, Altro del notebook): il professore (l’AI) ti fa una domanda dai tuoi appunti e la legge ad alta voce; rispondi a voce (o scrivendo), poi tocca “Ho finito”. Ricevi un <strong>voto indicativo in trentesimi</strong>, cosa hai detto bene, cosa mancava, cosa correggere, una <strong>risposta modello</strong> da leggere o ascoltare, e una <strong>domanda di approfondimento</strong>, come all’orale.</li>
+        <li>Pensata per chi tentenna: mentre rispondi vedi da quanti secondi aspetti a partire; dopo la risposta l’app ti dice quanto ci hai messo a partire, le pause lunghe e gli intercalari (ehm, cioè, praticamente), con un consiglio. Se ti blocchi, <strong>Aiutami a partire</strong> mostra la traccia dei punti da toccare, senza le risposte. Alla fine c’è il riepilogo con la media e l’elenco di cosa ripassare.</li>
+        <li><strong>Indovina dall’immagine</strong> negli atlanti (di anatomia e diagnostico): un’immagine delle tue schede e quattro risposte, scelte prima tra quelle dello stesso tipo (ECG con ECG, apparato con apparato).</li>
+      </ul>` },
+  { v: "3.60", title: "lettore PDF completo in Affianca", html: `      <ul>
+        <li>In <strong>⇆ Affianca</strong>, un PDF si apre ora con il <strong>lettore completo</strong>: evidenzia, sottolinea e barra (anche sulle scansioni), penna, gomma, forme, note, segnalibri e indice, ricerca, figure, flashcard e cloze dal testo, zoom con due dita. È lo stesso lettore della pagina intera, nel pannello.</li>
+        <li>Le modifiche fatte nel pannello compaiono subito anche nel resto dell’app, e viceversa (vale anche con l’app aperta in due schede). I collegamenti del lettore verso una sezione si aprono nella parte principale, accanto al PDF.</li>
+        <li>“Apri qui” porta il PDF a pagina intera, alla pagina dove eri arrivata nel pannello.</li>
+      </ul>` },
   { v: "3.59", title: "modifica e rimanda nelle flashcard", html: `      <ul>
         <li>Nel ripasso delle flashcard, <strong>✎ Modifica</strong> apre una finestra con fronte, retro e tag: salvi e continui il ripasso dallo stesso punto (“Editor completo” porta all’editor di prima).</li>
         <li><strong>Rimanda…</strong> sposta la flashcard a domani, tra 2 o 3 giorni, tra una settimana o al giorno che scegli. Una flashcard già in ripasso torna quel giorno con il suo intervallo; una nuova resta fuori fino a quel giorno. “Annulla” nel messaggio la rimette subito.</li>
@@ -1508,7 +1560,19 @@ const Split = {
     $('.split-name', this.el).textContent = meta.name;
     body.innerHTML = '<p class="hint split-wait">Apro il PDF…</p>';
     try {
+      // v3.60: il lettore completo (evidenziatori, penna, segnalibri, figure…) dentro il pannello
       this.dropDoc();
+      if (!EMBED) {
+        $('.split-pdfbar', this.el).hidden = true;
+        body.innerHTML = '';
+        const fr = document.createElement('iframe');
+        fr.className = 'split-frame';
+        fr.title = `PDF: ${meta.name}`;
+        fr.src = `index.html?embed=1#/pdf/${meta.id}/${Math.max(1, item.page || 1)}`;
+        body.append(fr);
+        this.frame = fr;
+        return;
+      }
       let pdf;
       // se lo stesso PDF è già aperto nel lettore, uso quello: niente seconda copia in memoria
       if (PdfShared.id === meta.id && PdfShared.doc) pdf = { doc: PdfShared.doc, pages: PdfShared.doc.numPages, shared: true };
@@ -1648,8 +1712,16 @@ const Split = {
     else if (a === 'open') {
       const it = this.item;
       if (!it) return;
+      // la pagina dove sei arrivata nel lettore del pannello
+      let pg = this.curPage || it.page || 1;
+      try {
+        const w = this.frame?.contentWindow;
+        const n = +(w?.document.querySelector('#pdfPage')?.value || 0);
+        const m = w?.location.hash.match(/^#\/pdf\/[^/]+\/(\d+)/);
+        if (n) pg = n; else if (m) pg = +m[1];
+      } catch { /* niente */ }
       this.close();
-      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${this.curPage || it.page || 1}`);
+      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${pg}`);
     } else if (a === 'prev') this.goPage((this.curPage || 1) - 1);
     else if (a === 'next') this.goPage((this.curPage || 1) + 1);
     else if (a === 'z+') this.setZoom(this.zoom * 1.25);
@@ -1664,6 +1736,7 @@ const Split = {
     this.dropDoc();
     this.rendered.clear();
     $('.split-body', this.el).innerHTML = '';
+    this.frame = null;
     setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
   },
   // scegli cosa mettere di fianco: prima quello che è vicino alla pagina aperta

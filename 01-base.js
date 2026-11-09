@@ -10,7 +10,9 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.59';
+const APP_VERSION = '3.62';
+// v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
+const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
@@ -102,6 +104,41 @@ function loadScript(src) {
 /* ---------------------------------------------------------------------
    Database (IndexedDB)
    --------------------------------------------------------------------- */
+/* v3.60: più finestre dell’app insieme (il lettore PDF in Affianca, o due schede):
+   ogni salvataggio avvisa le altre, che rileggono quei record e restano aggiornate,
+   così nessuna sovrascrive le modifiche dell’altra con dati vecchi. */
+const Live = {
+  ch: null,
+  me: Math.random().toString(36).slice(2),
+  STORES: new Set(['notebooks', 'sections', 'cards', 'links', 'pdfs', 'images']),
+  init() {
+    if (typeof BroadcastChannel === 'undefined') return;
+    try { this.ch = new BroadcastChannel('nb-live'); } catch { return; }
+    this.ch.onmessage = e => this.receive(e.data);
+  },
+  tell(store, ids, del = false) {
+    if (!this.ch || !this.STORES.has(store) || !ids.length) return;
+    try { this.ch.postMessage({ from: this.me, store, ids, del }); } catch { /* niente */ }
+  },
+  async receive(m) {
+    if (!m || m.from === this.me || !this.STORES.has(m.store) || !Array.isArray(state[m.store])) return;
+    const list = state[m.store];
+    if (m.del) state[m.store] = list.filter(x => !m.ids.includes(x.id));
+    else {
+      for (const id of m.ids) {
+        let rec = null;
+        try { rec = await DB.run(m.store, 'readonly', tx => tx.objectStore(m.store).get(id)); } catch { rec = null; }
+        if (!rec) continue;
+        const cur = state[m.store].find(x => x.id === id);
+        // stesso oggetto di prima, aggiornato: chi lo sta usando vede subito i dati nuovi
+        if (cur) { Object.keys(cur).forEach(k => { if (!(k in rec)) delete cur[k]; }); Object.assign(cur, rec); }
+        else state[m.store].push(rec);
+      }
+    }
+    if (!EMBED) { updateBadge(); scheduleSync(); }
+    window.dispatchEvent(new CustomEvent('nb-live', { detail: m }));
+  }
+};
 const DB = {
   db: null,
   open() {
@@ -153,13 +190,14 @@ const DB = {
     });
   },
   all(store) { return this.run(store, 'readonly', tx => tx.objectStore(store).getAll()); },
-  put(store, obj) { return this.run(store, 'readwrite', tx => tx.objectStore(store).put(obj)); },
-  del(store, id) { return this.run(store, 'readwrite', tx => tx.objectStore(store).delete(id)); },
-  bulkPut(store, arr) { return this.run(store, 'readwrite', tx => { const st = tx.objectStore(store); arr.forEach(o => st.put(o)); }); },
+  put(store, obj) { return this.run(store, 'readwrite', tx => tx.objectStore(store).put(obj)).then(r => { Live.tell(store, [obj.id]); return r; }); },
+  del(store, id) { return this.run(store, 'readwrite', tx => tx.objectStore(store).delete(id)).then(r => { Live.tell(store, [id], true); return r; }); },
+  bulkPut(store, arr) { return this.run(store, 'readwrite', tx => { const st = tx.objectStore(store); arr.forEach(o => st.put(o)); }).then(r => { Live.tell(store, arr.map(o => o.id)); return r; }); },
   removeMany(pairs) {
     const stores = [...new Set(pairs.map(p => p[0]))];
     if (!stores.length) return Promise.resolve();
-    return this.run(stores, 'readwrite', tx => { pairs.forEach(([st, id]) => tx.objectStore(st).delete(id)); });
+    return this.run(stores, 'readwrite', tx => { pairs.forEach(([st, id]) => tx.objectStore(st).delete(id)); })
+      .then(r => { stores.forEach(st => Live.tell(st, pairs.filter(p => p[0] === st).map(p => p[1]), true)); return r; });
   }
 };
 
@@ -797,11 +835,13 @@ function geminiQuotaError(data, model) {
   return e;
 }
 
-async function callGemini({ system, text, pdfBase64, maxTokens = 32768, signal, model: forced }) {
+async function callGemini({ system, text, pdfBase64, audio, maxTokens = 32768, signal, model: forced }) {
   const key = S().geminiKey.trim();
   const model = forced || GemQuota.main();
   const parts = [];
   if (pdfBase64) parts.push({ inline_data: { mime_type: 'application/pdf', data: pdfBase64 } });
+  // v3.62: l’audio di una risposta a voce (WAV), per trascriverla e valutarla insieme
+  if (audio) parts.push({ inline_data: { mime_type: audio.mime, data: audio.data } });
   parts.push({ text });
   const body = { contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: maxTokens } };
   if (system) body.system_instruction = { parts: [{ text: system }] };
@@ -1179,7 +1219,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1233,6 +1273,7 @@ function route() {
     case 'micro': case 'atlas': case 'anat': case 'pharma': case 'diary': return viewSpecial(p0, p1);
     case 'scores': return viewScores();
     case 'print': return viewPrint(p1, p2);
+    case 'viva': return viewViva(p1, p2);
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
     case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
     case 'split': location.replace('#/notebooks'); setTimeout(() => Split.pick(), 0); return;
@@ -1347,7 +1388,7 @@ const Sync = {
     }
   }
 };
-function scheduleSync() { Sync.schedule(); }
+function scheduleSync() { if (!EMBED) Sync.schedule(); }
 
 /* Diagnosi dei problemi più comuni con l’app web di Apps Script */
 const SYNC_URL_RE = /^https:\/\/script\.google\.com\/(?:a\/macros\/[^/]+|macros)\/s\/[\w-]+\/exec$/;
@@ -2385,6 +2426,7 @@ const ICONS = {
   scores: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   micro: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>',
   atlas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2-6 3 12 3-9 2 3h6"/></svg>',
+  viva: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H9l-5 4z"/><path d="M9 9h6M9 12h4"/></svg>',
   pharma: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="9" width="18" height="7" rx="3.5" transform="rotate(-35 12 12.5)"/><path d="M9.2 7.4l5.6 8"/></svg>',
   anat: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M8 10h8M12 14l-3 7M12 14l3 7"/></svg>',
   diary: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 3v18M11 8h6M11 12h6M11 16h4"/></svg>',
@@ -3323,7 +3365,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); const g = n && p[2] ? groupsOf(n).find(x => x.id === p[2]) : null; return g ? `Torna a ${g.name}` : n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { scores: 'Score clinici', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { scores: 'Score clinici', viva: 'Interrogazione', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {

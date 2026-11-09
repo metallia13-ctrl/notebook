@@ -1323,6 +1323,7 @@ function examStep(sc) {
     const out = $('.my-answer');
     let said = '';
     dict = createDictation({
+      vocab: vocabFrom(`${it.q || ''} ${it.a || ''} ${secById(it.sid || it.sectionId)?.md || ''}`),
       onText: t => { said = `${said} ${t}`.trim(); out.hidden = false; out.textContent = said; },
       onInterim: t => { if (t) { out.hidden = false; out.textContent = `${said} ${t}`.trim(); } },
       onState: v => { qm.setAttribute('aria-pressed', v); $('span', qm).textContent = v ? 'Stop' : 'Rispondi a voce'; }

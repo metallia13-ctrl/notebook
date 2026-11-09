@@ -795,12 +795,14 @@ function viewSpecial(kind, p1) {
   const isDiary = kind === 'diary';
   if (isDiary && p1 === 'procs') return viewDiaryProcs(cfg, all);
   if (kind === 'pharma' && p1 === 'compare') return viewPharmaCompare(cfg, all);
+  if ((kind === 'anat' || kind === 'atlas') && p1 === 'quiz') return viewImageQuiz(kind);
   setView(`
     <header class="page-head">
       <div><h1>${cfg.name}</h1><p class="lede">${cfg.lede}</p></div>
       <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button>
     </header>
     ${isDiary ? `<nav class="tabs" aria-label="Diario"><a href="#/diary" class="tab on" aria-current="page">Giornate${all.length ? ` (${all.length})` : ''}</a><a href="#/diary/procs" class="tab">Procedure</a></nav>` : ''}
+    ${kind === 'anat' || kind === 'atlas' ? `<nav class="tabs" aria-label="${esc(cfg.name)}"><a href="#/${cfg.route}" class="tab on" aria-current="page">Schede${all.length ? ` (${all.length})` : ''}</a><a href="#/${cfg.route}/quiz" class="tab">Indovina dall’immagine</a></nav>` : ''}
     ${kind === 'pharma' ? `<nav class="tabs" aria-label="Farmacologia"><a href="#/pharma" class="tab on" aria-current="page">Farmaci${all.length ? ` (${all.length})` : ''}</a><a href="#/pharma/compare" class="tab">Confronta</a></nav>` : ''}
     ${all.length ? `
       <div class="inline semei-tools">
@@ -2741,3 +2743,415 @@ function modeCase(sec, body) {
   draw();
 }
 
+/* =====================================================================
+   v3.61: Interrogazione con l’AI
+   Un professore fa una domanda dagli appunti, ascolta la risposta (a voce o
+   scritta), dà un voto indicativo e fa una domanda di approfondimento.
+   Pensata per chi tentenna: misura quanto ci metti a partire, le pause lunghe
+   e gli intercalari, e su richiesta mostra la traccia per partire.
+   ===================================================================== */
+const VIVA_FILLERS = /\b(e+h*m+|e+hh+|mm+h*|cioè|cioe|praticamente|diciamo|tipo|insomma|niente|allora|ecco|vabbè|cosa)\b/gi;
+const vivaJson = t => { const m = String(t || '').match(/\{[\s\S]*\}/); if (!m) throw new Error('Risposta dell’AI non leggibile: riprova'); return JSON.parse(m[0]); };
+const VIVA_SYS_Q = `Sei un professore universitario di medicina che interroga uno studente a un esame orale in Italia.
+Ti do gli APPUNTI dello studente su un argomento. Fai UNA sola domanda aperta d’esame, come la faresti all’inizio dell’interrogazione: chiara, breve (una frase), su un punto importante degli appunti. Evita le domande già fatte che ti elenco.
+Prepara anche una “traccia”: da 4 a 6 voci brevissime (2-5 parole) che una buona risposta dovrebbe toccare, in ordine logico, SENZA dare le risposte (per esempio “definizione”, “meccanismo patogenetico”, “quadro clinico”, “diagnosi”, “terapia di prima linea”).
+Rispondi SOLO con JSON valido, senza altro testo: {"domanda": "...", "traccia": ["...", "..."]}`;
+const VIVA_SYS_E = `Sei un professore universitario di medicina, giusto ma esigente, a un esame orale in Italia.
+Ti do gli APPUNTI dello studente, la DOMANDA e la RISPOSTA dello studente, trascritta in automatico dalla voce (ignora parole storpiate, punteggiatura mancante e ripetizioni se il senso è chiaro).
+Valuta solo il contenuto rispetto agli appunti e alle conoscenze mediche corrette, non lo stile.
+Rispondi SOLO con JSON valido, senza altro testo:
+{"voto": numero da 0 a 30 (18 è la sufficienza), "giudizio": "una frase, come la direbbe il professore", "bene": ["punti detti correttamente"], "mancava": ["punti importanti non detti"], "errori": ["affermazioni sbagliate o imprecise, con la correzione"], "approfondimento": "una domanda di approfondimento sullo stesso argomento, su un punto debole o per andare più a fondo; stringa vuota se ti chiedo di non farne", "modello": "una risposta modello di 4-7 frasi, scorrevole, come la direbbe uno studente preparato all’orale, con un ordine chiaro"}
+Liste brevi (al massimo 5 voci ciascuna), in italiano.`;
+
+// v3.62: con Gemini la risposta si registra e Gemini la trascrive (con i termini degli
+// appunti) e la valuta nella stessa richiesta; inizio e pause si misurano dal suono
+const VIVA_AUDIO_NOTE = `
+Oltre al testo ti do l’AUDIO della risposta dello studente, in italiano. Prima trascrivilo fedelmente nel campo "trascrizione": in italiano, scrivendo correttamente i termini medici e anatomici (aiutati con l’elenco TERMINI DEGLI APPUNTI), comprese le esitazioni come “ehm” se ci sono. Poi valuta il contenuto della trascrizione. Nel JSON aggiungi quindi il campo "trascrizione".`;
+const VoiceCapture = {
+  async start(onLevel) {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(4096, 1, 1);
+    const st = { stream, ctx, src, proc, chunks: [], rate: ctx.sampleRate, first: 0, lastVoice: 0, pauses: 0, floor: 1, n: 0 };
+    proc.onaudioprocess = e => {
+      const d = e.inputBuffer.getChannelData(0);
+      st.chunks.push(new Float32Array(d));
+      let sum = 0;
+      for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+      const rms = Math.sqrt(sum / d.length);
+      st.n++;
+      // il primo mezzo secondo dà il rumore di fondo; voce = ben sopra quel livello
+      if (st.n <= 5) st.floor = Math.min(st.floor, rms || 1);
+      const thr = Math.max(0.012, st.floor * 3);
+      const now = Date.now();
+      if (st.n > 3 && rms > thr) {
+        if (!st.first) st.first = now;
+        else if (st.lastVoice && now - st.lastVoice > 3000) st.pauses++;
+        st.lastVoice = now;
+      }
+      if (onLevel) onLevel(Math.min(1, rms / Math.max(thr * 4, 0.05)), rms > thr);
+    };
+    src.connect(proc);
+    proc.connect(ctx.destination);
+    return st;
+  },
+  async stop(st) {
+    try { st.proc.disconnect(); st.src.disconnect(); } catch { /* già scollegato */ }
+    st.stream.getTracks().forEach(t => t.stop());
+    try { await st.ctx.close(); } catch { /* già chiuso */ }
+    // WAV a 16 kHz, un canale: basta per la voce e Gemini lo legge sempre
+    const total = st.chunks.reduce((a, c) => a + c.length, 0);
+    const all = new Float32Array(total);
+    let o = 0;
+    st.chunks.forEach(c => { all.set(c, o); o += c.length; });
+    const ratio = st.rate / 16000;
+    const len = Math.floor(total / ratio);
+    const buf = new ArrayBuffer(44 + len * 2);
+    const v = new DataView(buf);
+    const w = (p, s) => [...s].forEach((ch, i) => v.setUint8(p + i, ch.charCodeAt(0)));
+    w(0, 'RIFF'); v.setUint32(4, 36 + len * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, 'data'); v.setUint32(40, len * 2, true);
+    for (let i = 0; i < len; i++) {
+      const a = Math.floor(i * ratio), b = Math.min(total, Math.floor((i + 1) * ratio));
+      let sum = 0;
+      for (let k = a; k < b; k++) sum += all[k];
+      v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, sum / Math.max(1, b - a))) * 0x7fff, true);
+    }
+    const data = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(new Blob([buf], { type: 'audio/wav' })); });
+    return { data, seconds: len / 16000 };
+  }
+};
+const vivaState = { setup: { n: 3, follow: 1, voice: true, asr: '' }, s: null };
+function vivaScope(kind, id) {
+  if (kind === 'sec') { const s = secById(id); return s ? { title: s.title, secs: [s] } : null; }
+  if (kind === 'grp') {
+    for (const nb of state.notebooks) {
+      const g = groupsOf(nb).find(x => x.id === id);
+      if (g) { const tree = groupTreeIds(nb, g); return { title: g.name, secs: secsOf(nb.id).filter(s => tree.has(s.groupId)) }; }
+    }
+    return null;
+  }
+  if (kind === 'nb') { const nb = nbById(id); return nb ? { title: nb.name, secs: secsOf(nb.id) } : null; }
+  return null;
+}
+function viewViva(kind, id) {
+  const st = vivaState;
+  if (!kind) return vivaPicker();
+  const sc = vivaScope(kind, id);
+  if (!sc) return notFound('Questo argomento');
+  const usable = sc.secs.filter(s => aiText(s.md || '').length > 150);
+  if (!st.s || st.s.key !== `${kind}/${id}`) st.s = null;
+  if (!AI.ready()) {
+    setView(`<header class="page-head"><div><h1>Interrogazione</h1><p class="lede">${esc(sc.title)}</p></div></header>
+      <div class="empty"><p>L’interrogazione usa l’AI (Gemini o Claude) per fare le domande e valutare le risposte. Aggiungi la chiave in Impostazioni → Intelligenza artificiale: con Gemini è gratuita.</p><a class="btn primary" href="#/settings">Vai alle impostazioni</a></div>`);
+    return;
+  }
+  if (!usable.length) {
+    setView(`<header class="page-head"><div><h1>Interrogazione</h1><p class="lede">${esc(sc.title)}</p></div></header><div class="empty"><p>Qui non ci sono ancora appunti abbastanza lunghi da cui fare domande.</p></div>`);
+    return;
+  }
+  if (!st.s) return vivaSetup(kind, id, sc, usable);
+  vivaRender();
+}
+function vivaPicker() {
+  const nbs = state.notebooks.filter(n => !n.kind && secsOf(n.id).length);
+  setView(`
+    <header class="page-head"><div><h1>Interrogazione</h1><p class="lede">Un professore (l’AI) ti fa domande dai tuoi appunti, ascolta la risposta a voce, ti dà un voto indicativo e fa l’approfondimento, come all’orale.</p></div></header>
+    ${nbs.length ? `<ul class="list">${nbs.map(nb => `<li><a class="row" href="#/viva/nb/${nb.id}"><span class="row-main"><span class="row-title">${esc(nb.name)}</span><span class="row-sub">${secsOf(nb.id).length} sezioni${topGroups(nb).length ? ` · ${topGroups(nb).length} cartelle: puoi anche scegliere una cartella o una sezione dalla sua pagina (pulsante Interrogami)` : ''}</span></span></a></li>`).join('')}</ul>` : '<div class="empty"><p>Crea prima un notebook con degli appunti.</p></div>'}`);
+}
+function vivaSetup(kind, id, sc, usable) {
+  const su = vivaState.setup;
+  setView(`
+    <header class="page-head"><div><h1>Interrogazione</h1><p class="lede">${esc(sc.title)} · ${usable.length} ${usable.length === 1 ? 'sezione' : 'sezioni'} da cui fare domande</p></div></header>
+    <div class="viva-card">
+      <p>Il professore ti fa una domanda presa dai tuoi appunti${su.voice ? ' e la legge ad alta voce' : ''}. Rispondi a voce (o scrivendo), poi tocca <b>Ho finito</b>: ricevi un voto indicativo, cosa mancava e una risposta modello, e poi una domanda di approfondimento.</p>
+      <p class="hint">Se tendi a bloccarti: parti sempre da una frase sicura (“La … è …”), poi segui un ordine fisso (definizione, cause, meccanismo, clinica, diagnosi, terapia). Se non ti viene niente, “Aiutami a partire” mostra la traccia dei punti da toccare.</p>
+      <div class="grid2">
+        <label class="field"><span>Domande principali</span><select class="input" id="vvN">${[1, 2, 3, 5, 8].map(n => `<option ${su.n === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        <label class="field"><span>Approfondimenti per domanda</span><select class="input" id="vvF">${[0, 1, 2].map(n => `<option ${su.follow === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      </div>
+      <label class="check"><input type="checkbox" id="vvVoice" ${su.voice ? 'checked' : ''}><span>Leggi le domande ad alta voce</span></label>
+      ${S().geminiKey.trim() ? `<label class="field"><span>Riconoscimento della voce (in italiano)</span><select class="input" id="vvAsr">
+        <option value="gemini" ${(su.asr || 'gemini') === 'gemini' ? 'selected' : ''}>Gemini: più preciso con i termini medici (la risposta si legge dopo)</option>
+        ${SpeechRec ? `<option value="chrome" ${su.asr === 'chrome' ? 'selected' : ''}>Chrome: la risposta si scrive mentre parli</option>` : ''}
+      </select></label>` : ''}
+      ${SpeechRec ? '' : '<p class="hint warn-hint">Questo browser non trascrive la voce: risponderai scrivendo. Con Chrome sul tablet o sul telefono puoi rispondere a voce.</p>'}
+      <div class="actions"><button class="btn primary big" type="button" data-act="vv-start">Inizia l’interrogazione</button></div>
+    </div>`);
+  on('[data-act="vv-start"]', 'click', () => {
+    su.n = +$('#vvN').value; su.follow = +$('#vvF').value; su.voice = $('#vvVoice').checked;
+    su.asr = $('#vvAsr') ? $('#vvAsr').value : 'chrome';
+    vivaState.s = { key: `${kind}/${id}`, title: sc.title, pool: shuffle(usable.map(s => s.id)), asked: [], items: [], qi: 0, phase: 'ask', cur: null };
+    vivaNext();
+  });
+}
+async function vivaNext(follow = null) {
+  const s = vivaState.s;
+  if (!s) return;
+  if (!follow && s.items.length >= vivaState.setup.n) { s.phase = 'end'; vivaRender(); return; }
+  s.phase = 'loading';
+  vivaRender();
+  try {
+    if (follow) {
+      s.cur = { secId: follow.secId, q: follow.q, traccia: [], follow: follow.depth, parent: follow.parent, t0: 0, tFirst: 0, last: 0, pauses: 0, text: '' };
+    } else {
+      const secId = s.pool[s.items.length % s.pool.length];
+      const sec = secById(secId);
+      const r = await AI.generate({ system: VIVA_SYS_Q, text: `APPUNTI (sezione “${sec.title}”):\n${aiText(sec.md).slice(0, 14000)}\n\nDOMANDE GIÀ FATTE:\n${s.asked.map(q => `- ${q}`).join('\n') || '(nessuna)'}`, maxTokens: 1500 });
+      const j = vivaJson(r.text);
+      s.cur = { secId, q: String(j.domanda || '').trim(), traccia: (j.traccia || []).map(String).slice(0, 6), follow: 0, t0: 0, tFirst: 0, last: 0, pauses: 0, text: '' };
+    }
+    s.asked.push(s.cur.q);
+    s.phase = 'ask';
+    vivaRender();
+    if (vivaState.setup.voice) speak(s.cur.q);
+  } catch (err) {
+    s.phase = 'error';
+    s.err = err.message || String(err);
+    vivaRender();
+  }
+}
+function vivaRender() {
+  // il contatore dei secondi vale solo per la schermata della domanda
+  clearInterval(vivaState.tick);
+  if (vivaState.dict) { try { vivaState.dict.stop(); } catch { /* già fermo */ } vivaState.dict = null; }
+  const s = vivaState.s;
+  const su = vivaState.setup;
+  const head = `<header class="page-head"><div><h1>Interrogazione</h1><p class="lede">${esc(s.title)} · domanda ${Math.min(s.items.length + 1, su.n)} di ${su.n}</p></div>
+    <button class="btn ghost" type="button" data-act="vv-stop">Termina</button></header>`;
+  if (s.phase === 'loading') { setView(`${head}<div class="viva-card"><p class="viva-wait">Il professore sta pensando alla domanda…</p></div>`); bindStop(); return; }
+  if (s.phase === 'error') { setView(`${head}<div class="viva-card"><p class="err-line">${esc(s.err)}</p><div class="actions"><button class="btn primary" type="button" data-act="vv-retry">Riprova</button></div></div>`); bindStop(); on('[data-act="vv-retry"]', 'click', () => vivaNext()); return; }
+  if (s.phase === 'end') return vivaSummary();
+  const c = s.cur;
+  const sec = secById(c.secId);
+  if (s.phase === 'ask') {
+    const gem = su.asr === 'gemini' && !!S().geminiKey.trim();
+    setView(`${head}
+      <div class="viva-card">
+        <p class="viva-from">${c.follow ? 'Approfondimento' : 'Domanda'} · ${esc(sec ? sec.title : '')}</p>
+        <p class="viva-q">${esc(c.q)}</p>
+        <div class="inline viva-qacts">
+          ${canSpeak || Voice.useGemini() ? '<button class="btn sm ghost" type="button" data-act="vv-say">Rileggi la domanda</button>' : ''}
+          ${c.traccia.length ? '<button class="btn sm ghost" type="button" data-act="vv-help">Aiutami a partire</button>' : ''}
+        </div>
+        <ol class="viva-trace" hidden>${c.traccia.map(t => `<li>${esc(t)}</li>`).join('')}</ol>
+        <div class="viva-meter" aria-live="polite"><span class="vm-t">0:00</span><span class="vm-first"></span><span class="vm-p"></span></div>
+        ${gem ? `<button class="btn primary big mic-big" type="button" data-act="vv-rec" aria-pressed="false">${MIC_SVG}<span>${c.audio ? 'Registra di nuovo' : 'Registra la risposta'}</span></button>
+          <div class="vv-level" aria-hidden="true"><i></i></div>
+          <p class="hint">${c.audio ? `Registrazione pronta (${fmtT(c.audio.seconds)}): tocca “Ho finito”.` : 'Parla come all’esame; quando hai finito tocca di nuovo il pulsante o direttamente “Ho finito”. Gemini trascrive la risposta riconoscendo i termini dei tuoi appunti.'}</p>`
+          : SpeechRec ? `<button class="btn primary big mic-big" type="button" data-act="vv-mic" aria-pressed="false">${MIC_SVG}<span>Rispondi a voce</span></button>` : ''}
+        <label class="field"><span>${gem ? 'Oppure scrivi la risposta' : SpeechRec ? 'La tua risposta (si scrive da sola mentre parli; puoi correggerla)' : 'La tua risposta'}</span><textarea class="input" id="vvAns" rows="${gem ? 3 : 6}">${esc(c.text)}</textarea></label>
+        <p class="viva-interim hint"></p>
+        <div class="actions"><button class="btn primary" type="button" data-act="vv-done">Ho finito</button><button class="btn ghost" type="button" data-act="vv-skip">Non lo so</button></div>
+      </div>`);
+    bindStop();
+    const ta = $('#vvAns');
+    const meter = () => {
+      const now = Date.now();
+      if (!c.t0 || !$('.vm-t')) { clearInterval(vivaState.tick); return; }
+      $('.vm-t').textContent = fmtT((now - c.t0) / 1000);
+      $('.vm-first').textContent = c.tFirst ? `partita dopo ${Math.round((c.tFirst - c.t0) / 1000)} s` : `in attesa… ${Math.round((now - c.t0) / 1000)} s`;
+      $('.vm-p').textContent = c.pauses ? `${c.pauses} ${c.pauses === 1 ? 'pausa lunga' : 'pause lunghe'}` : '';
+    };
+    c.t0 = c.t0 || Date.now();
+    vivaState.tick = setInterval(meter, 500);
+    addCleanup(() => clearInterval(vivaState.tick));
+    const heard = () => {
+      const now = Date.now();
+      if (!c.tFirst) c.tFirst = now;
+      else if (c.last && now - c.last > 3500) c.pauses++;
+      c.last = now;
+    };
+    let dict = null;
+    const micBtn = $('[data-act="vv-mic"]');
+    if (micBtn) {
+      dict = createDictation({
+        vocab: vocabFrom(sec ? sec.md : ''),
+        onText: t => { heard(); ta.value = `${ta.value.trim()} ${t}`.trim(); c.text = ta.value; },
+        onInterim: t => { if (t) heard(); $('.viva-interim').textContent = t; },
+        onState: on2 => { micBtn.setAttribute('aria-pressed', String(on2)); $('span', micBtn).textContent = on2 ? 'Sto ascoltando… tocca per fermare' : 'Rispondi a voce'; micBtn.classList.toggle('on', on2); }
+      });
+      micBtn.addEventListener('click', () => { if (micBtn.getAttribute('aria-pressed') === 'true') dict.stop(); else { if (canSpeak) speechSynthesis.cancel(); dict.start(); } });
+      vivaState.dict = dict;
+      addCleanup(() => dict && dict.stop());
+    }
+    ta.addEventListener('input', () => { if (!c.tFirst && ta.value.trim()) c.tFirst = Date.now(); c.text = ta.value; });
+    // registrazione per Gemini
+    const recBtn = $('[data-act="vv-rec"]');
+    const stopRec = async () => {
+      const cap = vivaState.cap;
+      if (!cap) return;
+      vivaState.cap = null;
+      clearTimeout(vivaState.capT);
+      const a = await VoiceCapture.stop(cap);
+      if (cap.first) { c.tFirst = cap.first; c.pauses = cap.pauses; }
+      c.tSpeechEnd = cap.lastVoice || Date.now();
+      if (a.seconds >= 1) c.audio = { mime: 'audio/wav', data: a.data, seconds: a.seconds };
+    };
+    if (recBtn) {
+      recBtn.addEventListener('click', async () => {
+        if (vivaState.cap) { await stopRec(); vivaRender(); return; }
+        if (canSpeak) speechSynthesis.cancel();
+        try {
+          const lv = $('.vv-level i');
+          vivaState.cap = await VoiceCapture.start((x, voice) => { if (lv) { lv.style.width = `${Math.round(x * 100)}%`; lv.classList.toggle('on', voice); } });
+          c.audio = null;
+          c.pauses = 0;
+          recBtn.setAttribute('aria-pressed', 'true');
+          recBtn.classList.add('on');
+          $('span', recBtn).textContent = 'Sto registrando… tocca per fermare';
+          // al massimo 5 minuti per risposta
+          vivaState.capT = setTimeout(() => { if (vivaState.cap) stopRec().then(vivaRender); }, 300000);
+        } catch { toast('Serve il permesso del microfono: consentilo nelle impostazioni del browser', 'err'); }
+      });
+      addCleanup(() => { if (vivaState.cap) { VoiceCapture.stop(vivaState.cap).catch(() => {}); vivaState.cap = null; } });
+    }
+    on('[data-act="vv-say"]', 'click', () => speak(c.q));
+    on('[data-act="vv-help"]', 'click', e => { $('.viva-trace').hidden = false; c.helped = true; e.currentTarget.remove(); });
+    const finish = async skip => {
+      if (dict) dict.stop();
+      if (vivaState.cap) await stopRec();
+      c.text = skip ? '' : ta.value.trim();
+      c.tEnd = c.audio && c.tSpeechEnd ? c.tSpeechEnd : Date.now();
+      const useAudio = !skip && c.audio && gem && !c.text;
+      if (!skip && !c.text && !useAudio) { toast('Rispondi a voce o scrivi la risposta, oppure tocca “Non lo so”'); return; }
+      s.phase = 'eval';
+      setView(`${head}<div class="viva-card"><p class="viva-wait">Il professore sta valutando la risposta…</p></div>`);
+      bindStop();
+      try {
+        const left = su.follow - (c.follow || 0);
+        const terms = useAudio ? [...vocabFrom(sec ? sec.md : '').values()].filter(t => t.length >= 6).slice(0, 250).join(', ') : '';
+        const r = await AI.generate({
+          ...(useAudio ? { provider: 'gemini', audio: { mime: c.audio.mime, data: c.audio.data } } : {}),
+          system: useAudio ? VIVA_SYS_E + VIVA_AUDIO_NOTE : VIVA_SYS_E,
+          text: `APPUNTI (sezione “${sec ? sec.title : ''}”):\n${aiText(sec ? sec.md : '').slice(0, 14000)}\n\n${useAudio ? `TERMINI DEGLI APPUNTI: ${terms}\n\n` : ''}DOMANDA: ${c.q}\n\nRISPOSTA DELLO STUDENTE:\n${useAudio ? '(nell’audio allegato)' : c.text || '(lo studente ha detto di non saperlo)'}\n\n${left > 0 ? 'Fai una domanda di approfondimento.' : 'Non fare domande di approfondimento: "approfondimento" deve essere una stringa vuota.'}`,
+          maxTokens: 3500
+        });
+        c.ev = vivaJson(r.text);
+        if (useAudio) { c.text = String(c.ev.trascrizione || '').trim(); c.audio = null; }
+        c.ev.voto = Math.max(0, Math.min(30, Math.round(+c.ev.voto || 0)));
+        c.left = left;
+        if (!c.follow) s.items.push(c); else (c.parent.followups = c.parent.followups || []).push(c);
+        s.phase = 'result';
+        // storico per la sezione: data e voto
+        if (sec) { sec.vivaHist = [...(sec.vivaHist || []), { d: todayStr(), v: c.ev.voto }].slice(-30); saveSection(sec); }
+        vivaRender();
+      } catch (err) { s.phase = 'ask'; toast(err.message || 'Valutazione non riuscita', 'err'); vivaRender(); }
+    };
+    on('[data-act="vv-done"]', 'click', () => finish(false));
+    on('[data-act="vv-skip"]', 'click', () => finish(true));
+    return;
+  }
+  if (s.phase === 'result') {
+    const e = c.ev;
+    const fl = vivaFluency(c);
+    const list = (t, arr, cls) => (arr && arr.length ? `<div class="viva-l ${cls}"><h3>${t}</h3><ul>${arr.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : '');
+    const parent = c.follow ? c.parent : c;
+    const canFollow = e.approfondimento && String(e.approfondimento).trim() && c.left > 0;
+    setView(`${head}
+      <div class="viva-card">
+        <p class="viva-from">${c.follow ? 'Approfondimento' : 'Domanda'}</p>
+        <p class="viva-q sm">${esc(c.q)}</p>
+        <div class="viva-score ${e.voto >= 27 ? 'top' : e.voto >= 18 ? 'ok' : 'ko'}"><b>${e.voto}</b><span>/30 indicativo</span></div>
+        <p class="viva-judge">“${esc(e.giudizio || '')}”</p>
+        ${c.text ? `<details class="viva-said"><summary>Cosa ha capito il professore della tua risposta</summary><p>${esc(c.text)}</p></details>` : ''}
+        ${list('Detto bene', e.bene, 'ok')}${list('Mancava', e.mancava, 'miss')}${list('Da correggere', e.errori, 'err')}
+        <div class="viva-l flu"><h3>Come l’hai detto</h3><ul>${fl.map(x => `<li>${x}</li>`).join('')}</ul></div>
+        ${e.modello ? `<details class="viva-model"><summary>Risposta modello</summary><p>${esc(e.modello)}</p>${canSpeak || Voice.useGemini() ? '<button class="btn sm ghost" type="button" data-act="vv-model">Ascoltala</button>' : ''}</details>` : ''}
+        <div class="actions">
+          ${canFollow ? `<button class="btn primary" type="button" data-act="vv-follow">Approfondimento: rispondi</button>` : ''}
+          <button class="btn ${canFollow ? '' : 'primary'}" type="button" data-act="vv-next">${s.items.length >= su.n ? 'Vedi il riepilogo' : 'Prossima domanda'}</button>
+          <a class="btn ghost" href="#/sec/${c.secId}/read">Apri la sezione</a>
+        </div>
+      </div>`);
+    bindStop();
+    on('[data-act="vv-model"]', 'click', () => speak(e.modello));
+    on('[data-act="vv-follow"]', 'click', () => vivaNext({ secId: c.secId, q: String(e.approfondimento).trim(), depth: (c.follow || 0) + 1, parent }));
+    on('[data-act="vv-next"]', 'click', () => vivaNext());
+  }
+}
+function bindStop() { on('[data-act="vv-stop"]', 'click', () => { const s = vivaState.s; if (s && s.items.length) { s.phase = 'end'; vivaRender(); } else { vivaState.s = null; history.back(); } }); }
+function vivaFluency(c) {
+  const out = [];
+  const secs = Math.max(1, ((c.tEnd || Date.now()) - (c.t0 || Date.now())) / 1000);
+  const words = (c.text.match(/\S+/g) || []).length;
+  const start = c.tFirst ? Math.round((c.tFirst - c.t0) / 1000) : null;
+  const fillers = (c.text.match(VIVA_FILLERS) || []).length;
+  if (!c.text) { out.push('Hai detto di non saperlo: all’esame prova comunque a partire da quello che sai (una definizione, un collegamento), è meglio del silenzio.'); return out; }
+  if (start !== null) out.push(start <= 5 ? `Sei partita subito (${start} s): bene.` : start <= 12 ? `Ci hai messo ${start} s a partire: prova ad attaccare subito con una frase sicura, anche solo la definizione.` : `Ci hai messo ${start} s a partire: all’orale sembra incertezza anche quando sai. Allenati a dire subito la prima frase (“La … è …”), poi segui la traccia.`);
+  out.push(`${fmtT(secs)} di risposta, circa ${words} parole${secs > 20 ? ` (${Math.round(words / (secs / 60))} al minuto)` : ''}.`);
+  if (c.pauses) out.push(`${c.pauses} ${c.pauses === 1 ? 'pausa lunga' : 'pause lunghe'} (oltre 3 secondi): ${c.pauses > 2 ? 'quando ti fermi, riparti dal punto successivo della traccia invece di cercare la parola perfetta.' : 'va bene, ma prova a collegare i punti con frasi ponte (“questo porta a…”, “di conseguenza…”).'}`);
+  if (fillers > 2) out.push(`${fillers} intercalari (ehm, cioè, praticamente…): una breve pausa silenziosa suona più sicura.`);
+  if (c.helped) out.push('Hai usato la traccia: la prossima volta prova a ricostruirla da sola prima di guardarla.');
+  return out;
+}
+function vivaSummary() {
+  const s = vivaState.s;
+  const all = s.items.flatMap(i => [i, ...(i.followups || [])]);
+  const avg = all.length ? Math.round(all.reduce((a, i) => a + i.ev.voto, 0) / all.length) : 0;
+  const starts = all.filter(i => i.text && i.tFirst).map(i => (i.tFirst - i.t0) / 1000);
+  const avgStart = starts.length ? Math.round(starts.reduce((a, b) => a + b, 0) / starts.length) : null;
+  const pauses = all.reduce((a, i) => a + (i.pauses || 0), 0);
+  const miss = all.flatMap(i => (i.ev.mancava || []).map(m => ({ m, sec: i.secId })));
+  setView(`
+    <header class="page-head"><div><h1>Fine dell’interrogazione</h1><p class="lede">${esc(s.title)}</p></div></header>
+    <div class="viva-card">
+      <div class="viva-score ${avg >= 27 ? 'top' : avg >= 18 ? 'ok' : 'ko'}"><b>${avg}</b><span>/30 indicativo, media di ${all.length} ${all.length === 1 ? 'risposta' : 'risposte'}</span></div>
+      <ul class="viva-sum">
+        ${avgStart !== null ? `<li>In media sei partita dopo <b>${avgStart} s</b>${avgStart > 8 ? ': è il punto da allenare, prima ancora del contenuto.' : '.'}</li>` : ''}
+        <li>${pauses ? `<b>${pauses}</b> ${pauses === 1 ? 'pausa lunga' : 'pause lunghe'} in tutto.` : 'Nessuna pausa lunga.'}</li>
+      </ul>
+      <h3 class="sub3">Domande</h3>
+      <ol class="viva-qs">${s.items.map(i => `<li><b>${i.ev.voto}/30</b> · ${esc(i.q)}${(i.followups || []).map(f => `<br><small>↳ ${f.ev.voto}/30 · ${esc(f.q)}</small>`).join('')}</li>`).join('')}</ol>
+      ${miss.length ? `<h3 class="sub3">Da ripassare</h3><ul class="viva-miss">${miss.slice(0, 15).map(x => `<li><a href="#/sec/${x.sec}/read">${esc(secById(x.sec)?.title || '')}</a>: ${esc(x.m)}</li>`).join('')}</ul>` : ''}
+      <div class="actions"><button class="btn primary" type="button" data-act="vv-again">Un’altra interrogazione</button><a class="btn ghost" href="#/viva">Cambia argomento</a></div>
+    </div>`);
+  on('[data-act="vv-again"]', 'click', () => { vivaState.s = null; route(); });
+}
+
+/* ---------- Indovina dall’immagine (atlanti) ---------- */
+const imgQuiz = { ok: 0, done: 0 };
+function viewImageQuiz(kind) {
+  const cfg = SPECIALS[kind];
+  const nb = specialNb(kind);
+  const all = (nb ? secsOf(nb.id) : []).filter(s => imageRefs(s.md).length);
+  setView(`
+    <header class="page-head"><div><h1>${cfg.name}</h1><p class="lede">Indovina dall’immagine: guarda e scegli la risposta giusta.</p></div></header>
+    <nav class="tabs" aria-label="${esc(cfg.name)}"><a href="#/${cfg.route}" class="tab">Schede</a><a href="#/${cfg.route}/quiz" class="tab on" aria-current="page">Indovina dall’immagine</a></nav>
+    <div id="iqBox"></div>`);
+  const box = $('#iqBox');
+  const next = () => {
+    if (all.length < 4) { box.innerHTML = `<div class="empty"><p>Servono almeno 4 schede con un’immagine (ora ${all.length}). Aggiungi le immagini con ＋ Foto nelle schede.</p></div>`; return; }
+    const target = all[Math.floor(Math.random() * all.length)];
+    const imgs = imageRefs(target.md);
+    const im = imgs[Math.floor(Math.random() * imgs.length)];
+    // le opzioni sbagliate, prima dallo stesso tipo (ECG con ECG, apparato con apparato)
+    const same = shuffle(all.filter(s => s.id !== target.id && s.sp?.type === target.sp?.type));
+    const rest = shuffle(all.filter(s => s.id !== target.id && s.sp?.type !== target.sp?.type));
+    const opts = shuffle([target, ...[...same, ...rest].slice(0, 3)]);
+    box.innerHTML = `
+      <div class="lab-q iq">
+        <div class="iq-img"><img class="nb-img" data-img="${im}" alt="Immagine da riconoscere"></div>
+        <p class="lab-q-t">Che cos’è?</p>
+        <div class="dx-opts">${opts.map(o => `<button type="button" class="btn dx-opt" data-iq="${o.id}">${esc(o.title)}</button>`).join('')}</div>
+        <div id="iqWhy"></div>
+        ${imgQuiz.done ? `<p class="hint">Finora: ${imgQuiz.ok} su ${imgQuiz.done}.</p>` : ''}
+      </div>`;
+    box.querySelector('.dx-opts').addEventListener('click', e => {
+      const b = e.target.closest('[data-iq]');
+      if (!b || box.querySelector('.dx-opts').dataset.done) return;
+      box.querySelector('.dx-opts').dataset.done = '1';
+      const right = b.dataset.iq === target.id;
+      imgQuiz.done++;
+      if (right) imgQuiz.ok++;
+      $$('[data-iq]', box).forEach(x => { x.disabled = true; x.classList.toggle('ok', x.dataset.iq === target.id); x.classList.toggle('ko', x === b && !right); });
+      const bits = specialMetaBits(target);
+      $('#iqWhy', box).innerHTML = `<p class="dx-res ${right ? 'ok' : 'ko'}">${right ? 'Giusto!' : `No: è ${esc(target.title)}.`}${bits.length ? ` <span class="muted-inline">${esc(bits.join(' · '))}</span>` : ''}</p>
+        <div class="inline"><button class="btn primary" type="button" data-iqn>Un’altra</button><a class="btn ghost" href="#/sec/${target.id}/read">Apri la scheda</a></div>`;
+      $('[data-iqn]', box).onclick = next;
+    });
+  };
+  next();
+}
