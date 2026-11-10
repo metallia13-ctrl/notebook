@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.67';
+const APP_VERSION = '3.68';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -1264,7 +1264,7 @@ function route() {
     case 'exam': return viewExam(p1, p2);
     case 'deck': return viewDeck(p1);
     case 'card': return viewCardEditor(p1);
-    case 'study': return viewStudy(p1);
+    case 'study': return viewStudy(p1, p2);
     case 'studyhub': ShDock.open(); location.replace('#/notebooks'); return;
     case 'cases': return viewCases();
     case 'lab': return viewLab(p1, p2);
@@ -2579,7 +2579,7 @@ function viewTag(name) {
     <a class="back" href="#/tag">Tutti i tag</a>
     <header class="page-head">
       <div><h1>#${esc(t)}</h1><p class="lede">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}, ${cards.length} flashcard</p></div>
-      ${toStudy.n + toStudy.l + toStudy.r ? `<a class="btn primary" href="#/study/tag-${encodeURIComponent(t)}">Studia queste flashcard</a>` : ''}
+      <div class="actions">${studyBtns(`tag-${encodeURIComponent(t)}`, toStudy)}</div>
     </header>
     ${secs.length ? `<h2 class="sub">Sezioni</h2><ul class="list">${secs.map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : ''}
     ${cards.length ? `<h2 class="sub">Flashcard</h2><ul class="list">${cards.slice(0, 300).map(cardRow).join('')}</ul>` : ''}

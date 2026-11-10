@@ -3848,3 +3848,7 @@ body.split-top .split-ctl { top: auto; bottom: -20px; }
 /* v3.67: schermo intero */
 .nav-fs svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .pad-pages [data-fs-btn] svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* v3.68: numero nei pulsanti Ripassa / Studia */
+.btn-n { display: inline-grid; place-items: center; min-width: 1.6em; height: 1.4em; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); font-size: 0.82em; font-variant-numeric: tabular-nums; }
+body.cs-on .view { padding-bottom: calc(220px + env(safe-area-inset-bottom, 0px)); }

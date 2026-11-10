@@ -32,7 +32,7 @@ function viewReview(onlyExam = false) {
     ${cardsNow ? `
       <div class="callout">
         <p>Hai anche ${cardsNow} flashcard da studiare.</p>
-        <a class="btn sm" href="#/study/all">Studia le flashcard</a>
+        <div class="inline">${studyBtns('all', cc, { cls: 'sm' })}</div>
       </div>` : ''}
     ${due.length ? `<ul class="list">${due.map(s => sectionRow(s, { showNb: true, review: true })).join('')}</ul>` : ''}
     ${linked ? `<p class="hint">${linked} ${linked === 1 ? 'sezione è pianificata' : 'sezioni sono pianificate'} da StudyHub e non compaiono qui.</p>` : ''}
@@ -398,7 +398,7 @@ function modeCards(sec, body) {
   const qs = sec.questions || [];
   body.innerHTML = `
     <div class="row-actions">
-      ${cards.length ? `<a class="btn primary" href="#/study/sec-${sec.id}">Studia queste flashcard</a>` : ''}
+      ${cards.length ? studyBtns(`sec-${sec.id}`, cardCounts(cards)) || '<span class="hint">Niente da studiare adesso in questa sezione.</span>' : ''}
       <button class="btn" data-act="new-card">Nuova flashcard</button>
     </div>
     <p class="hint">Puoi anche selezionare del testo in Leggi e toccare “Crea flashcard dalla selezione”.</p>
@@ -480,7 +480,7 @@ function viewCardsHome() {
         <p class="lede">${state.cards.length ? (total ? `${total} da studiare adesso.` : 'Niente da studiare adesso.') : 'Nessuna flashcard ancora.'}</p>
       </div>
       <div class="actions">
-        ${total ? '<a class="btn primary" href="#/study/all">Studia tutto</a>' : ''}
+        ${total ? studyBtns('all', all) : ''}
         ${examRec() ? '' : '<button class="btn ghost" data-act="exam-new">Modalità esame</button>'}
       </div>
     </header>
@@ -518,7 +518,7 @@ function viewDeck(nbId) {
         <p class="lede">${cards.length} flashcard</p>
       </div>
       <div class="actions">
-        ${cnt.n + cnt.l + cnt.r ? `<a class="btn primary" href="#/study/${nb.id}">Studia</a>` : ''}
+        ${studyBtns(nb.id, cnt)}
         <button class="btn" data-act="new-card">Nuova flashcard</button>
         <a class="btn ghost" href="#/nb/${nb.id}">Apri il notebook</a>
       </div>
@@ -660,11 +660,20 @@ function scopeBack(scope) {
   if (scope === 'exam') return '#/cards';
   return `#/deck/${scope}`;
 }
-function startSession(scope) {
+// v3.68: “Ripassa” = solo le flashcard già studiate (in scadenza e in apprendimento),
+// “Studia” = anche le nuove, entro il limite del giorno
+function studyBtns(scope, cnt, { cls = '' } = {}) {
+  const old = (cnt.r || 0) + (cnt.l || 0), news = cnt.n || 0;
+  return [
+    old ? `<a class="btn primary ${cls}" href="#/study/${scope}/ripassa" title="Solo le flashcard già studiate, senza nuove">Ripassa <span class="btn-n">${old}</span></a>` : '',
+    news ? `<a class="btn ${old ? '' : 'primary'} ${cls}" href="#/study/${scope}" title="Il ripasso più le flashcard nuove di oggi">${old ? 'Studia anche le nuove' : 'Studia le nuove'} <span class="btn-n">${news}</span></a>` : ''
+  ].join('');
+}
+function startSession(scope, mode = '') {
   const now = Date.now();
   const cards = scopeCards(scope);
   const reviews = cards.filter(c => c.srs.state === 'review' && c.srs.due <= now).sort((a, b) => a.srs.due - b.srs.due || a.order - b.order);
-  let news = cards.filter(c => c.srs.state === 'new' && !cardHeld(c)).sort((a, b) => a.order - b.order);
+  let news = mode === 'ripassa' ? [] : cards.filter(c => c.srs.state === 'new' && !cardHeld(c)).sort((a, b) => a.order - b.order);
   if (!scope.startsWith('sec-')) {
     // limite giornaliero di nuove per notebook (in una sola sezione studi tutto)
     const left = {};
@@ -674,7 +683,7 @@ function startSession(scope) {
       return false;
     });
   }
-  session = { scope, queue: [...reviews, ...news].map(c => c.id), done: 0, undo: [], learned: [], current: null, revealed: false };
+  session = { scope, mode, queue: [...reviews, ...news].map(c => c.id), done: 0, undo: [], learned: [], current: null, revealed: false };
 }
 function pickNext() {
   const now = Date.now();
@@ -703,9 +712,10 @@ function sessionCounts() {
   return { n, l, r };
 }
 
-function viewStudy(scope) {
+function viewStudy(scope, mode = '') {
   if (!scope) scope = 'all';
-  if (!session || session.scope !== scope) startSession(scope);
+  mode = mode === 'ripassa' ? 'ripassa' : '';
+  if (!session || session.scope !== scope || (session.mode || '') !== mode) startSession(scope, mode);
   renderStudy();
 }
 
@@ -727,7 +737,7 @@ function renderStudy() {
   setView(`
     <a class="back" href="${scopeBack(sc)}">${esc(sc === 'all' ? 'Flashcard' : scopeTitle(sc))}</a>
     <header class="study-head">
-      <h1>${esc(scopeTitle(sc))}</h1>
+      <h1>${esc(scopeTitle(sc))}${session.mode === 'ripassa' ? ' <span class="pill soft">solo ripasso</span>' : ''}</h1>
       ${countsHtml(sessionCounts())}
     </header>
     <article class="fcard study ${card.type === 'occlusion' ? 'is-io' : ''}">
@@ -982,6 +992,7 @@ function renderStudyDone() {
   const later = scopeCards(sc).filter(c => (c.srs.state === 'learning' || c.srs.state === 'relearning')).sort((a, b) => a.srs.due - b.srs.due);
   const learned = session.learned.map(secById).filter(s => s && !s.studyhub);
   const nextMin = later.length ? Math.max(1, Math.round((later[0].srs.due - now) / 60000)) : 0;
+  const newWaiting = session.mode === 'ripassa' ? cardCounts(scopeCards(sc)).n : 0;
   setView(`
     <a class="back" href="${scopeBack(sc)}">${esc(sc === 'all' ? 'Flashcard' : scopeTitle(sc))}</a>
     <header class="page-head">
@@ -999,8 +1010,10 @@ function renderStudyDone() {
           <button class="btn ghost sm" data-skip="${s.id}">Non ora</button>
         </div>
       </div>`).join('')}
+    ${session.mode === 'ripassa' && newWaiting ? `<p>Hai ripassato tutto. Ci sono ancora ${newWaiting} ${newWaiting === 1 ? 'flashcard nuova' : 'flashcard nuove'} per oggi.</p>` : ''}
     <div class="row-actions">
       ${later.length ? '<button class="btn" data-act="continue">Continua lo stesso</button>' : ''}
+      ${session.mode === 'ripassa' && newWaiting ? `<a class="btn" href="#/study/${sc}">Studia anche le nuove</a>` : ''}
       <a class="btn ${learned.length ? 'ghost' : 'primary'}" href="${scopeBack(sc)}">Torna indietro</a>
     </div>
   `);
@@ -1543,7 +1556,7 @@ function bindCardSelect(listEl, getCards, btnHost) {
     <button type="button" class="btn sm danger-solid" data-cs="del">Elimina</button>
     <button type="button" class="btn sm ghost" data-cs="end">Fine</button>`;
   document.body.append(bar);
-  addCleanup(() => bar.remove());
+  addCleanup(() => { bar.remove(); document.body.classList.remove('cs-on'); });
   const rows = () => $$('li[data-id]', listEl);
   const paint = () => {
     rows().forEach(li => {
@@ -1553,6 +1566,8 @@ function bindCardSelect(listEl, getCards, btnHost) {
       if (!on && box) box.remove();
     });
     listEl.classList.toggle('cs-mode', on);
+    // spazio in fondo, così le ultime flashcard possono scorrere sopra la barra
+    document.body.classList.toggle('cs-on', on);
     bar.hidden = !on;
     $('.cs-n', bar).textContent = `${picked.size} selezionate`;
     $('[data-cs="del"]', bar).disabled = !picked.size;

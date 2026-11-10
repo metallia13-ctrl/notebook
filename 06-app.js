@@ -1286,6 +1286,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.68", title: "flashcard: Ripassa o Studia", html: `      <ul>
+        <li>Ovunque si avviano le flashcard ci sono ora due pulsanti: <strong>Ripassa</strong> fa solo quelle già studiate (in scadenza oggi e quelle in apprendimento), senza nuove; <strong>Studia</strong> aggiunge anche le nuove del giorno. Accanto c’è quante sono.</li>
+        <li>Nel ripasso compare “solo ripasso”; quando hai finito, se ci sono nuove in attesa puoi passare a “Studia anche le nuove”.</li>
+      </ul>` },
   { v: "3.67", title: "schermo intero", html: `      <ul>
         <li><strong>Schermo intero</strong>: il pulsante con i quattro angoli (in cima alla barra laterale, nel blocco note, oppure Altro → Schermo intero) nasconde la barra in basso del tablet, con le app, e quella in alto. Così non apri più app per sbaglio mentre scrivi.</li>
         <li>Per vedere le barre per un attimo scorri dal bordo in basso o in alto: ricompaiono e poi si nascondono da sole. Per uscire tocca di nuovo il pulsante, o fai il gesto Indietro. Se lo lasci attivo, alla prossima apertura dell’app torna al primo tocco.</li>
