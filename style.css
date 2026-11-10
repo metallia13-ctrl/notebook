@@ -691,7 +691,7 @@ mark.cz {
 
 .toolbar {
   position: sticky;
-  top: 0;
+  top: var(--top-off, 0px);
   z-index: 5;
   margin: -8px -18px 6px;
   padding: 10px 18px;
@@ -2389,7 +2389,7 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 /* Modifica: la barra di formattazione resta in alto mentre scrivi */
 .mode-body > .edit-tools {
   position: sticky;
-  top: var(--tabs-h, 0px);
+  top: calc(var(--top-off, 0px) + var(--tabs-h, 0px));
   z-index: 11;
   flex-wrap: nowrap;
   overflow-x: auto;
@@ -3222,7 +3222,7 @@ h1 .help-btn { width: 24px; height: 24px; font-size: 0.85rem; transform: transla
    ===================================================================== */
 .tabs {
   position: sticky;
-  top: 0;
+  top: var(--top-off, 0px);
   z-index: 12;
   margin-top: 10px;
   padding-top: calc(8px + env(safe-area-inset-top, 0px));
@@ -3348,7 +3348,7 @@ h1 .help-btn { width: 24px; height: 24px; font-size: 0.85rem; transform: transla
 body.split-open .pad-fab { display: none; }
 .pdf-split-btn { text-decoration: none; }
 @media (max-width: 699px) {
-  body.split-open .view { padding-bottom: calc(var(--split-h, 50vh) + 104px + env(safe-area-inset-bottom, 0px)); }
+  body.split-open:not(.split-top) .view { padding-bottom: calc(var(--split-h, 50vh) + 104px + env(safe-area-inset-bottom, 0px)); }
   html.kb-open .split-dock { display: none; }
   .split-dock { max-height: calc(100dvh - 104px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); }
 }
@@ -3375,21 +3375,21 @@ body.split-open .pad-fab { display: none; }
   .split-grip::after { left: 3px; top: 50%; width: 3px; height: 44px; margin: -22px 0 0; opacity: 0.5; }
   .split-grip:hover::after, .split-dock.resizing .split-grip::after { opacity: 1; background: var(--accent); }
   .split-head { padding: 10px 8px 8px 16px; }
-  body.split-open .pdf-app { right: var(--split-w, 50vw); }
+  body.split-open:not(.split-stack):not(.split-swap) .pdf-app { right: var(--split-w, 50vw); }
 }
 @media (min-width: 700px) and (max-width: 899px) {
-  body.split-open .view { margin-left: 0; margin-right: var(--split-w, 50vw); max-width: none; }
-  body.split-open .toasts, body.split-open .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2); }
+  body.split-open:not(.split-stack):not(.split-swap) .view { margin-left: 0; margin-right: var(--split-w, 50vw); max-width: none; }
+  body.split-open:not(.split-stack):not(.split-swap) .toasts, body.split-open:not(.split-stack):not(.split-swap) .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2); }
 }
 @media (min-width: 900px) {
   .split-dock { bottom: 0; border-width: 0 0 0 1px; border-radius: 0; }
-  body.split-open .view {
+  body.split-open:not(.split-stack):not(.split-swap) .view {
     margin-left: max(252px, calc((100vw - var(--split-w, 50vw) - 820px) / 2 + 116px));
     max-width: min(820px, calc(100vw - var(--split-w, 50vw) - 252px));
   }
-  body.nav-hidden.split-open .view { margin-left: max(64px, calc((100vw - var(--split-w, 50vw) - 820px) / 2)); max-width: min(820px, calc(100vw - var(--split-w, 50vw) - 84px)); }
-  body.split-open .toasts, body.split-open .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2 + 116px); }
-  body.nav-hidden.split-open .toasts, body.nav-hidden.split-open .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2); }
+  body.nav-hidden.split-open:not(.split-stack):not(.split-swap) .view { margin-left: max(64px, calc((100vw - var(--split-w, 50vw) - 820px) / 2)); max-width: min(820px, calc(100vw - var(--split-w, 50vw) - 84px)); }
+  body.split-open:not(.split-stack):not(.split-swap) .toasts, body.split-open:not(.split-stack):not(.split-swap) .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2 + 116px); }
+  body.nav-hidden.split-open:not(.split-stack):not(.split-swap) .toasts, body.nav-hidden.split-open:not(.split-stack):not(.split-swap) .sel-bar { left: calc((100vw - var(--split-w, 50vw)) / 2); }
 }
 
 /* =====================================================================
@@ -3774,3 +3774,73 @@ body.embed .view { margin: 0 !important; max-width: none !important; padding: 0 
 .pad-zv { min-width: 46px; font-variant-numeric: tabular-nums; font-size: 0.8rem; }
 [data-pt="eraser"].area { box-shadow: inset 0 -3px 0 var(--accent); }
 .pad-live[hidden] { display: none; }
+
+
+/* =====================================================================
+   v3.65: Affianca scambiabile e una sopra l’altra
+   ===================================================================== */
+/* i comandi sulla barretta tra le due finestre */
+.split-dock { overflow: visible; }
+.split-body { border-radius: inherit; border-top-left-radius: 0; border-top-right-radius: 0; }
+.split-ctl { position: absolute; z-index: 6; display: flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); }
+.split-ctl button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--text); cursor: pointer; }
+.split-ctl button:hover, .split-ctl button:focus-visible { background: var(--accent-soft); color: var(--accent); outline: none; }
+.split-ctl button[hidden] { display: none; }
+.split-ctl svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.split-handle { flex: none; border-radius: 3px; background: var(--accent); opacity: 0.8; touch-action: none; }
+/* una sopra l’altra (telefono, o scelto): comandi sul bordo in alto del pannello */
+.split-ctl { left: 50%; top: -20px; transform: translateX(-50%); flex-direction: row; }
+.split-handle { width: 28px; height: 5px; margin: 0 4px; cursor: ns-resize; }
+body.split-top .split-ctl { top: auto; bottom: -20px; }
+/* telefono: pannello in alto */
+@media (max-width: 699px) {
+  body.split-top .split-dock { top: calc(8px + env(safe-area-inset-top, 0px)); bottom: auto; }
+  body.split-top.split-open .view { padding-top: calc(var(--split-h, 50vh) + 34px + env(safe-area-inset-top, 0px)); }
+  body.split-top { --top-off: calc(var(--split-h, 50vh) + 16px + env(safe-area-inset-top, 0px)); }
+  body.split-top .split-grip { top: auto; bottom: 0; }
+}
+@media (min-width: 700px) {
+  /* affiancate: comandi sul bordo verticale, in colonna */
+  body:not(.split-stack) .split-ctl { left: -20px; top: 50%; transform: translateY(-50%); flex-direction: column; }
+  body:not(.split-stack) .split-handle { width: 5px; height: 28px; margin: 4px 0; cursor: ew-resize; }
+  /* scambiate: pannello a sinistra */
+  body.split-swap:not(.split-stack) .split-dock { right: auto; left: 0; border-width: 0 1px 1px 0; border-radius: 0 0 16px 0; }
+  body.split-swap:not(.split-stack) .split-grip { left: auto; right: 0; }
+  body.split-swap:not(.split-stack) .split-grip::after { left: auto; right: 3px; }
+  body.split-swap:not(.split-stack) .split-ctl { left: auto; right: -20px; }
+  body.split-swap:not(.split-stack).split-open .pdf-app { right: 0; left: var(--split-w, 50vw); }
+  body.split-swap:not(.split-stack).split-open .view { margin-right: 0; margin-left: var(--split-w, 50vw); max-width: none; }
+  body.split-swap:not(.split-stack).split-open .toasts, body.split-swap:not(.split-stack).split-open .sel-bar { left: calc(var(--split-w, 50vw) + (100vw - var(--split-w, 50vw)) / 2); }
+  /* una sopra l’altra */
+  body.split-stack .split-dock { top: auto; left: 0; right: 0; width: auto; height: var(--split-h, 50vh); border-width: 1px 0 0; border-radius: 16px 16px 0 0; padding-top: 0; }
+  body.split-stack .split-grip { top: 0; left: 0; right: 0; bottom: auto; width: auto; height: 9px; cursor: ns-resize; }
+  body.split-stack .split-grip::after { left: 50%; top: 3px; width: 44px; height: 3px; margin: 0 0 0 -22px; }
+  body.split-stack.split-open:not(.split-top) .view { padding-bottom: calc(var(--split-h, 50vh) + 40px); }
+  body.split-stack.split-open:not(.split-top) .pdf-app { bottom: var(--split-h, 50vh); }
+  body.split-stack.split-top .split-dock { top: 0; bottom: auto; border-width: 0 0 1px; border-radius: 0 0 16px 16px; padding-top: env(safe-area-inset-top, 0px); }
+  body.split-stack.split-top .split-grip { top: auto; bottom: 0; }
+  body.split-stack.split-top .split-grip::after { top: auto; bottom: 3px; }
+  body.split-stack.split-top.split-open .view { padding-top: calc(var(--split-h, 50vh) + 30px); }
+  body.split-stack.split-top { --top-off: var(--split-h, 50vh); }
+  body.split-stack.split-top.split-open .pdf-app { top: var(--split-h, 50vh); }
+}
+@media (min-width: 700px) and (max-width: 899px) {
+  /* sul tablet c’è la barra in basso */
+  body.split-stack:not(.split-top) .split-dock { bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+  body.split-stack.split-open:not(.split-top) .view { padding-bottom: calc(var(--split-h, 50vh) + 120px); }
+  html.pdf-open body.split-stack:not(.split-top) .split-dock { bottom: 0; }
+}
+@media (min-width: 900px) {
+  /* con la barra laterale aperta il pannello parte dopo di lei */
+  body:not(.nav-hidden).split-swap:not(.split-stack) .split-dock, body:not(.nav-hidden).split-stack .split-dock { left: 232px; }
+  html.pdf-open body.split-swap:not(.nav-hidden):not(.split-stack) .split-dock, html.pdf-open body.split-stack:not(.nav-hidden) .split-dock { left: 0; }
+  body:not(.nav-hidden).split-swap:not(.split-stack).split-open .view { margin-left: calc(232px + var(--split-w, 50vw) + 24px); margin-right: 24px; max-width: none; }
+  body.nav-hidden.split-swap:not(.split-stack).split-open .view { margin-left: calc(var(--split-w, 50vw) + 24px); margin-right: 24px; }
+  body:not(.nav-hidden).split-swap:not(.split-stack).split-open .toasts, body:not(.nav-hidden).split-swap:not(.split-stack).split-open .sel-bar { left: calc(232px + var(--split-w, 50vw) + (100vw - 232px - var(--split-w, 50vw)) / 2); }
+}
+
+/* v3.66: la tela del blocco note è grande quanto la parte visibile e resta ferma mentre il foglio scorre */
+.pad-view { position: sticky; top: 0; left: 0; z-index: 1; overflow: hidden; }
+.pad-view canvas { position: absolute; left: 0; top: 0; }
+.pad-view .pad-canvas { touch-action: none; }
+.pad-sheet { pointer-events: none; }

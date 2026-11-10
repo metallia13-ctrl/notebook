@@ -1284,6 +1284,12 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.66", title: "blocco note veloce anche con fogli lunghi", html: `      <ul>
+        <li>Il blocco note ora disegna solo la parte del foglio che vedi, come le app di disegno: prima la tela era grande quanto tutto il foglio, e nelle sezioni, dove i fogli si allungano, diventava enorme e il tablet rallentava sempre di più. Ora resta veloce qualunque sia la lunghezza del foglio o lo zoom. I tuoi appunti non cambiano.</li>
+      </ul>` },
+  { v: "3.65", title: "Affianca: scambia le finestre o mettile una sopra l’altra", html: `      <ul>
+        <li>Sulla barretta tra le due finestre ci sono ora tre comandi: <strong>⇆ Scambia</strong> (il pannello passa dall’altra parte: a sinistra invece che a destra, o in alto invece che in basso), la <strong>maniglia</strong> da trascinare per allargarle, e <strong>una sopra l’altra / una accanto all’altra</strong> (sul tablet e sul computer). L’app ricorda la disposizione.</li>
+      </ul>` },
   { v: "3.64", title: "blocco note più veloce quando scrivi", html: `      <ul>
         <li>La scrittura nel blocco note è più reattiva: la tela trasparente dell’evidenziatore esiste solo mentre lo usi (prima pesava sempre, grande quanto il foglio), la posizione del foglio si calcola una volta per tratto, e Chrome usa la modalità a bassa latenza pensata per la scrittura a mano, così l’inchiostro compare più vicino alla punta.</li>
       </ul>` },
@@ -1421,6 +1427,12 @@ function showChangesIfNew() {
    ===================================================================== */
 // il documento del lettore PDF aperto, che Affianca può riusare
 const PdfShared = { id: '', doc: null };
+const SPLIT_ICONS = {
+  swapH: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h15M15 4l4 4-4 4M20 16H5M9 12l-4 4 4 4"/></svg>',
+  swapV: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20V5M4 9l4-4 4 4M16 4v15M12 15l4 4 4-4"/></svg>',
+  stack: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 12h16"/></svg>',
+  side: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 4v16"/></svg>'
+};
 const Split = {
   KEY: 'nb-split',
   el: null,
@@ -1431,7 +1443,26 @@ const Split = {
   rendered: new Map(),
   prefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { p = {}; } return { w: 0.5, h: 0.5, ...p }; },
   setPrefs(ch) { const p = { ...this.prefs(), ...ch }; try { localStorage.setItem(this.KEY, JSON.stringify(p)); } catch { /* niente */ } return p; },
-  side: () => matchMedia('(min-width: 700px)').matches,
+  // v3.65: affiancate o una sopra l’altra, e scambiabili (pannello a sinistra o in alto)
+  wideOk: () => matchMedia('(min-width: 700px)').matches,
+  side() { return this.wideOk() && !this.prefs().stack; },
+  swapped() { return !!this.prefs().swap; },
+  applyMode() {
+    const b = document.body.classList;
+    const open = this.isOpen();
+    b.toggle('split-stack', open && this.wideOk() && !!this.prefs().stack);
+    b.toggle('split-swap', open && this.swapped());
+    b.toggle('split-top', open && this.swapped() && !this.side());
+    if (!this.el) return;
+    const side = this.side();
+    const sw = $('[data-sp="swap"]', this.el), or = $('[data-sp="orient"]', this.el);
+    sw.innerHTML = side ? SPLIT_ICONS.swapH : SPLIT_ICONS.swapV;
+    sw.title = sw.ariaLabel = 'Scambia le due finestre';
+    or.hidden = !this.wideOk();
+    or.innerHTML = side ? SPLIT_ICONS.stack : SPLIT_ICONS.side;
+    or.title = or.ariaLabel = side ? 'Una sopra l’altra' : 'Una accanto all’altra';
+    $('.split-grip', this.el).setAttribute('aria-orientation', side ? 'vertical' : 'horizontal');
+  },
   isOpen() { return document.body.classList.contains('split-open'); },
   leftW() { return window.innerWidth >= 900 && !document.body.classList.contains('nav-hidden') ? 232 : 0; },
   maxW() { return Math.max(300, window.innerWidth - this.leftW() - 300); },
@@ -1457,6 +1488,11 @@ const Split = {
     el.hidden = true;
     el.innerHTML = `
       <div class="sh-grip split-grip" role="separator" tabindex="0" aria-label="Trascina per cambiare la dimensione del pannello; anche con le frecce"></div>
+      <div class="split-ctl" role="group" aria-label="Disposizione delle due finestre">
+        <button type="button" data-sp="swap"></button>
+        <span class="split-handle" aria-hidden="true"></span>
+        <button type="button" data-sp="orient"></button>
+      </div>
       <header class="split-head">
         <div class="split-title"><small class="split-kind"></small><strong class="split-name"></strong></div>
         <div class="split-acts">
@@ -1489,6 +1525,9 @@ const Split = {
       if (e.target.matches('[data-sp-bm]') && e.target.value) { this.goPage(+e.target.value); e.target.value = ''; }
     });
     this.bindGrip($('.split-grip', el));
+    // la maniglia al centro dei comandi trascina come il bordo
+    this.bindGrip($('.split-handle', el));
+    window.addEventListener('resize', () => { if (this.isOpen()) this.applyMode(); });
     const body = $('.split-body', el);
     body.addEventListener('scroll', () => this.trackPage(), { passive: true });
     // due dita per lo zoom del PDF
@@ -1511,15 +1550,18 @@ const Split = {
     });
     grip.addEventListener('pointermove', e => {
       if (!d || e.pointerId !== d.id) return;
-      if (this.side()) this.apply({ w: d.w - (e.clientX - d.x) }); else this.apply({ hPx: d.h - (e.clientY - d.y) });
+      // il pannello cresce verso la parte principale, da qualunque lato sia
+      const k = this.swapped() ? -1 : 1;
+      if (this.side()) this.apply({ w: d.w - k * (e.clientX - d.x) }); else this.apply({ hPx: d.h - k * (e.clientY - d.y) });
     });
     const end = e => { if (!d || e.pointerId !== d.id) return; d = null; this.el.classList.remove('resizing'); this.savePos(); window.dispatchEvent(new Event('resize')); };
     grip.addEventListener('pointerup', end);
     grip.addEventListener('pointercancel', end);
     grip.addEventListener('keydown', e => {
-      const dir = { ArrowLeft: 1, ArrowRight: -1, ArrowUp: 1, ArrowDown: -1 }[e.key];
+      let dir = { ArrowLeft: 1, ArrowRight: -1, ArrowUp: 1, ArrowDown: -1 }[e.key];
       if (!dir) return;
       e.preventDefault();
+      if (this.swapped()) dir = -dir;
       if (this.side()) this.apply({ w: this.curW() + dir * 40 }); else this.apply({ hPx: this.curH() + dir * 40 });
       this.savePos();
     });
@@ -1531,6 +1573,7 @@ const Split = {
     this.el.hidden = false;
     const was = this.isOpen();
     document.body.classList.add('split-open');
+    this.applyMode();
     this.apply();
     if (!was) setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
     this.item = item;
@@ -1734,6 +1777,11 @@ const Split = {
       } catch { /* niente */ }
       this.close();
       go(it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${pg}`);
+    } else if (a === 'swap' || a === 'orient') {
+      this.setPrefs(a === 'swap' ? { swap: !this.swapped() } : { stack: !this.prefs().stack });
+      this.applyMode();
+      this.apply();
+      setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
     } else if (a === 'prev') this.goPage((this.curPage || 1) - 1);
     else if (a === 'next') this.goPage((this.curPage || 1) + 1);
     else if (a === 'z+') this.setZoom(this.zoom * 1.25);
@@ -1749,6 +1797,7 @@ const Split = {
     this.rendered.clear();
     $('.split-body', this.el).innerHTML = '';
     this.frame = null;
+    this.applyMode();
     setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
   },
   // scegli cosa mettere di fianco: prima quello che è vicino alla pagina aperta
@@ -1947,22 +1996,25 @@ const PAD_HL = [['#facc15', 'Giallo'], ['#4ade80', 'Verde'], ['#f472b6', 'Rosa']
 const PAD_ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4];
 const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
 // v3.56: sfondo del foglio (righe, quadretti o bianco) e foglio da esportare su carta bianca
-function padPaper(c, W, H, kind, color, alpha) {
+function padPaper(c, W, H, kind, color, alpha, vis = null) {
   if (kind === 'plain') return;
+  // vis = [x0, y0, x1, y1]: si disegna solo la parte visibile
+  const [vx0, vy0, vx1, vy1] = vis || [0, 0, W, H];
   c.save();
   c.strokeStyle = color;
   c.globalAlpha = alpha;
   c.lineWidth = 1;
   const step = Math.max(26, W * 0.06);
   const sq = kind === 'grid' || kind === 'dots' ? step * 0.6 : step;
+  const from = (a, m) => Math.max(1, Math.floor(a / sq)) * sq;
   if (kind === 'dots') {
     c.fillStyle = color;
-    for (let y = sq; y < H; y += sq) for (let x = sq; x < W; x += sq) { c.beginPath(); c.arc(x, y, Math.max(1, W / 500), 0, Math.PI * 2); c.fill(); }
+    for (let y = from(vy0); y < Math.min(H, vy1 + sq); y += sq) for (let x = from(vx0); x < Math.min(W, vx1 + sq); x += sq) { c.beginPath(); c.arc(x, y, Math.max(1, W / 500), 0, Math.PI * 2); c.fill(); }
     c.restore();
     return;
   }
-  for (let y = sq; y < H; y += sq) { c.beginPath(); c.moveTo(0, Math.round(y) + 0.5); c.lineTo(W, Math.round(y) + 0.5); c.stroke(); }
-  if (kind === 'grid') for (let x = sq; x < W; x += sq) { c.beginPath(); c.moveTo(Math.round(x) + 0.5, 0); c.lineTo(Math.round(x) + 0.5, H); c.stroke(); }
+  for (let y = from(vy0); y < Math.min(H, vy1 + sq); y += sq) { c.beginPath(); c.moveTo(Math.max(0, vx0), Math.round(y) + 0.5); c.lineTo(Math.min(W, vx1), Math.round(y) + 0.5); c.stroke(); }
+  if (kind === 'grid') for (let x = from(vx0); x < Math.min(W, vx1 + sq); x += sq) { c.beginPath(); c.moveTo(Math.round(x) + 0.5, Math.max(0, vy0)); c.lineTo(Math.round(x) + 0.5, Math.min(H, vy1)); c.stroke(); }
   c.restore();
 }
 // l’evidenziatore: un solo tracciato trasparente, così le sovrapposizioni non fanno chiazze
@@ -2072,7 +2124,7 @@ const Pad = {
           <button type="button" class="sh-ic" data-pa="close" aria-label="Chiudi il blocco note" title="Chiudi">${SH_ICONS.close}</button>
         </div>
       </header>
-      <div class="pad-body"><div class="pad-sheet"><canvas class="pad-canvas" aria-label="Foglio per scrivere a mano"></canvas><canvas class="pad-live" aria-hidden="true"></canvas></div></div>`;
+      <div class="pad-body"><div class="pad-view"><canvas class="pad-canvas" aria-label="Foglio per scrivere a mano"></canvas><canvas class="pad-live" aria-hidden="true"></canvas></div><div class="pad-sheet" aria-hidden="true"></div></div>`;
     document.body.append(el);
     this.el = el;
     this.canvas = $('.pad-canvas', el);
@@ -2103,6 +2155,11 @@ const Pad = {
     });
     this.bindGrip($('.pad-grip', el));
     this.bindDraw();
+    $('.pad-body', el).addEventListener('scroll', () => {
+      if (this.rafS || !this.data) return;
+      this.rafS = requestAnimationFrame(() => { this.rafS = 0; this.clearLive(); this.redraw(); });
+    }, { passive: true });
+    new MutationObserver(() => { this.paperBg = ''; this.lineCol = ''; if (this.isOpen() && this.data) this.redraw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
     new ResizeObserver(() => { if (this.isOpen()) this.layout(); }).observe($('.pad-body', el));
     el.addEventListener('keydown', e => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z')))) { e.preventDefault(); this.act('redo'); return; }
@@ -2124,6 +2181,7 @@ const Pad = {
     this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });
     // dopo lo snapshot gli oggetti nella pagina restano gli stessi della selezione
     this.sel.forEach(s => { if (ch.c) s.c = ch.c; if (ch.w) s.w = s.k === 'hl' ? ch.w * 3.2 : ch.w; });
+    this.bbs = null;
     this.redraw();
     this.saveSoon();
   },
@@ -2251,19 +2309,42 @@ const Pad = {
     const w = Math.round(w0 * (this.zoom || 1));
     const minH = body.clientHeight;
     const h = Math.max(minH, Math.round((pg.h || 1.6) * w));
-    // tela entro ~10 milioni di pixel: più grande, il tablet fa fatica a scriverci sopra
-    const dpr = Math.min(3, window.devicePixelRatio || 1, Math.sqrt(10e6 / Math.max(1, w * h)));
-    this.W = w; this.H = h; this.dpr = dpr;
+    // v3.66: la tela è grande solo quanto la parte visibile (come nelle app di disegno);
+    // il foglio intero è uno spazio vuoto che dà la misura dello scorrimento. Così la tela
+    // resta piccola anche con fogli lunghi e zoom, e il tablet la disegna con la scheda grafica.
+    const vw = w0, vh = minH;
+    const dpr = Math.min(3, window.devicePixelRatio || 1, Math.sqrt(6e6 / Math.max(1, vw * vh)));
+    this.W = w; this.H = h; this.dpr = dpr; this.VW = vw; this.VH = vh;
+    const view = $('.pad-view', this.el);
+    view.style.width = `${vw}px`; view.style.height = `${vh}px`;
     const cv = this.canvas;
-    cv.style.width = `${w}px`; cv.style.height = `${h}px`; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-    $('.pad-sheet', this.el).style.width = `${w}px`;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cv.style.width = `${vw}px`; cv.style.height = `${vh}px`; cv.width = Math.round(vw * dpr); cv.height = Math.round(vh * dpr);
+    this.sizeSheet();
     this.clearLive();
     $('.pad-zv', this.el).textContent = `${Math.round((this.zoom || 1) * 100)}%`;
     this.redraw();
     $('.pad-pn', this.el).textContent = `${this.page + 1} / ${this.data.pages.length}`;
     $('[data-pa="prev"]', this.el).disabled = this.page === 0;
     $('[data-pa="next"]', this.el).disabled = this.page >= this.data.pages.length - 1;
+  },
+  // lo spazio da scorrere: largo e alto quanto il foglio intero
+  sizeSheet() {
+    const sh = $('.pad-sheet', this.el);
+    sh.style.width = `${this.W}px`;
+    sh.style.height = `${this.H}px`;
+    sh.style.marginTop = `${-this.VH}px`;
+  },
+  scroll() { const b = $('.pad-body', this.el); return [b.scrollLeft, b.scrollTop]; },
+  // riquadro dei tratti (in proporzione alla larghezza), ricordato finché il tratto non cambia
+  bbOf(s) {
+    const m = this.bbs || (this.bbs = new WeakMap());
+    const k = m.get(s);
+    if (k && k.n === s.p.length && k.p === s.p) return k.b;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const q of s.p) { if (q[0] < x0) x0 = q[0]; if (q[0] > x1) x1 = q[0]; if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; }
+    const b = [x0 - s.w, y0 - s.w, x1 + s.w, y1 + s.w];
+    m.set(s, { n: s.p.length, p: s.p, b });
+    return b;
   },
   // zoom attorno a un punto del riquadro (fx, fy: dal suo angolo in alto a sinistra)
   setZoom(z, fx, fy) {
@@ -2284,12 +2365,23 @@ const Pad = {
   },
   inkColor(c) { return c === 'ink' ? getComputedStyle(document.body).getPropertyValue('--text').trim() || '#111' : c; },
   redraw() {
-    const c = this.ctx;
+    const c = this.ctx, dpr = this.dpr || 1;
+    const [sl, st] = this.scroll();
+    this.sl = sl; this.st = st;
     // tela opaca: lo sfondo lo dipinge lei, con il colore della pagina
-    c.fillStyle = getComputedStyle($('.pad-body', this.el)).backgroundColor || '#fff';
-    c.fillRect(0, 0, this.W, this.H);
-    padPaper(c, this.W, this.H, this.bg(), getComputedStyle(document.body).getPropertyValue('--line').trim() || '#ccc', 0.45);
-    this.pg().strokes.forEach(s => this.drawStroke(s));
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.fillStyle = this.paperBg || (this.paperBg = getComputedStyle($('.pad-body', this.el)).backgroundColor || '#fff');
+    c.fillRect(0, 0, this.VW, this.VH);
+    // da qui in poi si disegna nelle coordinate del foglio, spostate dello scorrimento
+    c.setTransform(dpr, 0, 0, dpr, -sl * dpr, -st * dpr);
+    const vis = [sl, st, sl + this.VW, st + this.VH];
+    padPaper(c, this.W, this.H, this.bg(), this.lineCol || (this.lineCol = getComputedStyle(document.body).getPropertyValue('--line').trim() || '#ccc'), 0.45, vis);
+    const W = this.W, m = 4;
+    for (const s of this.pg().strokes) {
+      const b = this.bbOf(s);
+      if (b[2] * W < vis[0] - m || b[0] * W > vis[2] + m || b[3] * W < vis[1] - m || b[1] * W > vis[3] + m) continue;
+      this.drawStroke(s);
+    }
     this.drawSel();
   },
   bg() { return (this.data && this.data.bg) || this.prefs().bg || 'lines'; },
@@ -2343,7 +2435,11 @@ const Pad = {
     const cv = this.canvas;
     // la posizione del foglio si legge una volta quando appoggi la penna, non a ogni movimento
     let rect = null;
-    const pos = e => { const r = rect || cv.getBoundingClientRect(); return [(e.clientX - r.left) / this.W, (e.clientY - r.top) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5]; };
+    const pos = e => {
+      const r = rect || cv.getBoundingClientRect();
+      const sl = rect ? rect.sl : this.scroll()[0], st = rect ? rect.st : this.scroll()[1];
+      return [(e.clientX - r.left + sl) / this.W, (e.clientY - r.top + st) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5];
+    };
     const erase = pt => {
       const pg = this.pg();
       const rad = 12 / this.W;
@@ -2390,8 +2486,7 @@ const Pad = {
       this.drawing = null;
       pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, fx: (a.x + b.x) / 2 - r.left, fy: (a.y + b.y) / 2 - r.top, k: 1, mx0: (a.x + b.x) / 2, my0: (a.y + b.y) / 2, sl: body().scrollLeft, st: body().scrollTop };
       this.pinchMoved = false;
-      const sheet = $('.pad-sheet', this.el);
-      sheet.style.transformOrigin = `${pinch.fx + body().scrollLeft}px ${pinch.fy + body().scrollTop}px`;
+      $('.pad-view', this.el).style.transformOrigin = `${pinch.fx}px ${pinch.fy}px`;
     };
     const movePinch = () => {
       const [a, b] = [...fingers.values()];
@@ -2401,12 +2496,12 @@ const Pad = {
       // le due dita spostate insieme fanno scorrere il foglio
       body().scrollLeft = pinch.sl - ((a.x + b.x) / 2 - pinch.mx0);
       body().scrollTop = pinch.st - ((a.y + b.y) / 2 - pinch.my0);
-      $('.pad-sheet', this.el).style.transform = `scale(${pinch.k})`;
+      $('.pad-view', this.el).style.transform = `scale(${pinch.k})`;
     };
     const endPinch = () => {
       const p = pinch;
       pinch = null;
-      $('.pad-sheet', this.el).style.transform = '';
+      $('.pad-view', this.el).style.transform = '';
       if (p && Math.abs(p.k - 1) > 0.04) this.setZoom((this.zoom || 1) * p.k, p.fx, p.fy);
     };
     body().addEventListener('wheel', e => {
@@ -2419,7 +2514,7 @@ const Pad = {
       if (e.button > 0 && !penErases(e)) return;
       if (e.pointerType === 'pen') this.penSeen = true;
       e.preventDefault();
-      rect = cv.getBoundingClientRect();
+      { const r = cv.getBoundingClientRect(); const [sl, st] = this.scroll(); rect = { left: r.left, top: r.top, sl, st }; }
       try { cv.setPointerCapture(e.pointerId); } catch { /* niente */ }
       if (e.pointerType === 'touch') {
         fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -2490,6 +2585,7 @@ const Pad = {
         const dx = pt[0] - d.last[0], dy = pt[1] - d.last[1];
         d.last = pt;
         this.sel.forEach(s => s.p.forEach(q => { q[0] = +(q[0] + dx).toFixed(4); q[1] = +(q[1] + dy).toFixed(4); }));
+        this.bbs = null;
         this.redraw();
         return;
       }
@@ -2535,7 +2631,7 @@ const Pad = {
       // scrivendo in fondo il foglio si allunga
       const pg = this.pg();
       const lastY = d.s ? d.s.p[d.s.p.length - 1][1] * this.W : 0;
-      if (d.s && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.layout(); rect = cv.getBoundingClientRect(); }
+      if (d.s && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.H = Math.round(pg.h * this.W); this.sizeSheet(); }
     });
     const inPoly = (x, y, poly) => { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi) inside = !inside; } return inside; };
     const end = e => {
@@ -2574,9 +2670,10 @@ const Pad = {
     // la tela trasparente esiste solo mentre usi l’evidenziatore
     if (this.live.hidden) {
       const lv = this.live, dpr = this.dpr || 1;
-      lv.style.width = `${this.W}px`; lv.style.height = `${this.H}px`;
-      lv.width = Math.round(this.W * dpr); lv.height = Math.round(this.H * dpr);
-      this.lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const [sl, st] = this.scroll();
+      lv.style.width = `${this.VW}px`; lv.style.height = `${this.VH}px`;
+      lv.width = Math.round(this.VW * dpr); lv.height = Math.round(this.VH * dpr);
+      this.lctx.setTransform(dpr, 0, 0, dpr, -sl * dpr, -st * dpr);
       lv.hidden = false;
       from = 0;
     }

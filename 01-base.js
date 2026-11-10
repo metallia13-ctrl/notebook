@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.64';
+const APP_VERSION = '3.66';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
