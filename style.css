@@ -3773,3 +3773,4 @@ body.embed .view { margin: 0 !important; max-width: none !important; padding: 0 
 .pad-zoom { display: inline-flex; align-items: center; margin: 0 2px; }
 .pad-zv { min-width: 46px; font-variant-numeric: tabular-nums; font-size: 0.8rem; }
 [data-pt="eraser"].area { box-shadow: inset 0 -3px 0 var(--accent); }
+.pad-live[hidden] { display: none; }

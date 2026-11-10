@@ -1284,6 +1284,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.64", title: "blocco note più veloce quando scrivi", html: `      <ul>
+        <li>La scrittura nel blocco note è più reattiva: la tela trasparente dell’evidenziatore esiste solo mentre lo usi (prima pesava sempre, grande quanto il foglio), la posizione del foglio si calcola una volta per tratto, e Chrome usa la modalità a bassa latenza pensata per la scrittura a mano, così l’inchiostro compare più vicino alla punta.</li>
+      </ul>` },
   { v: "3.63", title: "blocco note: zoom, evidenziatore e altro, come Samsung Notes", html: `      <ul>
         <li><strong>Zoom</strong>: con due dita (allarga per ingrandire, e spostandole scorri il foglio), con i pulsanti − / % / + in alto, al computer con Ctrl+rotellina o Ctrl + e Ctrl −. Toccando la percentuale torni al 100%. Ingrandito, il foglio scorre anche di lato.</li>
         <li><strong>Evidenziatore</strong> trasparente, con i suoi colori, che non copre la scrittura.</li>
@@ -2073,8 +2076,11 @@ const Pad = {
     document.body.append(el);
     this.el = el;
     this.canvas = $('.pad-canvas', el);
-    this.ctx = this.canvas.getContext('2d');
+    // v3.64: tela “a bassa latenza” (Chrome la usa per le app di scrittura a mano: l’inchiostro
+    // compare più vicino alla punta della penna); dove non c’è, è una tela normale
+    this.ctx = this.canvas.getContext('2d', { desynchronized: true, alpha: false }) || this.canvas.getContext('2d');
     this.live = $('.pad-live', el);
+    this.live.hidden = true;
     this.lctx = this.live.getContext('2d');
     $('[data-pcustom]', el).addEventListener('input', e => this.pickColor(e.target.value));
     el.addEventListener('click', e => {
@@ -2245,13 +2251,14 @@ const Pad = {
     const w = Math.round(w0 * (this.zoom || 1));
     const minH = body.clientHeight;
     const h = Math.max(minH, Math.round((pg.h || 1.6) * w));
-    // tela entro ~16 milioni di pixel: oltre, il tablet potrebbe non disegnarla
-    const dpr = Math.min(3, window.devicePixelRatio || 1, Math.sqrt(16e6 / Math.max(1, w * h)));
-    this.W = w; this.H = h;
-    [this.canvas, this.live].forEach(cv => { cv.style.width = `${w}px`; cv.style.height = `${h}px`; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); });
+    // tela entro ~10 milioni di pixel: più grande, il tablet fa fatica a scriverci sopra
+    const dpr = Math.min(3, window.devicePixelRatio || 1, Math.sqrt(10e6 / Math.max(1, w * h)));
+    this.W = w; this.H = h; this.dpr = dpr;
+    const cv = this.canvas;
+    cv.style.width = `${w}px`; cv.style.height = `${h}px`; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
     $('.pad-sheet', this.el).style.width = `${w}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this.lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.clearLive();
     $('.pad-zv', this.el).textContent = `${Math.round((this.zoom || 1) * 100)}%`;
     this.redraw();
     $('.pad-pn', this.el).textContent = `${this.page + 1} / ${this.data.pages.length}`;
@@ -2278,7 +2285,9 @@ const Pad = {
   inkColor(c) { return c === 'ink' ? getComputedStyle(document.body).getPropertyValue('--text').trim() || '#111' : c; },
   redraw() {
     const c = this.ctx;
-    c.clearRect(0, 0, this.W, this.H);
+    // tela opaca: lo sfondo lo dipinge lei, con il colore della pagina
+    c.fillStyle = getComputedStyle($('.pad-body', this.el)).backgroundColor || '#fff';
+    c.fillRect(0, 0, this.W, this.H);
     padPaper(c, this.W, this.H, this.bg(), getComputedStyle(document.body).getPropertyValue('--line').trim() || '#ccc', 0.45);
     this.pg().strokes.forEach(s => this.drawStroke(s));
     this.drawSel();
@@ -2332,7 +2341,9 @@ const Pad = {
   },
   bindDraw() {
     const cv = this.canvas;
-    const pos = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / this.W, (e.clientY - r.top) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5]; };
+    // la posizione del foglio si legge una volta quando appoggi la penna, non a ogni movimento
+    let rect = null;
+    const pos = e => { const r = rect || cv.getBoundingClientRect(); return [(e.clientX - r.left) / this.W, (e.clientY - r.top) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5]; };
     const erase = pt => {
       const pg = this.pg();
       const rad = 12 / this.W;
@@ -2408,6 +2419,7 @@ const Pad = {
       if (e.button > 0 && !penErases(e)) return;
       if (e.pointerType === 'pen') this.penSeen = true;
       e.preventDefault();
+      rect = cv.getBoundingClientRect();
       try { cv.setPointerCapture(e.pointerId); } catch { /* niente */ }
       if (e.pointerType === 'touch') {
         fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -2458,7 +2470,7 @@ const Pad = {
       const d = this.drawing;
       if (!d || e.pointerId !== d.id) return;
       e.preventDefault();
-      if (d.pan) { body().scrollTop = d.st - (e.clientY - d.y0); body().scrollLeft = d.sl - (e.clientX - d.x0); return; }
+      if (d.pan) { body().scrollTop = d.st - (e.clientY - d.y0); body().scrollLeft = d.sl - (e.clientX - d.x0); rect = null; return; }
       if (d.resize) {
         const pt = pos(e);
         const k = Math.max(0.15, Math.hypot(pt[0] - d.ox, pt[1] - d.oy) / d.d0);
@@ -2505,7 +2517,7 @@ const Pad = {
       }
       // tieni ferma la penna alla fine del tratto: diventa una linea dritta (come in Samsung Notes)
       if (d.s && !d.line) {
-        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) {
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) {
           d.x = e.clientX; d.y = e.clientY;
           clearTimeout(d.hold);
           const p0 = d.s.p[0], pn = d.s.p[d.s.p.length - 1];
@@ -2523,7 +2535,7 @@ const Pad = {
       // scrivendo in fondo il foglio si allunga
       const pg = this.pg();
       const lastY = d.s ? d.s.p[d.s.p.length - 1][1] * this.W : 0;
-      if (d.s && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.layout(); }
+      if (d.s && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.layout(); rect = cv.getBoundingClientRect(); }
     });
     const inPoly = (x, y, poly) => { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi) inside = !inside; } return inside; };
     const end = e => {
@@ -2534,6 +2546,7 @@ const Pad = {
       const d = this.drawing;
       if (!d || e.pointerId !== d.id) return;
       this.drawing = null;
+      rect = null;
       if (d.hold) clearTimeout(d.hold);
       if (d.s) {
         this.pushUndo({ type: 'add', page: this.page, s: d.s });
@@ -2558,6 +2571,15 @@ const Pad = {
   },
   // l’evidenziatore mentre scrivi va su una tela trasparente sopra il foglio
   liveHl(s, from = 0) {
+    // la tela trasparente esiste solo mentre usi l’evidenziatore
+    if (this.live.hidden) {
+      const lv = this.live, dpr = this.dpr || 1;
+      lv.style.width = `${this.W}px`; lv.style.height = `${this.H}px`;
+      lv.width = Math.round(this.W * dpr); lv.height = Math.round(this.H * dpr);
+      this.lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      lv.hidden = false;
+      from = 0;
+    }
     const c = this.lctx, W = this.W;
     c.save();
     c.strokeStyle = s.c;
@@ -2571,7 +2593,13 @@ const Pad = {
     c.stroke();
     c.restore();
   },
-  clearLive() { this.lctx.clearRect(0, 0, this.W, this.H); },
+  clearLive() {
+    if (!this.live || this.live.hidden) return;
+    this.live.hidden = true;
+    // tela a zero: libera la memoria del tablet
+    this.live.width = 0;
+    this.live.height = 0;
+  },
   async act(a) {
     if (!this.data) return;
     if (a === 'zin') { this.stepZoom(1); return; }
