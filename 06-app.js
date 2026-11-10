@@ -1026,6 +1026,7 @@ function takeSharedText() {
 const MORE_ITEMS = [
   ['resume', 'Riprendi', 'Torna all’ultima sezione che stavi studiando, nella stessa scheda e allo stesso punto'],
   ['pad', 'Blocco note', 'Scrivi a mano accanto a qualunque pagina, mentre ripeti'],
+  ['fs', 'Schermo intero', 'Nasconde le barre del tablet, in alto e in basso'],
   ['split', 'Affianca', 'Una sezione o un PDF di fianco, per confrontare due cose'],
   ['search', 'Cerca ovunque', 'Appunti, flashcard, testo dei PDF, glossario, note cliniche'],
   ['studyhub', 'StudyHub', 'Il tuo planner, aperto qui accanto senza lasciare il Notebook'],
@@ -1194,6 +1195,7 @@ async function init() {
   Nav.init();
   SelGesture.init();
   NavHide.init();
+  FullScreen.init();
   Resume.init();
   Pad.init();
   Split.init();
@@ -1284,6 +1286,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.67", title: "schermo intero", html: `      <ul>
+        <li><strong>Schermo intero</strong>: il pulsante con i quattro angoli (in cima alla barra laterale, nel blocco note, oppure Altro → Schermo intero) nasconde la barra in basso del tablet, con le app, e quella in alto. Così non apri più app per sbaglio mentre scrivi.</li>
+        <li>Per vedere le barre per un attimo scorri dal bordo in basso o in alto: ricompaiono e poi si nascondono da sole. Per uscire tocca di nuovo il pulsante, o fai il gesto Indietro. Se lo lasci attivo, alla prossima apertura dell’app torna al primo tocco.</li>
+      </ul>` },
   { v: "3.66", title: "blocco note veloce anche con fogli lunghi", html: `      <ul>
         <li>Il blocco note ora disegna solo la parte del foglio che vedi, come le app di disegno: prima la tela era grande quanto tutto il foglio, e nelle sezioni, dove i fogli si allungano, diventava enorme e il tablet rallentava sempre di più. Ora resta veloce qualunque sia la lunghezza del foglio o lo zoom. I tuoi appunti non cambiano.</li>
       </ul>` },
@@ -1905,6 +1911,61 @@ const NavHide = {
   }
 };
 
+/* ---------- v3.67: schermo intero ----------
+   Come i video: su Android nasconde la barra in basso (navigazione e barra delle app)
+   e quella in alto. Scorrendo dal bordo le barre riappaiono per un attimo; si esce con
+   il pulsante o con il gesto Indietro. Se lo lasci attivo, alla prossima apertura
+   torna al primo tocco (il browser lo permette solo dopo un tocco). */
+const FullScreen = {
+  KEY: 'nb-fullscreen',
+  ICON_ON: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+  ICON_OFF: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>',
+  supported() { const d = document.documentElement; return !!(d.requestFullscreen || d.webkitRequestFullscreen); },
+  isOn() { return !!(document.fullscreenElement || document.webkitFullscreenElement); },
+  wanted() { try { return localStorage.getItem(this.KEY) === '1'; } catch { return false; } },
+  want(v) { try { localStorage.setItem(this.KEY, v ? '1' : '0'); } catch { /* solo una preferenza */ } },
+  async enter() {
+    const d = document.documentElement;
+    try {
+      if (d.requestFullscreen) await d.requestFullscreen({ navigationUI: 'hide' });
+      else d.webkitRequestFullscreen();
+      return true;
+    } catch { toast('Il browser non ha permesso lo schermo intero: tocca di nuovo il pulsante', 'err'); return false; }
+  },
+  async exit() { try { if (document.exitFullscreen) await document.exitFullscreen(); else document.webkitExitFullscreen(); } catch { /* già fuori */ } },
+  async toggle() {
+    if (!this.supported()) { toast('Questo browser non ha lo schermo intero'); return; }
+    if (this.isOn()) { this.want(false); await this.exit(); }
+    else if (await this.enter()) { this.want(true); if (!this.told) { this.told = true; toast('Schermo intero: scorri dal bordo in basso o in alto per vedere le barre per un attimo; per uscire usa questo pulsante o il gesto Indietro'); } }
+    this.paint();
+  },
+  paint() {
+    const on = this.isOn();
+    $$('[data-fs-btn]').forEach(b => {
+      b.innerHTML = on ? this.ICON_OFF : this.ICON_ON;
+      b.setAttribute('aria-pressed', String(on));
+      b.setAttribute('aria-label', on ? 'Esci dallo schermo intero' : 'Schermo intero');
+      b.title = on ? 'Esci dallo schermo intero' : 'Schermo intero: nasconde le barre del tablet';
+    });
+    $$('a[href="#/fs"] span').forEach(s => { s.textContent = on ? 'Esci dallo schermo intero' : 'Schermo intero'; });
+    document.body.classList.toggle('fs-on', on);
+  },
+  init() {
+    if (!this.supported()) { $$('a[href="#/fs"]').forEach(a => { a.hidden = true; }); return; }
+    const brand = $('.nav .brand');
+    if (brand && !$('#fsBtn')) brand.insertAdjacentHTML('beforeend', '<button type="button" class="nav-hide nav-fs" id="fsBtn" data-fs-btn></button>');
+    $('#fsBtn')?.addEventListener('click', () => this.toggle());
+    document.addEventListener('fullscreenchange', () => this.paint());
+    document.addEventListener('webkitfullscreenchange', () => this.paint());
+    // lasciato attivo: torna al primo tocco
+    if (this.wanted() && !this.isOn()) {
+      const again = () => { if (this.wanted() && !this.isOn()) this.enter().then(() => this.paint()); };
+      document.addEventListener('pointerup', again, { once: true, capture: true });
+    }
+    this.paint();
+  }
+};
+
 /* ---------- “Riprendi”: l’ultima sezione studiata, con la scheda e il punto ---------- */
 const Resume = {
   KEY: 'nb-last-study',
@@ -2120,6 +2181,7 @@ const Pad = {
           <span class="pad-pn" aria-live="polite"></span>
           <button type="button" class="pad-b" data-pa="next" aria-label="Pagina successiva">›</button>
           <button type="button" class="pad-b" data-pa="add" aria-label="Nuova pagina" title="Nuova pagina">＋</button>
+          <button type="button" class="sh-ic" data-pa="fs" data-fs-btn></button>
           <button type="button" class="sh-ic" data-pa="size"></button>
           <button type="button" class="sh-ic" data-pa="close" aria-label="Chiudi il blocco note" title="Chiudi">${SH_ICONS.close}</button>
         </div>
@@ -2127,6 +2189,7 @@ const Pad = {
       <div class="pad-body"><div class="pad-view"><canvas class="pad-canvas" aria-label="Foglio per scrivere a mano"></canvas><canvas class="pad-live" aria-hidden="true"></canvas></div><div class="pad-sheet" aria-hidden="true"></div></div>`;
     document.body.append(el);
     this.el = el;
+    FullScreen.paint();
     this.canvas = $('.pad-canvas', el);
     // v3.64: tela “a bassa latenza” (Chrome la usa per le app di scrittura a mano: l’inchiostro
     // compare più vicino alla punta della penna); dove non c’è, è una tela normale
@@ -2699,6 +2762,7 @@ const Pad = {
   },
   async act(a) {
     if (!this.data) return;
+    if (a === 'fs') { FullScreen.toggle(); return; }
     if (a === 'zin') { this.stepZoom(1); return; }
     if (a === 'zout') { this.stepZoom(-1); return; }
     if (a === 'z100') { this.setZoom(1); return; }
