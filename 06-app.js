@@ -1284,6 +1284,15 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.63", title: "blocco note: zoom, evidenziatore e altro, come Samsung Notes", html: `      <ul>
+        <li><strong>Zoom</strong>: con due dita (allarga per ingrandire, e spostandole scorri il foglio), con i pulsanti − / % / + in alto, al computer con Ctrl+rotellina o Ctrl + e Ctrl −. Toccando la percentuale torni al 100%. Ingrandito, il foglio scorre anche di lato.</li>
+        <li><strong>Evidenziatore</strong> trasparente, con i suoi colori, che non copre la scrittura.</li>
+        <li><strong>Tieni premuto per raddrizzare</strong>: alla fine di un tratto tieni ferma la penna un attimo e diventa una linea dritta; continuando a muoverti ne sposti l’estremo.</li>
+        <li><strong>Ripeti</strong> accanto ad Annulla (Ctrl+Y).</li>
+        <li><strong>Gomma per area</strong>: tocca di nuovo la gomma per passare da “per tratto” (cancella il tratto intero) a “per area” (cancella solo il pezzo sotto la gomma).</li>
+        <li><strong>Lazo</strong>: con una selezione, tocca un colore o uno spessore per cambiarli; trascina il quadratino nell’angolo per ridimensionarla; <strong>Duplica</strong> ne fa una copia.</li>
+        <li>Sfondo anche <strong>a puntini</strong>; più colori, e il <strong>+</strong> per sceglierne uno a piacere.</li>
+      </ul>` },
   { v: "3.62", title: "riconoscimento della voce più preciso con i termini medici", html: `      <ul>
         <li>Nell’<strong>Interrogazione</strong>, se hai la chiave di Gemini, puoi scegliere il riconoscimento <strong>Gemini</strong>: la risposta si registra e Gemini la trascrive in italiano riconoscendo i termini medici e anatomici dei tuoi appunti, e la valuta nella stessa richiesta (non costa una richiesta in più). L’inizio e le pause si misurano dal suono, quindi sono più affidabili. Dopo la valutazione, “Cosa ha capito il professore” mostra la trascrizione.</li>
         <li>Con il riconoscimento di <strong>Chrome</strong> (anche nell’Orale, nelle Domande e nella simulazione d’esame), l’app usa gli appunti della sezione come vocabolario: tra le trascrizioni proposte sceglie quella con più termini degli appunti e corregge le parole quasi uguali a un termine lungo (per esempio un nome anatomico storpiato).</li>
@@ -1930,7 +1939,9 @@ const PadDB = {
   async put(k, v) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('pads', 'readwrite'); tx.objectStore('pads').put(v, k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); },
   async del(k) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('pads', 'readwrite'); tx.objectStore('pads').delete(k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); }
 };
-const PAD_COLORS = [['ink', 'Inchiostro'], ['#2563eb', 'Blu'], ['#dc2626', 'Rosso'], ['#16a34a', 'Verde']];
+const PAD_COLORS = [['ink', 'Inchiostro'], ['#2563eb', 'Blu'], ['#dc2626', 'Rosso'], ['#16a34a', 'Verde'], ['#f59e0b', 'Arancio'], ['#9333ea', 'Viola']];
+const PAD_HL = [['#facc15', 'Giallo'], ['#4ade80', 'Verde'], ['#f472b6', 'Rosa'], ['#38bdf8', 'Azzurro']];
+const PAD_ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4];
 const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
 // v3.56: sfondo del foglio (righe, quadretti o bianco) e foglio da esportare su carta bianca
 function padPaper(c, W, H, kind, color, alpha) {
@@ -1940,9 +1951,29 @@ function padPaper(c, W, H, kind, color, alpha) {
   c.globalAlpha = alpha;
   c.lineWidth = 1;
   const step = Math.max(26, W * 0.06);
-  const sq = kind === 'grid' ? step * 0.6 : step;
+  const sq = kind === 'grid' || kind === 'dots' ? step * 0.6 : step;
+  if (kind === 'dots') {
+    c.fillStyle = color;
+    for (let y = sq; y < H; y += sq) for (let x = sq; x < W; x += sq) { c.beginPath(); c.arc(x, y, Math.max(1, W / 500), 0, Math.PI * 2); c.fill(); }
+    c.restore();
+    return;
+  }
   for (let y = sq; y < H; y += sq) { c.beginPath(); c.moveTo(0, Math.round(y) + 0.5); c.lineTo(W, Math.round(y) + 0.5); c.stroke(); }
   if (kind === 'grid') for (let x = sq; x < W; x += sq) { c.beginPath(); c.moveTo(Math.round(x) + 0.5, 0); c.lineTo(Math.round(x) + 0.5, H); c.stroke(); }
+  c.restore();
+}
+// l’evidenziatore: un solo tracciato trasparente, così le sovrapposizioni non fanno chiazze
+function padHlPath(c, s, W) {
+  c.save();
+  c.globalAlpha = 0.35;
+  c.strokeStyle = s.c === 'ink' ? '#facc15' : s.c;
+  c.lineWidth = Math.max(4, s.w * W);
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  c.beginPath();
+  s.p.forEach((q, i) => (i ? c.lineTo(q[0] * W, q[1] * W) : c.moveTo(q[0] * W, q[1] * W)));
+  if (s.p.length === 1) c.lineTo(s.p[0][0] * W + 0.1, s.p[0][1] * W);
+  c.stroke();
   c.restore();
 }
 function padExportCanvas(pg, bg, W = 1240) {
@@ -1959,6 +1990,7 @@ function padExportCanvas(pg, bg, W = 1240) {
   pg.strokes.forEach(s => {
     c.strokeStyle = c.fillStyle = s.c === 'ink' ? '#111' : s.c;
     const pts = s.p;
+    if (s.k === 'hl') { padHlPath(c, s, W); return; }
     if (pts.length === 1) { c.beginPath(); c.arc(pts[0][0] * W, pts[0][1] * W, Math.max(0.8, s.w * W * (pts[0][2] || 0.5)), 0, Math.PI * 2); c.fill(); return; }
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1], b = pts[i];
@@ -2003,15 +2035,25 @@ const Pad = {
         <div class="pad-title"><strong>Blocco note</strong>${helpBtn('pad')}<span class="pad-ctx"></span></div>
         <div class="pad-tools" role="toolbar" aria-label="Strumenti">
           <button type="button" class="pad-b" data-pt="pen" aria-label="Penna" title="Penna"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/></svg></button>
-          <button type="button" class="pad-b" data-pt="eraser" aria-label="Gomma" title="Gomma: tocca o passa sui tratti da togliere"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20h12"/><path d="M5.5 15.5 14 7l5 5-7.5 7.5H9z"/></svg></button>
+          <button type="button" class="pad-b" data-pt="hl" aria-label="Evidenziatore" title="Evidenziatore trasparente"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15l-3 3h6l1-1"/><path d="M9 15l7-11 4 3-7 11z"/><path d="M4 21h16" stroke-width="3" opacity=".45"/></svg></button>
+          <button type="button" class="pad-b" data-pt="eraser" aria-label="Gomma" title="Gomma: tocca di nuovo per scegliere tra “per tratto” e “per area”"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20h12"/><path d="M5.5 15.5 14 7l5 5-7.5 7.5H9z"/></svg></button>
           <button type="button" class="pad-b" data-pt="lasso" aria-label="Lazo" title="Lazo: circonda i tratti per selezionarli, poi trascinali per spostarli (il cestino elimina la selezione)"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="9" rx="8" ry="5.5" stroke-dasharray="3 2.5"/><path d="M7 13.5c-1 2 0 4 2 4.5 1.5.4 1.2 2.4-.5 2.5"/></svg></button>
           <button type="button" class="pad-b" data-pt="hand" aria-label="Scorri" title="Scorri il foglio con il dito"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5a6.5 6.5 0 0 1-6.5 6.5h-.6a6 6 0 0 1-4.9-2.6l-2.7-3.9a1.5 1.5 0 0 1 2.4-1.8L8 15"/></svg></button>
+          <span class="pad-zoom" role="group" aria-label="Zoom">
+            <button type="button" class="pad-b" data-pa="zout" aria-label="Rimpicciolisci" title="Rimpicciolisci (o due dita, o Ctrl+rotellina)">−</button>
+            <button type="button" class="pad-b pad-zv" data-pa="z100" title="Torna al 100%">100%</button>
+            <button type="button" class="pad-b" data-pa="zin" aria-label="Ingrandisci" title="Ingrandisci (o due dita, o Ctrl+rotellina)">+</button>
+          </span>
           <span class="pad-sep"></span>
-          ${PAD_COLORS.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="${l}" title="${l}" style="--c:${c === 'ink' ? 'var(--text)' : c}"></button>`).join('')}
+          <span class="pad-pens">${PAD_COLORS.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="${l}" title="${l}" style="--c:${c === 'ink' ? 'var(--text)' : c}"></button>`).join('')}</span>
+          <span class="pad-hls" hidden>${PAD_HL.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="Evidenziatore ${l.toLowerCase()}" title="${l}" style="--c:${c}"></button>`).join('')}</span>
+          <label class="pad-c pad-custom" title="Un colore a scelta"><input type="color" data-pcustom aria-label="Un colore a scelta"><span aria-hidden="true">+</span></label>
           <span class="pad-sep"></span>
           ${PAD_SIZES.map(([s, l], i) => `<button type="button" class="pad-b pad-s" data-ps="${s}" aria-label="Tratto ${l.toLowerCase()}" title="${l}"><i style="--d:${4 + i * 4}px"></i></button>`).join('')}
           <span class="pad-sep"></span>
-          <button type="button" class="pad-b" data-pa="undo" aria-label="Annulla l’ultimo tratto" title="Annulla (Ctrl+Z)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+          <button type="button" class="pad-b" data-pa="undo" aria-label="Annulla l’ultimo tratto" title="Annulla (Ctrl+Z; con le dita: tocco con due dita)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+          <button type="button" class="pad-b" data-pa="redo" aria-label="Ripeti" title="Ripeti (Ctrl+Y)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+          <button type="button" class="pad-b" data-pa="dup" hidden aria-label="Duplica la selezione" title="Duplica la selezione"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg></button>
           <button type="button" class="pad-b" data-pa="clear" aria-label="Svuota la pagina" title="Svuota la pagina"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
           <button type="button" class="pad-b pad-pen" data-pa="penonly" aria-pressed="false" title="Solo penna: il dito e il palmo non scrivono">✍︎</button>
           <span class="pad-sep"></span>
@@ -2027,37 +2069,75 @@ const Pad = {
           <button type="button" class="sh-ic" data-pa="close" aria-label="Chiudi il blocco note" title="Chiudi">${SH_ICONS.close}</button>
         </div>
       </header>
-      <div class="pad-body"><canvas class="pad-canvas" aria-label="Foglio per scrivere a mano"></canvas></div>`;
+      <div class="pad-body"><div class="pad-sheet"><canvas class="pad-canvas" aria-label="Foglio per scrivere a mano"></canvas><canvas class="pad-live" aria-hidden="true"></canvas></div></div>`;
     document.body.append(el);
     this.el = el;
-    this.canvas = $('canvas', el);
+    this.canvas = $('.pad-canvas', el);
     this.ctx = this.canvas.getContext('2d');
+    this.live = $('.pad-live', el);
+    this.lctx = this.live.getContext('2d');
+    $('[data-pcustom]', el).addEventListener('input', e => this.pickColor(e.target.value));
     el.addEventListener('click', e => {
       const b = e.target.closest('button');
       if (!b) return;
-      if (b.dataset.pt) { this.tool = b.dataset.pt; this.paintTools(); }
-      else if (b.dataset.pc) { this.color = b.dataset.pc; this.tool = 'pen'; this.paintTools(); }
-      else if (b.dataset.ps) { this.size = +b.dataset.ps; this.tool = 'pen'; this.paintTools(); }
+      if (b.dataset.pt) {
+        // un secondo tocco sulla gomma cambia il modo
+        if (b.dataset.pt === 'eraser' && this.tool === 'eraser') { this.eraseMode = this.eraseMode === 'area' ? 'stroke' : 'area'; toast(this.eraseMode === 'area' ? 'Gomma per area: cancella solo il pezzo che tocchi' : 'Gomma per tratto: cancella il tratto intero'); }
+        this.tool = b.dataset.pt;
+        this.paintTools();
+      }
+      else if (b.dataset.pc) this.pickColor(b.dataset.pc);
+      else if (b.dataset.ps) {
+        this.size = +b.dataset.ps;
+        if (this.sel && this.sel.length) { this.restyleSel({ w: this.size }); return; }
+        if (this.tool !== 'hl') this.tool = 'pen';
+        this.paintTools();
+      }
       else if (b.dataset.pa) this.act(b.dataset.pa);
     });
     this.bindGrip($('.pad-grip', el));
     this.bindDraw();
     new ResizeObserver(() => { if (this.isOpen()) this.layout(); }).observe($('.pad-body', el));
     el.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z')))) { e.preventDefault(); this.act('redo'); return; }
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); this.act('undo'); }
+      if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) { e.preventDefault(); this.stepZoom(1); }
+      if ((e.ctrlKey || e.metaKey) && e.key === '-') { e.preventDefault(); this.stepZoom(-1); }
       if ((e.key === 'Delete' || e.key === 'Backspace') && this.sel && this.sel.length && !/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) { e.preventDefault(); this.act('clear'); }
     });
+  },
+  pushUndo(u) { this.undo.push(u); this.redoStack = []; },
+  pickColor(c) {
+    // con una selezione del lazo, il colore va ai tratti scelti
+    if (this.sel && this.sel.length) { this.restyleSel({ c }); return; }
+    if (this.tool === 'hl') this.hlColor = c; else { this.color = c; this.tool = 'pen'; }
+    this.paintTools();
+  },
+  restyleSel(ch) {
+    const pg = this.pg();
+    this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });
+    // dopo lo snapshot gli oggetti nella pagina restano gli stessi della selezione
+    this.sel.forEach(s => { if (ch.c) s.c = ch.c; if (ch.w) s.w = s.k === 'hl' ? ch.w * 3.2 : ch.w; });
+    this.redraw();
+    this.saveSoon();
   },
   paintTools() {
     if (!this.el) return;
     $$('[data-pt]', this.el).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.pt === this.tool)));
-    $$('[data-pc]', this.el).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.pc === this.color)));
+    const hl = this.tool === 'hl';
+    $('.pad-pens', this.el).hidden = hl;
+    $('.pad-hls', this.el).hidden = !hl;
+    const cur = hl ? this.hlColor : this.color;
+    $$('[data-pc]', this.el).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.pc === cur)));
+    $('.pad-custom', this.el).style.setProperty('--c', /^#/.test(cur) && !$$('[data-pc]', this.el).some(b => b.dataset.pc === cur) ? cur : 'transparent');
+    $('[data-pt="eraser"]', this.el).classList.toggle('area', this.eraseMode === 'area');
+    $('[data-pa="dup"]', this.el).hidden = !(this.sel && this.sel.length);
     $$('[data-ps]', this.el).forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.ps === this.size)));
     $('[data-pa="penonly"]', this.el).setAttribute('aria-pressed', String(this.penOnly));
     this.canvas.style.touchAction = 'none';
     this.canvas.style.cursor = this.tool === 'hand' ? 'grab' : this.tool === 'eraser' ? 'cell' : this.tool === 'lasso' ? 'default' : 'crosshair';
     if (this.tool !== 'lasso' && this.sel) { this.sel = null; this.selBox = null; this.redraw(); }
-    this.setPrefs({ tool: this.tool === 'hand' ? 'pen' : this.tool, color: this.color, size: this.size, penOnly: this.penOnly });
+    this.setPrefs({ tool: this.tool === 'hand' ? 'pen' : this.tool, color: this.color, hlColor: this.hlColor, size: this.size, penOnly: this.penOnly, eraseMode: this.eraseMode });
   },
   bindGrip(grip) {
     let d = null;
@@ -2104,6 +2184,7 @@ const Pad = {
     if (typeof Split !== 'undefined' && Split.isOpen()) Split.close();
     const p = this.prefs();
     this.tool = p.tool || 'pen'; this.color = p.color || 'ink'; this.size = +p.size || 0.006; this.penOnly = !!p.penOnly;
+    this.hlColor = p.hlColor || '#facc15'; this.eraseMode = p.eraseMode || 'stroke'; this.zoom = +p.zoom || 1; this.redoStack = [];
     this.el.hidden = false;
     document.body.classList.add('pad-open');
     this.apply();
@@ -2157,22 +2238,42 @@ const Pad = {
   layout() {
     if (!this.el || !this.data) return;
     const body = $('.pad-body', this.el);
-    const w = body.clientWidth;
-    if (!w) return;
+    const w0 = body.clientWidth;
+    if (!w0) return;
     const pg = this.pg();
+    // v3.63: zoom; i tratti sono salvati in proporzione alla larghezza, quindi si ingrandiscono da soli
+    const w = Math.round(w0 * (this.zoom || 1));
     const minH = body.clientHeight;
     const h = Math.max(minH, Math.round((pg.h || 1.6) * w));
-    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    // tela entro ~16 milioni di pixel: oltre, il tablet potrebbe non disegnarla
+    const dpr = Math.min(3, window.devicePixelRatio || 1, Math.sqrt(16e6 / Math.max(1, w * h)));
     this.W = w; this.H = h;
-    this.canvas.style.width = `${w}px`;
-    this.canvas.style.height = `${h}px`;
-    this.canvas.width = Math.round(w * dpr);
-    this.canvas.height = Math.round(h * dpr);
+    [this.canvas, this.live].forEach(cv => { cv.style.width = `${w}px`; cv.style.height = `${h}px`; cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); });
+    $('.pad-sheet', this.el).style.width = `${w}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    $('.pad-zv', this.el).textContent = `${Math.round((this.zoom || 1) * 100)}%`;
     this.redraw();
     $('.pad-pn', this.el).textContent = `${this.page + 1} / ${this.data.pages.length}`;
     $('[data-pa="prev"]', this.el).disabled = this.page === 0;
     $('[data-pa="next"]', this.el).disabled = this.page >= this.data.pages.length - 1;
+  },
+  // zoom attorno a un punto del riquadro (fx, fy: dal suo angolo in alto a sinistra)
+  setZoom(z, fx, fy) {
+    const body = $('.pad-body', this.el);
+    z = Math.max(PAD_ZOOMS[0], Math.min(PAD_ZOOMS[PAD_ZOOMS.length - 1], +z.toFixed(2)));
+    if (fx === undefined) { fx = body.clientWidth / 2; fy = body.clientHeight / 3; }
+    const cx = (body.scrollLeft + fx) / this.W, cy = (body.scrollTop + fy) / this.W;
+    this.zoom = z;
+    this.setPrefs({ zoom: z });
+    this.layout();
+    body.scrollLeft = Math.max(0, cx * this.W - fx);
+    body.scrollTop = Math.max(0, cy * this.W - fy);
+  },
+  stepZoom(dir) {
+    const z = this.zoom || 1;
+    const next = dir > 0 ? PAD_ZOOMS.find(v => v > z + 0.01) : [...PAD_ZOOMS].reverse().find(v => v < z - 0.01);
+    if (next) this.setZoom(next);
   },
   inkColor(c) { return c === 'ink' ? getComputedStyle(document.body).getPropertyValue('--text').trim() || '#111' : c; },
   redraw() {
@@ -2187,8 +2288,8 @@ const Pad = {
     const b = this.el && $('[data-pa="bg"]', this.el);
     if (!b) return;
     const k = this.bg();
-    b.innerHTML = k === 'grid' ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16"/></svg>' : k === 'plain' ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>' : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 9.3h16M4 14.6h16"/></svg>';
-    b.title = `Sfondo: ${k === 'grid' ? 'quadretti' : k === 'plain' ? 'bianco' : 'righe'} (tocca per cambiare)`;
+    b.innerHTML = k === 'dots' ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><circle cx="9" cy="9" r="1"/><circle cx="15" cy="9" r="1"/><circle cx="9" cy="15" r="1"/><circle cx="15" cy="15" r="1"/></svg>' : k === 'grid' ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16"/></svg>' : k === 'plain' ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>' : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 9.3h16M4 14.6h16"/></svg>';
+    b.title = `Sfondo: ${{ grid: 'quadretti', dots: 'puntini', plain: 'bianco', lines: 'righe' }[k] || 'righe'} (tocca per cambiare)`;
   },
   // selezione del lazo: riquadro tratteggiato attorno ai tratti scelti
   drawSel() {
@@ -2205,10 +2306,16 @@ const Pad = {
     c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#7dd3fc';
     c.lineWidth = 1.5;
     c.strokeRect(...this.selBox);
+    // maniglia per ridimensionare, nell’angolo in basso a destra
+    const [bx, by, bw, bh] = this.selBox;
+    c.setLineDash([]);
+    c.fillStyle = c.strokeStyle;
+    c.fillRect(bx + bw - 7, by + bh - 7, 14, 14);
     c.restore();
   },
   drawStroke(s, from = 1) {
     const c = this.ctx, W = this.W, pts = s.p;
+    if (s.k === 'hl') { padHlPath(c, s, W); return; }
     c.strokeStyle = this.inkColor(s.c);
     c.lineCap = 'round';
     c.lineJoin = 'round';
@@ -2230,23 +2337,86 @@ const Pad = {
       const pg = this.pg();
       const rad = 12 / this.W;
       const before = pg.strokes.length;
+      if (this.eraseMode === 'area') {
+        // per area: tolgo solo i punti sotto la gomma e divido il tratto in pezzi
+        let changed = false;
+        const out = [];
+        pg.strokes.forEach(s => {
+          const hit = q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < rad + s.w / 2;
+          if (!s.p.some(hit)) { out.push(s); return; }
+          changed = true;
+          let run = [];
+          s.p.forEach(q => { if (hit(q)) { if (run.length > 1) out.push({ ...s, p: run }); run = []; } else run.push(q); });
+          if (run.length > 1) out.push({ ...s, p: run });
+        });
+        if (changed) {
+          if (!this.drawing || !this.drawing.snap) { this.pushUndo({ type: 'erase', page: this.page, strokes: pg.strokes }); if (this.drawing) this.drawing.snap = true; }
+          pg.strokes = out;
+          this.redraw();
+          this.saveSoon();
+        }
+        return;
+      }
       const keep = pg.strokes.filter(s => !s.p.some(q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < rad + s.w));
       if (keep.length !== before) {
-        this.undo.push({ type: 'erase', page: this.page, strokes: pg.strokes });
+        this.pushUndo({ type: 'erase', page: this.page, strokes: pg.strokes });
         pg.strokes = keep;
         this.redraw();
         this.saveSoon();
       }
     };
     const body = () => $('.pad-body', this.el);
+    // due dita: pizzico per lo zoom (mentre pizzichi il foglio si ingrandisce subito, poi si ridisegna nitido)
+    const fingers = new Map();
+    let pinch = null;
+    const startPinch = () => {
+      const [a, b] = [...fingers.values()];
+      const r = body().getBoundingClientRect();
+      const d = this.drawing;
+      // il dito che stava scrivendo non lascia il segno
+      if (d && d.s) { const pg = this.pg(); pg.strokes = pg.strokes.filter(x => x !== d.s); this.clearLive(); this.redraw(); }
+      if (d && d.hold) clearTimeout(d.hold);
+      this.drawing = null;
+      pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, fx: (a.x + b.x) / 2 - r.left, fy: (a.y + b.y) / 2 - r.top, k: 1, mx0: (a.x + b.x) / 2, my0: (a.y + b.y) / 2, sl: body().scrollLeft, st: body().scrollTop };
+      this.pinchMoved = false;
+      const sheet = $('.pad-sheet', this.el);
+      sheet.style.transformOrigin = `${pinch.fx + body().scrollLeft}px ${pinch.fy + body().scrollTop}px`;
+    };
+    const movePinch = () => {
+      const [a, b] = [...fingers.values()];
+      if (!a || !b) return;
+      pinch.k = Math.max(PAD_ZOOMS[0] / (this.zoom || 1), Math.min(PAD_ZOOMS[PAD_ZOOMS.length - 1] / (this.zoom || 1), Math.hypot(a.x - b.x, a.y - b.y) / pinch.d0));
+      if (Math.abs(pinch.k - 1) > 0.04) this.pinchMoved = true;
+      // le due dita spostate insieme fanno scorrere il foglio
+      body().scrollLeft = pinch.sl - ((a.x + b.x) / 2 - pinch.mx0);
+      body().scrollTop = pinch.st - ((a.y + b.y) / 2 - pinch.my0);
+      $('.pad-sheet', this.el).style.transform = `scale(${pinch.k})`;
+    };
+    const endPinch = () => {
+      const p = pinch;
+      pinch = null;
+      $('.pad-sheet', this.el).style.transform = '';
+      if (p && Math.abs(p.k - 1) > 0.04) this.setZoom((this.zoom || 1) * p.k, p.fx, p.fy);
+    };
+    body().addEventListener('wheel', e => {
+      if (!(e.ctrlKey || e.metaKey) || !this.isOpen()) return;
+      e.preventDefault();
+      const r = body().getBoundingClientRect();
+      this.setZoom((this.zoom || 1) * Math.exp(-e.deltaY * 0.0025), e.clientX - r.left, e.clientY - r.top);
+    }, { passive: false });
     cv.addEventListener('pointerdown', e => {
       if (e.button > 0 && !penErases(e)) return;
       if (e.pointerType === 'pen') this.penSeen = true;
       e.preventDefault();
       try { cv.setPointerCapture(e.pointerId); } catch { /* niente */ }
+      if (e.pointerType === 'touch') {
+        fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (fingers.size === 2) { startPinch(); return; }
+        if (fingers.size > 2 || pinch) return;
+      }
       // con la mano, o con le dita quando scrivi con la penna, il foglio scorre
       if (this.tool === 'hand' || ((this.penOnly || this.penSeen) && e.pointerType === 'touch')) {
-        this.drawing = { id: e.pointerId, pan: true, y0: e.clientY, st: body().scrollTop };
+        this.drawing = { id: e.pointerId, pan: true, x0: e.clientX, y0: e.clientY, sl: body().scrollLeft, st: body().scrollTop };
         return;
       }
       const pt = pos(e);
@@ -2254,10 +2424,17 @@ const Pad = {
       if (this.tool === 'lasso') {
         const px = pt[0] * this.W, py = pt[1] * this.W;
         const b = this.selBox;
-        // dentro la selezione: la sposto; fuori: nuovo lazo
+        // sulla maniglia: ridimensiono; dentro la selezione: la sposto; fuori: nuovo lazo
+        if (this.sel && this.sel.length && b && Math.abs(px - (b[0] + b[2])) < 18 && Math.abs(py - (b[1] + b[3])) < 18) {
+          const pg = this.pg();
+          this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });
+          const ox = (b[0] + 8) / this.W, oy = (b[1] + 8) / this.W;
+          this.drawing = { id: e.pointerId, resize: true, ox, oy, d0: Math.hypot(pt[0] - ox, pt[1] - oy) || 0.001, orig: this.sel.map(s => ({ s, p: s.p.map(q => q.slice()), w: s.w })) };
+          return;
+        }
         if (this.sel && this.sel.length && b && px >= b[0] && px <= b[0] + b[2] && py >= b[1] && py <= b[1] + b[3]) {
           const pg = this.pg();
-          this.undo.push({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })), keepSel: true });
+          this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })), keepSel: true });
           this.drawing = { id: e.pointerId, move: true, last: pt };
         } else {
           this.sel = null;
@@ -2269,16 +2446,33 @@ const Pad = {
       }
       this.sel = null;
       this.selBox = null;
-      const s = { c: this.color, w: this.size, p: [pt.map(v => +v.toFixed(4))] };
-      this.drawing = { id: e.pointerId, s };
+      $('[data-pa="dup"]', this.el).hidden = true;
+      const hl = this.tool === 'hl';
+      const s = hl ? { c: this.hlColor, w: this.size * 3.2, k: 'hl', p: [pt.map(v => +v.toFixed(4))] } : { c: this.color, w: this.size, p: [pt.map(v => +v.toFixed(4))] };
+      this.drawing = { id: e.pointerId, s, x: e.clientX, y: e.clientY };
       this.pg().strokes.push(s);
-      this.drawStroke(s);
+      if (hl) this.liveHl(s); else this.drawStroke(s);
     });
     cv.addEventListener('pointermove', e => {
+      if (e.pointerType === 'touch' && fingers.has(e.pointerId)) { fingers.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pinch) { e.preventDefault(); movePinch(); return; } }
       const d = this.drawing;
       if (!d || e.pointerId !== d.id) return;
       e.preventDefault();
-      if (d.pan) { body().scrollTop = d.st - (e.clientY - d.y0); return; }
+      if (d.pan) { body().scrollTop = d.st - (e.clientY - d.y0); body().scrollLeft = d.sl - (e.clientX - d.x0); return; }
+      if (d.resize) {
+        const pt = pos(e);
+        const k = Math.max(0.15, Math.hypot(pt[0] - d.ox, pt[1] - d.oy) / d.d0);
+        d.orig.forEach(o => { o.s.p = o.p.map(q => [+(d.ox + (q[0] - d.ox) * k).toFixed(4), +(d.oy + (q[1] - d.oy) * k).toFixed(4), q[2]]); o.s.w = o.w * k; });
+        this.redraw();
+        return;
+      }
+      if (d.line) {
+        // linea dritta: l’estremo segue la penna
+        const pt = pos(e);
+        d.s.p = [d.s.p[0], pt.map(v => +v.toFixed(4))];
+        if (d.s.k === 'hl') { this.clearLive(); this.liveHl(d.s); } else { this.redraw(); }
+        return;
+      }
       if (d.move) {
         const pt = pos(e);
         const dx = pt[0] - d.last[0], dy = pt[1] - d.last[1];
@@ -2307,7 +2501,24 @@ const Pad = {
         const last = d.s.p[d.s.p.length - 1];
         if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) * this.W < 1.2) continue;
         d.s.p.push(pt.map(v => +v.toFixed(4)));
-        this.drawStroke(d.s, d.s.p.length - 1);
+        if (d.s.k === 'hl') this.liveHl(d.s, d.s.p.length - 1); else this.drawStroke(d.s, d.s.p.length - 1);
+      }
+      // tieni ferma la penna alla fine del tratto: diventa una linea dritta (come in Samsung Notes)
+      if (d.s && !d.line) {
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 4) {
+          d.x = e.clientX; d.y = e.clientY;
+          clearTimeout(d.hold);
+          const p0 = d.s.p[0], pn = d.s.p[d.s.p.length - 1];
+          if (Math.hypot(pn[0] - p0[0], pn[1] - p0[1]) * this.W > 30) {
+            d.hold = setTimeout(() => {
+              if (this.drawing !== d) return;
+              d.line = true;
+              d.s.p = [d.s.p[0], d.s.p[d.s.p.length - 1]];
+              if (d.s.k === 'hl') { this.clearLive(); this.liveHl(d.s); } else this.redraw();
+              try { navigator.vibrate && navigator.vibrate(12); } catch { /* niente */ }
+            }, 650);
+          }
+        }
       }
       // scrivendo in fondo il foglio si allunga
       const pg = this.pg();
@@ -2316,27 +2527,80 @@ const Pad = {
     });
     const inPoly = (x, y, poly) => { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi) inside = !inside; } return inside; };
     const end = e => {
+      if (e.pointerType === 'touch') {
+        fingers.delete(e.pointerId);
+        if (pinch && fingers.size < 2) { endPinch(); return; }
+      }
       const d = this.drawing;
       if (!d || e.pointerId !== d.id) return;
       this.drawing = null;
-      if (d.s) { this.undo.push({ type: 'add', page: this.page, s: d.s }); this.saveSoon(); }
-      if (d.move) { this.saveSoon(); this.redraw(); }
+      if (d.hold) clearTimeout(d.hold);
+      if (d.s) {
+        this.pushUndo({ type: 'add', page: this.page, s: d.s });
+        if (d.s.k === 'hl') { this.clearLive(); this.redraw(); }
+        this.saveSoon();
+      }
+      if (d.move || d.resize) { this.saveSoon(); this.redraw(); }
       if (d.lasso) {
         // presi i tratti che stanno per almeno metà dentro il lazo
         const poly = d.lasso;
         const sel = poly.length > 2 ? this.pg().strokes.filter(s => s.p.filter(q => inPoly(q[0], q[1], poly)).length >= Math.max(1, s.p.length / 2)) : [];
         this.sel = sel.length ? sel : null;
         this.redraw();
-        if (sel.length) toast(`${sel.length} ${sel.length === 1 ? 'tratto selezionato' : 'tratti selezionati'}: trascinali per spostarli, il cestino li elimina`);
+        $('[data-pa="dup"]', this.el).hidden = !sel.length;
+        if (sel.length) toast(`${sel.length} ${sel.length === 1 ? 'tratto selezionato' : 'tratti selezionati'}: trascinali, ridimensionali dall’angolo, tocca un colore o uno spessore per cambiarli`);
       }
     };
     cv.addEventListener('pointerup', end);
     cv.addEventListener('pointercancel', end);
     cv.addEventListener('contextmenu', e => e.preventDefault());
-    twoFingerTap(cv, () => this.act('undo'), () => this.penOnly || this.penSeen || this.tool === 'hand');
+    twoFingerTap(cv, () => { if (!this.pinchMoved) this.act('undo'); }, () => this.penOnly || this.penSeen || this.tool === 'hand');
   },
+  // l’evidenziatore mentre scrivi va su una tela trasparente sopra il foglio
+  liveHl(s, from = 0) {
+    const c = this.lctx, W = this.W;
+    c.save();
+    c.strokeStyle = s.c;
+    c.lineWidth = Math.max(4, s.w * W);
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.beginPath();
+    const pts = s.p.slice(Math.max(0, from - 1));
+    pts.forEach((q, i) => (i ? c.lineTo(q[0] * W, q[1] * W) : c.moveTo(q[0] * W, q[1] * W)));
+    if (pts.length === 1) c.lineTo(pts[0][0] * W + 0.1, pts[0][1] * W);
+    c.stroke();
+    c.restore();
+  },
+  clearLive() { this.lctx.clearRect(0, 0, this.W, this.H); },
   async act(a) {
     if (!this.data) return;
+    if (a === 'zin') { this.stepZoom(1); return; }
+    if (a === 'zout') { this.stepZoom(-1); return; }
+    if (a === 'z100') { this.setZoom(1); return; }
+    if (a === 'redo') {
+      const r = (this.redoStack || []).pop();
+      if (!r) return;
+      const pg = this.data.pages[r.page];
+      if (r.type === 'add') { pg.strokes.push(r.s); this.undo.push({ type: 'add', page: r.page, s: r.s }); }
+      else { this.undo.push({ type: 'clear', page: r.page, strokes: pg.strokes }); pg.strokes = r.strokes; }
+      this.sel = null; this.selBox = null;
+      if (r.page !== this.page) { this.page = r.page; this.layout(); } else this.redraw();
+      this.paintTools();
+      this.saveSoon();
+      return;
+    }
+    if (a === 'dup' && this.sel && this.sel.length) {
+      const pg = this.pg();
+      this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.slice() });
+      const off = 14 / this.W;
+      const copies = this.sel.map(s => ({ ...s, p: s.p.map(q => [+(q[0] + off).toFixed(4), +(q[1] + off).toFixed(4), q[2]]) }));
+      pg.strokes.push(...copies);
+      this.sel = copies;
+      this.redraw();
+      this.saveSoon();
+      toast('Selezione duplicata: trascinala dove vuoi');
+      return;
+    }
     if (a === 'close') this.close();
     else if (a === 'size') {
       if (this.wide()) this.apply({ w: this.curW() >= this.maxW() - 4 ? 380 : this.maxW() });
@@ -2352,8 +2616,10 @@ const Pad = {
       const u = this.undo.pop();
       if (!u) return;
       const pg = this.data.pages[u.page];
-      if (u.type === 'add') pg.strokes = pg.strokes.filter(s => s !== u.s);
-      else if (u.type === 'erase' || u.type === 'clear') pg.strokes = u.strokes;
+      // quello che annulli si può ripetere
+      this.redoStack = this.redoStack || [];
+      if (u.type === 'add') { pg.strokes = pg.strokes.filter(s => s !== u.s); this.redoStack.push({ type: 'add', page: u.page, s: u.s }); }
+      else if (u.type === 'erase' || u.type === 'clear') { this.redoStack.push({ type: 'clear', page: u.page, strokes: pg.strokes }); pg.strokes = u.strokes; }
       this.sel = null;
       this.selBox = null;
       if (u.page !== this.page) { this.page = u.page; this.layout(); } else this.redraw();
@@ -2361,7 +2627,7 @@ const Pad = {
     } else if (a === 'clear' && this.sel && this.sel.length) {
       const pg = this.pg();
       const gone = new Set(this.sel);
-      this.undo.push({ type: 'clear', page: this.page, strokes: pg.strokes });
+      this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes });
       pg.strokes = pg.strokes.filter(s => !gone.has(s));
       this.sel = null;
       this.selBox = null;
@@ -2369,14 +2635,14 @@ const Pad = {
       this.saveSoon();
       toast(`${gone.size} ${gone.size === 1 ? 'tratto eliminato' : 'tratti eliminati'}`, '', { label: 'Annulla', fn: () => this.act('undo') });
     } else if (a === 'bg') {
-      const order = ['lines', 'grid', 'plain'];
+      const order = ['lines', 'grid', 'dots', 'plain'];
       const next = order[(order.indexOf(this.bg()) + 1) % order.length];
       this.data.bg = next;
       this.setPrefs({ bg: next });
       this.paintBg();
       this.redraw();
       this.saveSoon();
-      toast(`Sfondo: ${next === 'grid' ? 'quadretti' : next === 'plain' ? 'bianco' : 'righe'}`);
+      toast(`Sfondo: ${{ grid: 'quadretti', dots: 'puntini', plain: 'bianco', lines: 'righe' }[next]}`);
     } else if (a === 'save') {
       this.flush();
       const m = location.hash.match(/^#\/sec\/([^/]+)/);
@@ -2418,7 +2684,7 @@ const Pad = {
     } else if (a === 'clear') {
       const pg = this.pg();
       if (!pg.strokes.length) return;
-      this.undo.push({ type: 'clear', page: this.page, strokes: pg.strokes });
+      this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes });
       pg.strokes = [];
       pg.h = 1.6;
       this.layout();
@@ -2549,7 +2815,7 @@ const HELP = {
   diary: { t: 'Diario di tirocinio', b: `Una pagina per ogni giornata: data, reparto, tutor e le <b>procedure</b> (eseguite, assistite, osservate, quante volte). Scrivi casi e cose imparate sotto i titoli pronti. La scheda <b>Procedure</b> fa il totale, con i reparti e l’ultima volta.` },
   examq: { t: 'Domande d’esame', b: `La banca delle domande uscite agli esami. Ogni domanda ha materia, argomenti collegati, risposta o traccia, e le volte in cui è uscita (docente, anno, data, fonte): quando esce di nuovo si somma, così l’elenco “Le più frequenti” ti dice cosa chiedono di più.<br><br><b>Importa da Excel</b>: un foglio .xlsx (anche scaricato da Google Fogli) o un CSV, una domanda per riga. Scegli quali colonne sono domanda, risposta, materia, argomento, docente, anno, data, fonte e tag; “Scarica il modello” ti dà un foglio già pronto. Le domande uguali si sommano e gli argomenti si collegano da soli quando il titolo di una sezione compare nella domanda.<br><br><b>Allenati</b> sulle domande filtrate: le più frequenti, quelle di un docente o di un anno, quelle che sbagli. In ogni sezione, in fondo a Leggi, trovi le domande uscite su quell’argomento.` },
   split: { t: 'Affianca', b: `Apre di fianco una <b>sezione</b> o un <b>PDF</b>, mentre nella pagina principale resta quello che stai guardando: due sezioni, una sezione e le slide, due PDF, o un PDF accanto al lettore PDF.<br><br>Sul tablet e sul computer sta a destra (anche col tablet in verticale), sul telefono sotto. Trascina il bordo per dargli più o meno spazio.<br><br>Nel PDF: pagine ‹ ›, zoom (anche con due dita), salto ai segnalibri. <b>Cambia</b> mostra un’altra cosa, <b>Apri qui</b> la porta nella pagina principale.` },
-  pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Quando scrivi con la penna il palmo non lascia segni e con le dita scorri il foglio; <b>✍︎ Solo penna</b> lo attiva da subito.<br><br><b>Gomma della penna</b>: tieni premuto il pulsante laterale (S Pen) o gira la penna dalla parte della gomma (Staedtler Noris digital, Wacom, Surface). <b>Tocco con due dita</b>: annulla l’ultimo tratto (comodo con Apple Pencil, che non ha la gomma).` },
+  pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Quando scrivi con la penna il palmo non lascia segni e con le dita scorri il foglio; <b>✍︎ Solo penna</b> lo attiva da subito.<br><br><b>Gomma della penna</b>: tieni premuto il pulsante laterale (S Pen) o gira la penna dalla parte della gomma (Staedtler Noris digital, Wacom, Surface). <b>Tocco con due dita</b>: annulla l’ultimo tratto (comodo con Apple Pencil, che non ha la gomma).<br><br><b>Zoom</b>: allarga due dita (spostandole scorri il foglio), oppure − / % / + tra gli strumenti, o Ctrl+rotellina. <b>Evidenziatore</b> trasparente; <b>tieni ferma la penna</b> alla fine di un tratto per farlo diventare una linea dritta; <b>Ripeti</b> accanto ad Annulla. Tocca due volte la gomma per passare da “per tratto” a “per area”. Con il <b>lazo</b>: trascina, ridimensiona dal quadratino nell’angolo, tocca un colore o uno spessore per cambiarli, Duplica.` },
   semei: { t: 'Semeiotica', b: `Una scheda per ogni <b>manovra</b>, <b>segno</b> o <b>punto di repere</b>, divise tra semeiotica <b>clinica</b> e <b>chirurgica</b> e per distretto (che scegli tu, per esempio Addome o Torace).<br><br>Ogni scheda è una sezione: descrivi i passaggi, aggiungi foto con <b>＋ Foto</b> (poi puoi farne etichette da rimettere al posto giusto o un’image occlusion) e video nella scheda Video.<br><br><b>Esercitati</b> apre una scheda a caso tra quelle filtrate in modalità Orale: descrivi la manovra a voce e confronta.` },
   labRef: { t: 'Leggi un referto', b: `Scrivi esame e valore (anche la sigla): l’app usa i range delle tue schede e segna in giallo i valori bassi o alti e in rosso quelli critici. Indica il sesso per i range diversi.<br><br>È un esercizio di lettura: in un referto vero vale sempre il range stampato dal laboratorio.` },
   labCalc: { t: 'Calcoli di laboratorio', b: `Gap anionico (anche corretto per l’albumina), calcio corretto, eGFR con la CKD-EPI 2021, LDL di Friedewald, osmolalità calcolata e gap osmolare, sodio corretto per la glicemia. Sotto ogni calcolo c’è la formula.<br><br>Le unità sono quelle convenzionali (mg/dL, mEq/L) dei referti italiani.` },
