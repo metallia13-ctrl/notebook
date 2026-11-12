@@ -277,6 +277,17 @@ function clinicSheet(entry = null, prefill = {}) {
         <div id="cnAlgos"></div>
         <button class="btn sm ghost" type="button" data-algo-add>＋ Aggiungi un algoritmo</button>
       </details>
+      <details class="cn-group" ${(e.papers || []).length ? 'open' : ''}><summary>Articoli</summary>
+        <div class="tags" id="cnPapers"></div>
+        <input type="search" class="input" id="cnPpQ" placeholder="＋ Collega un articolo della bibliografia: scrivi titolo, autore o tag" autocomplete="off">
+        <ul class="list pick-list sp-link-res" id="cnPpRes"></ul>
+        <p class="hint">Gli articoli si aggiungono in Articoli (dal DOI o dal PDF); qui li colleghi alla nota.</p>
+      </details>
+      <details class="cn-group" ${(e.images || []).length ? 'open' : ''}><summary>Immagini</summary>
+        <p class="hint">Algoritmi, tabelle o schemi trovati in giro, anche screenshot dai social: caricali qui. La fonte di ogni immagine la puoi aggiungere anche dopo.</p>
+        <div class="cn-imgs" id="cnImgs"></div>
+        <button class="btn sm ghost" type="button" data-cnimg-add>＋ Aggiungi foto</button>
+      </details>
       ${group('Note', ['body'], ta('cnBody', 'Note libere', e.body || prefill.body, 4))}
       ${group('Link e fonti', ['links'], `
         ${ta('cnLinks', 'Link utili, uno per riga (anche “Nome | indirizzo”)', (e.links || []).join('\n'), 2, 'Orphanet | https://www.orpha.net/…')}
@@ -289,6 +300,49 @@ function clinicSheet(entry = null, prefill = {}) {
         <button class="btn primary" type="button" data-cn-act="ok">Salva</button>
       </div>`, { label: 'Nota clinica', onClose: resolve });
     bindTagField(sh.el, 'cnSyms');
+    // v3.70: articoli collegati
+    let pps = [...(e.papers || [])].filter(id => paperById(id));
+    const drawPps = () => { $('#cnPapers', sh.el).innerHTML = pps.map(paperById).filter(Boolean).map(p => `<span class="tag">${esc(p.title.slice(0, 70))}${p.title.length > 70 ? '…' : ''} <button type="button" class="tag-x" data-unpp="${p.id}" aria-label="Scollega">×</button></span>`).join('') || '<span class="hint">Nessun articolo collegato.</span>'; };
+    drawPps();
+    $('#cnPpQ', sh.el).addEventListener('input', ev => {
+      const f = foldAccents(ev.target.value.trim());
+      const hits = f ? papers().filter(p => !pps.includes(p.id) && foldAccents(`${p.title} ${p.authors} ${tagsOf(p).join(' ')} ${p.year}`).includes(f)).slice(0, 8) : [];
+      $('#cnPpRes', sh.el).innerHTML = hits.map(p => `<li><button type="button" class="row" data-addpp="${p.id}"><span class="row-main"><span class="row-title">${esc(p.title)}</span><span class="row-sub">${esc([authorsShort(p), p.journal, p.year].filter(Boolean).join(' · '))}</span></span></button></li>`).join('') || (f ? '<li class="hint">Nessun articolo trovato.</li>' : '');
+    });
+    sh.el.addEventListener('click', ev => {
+      const a = ev.target.closest('[data-addpp]');
+      if (a) { pps.push(a.dataset.addpp); drawPps(); $('#cnPpQ', sh.el).value = ''; $('#cnPpRes', sh.el).innerHTML = ''; return; }
+      const u = ev.target.closest('[data-unpp]');
+      if (u) { pps = pps.filter(x => x !== u.dataset.unpp); drawPps(); }
+    });
+    // v3.69: immagini della nota, ognuna con didascalia e fonte
+    let imgs = (e.images || []).map(x => ({ ...x }));
+    const readImgs = () => $$('.cn-img', sh.el).forEach(box => { const x = imgs[+box.dataset.ii]; if (!x) return; x.cap = $('[data-icap]', box).value.trim(); x.src = $('[data-isrc]', box).value.trim(); });
+    const drawImgs = () => {
+      $('#cnImgs', sh.el).innerHTML = imgs.map((x, i) => `<div class="cn-img" data-ii="${i}">
+        <img class="nb-img" data-img="${esc(x.id)}" alt="">
+        <div class="cn-img-f">
+          <input class="input" data-icap value="${esc(x.cap || '')}" placeholder="Didascalia, es. Algoritmo della sincope" aria-label="Didascalia">
+          <input class="input" data-isrc value="${esc(x.src || '')}" placeholder="Fonte: link, account o libro (anche dopo)" aria-label="Fonte">
+        </div>
+        <button class="btn sm ghost" type="button" data-idel="${i}" aria-label="Togli l’immagine">✕</button></div>`).join('');
+    };
+    drawImgs();
+    sh.el.addEventListener('click', async ev => {
+      if (ev.target.closest('[data-cnimg-add]')) {
+        const files = await chooseImageFiles();
+        if (!files.length) return;
+        readImgs();
+        for (const f of files) {
+          try { imgs.push({ id: (await saveImage(await compressImage(f, { max: 2200, quality: 0.86 }), '_clinical')).id, cap: '', src: '' }); }
+          catch (err) { toast(`${f.name}: ${err.message}`, 'err'); }
+        }
+        drawImgs();
+        return;
+      }
+      const d = ev.target.closest('[data-idel]');
+      if (d) { readImgs(); imgs.splice(+d.dataset.idel, 1); drawImgs(); }
+    });
     let algos = (e.algos || []).map(a => ({ ...a }));
     const drawAlgos = () => {
       $('#cnAlgos', sh.el).innerHTML = algos.map((a, i) => `<div class="cn-algo" data-ai="${i}">
@@ -360,6 +414,8 @@ function clinicSheet(entry = null, prefill = {}) {
         ddx, ddxText: v('#cnDdxText'),
         complications: v('#cnCompl'), staging: v('#cnStage'), prognosis: v('#cnProg'),
         therapy: v('#cnTher'), body: v('#cnBody'),
+        images: (readImgs(), imgs.map(x => ({ id: x.id, cap: x.cap || '', src: x.src || '' }))),
+        papers: pps,
         algos: ($$('.cn-algo', sh.el).forEach(box => { const a = algos[+box.dataset.ai]; $$('[data-af]', box).forEach(i => { a[i.dataset.af] = i.value; }); }), algos.filter(a => String(a.md || '').trim()).map(a => ({ t: String(a.t || '').trim(), md: a.md }))),
         links: $('#cnLinks', sh.el).value.split('\n').map(x => x.trim()).filter(Boolean)
       });
@@ -407,6 +463,8 @@ function showClinicNote(id) {
       ${row('Prognosi', md('prognosis'))}
       ${row('Terapia', md('therapy'))}
       ${(n.algos || []).map(a => `<div class="cn-row"><h3>${esc(a.t || 'Algoritmo')}</h3>${algoSvg(a.md, a.t)}</div>`).join('')}
+      ${(n.papers || []).map(paperById).filter(Boolean).length ? `<div class="cn-row"><h3>Articoli</h3><ul class="cn-papers">${(n.papers || []).map(paperById).filter(Boolean).map(p => `<li><a href="#/papers/${p.id}" data-g="pp">${p.star ? '★ ' : ''}${esc(p.title)}</a><small> · ${esc([authorsShort(p, 1), p.journal, p.year].filter(Boolean).join(' · '))}${p.status === 'read' ? '' : ` · ${esc(PAPER_STATUS.find(s => s[0] === (p.status || 'todo'))[1].toLowerCase())}`}</small></li>`).join('')}</ul></div>` : ''}
+      ${(n.images || []).length ? `<div class="cn-row"><h3>Immagini</h3><div class="cn-gal">${n.images.map(x => `<figure class="cn-fig"><img class="nb-img" data-img="${esc(x.id)}" alt="${esc(x.cap || '')}" title="Tocca per ingrandire">${x.cap || x.src ? `<figcaption>${esc(x.cap || '')}${x.src ? `<span class="cn-src">Fonte: ${/^https?:\/\//.test(x.src) ? `<a href="${esc(x.src)}" target="_blank" rel="noopener">${esc(x.src.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60))}</a>` : esc(x.src)}</span>` : '<span class="cn-src muted-inline">fonte da aggiungere</span>'}</figcaption>` : ''}</figure>`).join('')}</div></div>` : ''}
       ${row('Note', md('body'))}
     </div>
     ${labExams().some(x => (x.clinic || []).includes(n.id)) ? `<div class="fonti fonti-mini"><h3>Esami di laboratorio</h3><div class="tags">${labExams().filter(x => (x.clinic || []).includes(n.id)).map(x => `<a class="tag" href="#/lab/${x.id}" data-g="lab">${esc(x.name)}</a>`).join('')}</div></div>` : ''}
@@ -421,8 +479,10 @@ function showClinicNote(id) {
   $('[data-g="close"]', sh.el).onclick = () => sh.close();
   const go2 = $('[data-g="go"]', sh.el);
   if (go2) go2.onclick = () => sh.close();
-  $$('[data-g="lab"]', sh.el).forEach(a => { a.onclick = () => sh.close(); });
+  $$('[data-g="lab"], [data-g="pp"]', sh.el).forEach(a => { a.onclick = () => sh.close(); });
   $$('[data-cnopen]', sh.el).forEach(b => { b.onclick = () => { sh.close(); setTimeout(() => showClinicNote(b.dataset.cnopen), 0); }; });
+  // un tocco su un’immagine la ingrandisce dentro la nota, un altro la rimpicciolisce
+  $$('.cn-fig img', sh.el).forEach(img => img.addEventListener('click', () => img.closest('.cn-fig').classList.toggle('big')));
   // un tocco sul diagramma lo mostra a grandezza piena (si scorre), un altro lo rimette nella finestra
   $$('.algo-scroll', sh.el).forEach(box => box.addEventListener('click', () => {
     const svg = $('svg', box);
@@ -3154,4 +3214,301 @@ function viewImageQuiz(kind) {
     });
   };
   next();
+}
+
+/* =====================================================================
+   v3.70: Articoli — una bibliografia
+   Ogni articolo è un record (kind 'paper') con i dati bibliografici, lo stato di
+   lettura, i tag, la sintesi e il PDF (nella libreria, notebook “Articoli”). I dati si
+   compilano dal DOI con Crossref. Le note cliniche li collegano (n.papers).
+   ===================================================================== */
+const PAPER_TYPES = [['guide', 'Linee guida'], ['sr', 'Review sistematica o meta-analisi'], ['review', 'Review narrativa'], ['rct', 'Trial randomizzato'], ['obs', 'Studio osservazionale'], ['case', 'Case report'], ['other', 'Altro']];
+const PAPER_STATUS = [['todo', 'Da leggere'], ['reading', 'In lettura'], ['read', 'Letto']];
+const papers = () => state.links.filter(l => l.kind === 'paper');
+const paperById = id => state.links.find(l => l.id === id && l.kind === 'paper');
+const DOI_RE = /\b(10\.\d{4,9}\/[^\s"<>]+)/i;
+const cleanDoi = t => { const m = String(t || '').trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i, '').replace(/^doi:\s*/i, '').match(DOI_RE); return m ? m[1].replace(/[.,;)\]]+$/, '') : ''; };
+async function papersNb() {
+  let nb = state.notebooks.find(n => n.kind === 'papers');
+  if (!nb) { nb = { id: uid(), name: 'Articoli', kind: 'papers', created: Date.now() }; await saveNotebook(nb); }
+  return nb;
+}
+// i dati di un articolo dal suo DOI (Crossref, gratuito e senza chiave)
+async function crossrefLookup(doi) {
+  const r = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(r.status === 404 ? 'DOI non trovato' : 'Il registro degli articoli non risponde: riprova più tardi');
+  const m = (await r.json()).message || {};
+  const year = (m.issued?.['date-parts']?.[0]?.[0]) || (m.published?.['date-parts']?.[0]?.[0]) || '';
+  const tp = String(m.type || '');
+  return {
+    title: String((m.title || [])[0] || '').replace(/\s+/g, ' ').trim(),
+    authors: (m.author || []).map(a => [a.family, a.given].filter(Boolean).join(' ') || a.name || '').filter(Boolean).join('; '),
+    journal: String((m['container-title'] || [])[0] || (m['short-container-title'] || [])[0] || ''),
+    year: year ? String(year) : '',
+    volume: String(m.volume || ''), issue: String(m.issue || ''), pages: String(m.page || ''),
+    url: String(m.URL || ''),
+    guessType: /book/.test(tp) ? 'other' : ''
+  };
+}
+// il DOI scritto nelle prime pagine del PDF (e il titolo nei metadati, se c’è)
+async function doiFromPdf(file) {
+  try {
+    await ensurePdfJs();
+    const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    let doi = '', title = '';
+    try { title = String((await doc.getMetadata())?.info?.Title || '').trim(); } catch { /* niente */ }
+    for (let n = 1; n <= Math.min(2, doc.numPages) && !doi; n++) doi = cleanDoi(await pageText(doc, n));
+    doc.destroy();
+    return { doi, title: /^(untitled|microsoft word|document)/i.test(title) ? '' : title };
+  } catch { return { doi: '', title: '' }; }
+}
+// “Smolen JS, Aletaha D, McInnes IB, et al.” e la citazione completa (stile Vancouver)
+function authorsShort(p, max = 3) {
+  const list = String(p.authors || '').split(/\s*;\s*/).filter(Boolean).map(a => { const [fam, ...g] = a.split(' '); return `${fam} ${g.map(x => x[0]).join('').toUpperCase()}`.trim(); });
+  return list.length > max ? `${list.slice(0, max).join(', ')}, et al.` : list.join(', ');
+}
+function citation(p) {
+  const au = authorsShort(p, 6);
+  const parts = [au ? `${au.replace(/\.$/, '')}.` : '', p.title ? `${p.title.replace(/\.$/, '')}.` : '', p.journal ? `${p.journal}.` : ''];
+  let det = p.year || '';
+  if (p.volume) det += `;${p.volume}`;
+  if (p.issue) det += `(${p.issue})`;
+  if (p.pages) det += `:${p.pages}`;
+  if (det) parts.push(`${det}.`);
+  if (p.doi) parts.push(`doi:${p.doi}`);
+  return parts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+function risOf(list) {
+  const ty = { guide: 'JOUR', sr: 'JOUR', review: 'JOUR', rct: 'JOUR', obs: 'JOUR', case: 'JOUR', other: 'GEN' };
+  return list.map(p => {
+    const L = [`TY  - ${ty[p.ptype] || 'JOUR'}`, `TI  - ${p.title || ''}`];
+    String(p.authors || '').split(/\s*;\s*/).filter(Boolean).forEach(a => { const [fam, ...g] = a.split(' '); L.push(`AU  - ${fam}, ${g.join(' ')}`); });
+    if (p.journal) L.push(`JO  - ${p.journal}`);
+    if (p.year) L.push(`PY  - ${p.year}`);
+    if (p.volume) L.push(`VL  - ${p.volume}`);
+    if (p.issue) L.push(`IS  - ${p.issue}`);
+    if (p.pages) { const [sp, ep] = p.pages.split(/[-–]/); L.push(`SP  - ${sp}`); if (ep) L.push(`EP  - ${ep}`); }
+    if (p.doi) L.push(`DO  - ${p.doi}`);
+    if (p.url) L.push(`UR  - ${p.url}`);
+    tagsOf(p).forEach(t => L.push(`KW  - ${t}`));
+    if (p.summary) L.push(`N1  - ${p.summary.replace(/\n+/g, ' ')}`);
+    L.push('ER  - ');
+    return L.join('\r\n');
+  }).join('\r\n\r\n');
+}
+// scheda per un articolo nuovo o da modificare
+function paperSheet(p = null, prefill = {}) {
+  return new Promise(resolve => {
+    const e = p ? { ...p } : { status: 'todo', ptype: '', ...prefill };
+    let pdfFile = null;
+    const usedTags = [...new Set(papers().flatMap(x => tagsOf(x)))].sort((a, b) => a.localeCompare(b, 'it'));
+    const inp = (id, label, val, ph = '', extra = '') => `<label class="field"><span>${label}</span><input class="input" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph)}" ${extra}></label>`;
+    const sh = openSheet(`
+      <h2>${p ? 'Modifica l’articolo' : 'Nuovo articolo'}</h2>
+      <div class="pp-doi">
+        ${inp('ppDoi', 'DOI o link dell’articolo', e.doi || '', 'Es. 10.1016/S0140-6736(16)30173-8', 'autocomplete="off" autocapitalize="off"')}
+        <button class="btn" type="button" data-pp="look">Compila dal DOI</button>
+      </div>
+      <div class="pp-pdf"><button class="btn ghost" type="button" data-pp="pdf">${p && p.pdfId ? 'Sostituisci il PDF' : '＋ Carica il PDF'}</button><span class="hint" id="ppPdfInfo">${p && p.pdfId ? 'PDF già caricato.' : 'Se il PDF contiene il DOI, i dati si compilano da soli.'}</span></div>
+      <p class="hint" id="ppMsg" aria-live="polite"></p>
+      ${inp('ppTitle', 'Titolo', e.title)}
+      ${inp('ppAuthors', 'Autori, separati da punto e virgola', e.authors, 'Es. Smolen JS; Aletaha D')}
+      <div class="grid2">${inp('ppJournal', 'Rivista', e.journal)}${inp('ppYear', 'Anno', e.year, '', 'inputmode="numeric"')}</div>
+      <div class="grid3">${inp('ppVol', 'Volume', e.volume)}${inp('ppIssue', 'Numero', e.issue)}${inp('ppPages', 'Pagine', e.pages)}</div>
+      <div class="grid2">
+        <label class="field"><span>Tipo</span><select class="input" id="ppType"><option value="">—</option>${PAPER_TYPES.map(([k, l]) => `<option value="${k}" ${e.ptype === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="field"><span>Stato</span><select class="input" id="ppStatus">${PAPER_STATUS.map(([k, l]) => `<option value="${k}" ${e.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      </div>
+      <label class="check"><input type="checkbox" id="ppStar" ${e.star ? 'checked' : ''}><span>★ Importante</span></label>
+      <label class="field"><span>Tag, separati da virgole (es. la malattia)</span><input class="input" id="ppTags" value="${esc(tagsOf(e).join(', '))}" list="ppTagList" placeholder="Es. artrite reumatoide, terapia"><datalist id="ppTagList">${usedTags.map(t => `<option value="${esc(t)}">`).join('')}</datalist></label>
+      <label class="field"><span>Sintesi: cosa dice, in due o tre righe</span><textarea class="input" id="ppSum" rows="3">${esc(e.summary || '')}</textarea></label>
+      <label class="field"><span>Punti chiave, uno per riga</span><textarea class="input" id="ppKey" rows="4" placeholder="Es. - target: remissione o bassa attività">${esc(e.keys || '')}</textarea></label>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-pp="no">Annulla</button>
+        <button class="btn primary" type="button" data-pp="ok">Salva</button>
+      </div>`, { label: 'Articolo', onClose: v => resolve(v || null) });
+    const msg = t => { $('#ppMsg', sh.el).textContent = t; };
+    const fill = (d, force = false) => {
+      const map = { ppTitle: d.title, ppAuthors: d.authors, ppJournal: d.journal, ppYear: d.year, ppVol: d.volume, ppIssue: d.issue, ppPages: d.pages };
+      Object.entries(map).forEach(([id, v]) => { const el = $(`#${id}`, sh.el); if (v && (force || !el.value.trim())) el.value = v; });
+      if (d.url) e.url = d.url;
+    };
+    const look = async (doi, quiet = false) => {
+      if (!doi) { if (!quiet) msg('Scrivi un DOI valido (inizia con 10.)'); return false; }
+      $('#ppDoi', sh.el).value = doi;
+      msg('Cerco i dati dell’articolo…');
+      try { fill(await crossrefLookup(doi), !p); msg('Dati compilati dal DOI: controllali.'); return true; }
+      catch (err) { msg(`${err.message}. Puoi scrivere i dati a mano.`); return false; }
+    };
+    $('[data-pp="look"]', sh.el).onclick = () => look(cleanDoi($('#ppDoi', sh.el).value));
+    $('#ppDoi', sh.el).addEventListener('paste', () => setTimeout(() => { const d = cleanDoi($('#ppDoi', sh.el).value); if (d && !$('#ppTitle', sh.el).value.trim()) look(d, true); }, 30));
+    $('[data-pp="pdf"]', sh.el).onclick = () => {
+      const fi = document.createElement('input');
+      fi.type = 'file';
+      fi.accept = 'application/pdf,.pdf';
+      fi.onchange = async () => {
+        const f = fi.files[0];
+        if (!f) return;
+        pdfFile = f;
+        $('#ppPdfInfo', sh.el).textContent = `${f.name} (${fmtSize(f.size)}) sarà salvato con l’articolo.`;
+        const got = await doiFromPdf(f);
+        if (got.title && !$('#ppTitle', sh.el).value.trim()) $('#ppTitle', sh.el).value = got.title;
+        if (got.doi && !$('#ppDoi', sh.el).value.trim()) await look(got.doi, true);
+        else if (!got.doi) msg('Nel PDF non ho trovato il DOI: incollalo sopra, oppure scrivi i dati a mano.');
+      };
+      fi.click();
+    };
+    $('[data-pp="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-pp="ok"]', sh.el).onclick = async () => {
+      const v = id => $(`#${id}`, sh.el).value.trim();
+      const title = v('ppTitle');
+      if (!title) { toast('Scrivi il titolo, o compila i dati dal DOI'); return; }
+      const rec = p || { id: uid(), kind: 'paper', notebookId: '_papers', created: Date.now() };
+      const doi = cleanDoi(v('ppDoi'));
+      Object.assign(rec, {
+        title, authors: v('ppAuthors'), journal: v('ppJournal'), year: v('ppYear'), volume: v('ppVol'), issue: v('ppIssue'), pages: v('ppPages'),
+        doi, url: doi ? `https://doi.org/${doi}` : (/^https?:\/\//.test(v('ppDoi')) ? v('ppDoi') : (e.url || rec.url || '')),
+        ptype: $('#ppType', sh.el).value, status: $('#ppStatus', sh.el).value, star: $('#ppStar', sh.el).checked,
+        tags: parseTags(v('ppTags')), summary: $('#ppSum', sh.el).value.trim(), keys: $('#ppKey', sh.el).value.trim(), updated: Date.now()
+      });
+      if (pdfFile) {
+        msg('Salvo il PDF…');
+        try {
+          const nb = await papersNb();
+          const meta = await storePdfFile(pdfFile, { notebookId: nb.id });
+          meta.name = title.slice(0, 120);
+          meta.paperId = rec.id;
+          await savePdfMeta(meta);
+          rec.pdfId = meta.id;
+        } catch (err) { toast(err.message || 'Non riesco a salvare il PDF', 'err'); return; }
+      }
+      await saveLink(rec);
+      toast(p ? 'Articolo aggiornato' : 'Articolo salvato');
+      sh.close(rec);
+    };
+    setTimeout(() => $('#ppDoi', sh.el)?.focus(), 40);
+  });
+}
+const paperState = { q: '', status: '', type: '', tag: '', star: false, sort: 'new' };
+function viewPapers(id) {
+  if (id) return viewPaper(id);
+  const all = papers();
+  const st = paperState;
+  const tags = [...new Set(all.flatMap(p => tagsOf(p)))].sort((a, b) => a.localeCompare(b, 'it'));
+  const cnt = k => all.filter(p => (p.status || 'todo') === k).length;
+  setView(`
+    <header class="page-head">
+      <div><h1>Articoli</h1><p class="lede">${all.length ? `${all.length} ${all.length === 1 ? 'articolo' : 'articoli'} · ${cnt('todo')} da leggere · ${cnt('read')} letti` : 'La tua bibliografia: articoli, linee guida e review, con sintesi, tag e collegamenti alle note cliniche.'}</p></div>
+      <div class="actions"><button class="btn primary" type="button" data-act="pp-new">Nuovo articolo</button>${all.length ? '<button class="btn ghost" type="button" data-act="pp-ris" title="Per Zotero, Mendeley, EndNote">Esporta (RIS)</button>' : ''}</div>
+    </header>
+    ${all.length ? `
+      <input type="search" class="input search" id="ppQ" placeholder="Cerca per titolo, autore, rivista, tag, sintesi" aria-label="Cerca negli articoli" value="${esc(st.q)}">
+      <div class="tag-cloud">
+        ${PAPER_STATUS.map(([k, l]) => `<button type="button" class="tag ${st.status === k ? 'on' : ''}" data-pps="${k}" aria-pressed="${st.status === k}">${l} <small>${cnt(k)}</small></button>`).join('')}
+        <button type="button" class="tag ${st.star ? 'on' : ''}" data-ppstar aria-pressed="${st.star}">★ Importanti</button>
+      </div>
+      <div class="tag-cloud">${PAPER_TYPES.filter(([k]) => all.some(p => p.ptype === k)).map(([k, l]) => `<button type="button" class="tag ${st.type === k ? 'on' : ''}" data-ppt="${k}" aria-pressed="${st.type === k}">${l}</button>`).join('')}</div>
+      ${tags.length ? `<div class="tag-cloud">${tags.map(t => `<button type="button" class="tag ${st.tag === t ? 'on' : ''}" data-pptag="${esc(t)}" aria-pressed="${st.tag === t}">#${esc(t)}</button>`).join('')}</div>` : ''}
+      <label class="field pp-sort"><span>Ordina</span><select class="input" id="ppSort">${[['new', 'Aggiunti di recente'], ['year', 'Anno, i più recenti'], ['title', 'Titolo']].map(([k, l]) => `<option value="${k}" ${st.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <ul class="list" id="ppList"></ul>` : `
+      <div class="empty"><p>Incolla il DOI di un articolo, o carica il suo PDF: titolo, autori, rivista e anno si compilano da soli. Poi aggiungi tag (per esempio la malattia), stato di lettura e la tua sintesi.</p><button class="btn primary" type="button" data-act="pp-new">Nuovo articolo</button></div>`}`);
+  const filtered = () => {
+    const f = foldAccents(st.q);
+    let list = all.filter(p => (!st.status || (p.status || 'todo') === st.status) && (!st.type || p.ptype === st.type) && (!st.tag || tagsOf(p).includes(st.tag)) && (!st.star || p.star)
+      && (!f || foldAccents(`${p.title} ${p.authors} ${p.journal} ${p.year} ${tagsOf(p).join(' ')} ${p.summary} ${p.keys}`).includes(f)));
+    list = list.sort(st.sort === 'year' ? (a, b) => (+b.year || 0) - (+a.year || 0) : st.sort === 'title' ? (a, b) => a.title.localeCompare(b.title, 'it') : (a, b) => (b.created || 0) - (a.created || 0));
+    return list;
+  };
+  const draw = () => {
+    const box = $('#ppList');
+    if (!box) return;
+    const list = filtered();
+    box.innerHTML = list.map(p => `<li><a class="row pp-row" href="#/papers/${p.id}"><span class="row-main">
+      <span class="row-title">${p.star ? '<span class="pp-star">★</span> ' : ''}${esc(p.title)}</span>
+      <span class="row-sub">${esc([authorsShort(p), p.journal, p.year].filter(Boolean).join(' · '))}</span>
+      <span class="tags">${p.ptype ? `<span class="tag">${esc(PAPER_TYPES.find(t => t[0] === p.ptype)?.[1] || '')}</span>` : ''}${tagsOf(p).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}${p.pdfId ? '<span class="tag">PDF</span>' : ''}</span>
+    </span><span class="pill ${p.status === 'read' ? 'soft' : p.status === 'reading' ? 'due' : ''}">${esc(PAPER_STATUS.find(s => s[0] === (p.status || 'todo'))[1])}</span></a></li>`).join('') || '<li class="hint">Nessun articolo corrisponde.</li>';
+  };
+  draw();
+  $('#ppQ')?.addEventListener('input', e => { st.q = e.target.value; draw(); });
+  $('#ppSort')?.addEventListener('change', e => { st.sort = e.target.value; draw(); });
+  const chip = (sel, key, get) => on(sel, 'click', e => { const v = get(e.currentTarget); st[key] = st[key] === v ? (typeof v === 'boolean' ? false : '') : v; route(); });
+  chip('[data-pps]', 'status', b => b.dataset.pps);
+  chip('[data-ppt]', 'type', b => b.dataset.ppt);
+  chip('[data-pptag]', 'tag', b => b.dataset.pptag);
+  on('[data-ppstar]', 'click', () => { st.star = !st.star; route(); });
+  on('[data-act="pp-new"]', 'click', async () => { const p = await paperSheet(); if (p) go(`#/papers/${p.id}`); });
+  on('[data-act="pp-ris"]', 'click', () => {
+    const list = filtered();
+    downloadBlob(new Blob([risOf(list)], { type: 'application/x-research-info-systems' }), `articoli-${todayStr()}.ris`);
+    toast(`${list.length} articoli esportati: aprili con Zotero, Mendeley o EndNote`);
+  });
+}
+function viewPaper(id) {
+  const p = paperById(id);
+  if (!p) return notFound('Questo articolo');
+  const notes = clinicalNotes().filter(n => (n.papers || []).includes(p.id));
+  const pdf = p.pdfId ? pdfById(p.pdfId) : null;
+  const tl = PAPER_TYPES.find(t => t[0] === p.ptype)?.[1];
+  setView(`<div id="ppDetail">
+    <a class="back" href="#/papers">Articoli</a>
+    <header class="page-head pp-head">
+      <div>
+        <h1>${p.star ? '<span class="pp-star">★</span> ' : ''}${esc(p.title)}</h1>
+        <p class="lede">${esc(String(p.authors || '').split(/\s*;\s*/).filter(Boolean).join(', '))}</p>
+        <p class="meta">${esc([p.journal, [p.year, p.volume && `vol. ${p.volume}`, p.issue && `n. ${p.issue}`, p.pages && `pp. ${p.pages}`].filter(Boolean).join(', '), tl].filter(Boolean).join(' · '))}</p>
+      </div>
+    </header>
+    <div class="row-actions">
+      ${pdf ? `<a class="btn primary" href="#/pdf/${pdf.id}">Apri il PDF</a><button class="btn" type="button" data-act="pp-split">⇆ Affianca</button>` : '<button class="btn primary" type="button" data-act="pp-edit">＋ Carica il PDF</button>'}
+      ${p.url ? `<a class="btn" href="${esc(p.url)}" target="_blank" rel="noopener">Apri online</a>` : ''}
+      <a class="btn ghost" href="https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(p.doi || p.title)}" target="_blank" rel="noopener">PubMed</a>
+      <button class="btn ghost" type="button" data-act="pp-cite">Copia la citazione</button>
+      <button class="btn ghost" type="button" data-act="pp-edit">Modifica</button>
+    </div>
+    <div class="pp-status inline">
+      <div class="seg" role="radiogroup" aria-label="Stato">${PAPER_STATUS.map(([k, l]) => `<button type="button" role="radio" data-ppset="${k}" aria-checked="${(p.status || 'todo') === k}">${l}</button>`).join('')}</div>
+      <button type="button" class="btn sm ${p.star ? 'primary' : 'ghost'}" data-act="pp-star" aria-pressed="${!!p.star}">★ ${p.star ? 'Importante' : 'Segna importante'}</button>
+    </div>
+    ${tagsOf(p).length ? `<div class="tags">${tagsOf(p).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}</div>` : ''}
+    <div class="notes pp-body">
+      ${p.summary ? `<h2>Sintesi</h2>${renderMd(p.summary)}` : '<p class="hint">Nessuna sintesi: in Modifica scrivi in due o tre righe cosa dice.</p>'}
+      ${p.keys ? `<h2>Punti chiave</h2>${renderMd(p.keys.split('\n').map(l => (l.trim() && !/^\s*[-*\d]/.test(l) ? `- ${l.trim()}` : l)).join('\n'))}` : ''}
+    </div>
+    <div class="fonti">
+      <h3>Note cliniche collegate</h3>
+      <div class="tags">${notes.map(n => `<button type="button" class="tag" data-cnopen="${n.id}">${esc(n.title)} <span class="tag-x" data-ppunl="${n.id}" role="button" aria-label="Scollega">×</span></button>`).join('') || '<span class="hint">Nessuna.</span>'}</div>
+      <input type="search" class="input" id="ppCnQ" placeholder="＋ Collega a una nota clinica: scrivi il nome" autocomplete="off">
+      <ul class="list pick-list sp-link-res" id="ppCnRes"></ul>
+    </div>
+    <p class="hint pp-cite">${esc(citation(p))}</p>
+    <div class="row-actions"><button class="btn ghost danger" type="button" data-act="pp-del">Elimina l’articolo</button></div>
+    </div>`);
+  on('[data-act="pp-edit"]', 'click', async () => { if (await paperSheet(p)) route(); });
+  on('[data-act="pp-split"]', 'click', () => Split.show({ kind: 'pdf', id: pdf.id, page: pdf.lastPage || 1 }));
+  on('[data-act="pp-cite"]', 'click', async () => { try { await navigator.clipboard.writeText(citation(p)); toast('Citazione copiata'); } catch { toast('Non riesco a copiare: selezionala qui sotto', 'err'); } });
+  on('[data-act="pp-star"]', 'click', async () => { p.star = !p.star; await saveLink(p); route(); });
+  on('[data-ppset]', 'click', async e => { p.status = e.currentTarget.dataset.ppset; if (p.status === 'read' && !p.readOn) p.readOn = todayStr(); await saveLink(p); route(); });
+  on('[data-act="pp-del"]', 'click', async () => {
+    const ok = await modal({ title: 'Eliminare l’articolo?', text: pdf ? 'Sparisce dalla bibliografia e dalle note cliniche collegate. Il PDF resta nella libreria: se non ti serve, eliminalo da lì.' : 'Sparisce dalla bibliografia e dalle note cliniche collegate.', confirm: 'Elimina', danger: true });
+    if (!ok) return;
+    for (const n of notes) { n.papers = n.papers.filter(x => x !== p.id); await saveLink(n); }
+    await removeRecords([{ store: 'links', rec: p }]);
+    toast('Articolo eliminato');
+    go('#/papers');
+  });
+  // l’ascoltatore sta sulla pagina dell’articolo, che sparisce quando cambi pagina
+  $('#ppDetail').addEventListener('click', async e => {
+    const un = e.target.closest('[data-ppunl]');
+    if (un) { e.stopPropagation(); const n = clinicalNotes().find(x => x.id === un.dataset.ppunl); if (n) { n.papers = (n.papers || []).filter(x => x !== p.id); await saveLink(n); route(); } return; }
+    const o = e.target.closest('[data-cnopen]');
+    if (o) { showClinicNote(o.dataset.cnopen); return; }
+    const add = e.target.closest('[data-pplink]');
+    if (add) { const n = clinicalNotes().find(x => x.id === add.dataset.pplink); if (n) { n.papers = [...new Set([...(n.papers || []), p.id])]; await saveLink(n); toast(`Collegato a “${n.title}”`); route(); } }
+  });
+  $('#ppCnQ').addEventListener('input', e => {
+    const f = foldAccents(e.target.value.trim());
+    const hits = f ? clinicalNotes().filter(n => !(n.papers || []).includes(p.id) && foldAccents(n.title).includes(f)).slice(0, 8) : [];
+    $('#ppCnRes').innerHTML = hits.map(n => `<li><button type="button" class="row" data-pplink="${n.id}"><span class="row-main"><span class="row-title">${esc(n.title)}</span></span></button></li>`).join('') || (f ? '<li class="hint">Nessuna nota clinica con questo nome.</li>' : '');
+  });
 }

@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.68';
+const APP_VERSION = '3.70';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -1219,7 +1219,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1274,6 +1274,7 @@ function route() {
     case 'scores': return viewScores();
     case 'print': return viewPrint(p1, p2);
     case 'viva': return viewViva(p1, p2);
+    case 'papers': return viewPapers(p1);
     case 'fs': { FullScreen.toggle(); if (history.length > 1) history.back(); else location.replace('#/notebooks'); return; }
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
     case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
@@ -1831,6 +1832,8 @@ function referencedImages() {
   const set = new Set();
   state.sections.forEach(s => imageRefs(s.md).forEach(id => set.add(id)));
   state.cards.forEach(c => cardImageRefs(c).forEach(id => set.add(id)));
+  // v3.69: le foto delle note cliniche
+  state.links.forEach(l => (l.images || []).forEach(im => set.add(im.id)));
   return set;
 }
 async function removeOrphanImages(candidates) {
@@ -2428,6 +2431,7 @@ const ICONS = {
   micro: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>',
   atlas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2-6 3 12 3-9 2 3h6"/></svg>',
   fs: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+  papers: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 15h7M9 18h4"/></svg>',
   viva: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H9l-5 4z"/><path d="M9 9h6M9 12h4"/></svg>',
   pharma: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="9" width="18" height="7" rx="3.5" transform="rotate(-35 12 12.5)"/><path d="M9.2 7.4l5.6 8"/></svg>',
   anat: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M8 10h8M12 14l-3 7M12 14l3 7"/></svg>',
@@ -3367,7 +3371,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); const g = n && p[2] ? groupsOf(n).find(x => x.id === p[2]) : null; return g ? `Torna a ${g.name}` : n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { scores: 'Score clinici', viva: 'Interrogazione', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { scores: 'Score clinici', viva: 'Interrogazione', papers: 'Articoli', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {

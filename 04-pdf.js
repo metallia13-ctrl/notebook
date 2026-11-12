@@ -254,11 +254,12 @@ function viewPdf(id, pageParam) {
     }
     return ans + 1;
   };
-  const goTo = (n, { flash = false } = {}) => {
+  const goTo = (n, { flash = false, y = 0 } = {}) => {
     n = Math.max(1, Math.min(meta.pages, Math.round(n) || 1));
     const el = pageEl(n);
     if (!el) return;
-    scroller.scrollTop = pageTop(el) - 8;
+    // y: punto della pagina (da 0 in alto a 1 in fondo), per i segnalibri messi a metà pagina
+    scroller.scrollTop = pageTop(el) + Math.max(0, Math.min(1, +y || 0)) * el.offsetHeight - (y ? 60 : 8);
     if (flash) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
     onScroll();
   };
@@ -491,6 +492,7 @@ function viewPdf(id, pageParam) {
     ${PDF_COLORS.map(([k, , , n]) => `<button type="button" class="rt-dot pdf-hl-dot" data-ps="hl" data-c="${k}" style="--dot:${pdfCol(k)}" aria-label="Evidenzia in ${n.toLowerCase()}" title="Evidenzia in ${n.toLowerCase()}"></button>`).join('')}
     <button type="button" class="rt-btn rt-u" data-ps="ul" title="Sottolinea" aria-label="Sottolinea">S</button>
     <button type="button" class="rt-btn" data-ps="note">Nota</button>
+    <button type="button" class="rt-btn" data-ps="bm" title="Segnalibro con questo testo come nome">Segnalibro</button>
     <button type="button" class="rt-btn rt-drag" data-ps="drag" title="Aggiunge il testo al pannello Trascina">Trascina</button>
     <button type="button" class="rt-btn rt-card" data-ps="card">Flashcard</button>
     <button type="button" class="rt-btn" data-ps="copy">Copia</button>`;
@@ -507,10 +509,11 @@ function viewPdf(id, pageParam) {
   menu.innerHTML = selHtml();
   document.body.append(bar, menu);
   let lastSel = null;
+  let lastSelAt = 0;
   let hideTimer = null;
   const textTool = () => ['hl', 'ul', 'st'].includes(R.tool);
   const barTool = () => R.tool === 'select' || (textTool() && SelGesture.lastType !== 'mouse');
-  const pdfStable = stableSelection(bar, () => { if (!barTool()) return false; const s = readSelection(); if (s) lastSel = s; return !!s; }, {
+  const pdfStable = stableSelection(bar, () => { if (!barTool()) return false; const s = readSelection(); if (s) lastSel = s; lastSelAt = Date.now(); return !!s; }, {
     // nel PDF le pagine occupano tutto: la barra va in alto, sotto gli strumenti
     place: () => { const r = scroller.getBoundingClientRect(); bar.classList.add('rt-top'); bar.style.top = `${Math.round(r.top + 8)}px`; bar.style.left = `${Math.round(r.left + r.width / 2)}px`; }
   });
@@ -518,7 +521,7 @@ function viewPdf(id, pageParam) {
   const onSel = () => {
     if (!barTool()) return;
     const s = readSelection();
-    if (s) { clearTimeout(hideTimer); lastSel = s; pdfStable.changed(); }
+    if (s) { clearTimeout(hideTimer); lastSel = s; lastSelAt = Date.now(); pdfStable.changed(); }
     else if (!bar.hidden) { pdfStable.cancel(); clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 600); }
     else pdfStable.cancel();
   };
@@ -543,6 +546,7 @@ function viewPdf(id, pageParam) {
       return;
     }
     if (kind === 'drag') { addDraft(s.text, s.firstPage); toast('Aggiunto a Trascina'); return; }
+    if (kind === 'bm') { await addBookmark(s.firstPage, s); return; }
     if (kind === 'card') {
       const card = await openCardSheet({ back: s.text, sectionId: meta.sectionId, notebookId: meta.notebookId });
       if (card) { card.pdf = { id: meta.id, page: s.firstPage }; await saveCard(card); }
@@ -570,7 +574,7 @@ function viewPdf(id, pageParam) {
     const s = readSelection();
     if (!s) return;
     e.preventDefault();
-    lastSel = s;
+    lastSel = s; lastSelAt = Date.now();
     bar.hidden = true;
     menu.hidden = false;
     const w = menu.offsetWidth || 300;
@@ -876,7 +880,8 @@ function viewPdf(id, pageParam) {
     const btn = $('[data-pdf="bookmark"]', app);
     btn.setAttribute('aria-pressed', has);
     btn.classList.toggle('on', has);
-    btn.querySelector('span').textContent = has ? 'Segnato' : 'Segnalibro';
+    btn.querySelector('span').textContent = has ? `Segnato (${meta.bookmarks.filter(b => b.page === R.cur).length})` : 'Segnalibro';
+    btn.title = has ? 'Aggiunge un altro segnalibro in questa pagina (B); col testo selezionato, il nome è quel testo' : 'Segnalibro su questa pagina (B); col testo selezionato, il nome è quel testo';
     $$('.pdf-page', pagesEl).forEach(el => el.classList.toggle('bm', meta.bookmarks.some(b => b.page === +el.dataset.p)));
     refreshPanel('marks');
     refreshPanel('pages');
@@ -888,26 +893,48 @@ function viewPdf(id, pageParam) {
     saveSoon();
     refreshPanel('marks');
   };
-  const toggleBookmark = async (n = R.cur) => {
-    const ex = meta.bookmarks.find(b => b.page === n);
-    if (ex) {
-      meta.bookmarks = meta.bookmarks.filter(b => b !== ex);
-      markGone(meta, [ex.id]);
-      saveSoon();
-      refreshBm();
-      toast(`Segnalibro di pagina ${n} tolto`, '', { label: 'Annulla', fn: () => { unGone(meta, [ex.id]); meta.bookmarks.push(ex); meta.bookmarks.sort((a, b) => a.page - b.page); saveSoon(); refreshBm(); } });
-      return;
+  // v3.69: ogni tocco aggiunge un segnalibro (anche più d’uno nella stessa pagina), nel punto
+  // in cui sei; il nome è il testo selezionato, se c’è. Niente finestra: si rinomina dal messaggio.
+  const sortBm = () => meta.bookmarks.sort((x, y) => x.page - y.page || (x.y || 0) - (y.y || 0));
+  const addBookmark = async (n = R.cur, sel = null) => {
+    let title = '', y = 0;
+    if (sel && sel.text) {
+      n = sel.firstPage;
+      title = sel.text.replace(/\s+/g, ' ').trim().slice(0, 120);
+      const r = (sel.byPage.get(n) || [])[0];
+      if (r) y = Math.max(0, Math.min(1, r[1] / sizeOf(n).height));
+    } else {
+      const el = pageEl(n);
+      if (el) y = Math.max(0, Math.min(0.95, (scroller.scrollTop - pageTop(el)) / el.offsetHeight));
+      title = await bookmarkTitle(n);
+      if (meta.bookmarks.some(b => b.page === n && b.title === title)) title = `${title} (segue)`;
     }
-    const guess = await bookmarkTitle(n);
-    const title = await modal({ title: `Segnalibro a pagina ${n}`, text: 'Dagli un titolo: lo ritrovi nel pannello e nella ricerca.', input: true, value: guess, confirm: 'Salva' });
-    if (!title) return;
-    const b = { id: uid(), page: n, title, created: Date.now() };
+    const b = { id: uid(), page: n, y: +y.toFixed(3), title: title || `Pagina ${n}`, created: Date.now() };
     meta.bookmarks.push(b);
-    meta.bookmarks.sort((x, y) => x.page - y.page);
+    sortBm();
     saveSoon();
     refreshBm();
-    toast(`Segnalibro “${title}” a pagina ${n}`);
+    toast(`Segnalibro “${b.title.slice(0, 60)}${b.title.length > 60 ? '…' : ''}” a pagina ${n}`, '', { label: 'Rinomina', fn: () => renameBookmark(b) });
   };
+  const deleteBookmark = id => {
+    const ex = meta.bookmarks.find(b => b.id === id);
+    if (!ex) return;
+    meta.bookmarks = meta.bookmarks.filter(b => b !== ex);
+    markGone(meta, [ex.id]);
+    saveSoon();
+    refreshBm();
+    toast(`Segnalibro “${ex.title.slice(0, 50)}” tolto`, '', { label: 'Annulla', fn: () => { unGone(meta, [ex.id]); meta.bookmarks.push(ex); sortBm(); saveSoon(); refreshBm(); } });
+  };
+  // il testo selezionato nel PDF, anche se toccando il pulsante la selezione è appena sparita
+  const selForBm = () => {
+    const s0 = readSelection() || (R.bmSel && Date.now() - R.bmSel.t < 5000 ? R.bmSel.s : null);
+    R.bmSel = null;
+    return s0;
+  };
+  // la selezione si legge appena tocchi il pulsante, prima che il tocco la faccia sparire
+  app.addEventListener('pointerdown', e => {
+    if (e.target.closest('[data-pdf="bookmark"], [data-pm="add"]')) { const s1 = readSelection(); R.bmSel = s1 ? { s: s1, t: Date.now() } : null; }
+  }, true);
 
   // ---------- pannello laterale
   const openPanel = tab => {
@@ -940,19 +967,19 @@ function viewPdf(id, pageParam) {
   function drawMarks() {
     panelBody.innerHTML = `
       ${meta.bookmarks.length > 3 ? `<input type="search" class="input search pdf-bm-q" id="bmQ" placeholder="Cerca tra i segnalibri e l’indice" aria-label="Cerca tra i segnalibri">` : ''}
-      <button class="btn sm block" type="button" data-pm="add">${meta.bookmarks.some(b => b.page === R.cur) ? `Togli il segnalibro da pagina ${R.cur}` : `Segnalibro su pagina ${R.cur}`}</button>
+      <button class="btn sm block" type="button" data-pm="add">Aggiungi un segnalibro qui (pagina ${R.cur})</button>
       ${meta.bookmarks.length ? `<button class="btn sm block" type="button" data-bmall>Collega i segnalibri alle sezioni</button>` : ''}
       ${meta.bookmarks.length ? `<ul class="pdf-plist">${meta.bookmarks.map(b => {
         const linked = refsOfBookmark(meta.id, b.id);
         return `
-        <li class="${linked.length ? 'has-sec' : ''}"><button type="button" class="pdf-pitem ${b.page === R.cur ? 'cur' : ''}" data-go="${b.page}">
+        <li class="${linked.length ? 'has-sec' : ''}"><button type="button" class="pdf-pitem ${b.page === R.cur ? 'cur' : ''}" data-go="${b.page}" data-goy="${b.y || 0}">
           <span class="pdf-bm-ic">${ICON_BM}</span><span class="pdf-pitem-t">${esc(b.title)}</span><span class="pdf-pitem-p">p. ${b.page}</span></button>
           <button type="button" class="btn sm ghost" data-bmlink="${b.id}" aria-label="Collega a una sezione" title="Collega a una sezione del notebook">🔗</button>
           <button type="button" class="btn sm ghost" data-bmren="${b.id}" aria-label="Rinomina">✎</button>
           <button type="button" class="btn sm ghost" data-bmdel="${b.id}" aria-label="Elimina">✕</button>
           ${linked.length ? `<div class="bm-secs">${linked.map(x => `<a class="bm-sec" href="#/sec/${x.id}">→ ${esc(x.title)}</a>`).join('')}</div>` : ''}</li>`;
       }).join('')}</ul>`
-        : '<p class="hint">Nessun segnalibro. Toccando “Segnalibro” in alto, o premendo B, segni la pagina che stai leggendo.</p>'}
+        : '<p class="hint">Nessun segnalibro. Seleziona un titolo o una frase e tocca “Segnalibro” (nella barra della selezione o in alto, o premi B): il nome sarà quel testo. Puoi metterne quanti vuoi nella stessa pagina.</p>'}
       <h3 class="sub3">Indice del PDF</h3>
       <div id="pdfOutline"><p class="hint">Carico l’indice…</p></div>`;
     drawOutline();
@@ -1276,7 +1303,7 @@ function viewPdf(id, pageParam) {
   panelBody.addEventListener('click', async e => {
     const goB = e.target.closest('[data-go]');
     if (goB) {
-      goTo(+goB.dataset.go, { flash: true });
+      goTo(+goB.dataset.go, { flash: true, y: +(goB.dataset.goy || 0) });
       if (window.innerWidth < 900 && R.tab !== 'drag') closePanel();
       return;
     }
@@ -1291,7 +1318,7 @@ function viewPdf(id, pageParam) {
       return;
     }
     const pm = e.target.closest('[data-pm]');
-    if (pm) { await toggleBookmark(); return; }
+    if (pm) { await addBookmark(R.cur, selForBm()); return; }
     const ren = e.target.closest('[data-bmren]');
     if (ren) { const b = meta.bookmarks.find(x => x.id === ren.dataset.bmren); if (b) renameBookmark(b); return; }
     const bl = e.target.closest('[data-bmlink]');
@@ -1308,7 +1335,7 @@ function viewPdf(id, pageParam) {
       return;
     }
     const del = e.target.closest('[data-bmdel]');
-    if (del) { const b = meta.bookmarks.find(x => x.id === del.dataset.bmdel); if (b) toggleBookmark(b.page); return; }
+    if (del) { deleteBookmark(del.dataset.bmdel); return; }
     const dd = e.target.closest('[data-ddel]');
     if (dd) { meta.drafts = meta.drafts.filter(x => x.id !== dd.dataset.ddel); markGone(meta, [dd.dataset.ddel]); saveSoon(); drawDrag(); return; }
     const dm = e.target.closest('[data-dmake]');
@@ -1514,7 +1541,7 @@ function viewPdf(id, pageParam) {
     const p = e.target.closest('[data-pdf]');
     if (!p) return;
     const act = p.dataset.pdf;
-    if (act === 'bookmark') toggleBookmark();
+    if (act === 'bookmark') addBookmark(R.cur, selForBm());
     else if (act === 'panel') { if (panel.hidden) openPanel(); else closePanel(); }
     else if (act === 'zoom+') zoomTo(R.zoom * 1.2);
     else if (act === 'zoom-') zoomTo(R.zoom / 1.2);
@@ -1535,7 +1562,7 @@ function viewPdf(id, pageParam) {
     const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); return; }
     if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'b' || e.key === 'B') { e.preventDefault(); toggleBookmark(); }
+    if (e.key === 'b' || e.key === 'B') { e.preventDefault(); addBookmark(R.cur, selForBm()); }
     else if (e.key === 'Escape') { if (!menu.hidden) menu.hidden = true; else if (!panel.hidden) closePanel(); }
   };
   let resizeTimer = null;

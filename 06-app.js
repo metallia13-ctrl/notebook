@@ -1034,6 +1034,7 @@ const MORE_ITEMS = [
   ['clinic', 'Note cliniche', 'Quadri clinici di tutte le materie, per sintomo'],
   ['examq', 'Domande d’esame', 'Le domande uscite agli esami, anche da Excel: frequenza, docenti, allenamento'],
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
+  ['papers', 'Articoli', 'La tua bibliografia: dal DOI o dal PDF, con tag, stato di lettura e sintesi'],
   ['viva', 'Interrogazione', 'Il professore (l’AI) ti fa domande dai tuoi appunti e valuta le risposte a voce'],
   ['scores', 'Score clinici', 'CHA₂DS₂-VASc, Wells, CURB-65, qSOFA, NEWS2, Glasgow, Child-Pugh, MELD'],
   ['micro', 'Microbiologia', 'Una scheda per ogni microrganismo, con foto e video'],
@@ -1286,6 +1287,16 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.70", title: "Articoli: la tua bibliografia", html: `      <ul>
+        <li><strong>Articoli</strong> (barra laterale o Altro): incolla il DOI e titolo, autori, rivista, anno, volume e pagine si compilano da soli; oppure carica il PDF, e se contiene il DOI l’app lo trova da sé. Il PDF si apre con il lettore completo, anche in Affianca.</li>
+        <li>Per ogni articolo: tipo (linee guida, review sistematica, trial…), stato (da leggere, in lettura, letto), ★ importante, tag (per esempio la malattia), sintesi e punti chiave. Ricerca e filtri per stato, tipo e tag; ordine per data, anno o titolo.</li>
+        <li>Collegamenti con le <strong>note cliniche</strong> nei due sensi; <strong>Copia la citazione</strong> (stile Vancouver) ed <strong>Esporta (RIS)</strong> per Zotero, Mendeley o EndNote.</li>
+      </ul>` },
+  { v: "3.69", title: "segnalibri del PDF col nome dal testo; foto nelle note cliniche", html: `      <ul>
+        <li><strong>Segnalibri del PDF</strong>: ogni tocco su Segnalibro ne aggiunge uno nuovo, anche se la pagina ne ha già, nel punto in cui sei. Se hai selezionato del testo (per esempio un titolo), il nome del segnalibro è quel testo; c’è anche “Segnalibro” nella barra della selezione. Nel pannello i segnalibri sono in ordine di pagina e di posizione, e toccandoli torni proprio a quel punto. Si eliminano con ✕ e si rinominano con ✎ (o con “Rinomina” nel messaggio).</li>
+        <li>Aggiungendo un segnalibro non compare più lo schermo nero per un attimo: era la finestra del titolo, che sfocava le pagine del PDF. Ora nel PDF le finestre scuriscono lo sfondo senza sfocarlo.</li>
+        <li><strong>Foto nelle note cliniche</strong>: in Modifica → Immagini carichi algoritmi, tabelle o schemi (anche screenshot dai social), ognuno con didascalia e fonte, che puoi aggiungere anche dopo. Nella nota le immagini si ingrandiscono con un tocco; quelle senza fonte lo ricordano con “fonte da aggiungere”.</li>
+      </ul>` },
   { v: "3.68", title: "flashcard: Ripassa o Studia", html: `      <ul>
         <li>Ovunque si avviano le flashcard ci sono ora due pulsanti: <strong>Ripassa</strong> fa solo quelle già studiate (in scadenza oggi e quelle in apprendimento), senza nuove; <strong>Studia</strong> aggiunge anche le nuove del giorno. Accanto c’è quante sono.</li>
         <li>Nel ripasso compare “solo ripasso”; quando hai finito, se ci sono nuove in attesa puoi passare a “Studia anche le nuove”.</li>
@@ -2999,6 +3010,7 @@ const HELP = {
   links: { t: 'Link utili', b: `I siti che usi di più, a portata di tocco. Tieni premuto o usa Modifica per cambiarli.` },
   exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
+  papers: { t: 'Articoli', b: `La tua bibliografia. <b>Nuovo articolo</b>: incolla il DOI (o il link doi.org) e i dati si compilano da soli dal registro Crossref; oppure carica il PDF: se contiene il DOI, li trova da sé. Il PDF finisce nella libreria (notebook “Articoli”) e si apre con il lettore completo, anche in Affianca.<br><br>Per ogni articolo: <b>tipo</b> (linee guida, review, trial…), <b>stato</b> (da leggere, in lettura, letto), <b>★ importante</b>, <b>tag</b> (per esempio la malattia), <b>sintesi</b> e <b>punti chiave</b>. Lo colleghi alle note cliniche, che poi lo mostrano.<br><br><b>Copia la citazione</b> dà la citazione in stile Vancouver; <b>Esporta (RIS)</b> salva gli articoli che vedi (con i filtri) per Zotero, Mendeley o EndNote.` },
   clinicQuiz: { t: 'Diagnosi differenziale', b: `<b>Dai sintomi alla diagnosi</b>: vedi alcuni sintomi presi da una tua nota clinica e scegli tra quattro diagnosi, scelte tra quelle con più sintomi in comune (o collegate in diagnosi differenziale), così non è troppo facile. Dopo la risposta, per ogni opzione vedi quali sintomi spiega e quali no.<br><br><b>Cosa entra in diagnosi differenziale</b>: per un quadro, scegli le malattie che entrano in DDx; vale per le note in cui le hai collegate (Modifica → Diagnosi differenziale).<br><br>Più note scrivi, con più sintomi, più l’esercizio somiglia al reparto.` },
   scores: { t: 'Score clinici', b: `Spunta i criteri o scegli i valori: il punteggio e la sua lettura si aggiornano subito. Sotto ogni score c’è la fonte (sono io, Claude, sulle linee guida citate). Servono per studiare e per capire come ragionano in reparto: le decisioni vere si prendono con il medico.` },
   micro: { t: 'Microbiologia', b: `Una scheda per microrganismo, con tipo (batterio, virus, fungo, parassita, prione) e un gruppo scelto da te. I titoli sono già pronti; le malattie infettive restano nelle note cliniche. Ogni scheda ha tutte le modalità di studio, foto con etichette e video. <b>Esercitati</b> ne apre una a caso in Orale.` },
@@ -3051,6 +3063,7 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Domande d’esame', key: 'examq' },
   { sel: '.page-head h1', text: 'Score clinici', key: 'scores' },
   { sel: '.page-head h1', text: 'Diagnosi differenziale', key: 'clinicQuiz' },
+  { sel: '.page-head h1', text: 'Articoli', key: 'papers' },
   { sel: '.page-head h1', text: 'Microbiologia', key: 'micro' },
   { sel: '.page-head h1', text: 'Atlante diagnostico', key: 'atlas' },
   { sel: '.page-head h1', text: 'Atlante di anatomia', key: 'anat' },

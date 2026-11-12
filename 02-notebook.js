@@ -74,6 +74,7 @@ function viewNotebook(id, folderId = '') {
   if (nb.kind === 'cases') { location.replace('#/cases'); return; }
   if (nb.kind === 'semei') { location.replace('#/semei'); return; }
   if (SPECIALS[nb.kind]) { location.replace(`#/${SPECIALS[nb.kind].route}`); return; }
+  if (nb.kind === 'papers') { location.replace('#/papers'); return; }
   const secs = secsOf(id);
   const due = secs.filter(isDue).length;
   const nbCards = cardsOf(id);

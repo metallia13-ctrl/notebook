@@ -3852,3 +3852,36 @@ body.split-top .split-ctl { top: auto; bottom: -20px; }
 /* v3.68: numero nei pulsanti Ripassa / Studia */
 .btn-n { display: inline-grid; place-items: center; min-width: 1.6em; height: 1.4em; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, currentColor 18%, transparent); font-size: 0.82em; font-variant-numeric: tabular-nums; }
 body.cs-on .view { padding-bottom: calc(220px + env(safe-area-inset-bottom, 0px)); }
+
+/* =====================================================================
+   v3.69: niente sfocatura sopra il PDF; foto nelle note cliniche
+   ===================================================================== */
+html.pdf-open .overlay:not(.full) { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(0, 0, 0, 0.55); }
+.cn-imgs { display: grid; gap: 10px; margin: 6px 0; }
+.cn-img { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 8px; border: 1px solid var(--line); border-radius: var(--r); }
+.cn-img img { width: 96px; height: 96px; object-fit: contain; background: #fff; border-radius: 6px; }
+.cn-img-f { display: grid; gap: 6px; }
+.cn-gal { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.cn-fig { margin: 0; padding: 6px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface-2); }
+.cn-fig img { display: block; width: 100%; max-height: 220px; object-fit: contain; background: #fff; border-radius: 6px; cursor: zoom-in; }
+.cn-fig.big { grid-column: 1 / -1; }
+.cn-fig.big img { max-height: none; cursor: zoom-out; }
+.cn-fig figcaption { margin-top: 4px; font-size: 0.85rem; }
+.cn-src { display: block; color: var(--muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+
+/* =====================================================================
+   v3.70: Articoli
+   ===================================================================== */
+.pp-doi { display: flex; align-items: flex-end; gap: 8px; }
+.pp-doi .field { flex: 1; margin-bottom: 0; }
+.pp-pdf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0 2px; }
+.pp-row .tags { margin-top: 4px; }
+.pp-star { color: #f59e0b; }
+.pp-head h1 { font-size: 1.45rem; line-height: 1.3; }
+.pp-status { margin: 4px 0 10px; gap: 10px; flex-wrap: wrap; }
+.pp-body h2 { font-size: 1.05rem; }
+.pp-cite { margin-top: 14px; user-select: text; -webkit-user-select: text; }
+.pp-sort { max-width: 260px; }
+.cn-papers { margin: 4px 0; padding-left: 1.2em; }
+.cn-papers li { margin: 4px 0; }
+.cn-papers small { color: var(--muted); }
