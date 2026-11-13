@@ -861,12 +861,24 @@ function viewPdf(id, pageParam) {
     if (z <= a) return;
     document.getSelection().setBaseAndExtent(c.node, a, c.node, z);
   };
+  const inSelection = (sel, x, y) => {
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      for (const r of sel.getRangeAt(i).getClientRects()) {
+        if (r.width && x >= r.left - 1 && x <= r.right + 1 && y >= r.top - 1 && y <= r.bottom + 1) return true;
+      }
+    }
+    return false;
+  };
   pagesEl.addEventListener('pointerdown', e => {
     if (!(e.pointerType === 'pen' || e.pointerType === 'mouse') || e.button !== 0) return;
     if (!['select', 'hl', 'ul', 'st'].includes(R.tool)) return;
     const layer = e.target.closest ? e.target.closest('.textLayer') : null;
     if (!layer || e.target.closest('.pdf-pin')) return;
     const sel = document.getSelection();
+    // v3.84: premendo dentro il testo già selezionato lo si trascina (sulla mappa, in una sezione…):
+    // lì decide il browser, come prima della 3.82
+    if (!e.shiftKey && inSelection(sel, e.clientX, e.clientY)) return;
     const a = e.shiftKey && sel.rangeCount ? { node: sel.anchorNode, offset: sel.anchorOffset } : textPos(layer, e.clientX, e.clientY);
     if (!a) return;
     e.preventDefault();
@@ -1209,7 +1221,7 @@ function viewPdf(id, pageParam) {
     $('[data-pdf="panel"]', app).setAttribute('aria-expanded', 'true');
     $$('[data-ptab]', panel).forEach(b => b.setAttribute('aria-selected', b.dataset.ptab === R.tab));
     drawPanel();
-    if (R.doc && window.innerWidth >= 900) zoomTo(R.zoom);
+    if (R.doc && window.innerWidth >= 900 && !R.dragging) zoomTo(R.zoom);
   };
   const closePanel = () => {
     panel.hidden = true;
@@ -1732,7 +1744,24 @@ function viewPdf(id, pageParam) {
     addDraft(t, R.cur);
   });
   // apre il pannello Trascina quando inizi a trascinare testo dal PDF
-  pagesEl.addEventListener('dragstart', () => { if (panel.hidden || R.tab !== 'drag') openPanel('drag'); });
+  /* v3.84: trascinando il testo si apre il riquadro Trascina, ma senza ridisegnare le pagine
+     mentre trascini (il ridisegno annullava il trascinamento: il testo spariva da sotto il
+     mouse). Con Affianca aperto (la mappa o la sezione sono lì accanto) il riquadro non si apre. */
+  pagesEl.addEventListener('dragstart', () => {
+    if (EMBED || document.body.classList.contains('split-open')) return;
+    if (!panel.hidden && R.tab === 'drag') return;
+    R.dragging = true;
+    openPanel('drag');
+    const done = () => {
+      document.removeEventListener('dragend', done, true);
+      document.removeEventListener('drop', done, true);
+      if (!R.dragging) return;
+      R.dragging = false;
+      if (R.doc && window.innerWidth >= 900) setTimeout(() => zoomTo(R.zoom), 50);
+    };
+    document.addEventListener('dragend', done, true);
+    document.addEventListener('drop', done, true);
+  });
 
   // ---------- barra in alto e scorrimento
   let scrollRaf = 0;

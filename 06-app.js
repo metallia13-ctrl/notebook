@@ -1305,6 +1305,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.84", title: "di nuovo il trascinamento del testo dal PDF", html: `      <ul>
+        <li>Selezionato un pezzo di testo nel PDF, puoi di nuovo <strong>trascinarlo col mouse</strong> sulla mappa aperta in Affianca (o nelle altre zone dove si rilascia il testo). Con la 3.82 premere sulla selezione ne iniziava una nuova.</li>
+      </ul>` },
   { v: "3.83", title: "Evidenzia e Sottolinea con la penna", html: `      <ul>
         <li>Nei PDF, con <strong>Evidenzia</strong>, <strong>Sottolinea</strong> e <strong>Barra</strong> la penna ora funziona come il mouse: trascini sul testo e appena alzi la punta viene evidenziato. Prima Android si prendeva il gesto (partiva la sua selezione con le maniglie) e lo strumento non si applicava.</li>
         <li>Il dito resta com’era: scorre la pagina e, tenendo premuto, seleziona.</li>
