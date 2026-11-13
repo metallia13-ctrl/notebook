@@ -1305,6 +1305,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.82", title: "selezione precisa nei PDF scansionati", html: `      <ul>
+        <li>Selezionando il testo di un PDF (con la penna, il dito o il mouse), se la punta passava su uno spazio vuoto tra le parole la selezione si allungava fino a metà pagina. Succedeva soprattutto nei PDF scansionati con l’OCR, che hanno molti vuoti. Ora la selezione si ferma all’ultima parola toccata, come nel lettore ufficiale dei PDF.</li>
+      </ul>` },
   { v: "3.81", title: "ritaglio regolabile, con le etichette", html: `      <ul>
         <li>Prima di salvare un ritaglio dal PDF (con Ritaglia o dalla galleria delle figure) si apre la pagina intera con il riquadro: lo <strong>allarghi o sposti con le maniglie</strong>, ne disegni uno nuovo trascinando fuori, oppure tocchi <strong>Includi le scritte vicine</strong> e si allarga da solo fino alle etichette della tavola. Per le figure della galleria lo fa già da sé.</li>
         <li>Le immagini già salvate e tagliate: aprile (tocco sull’immagine) e scegli <strong>✂ Ritaglia di nuovo dal PDF</strong>. Si riapre la pagina giusta; l’immagine nuova sostituisce la vecchia ovunque sia usata.</li>

@@ -123,6 +123,7 @@ async function renderTextLayerCompat(textContent, container, viewport) {
     await L.renderTextLayer({ textContentSource: textContent, container, viewport, textDivs: [] }).promise;
   }
 }
+
 // Unisce i rettangoli della selezione riga per riga
 function mergeRects(list) {
   const rs = list.map(r => [...r]).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
@@ -807,6 +808,104 @@ function viewPdf(id, pageParam) {
   pagesEl.addEventListener('mouseup', () => { if (SelGesture.lastType !== 'mouse') return; clearTimeout(textToolTimer); textToolTimer = setTimeout(applyTextTool, 30); });
   // con la penna: se hai trascinato evidenzio subito; se hai solo tenuto premuto
   // (poi allarghi con le maniglie) aspetto che tu scelga il colore dalla barra
+  /* v3.82: con la penna e il mouse la selezione la guida l’app. Nei vuoti tra le parole
+     (tantissimi nei PDF scansionati con l’OCR) il browser allungava la selezione fino a
+     metà pagina: ora, sopra una parola si arriva al punto esatto; sopra un vuoto, alla
+     parola più vicina (preferendo la stessa riga). Il dito resta quello del sistema. */
+  let ps = null;
+  const caretAt = (x, y) => {
+    if (document.caretPositionFromPoint) { const p = document.caretPositionFromPoint(x, y); return p ? { node: p.offsetNode, offset: p.offset } : null; }
+    const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+    return r ? { node: r.startContainer, offset: r.startOffset } : null;
+  };
+  const textPos = (layer, x, y) => {
+    const hit = document.elementFromPoint(x, y);
+    const sp = hit && hit.closest ? hit.closest('.textLayer span') : null;
+    if (sp && layer.contains(sp)) {
+      const c = caretAt(x, y);
+      if (c && c.node.nodeType === 3 && sp.contains(c.node)) return c;
+    }
+    let best = null, bd = Infinity;
+    for (const s of layer.querySelectorAll('span')) {
+      const t = s.firstChild;
+      if (!t || t.nodeType !== 3 || !t.nodeValue.trim()) continue;
+      const r = s.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const dy = y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+      const dx = x < r.left ? r.left - x : x > r.right ? x - r.right : 0;
+      const d = dy * 3 + dx;
+      if (d < bd) { bd = d; best = { r, t }; }
+    }
+    if (!best) return null;
+    const { r, t } = best;
+    if (x <= r.left) return { node: t, offset: 0 };
+    if (x >= r.right) return { node: t, offset: t.nodeValue.length };
+    const c = caretAt(x, r.top + r.height / 2);
+    return c && c.node === t ? c : { node: t, offset: t.nodeValue.length };
+  };
+  const layerAt = (x, y, fallback) => {
+    const el = document.elementFromPoint(x, y);
+    const pg = el && el.closest ? el.closest('.pdf-page') : null;
+    return (pg && pg.querySelector('.textLayer')) || fallback;
+  };
+  const selectWordAt = (layer, x, y) => {
+    const c = textPos(layer, x, y);
+    if (!c) return;
+    // i confini della parola, dalle lettere intorno al punto
+    const t = c.node.nodeValue || '';
+    const isW = ch => /[\p{L}\p{N}’'\-]/u.test(ch);
+    let a = Math.min(c.offset, t.length), z = a;
+    if (a < t.length && !isW(t[a]) && a > 0 && isW(t[a - 1])) a--;
+    while (a > 0 && isW(t[a - 1])) a--;
+    while (z < t.length && isW(t[z])) z++;
+    if (z <= a) return;
+    document.getSelection().setBaseAndExtent(c.node, a, c.node, z);
+  };
+  pagesEl.addEventListener('pointerdown', e => {
+    if (!(e.pointerType === 'pen' || e.pointerType === 'mouse') || e.button !== 0) return;
+    if (!['select', 'hl', 'ul', 'st'].includes(R.tool)) return;
+    const layer = e.target.closest ? e.target.closest('.textLayer') : null;
+    if (!layer || e.target.closest('.pdf-pin')) return;
+    const sel = document.getSelection();
+    const a = e.shiftKey && sel.rangeCount ? { node: sel.anchorNode, offset: sel.anchorOffset } : textPos(layer, e.clientX, e.clientY);
+    if (!a) return;
+    e.preventDefault();
+    ps = { id: e.pointerId, type: e.pointerType, layer, a, x: e.clientX, y: e.clientY, t: Date.now(), moved: !!e.shiftKey };
+    if (e.shiftKey) { const f = textPos(layer, e.clientX, e.clientY); if (f) sel.setBaseAndExtent(a.node, a.offset, f.node, f.offset); }
+    else sel.removeAllRanges();
+  });
+  const onPsMove = e => {
+    if (!ps || e.pointerId !== ps.id) return;
+    if (!ps.moved && Math.hypot(e.clientX - ps.x, e.clientY - ps.y) < 4) return;
+    ps.moved = true;
+    // vicino al bordo, la pagina scorre
+    const sr = scroller.getBoundingClientRect();
+    if (e.clientY > sr.bottom - 36) scroller.scrollTop += 14;
+    else if (e.clientY < sr.top + 36) scroller.scrollTop -= 14;
+    const layer = layerAt(e.clientX, e.clientY, ps.layer);
+    const f = textPos(layer, e.clientX, e.clientY);
+    if (f) document.getSelection().setBaseAndExtent(ps.a.node, ps.a.offset, f.node, f.offset);
+  };
+  window.addEventListener('pointermove', onPsMove);
+  addCleanup(() => window.removeEventListener('pointermove', onPsMove));
+  const endPs = e => {
+    if (!ps || e.pointerId !== ps.id) return;
+    const cur = ps;
+    ps = null;
+    // penna tenuta ferma su una parola: la seleziona (poi si allarga con le maniglie)
+    if (!cur.moved && cur.type === 'pen' && Date.now() - cur.t > 450) selectWordAt(cur.layer, e.clientX, e.clientY);
+    // col mouse gli strumenti del testo partono qui (il mouseup non arriva più)
+    if (cur.type === 'mouse' && cur.moved) { clearTimeout(textToolTimer); textToolTimer = setTimeout(applyTextTool, 30); }
+  };
+  const onPsCancel = e => { if (ps && e.pointerId === ps.id) ps = null; };
+  window.addEventListener('pointerup', endPs);
+  window.addEventListener('pointercancel', onPsCancel);
+  addCleanup(() => { window.removeEventListener('pointerup', endPs); window.removeEventListener('pointercancel', onPsCancel); });
+  pagesEl.addEventListener('dblclick', e => {
+    if (!['select', 'hl', 'ul', 'st'].includes(R.tool)) return;
+    const layer = layerAt(e.clientX, e.clientY, null);
+    if (layer) selectWordAt(layer, e.clientX, e.clientY);
+  });
   let penFrom = null;
   pagesEl.addEventListener('pointerdown', e => { penFrom = e.pointerType === 'pen' ? [e.clientX, e.clientY] : null; }, true);
   pagesEl.addEventListener('pointerup', e => {
