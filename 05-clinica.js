@@ -3579,6 +3579,7 @@ async function papersNb() {
 }
 // i dati di un articolo dal suo DOI (Crossref, gratuito e senza chiave)
 async function crossrefLookup(doi) {
+  if (navigator.onLine === false) throw new Error('Sei offline: i dati dal DOI arrivano con internet');
   const r = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, { headers: { Accept: 'application/json' } });
   if (!r.ok) throw new Error(r.status === 404 ? 'DOI non trovato' : 'Il registro degli articoli non risponde: riprova più tardi');
   const m = (await r.json()).message || {};

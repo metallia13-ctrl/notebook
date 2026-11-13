@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.76';
+const APP_VERSION = '3.77';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -724,6 +724,8 @@ const AI = {
     }
   },
   async generate(opts) {
+    // offline: lo dico subito, invece di riprovare più volte
+    if (navigator.onLine === false) throw apiError('Sei offline: questa funzione usa l’AI e serve internet. Il resto dell’app funziona anche così.', 0);
     const p = opts.provider || S().provider;
     if (p === 'claude') return this.withRetry(() => callClaude(opts), opts);
     // Gemini: ogni modello ha la sua quota gratuita del giorno. Finita quella del
@@ -1347,6 +1349,12 @@ const Sync = {
   async run({ silent = false } = {}) {
     if (!this.configured()) { if (!silent) toast('Configura prima la sincronizzazione in Impostazioni', 'err'); return false; }
     if (this.busy) { this.again = true; return false; }
+    // offline: niente errore; le modifiche restano da parte e partono appena torna la connessione
+    if (navigator.onLine === false) {
+      setSyncStatus('Sei offline: sincronizzo appena torna la connessione');
+      if (!silent) toast('Sei offline: le modifiche sono salvate qui e le sincronizzo appena torna la connessione');
+      return false;
+    }
     this.busy = true;
     clearTimeout(this.timer);
     this.timer = null;

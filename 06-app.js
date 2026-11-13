@@ -1305,6 +1305,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.77", title: "messaggi più chiari senza internet", html: `      <ul>
+        <li>Senza internet l’app funziona come sempre (appunti, PDF, flashcard, ripasso, blocco note, lezioni già sul dispositivo). Ora le funzioni che hanno bisogno della rete lo dicono subito e chiaramente: l’AI risponde “sei offline” invece di riprovare, e la sincronizzazione con Drive non mostra errori ma aspetta che torni la connessione, poi parte da sola.</li>
+      </ul>` },
   { v: "3.76", title: "lezioni audio nel notebook", html: `      <ul>
         <li>Ogni notebook ha <strong>Lezioni</strong> (pulsante in alto nella pagina del notebook): carichi o registri l’audio di una lezione che parla di più argomenti, con lo stesso lettore di sempre, che resta in basso mentre studi.</li>
         <li><strong>Segnalibri</strong> con nome e <strong>sezioni collegate</strong>: per ogni segnalibro, e per la lezione intera. Se metti un segnalibro mentre studi una sezione del notebook, nasce già collegato a lei.</li>
