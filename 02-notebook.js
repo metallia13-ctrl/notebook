@@ -4025,6 +4025,12 @@ function modeMap(sec, body) {
   const instId = uid();
   let view = (inPanel ? st.mapViewPanel : st.mapView) || (inPanel || window.innerWidth < 700 ? 'list' : 'map');
   let connectFrom = null;
+  // v3.79: la scheda Mappe usa tutta la larghezza; la mappa può andare a tutto schermo
+  let mapFull = false;
+  if (!inPanel) { document.body.classList.add('view-wide'); addCleanup(() => document.body.classList.remove('view-wide', 'map-full-on', 'map-full-edit')); }
+  const onEscFull = e => { if (e.key === 'Escape' && mapFull && body.isConnected) { mapFull = false; draw(); } };
+  document.addEventListener('keydown', onEscFull);
+  addCleanup(() => document.removeEventListener('keydown', onEscFull));
   let quiz = false;
   // v3.57: semaforo nel ripasso delle mappe; le parti rosse e arancio diventano punti deboli
   let rateFor = null;
@@ -4153,7 +4159,9 @@ function modeMap(sec, body) {
         ${CZ_MARKS.map(c => `<button type="button" class="czm-dot ${c} ${mpMarks()[markKey(rateFor)] === c ? 'on' : ''}" data-mpr="${c}" aria-label="${CZ_MARK_NAMES[c]}" title="${CZ_MARK_NAMES[c]}"></button>`).join('')}
       </div>` : ''}
       ${connectFrom ? '<p class="hint warn-hint map-connect">→ Ora tocca il nodo a cui arriva la freccia. <button type="button" class="btn sm ghost" data-act="map-noconn">Annulla</button></p>' : ''}
-      <div id="mapBox" class="map-box ${quiz ? 'quiz' : ''} ${edit ? 'editing' : ''}"></div>`;
+      <div id="mapBox" class="map-box ${quiz ? 'quiz' : ''} ${edit ? 'editing' : ''} ${mapFull && view === 'map' ? 'map-full' : ''}"></div>`;
+    document.body.classList.toggle('map-full-on', mapFull && view === 'map');
+    document.body.classList.toggle('map-full-edit', mapFull && view === 'map' && edit);
     view === 'map' ? drawSvg(sheet) : drawList(sheet);
     const nsc = $('.map-scroll', body);
     if (keepSc && nsc) { nsc.scrollLeft = keepSc[0]; nsc.scrollTop = keepSc[1]; }
@@ -4297,13 +4305,13 @@ function modeMap(sec, body) {
       rels.push(`<g class="mrel" data-mrel="${r.id}"><path class="mrel-line" d="${d}" marker-end="url(#mArw-${instId})"/><path class="mrel-hit" d="${d}"><title>${esc(lt || 'Freccia')}</title></path>${lt ? `<rect class="mrel-lb" x="${f(mx - lw / 2)}" y="${f(my - 11)}" width="${lw}" height="20" rx="6"/><text class="mrel-t" x="${f(mx)}" y="${f(my + 4)}" text-anchor="middle">${esc(lt)}</text>` : ''}</g>`);
     });
     box.innerHTML = `
-      <div class="map-zoom"><button class="btn sm ghost" data-mz="-">−</button><button class="btn sm ghost" data-mz="0">${Math.round(zoom * 100)}%</button><button class="btn sm ghost" data-mz="+">+</button></div>
+      <div class="map-zoom"><button class="btn sm ghost" data-mz="-" aria-label="Rimpicciolisci">−</button><button class="btn sm ghost" data-mz="0" title="Torna al 100%">${Math.round(zoom * 100)}%</button><button class="btn sm ghost" data-mz="+" aria-label="Ingrandisci">+</button><button class="btn sm ghost" data-mz="fit" title="Adatta: la mappa intera nello spazio" aria-label="Adatta allo spazio">⤢</button><button class="btn sm ghost" data-mz="full" title="${mapFull ? 'Esci dallo schermo intero (Esc)' : 'Mappa a tutto schermo'}" aria-label="${mapFull ? 'Esci dallo schermo intero' : 'Mappa a tutto schermo'}">${mapFull ? '✕' : '⛶'}</button></div>
       <div class="map-scroll"><svg class="map-svg" viewBox="0 0 ${W} ${H}" width="${Math.round(W * zoom)}" height="${Math.round(H * zoom)}" role="img" aria-label="Mappa: ${esc(sheet.root.t)}"><defs><marker id="mArw-${instId}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mrel-head" d="M0 0L10 5L0 10z"/></marker></defs><g class="links">${links.join('')}</g><g class="sums">${sums.join('')}</g>${nodes.join('')}<g class="rels">${rels.join('')}</g></svg></div>`;
     const sc = $('.map-scroll', box);
     const setZoom = (z, cx, cy) => {
       const svg = $('.map-svg', box);
       const old = zoom;
-      zoom = Math.max(0.3, Math.min(2.5, z));
+      zoom = Math.max(0.15, Math.min(2.5, z));
       const r = sc.getBoundingClientRect();
       const px = cx ?? r.width / 2;
       const py = cy ?? r.height / 2;
@@ -4315,9 +4323,20 @@ function modeMap(sec, body) {
       sc.scrollTop = ay * zoom - py;
       $('[data-mz="0"]', box).textContent = `${Math.round(zoom * 100)}%`;
     };
+    // la mappa intera nello spazio che c’è
+    const fit = () => {
+      const r = sc.getBoundingClientRect();
+      const z = Math.min(r.width / W, (r.height || window.innerHeight * 0.7) / H) * 0.97;
+      setZoom(Math.max(0.15, Math.min(1.5, z)));
+      sc.scrollLeft = 0;
+      sc.scrollTop = 0;
+    };
     box.querySelector('.map-zoom').addEventListener('click', e => {
       const b = e.target.closest('[data-mz]');
       if (!b) return;
+      // ridisegnata a tutto schermo, la mappa si adatta al nuovo spazio
+      if (b.dataset.mz === 'full') { mapFull = !mapFull; draw(); if (mapFull) requestAnimationFrame(() => $('[data-mz="fit"]', body)?.click()); return; }
+      if (b.dataset.mz === 'fit') { fit(); return; }
       setZoom(b.dataset.mz === '+' ? zoom * 1.2 : b.dataset.mz === '-' ? zoom / 1.2 : 1);
     });
     sc.addEventListener('wheel', e => {

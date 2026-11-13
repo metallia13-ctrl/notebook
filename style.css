@@ -3986,3 +3986,26 @@ html.pdf-open .overlay:not(.full) { backdrop-filter: none; -webkit-backdrop-filt
 .ml-rels { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 4px 1.8em; }
 .ml-rel { padding: 1px 8px; border: 1px dashed var(--accent); border-radius: 999px; background: none; color: var(--accent); font-size: 0.82rem; cursor: pointer; }
 .ml-rel em { font-style: normal; font-weight: 700; }
+
+/* =====================================================================
+   v3.79: più spazio al computer
+   ===================================================================== */
+/* con il mouse le schede non si possono scorrere di lato: vanno a capo */
+@media (hover: hover) and (pointer: fine) {
+  .tabs { flex-wrap: wrap; overflow-x: visible; row-gap: 6px; }
+}
+/* la scheda Mappe usa tutta la larghezza */
+@media (min-width: 900px) {
+  body.view-wide:not(.split-open) .view { max-width: none; margin-left: 252px; margin-right: 24px; }
+  body.view-wide.nav-hidden:not(.split-open) .view { margin-left: 72px; }
+}
+@media (min-width: 700px) and (max-width: 899px) {
+  body.view-wide:not(.split-open) .view { max-width: none; }
+}
+body.view-wide .map-scroll { max-height: calc(100dvh - 210px); min-height: 55vh; }
+/* mappa a tutto schermo */
+.map-box.map-full { position: fixed; inset: 10px; z-index: 70; display: flex; flex-direction: column; box-shadow: var(--shadow); }
+.map-box.map-full .map-scroll { flex: 1; max-height: none; min-height: 0; height: 100%; }
+body.map-full-edit .map-box.map-full { top: 72px; }
+body.map-full-edit .map-etools { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 71; flex-wrap: nowrap; max-width: calc(100vw - 24px); overflow-x: auto; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }

@@ -1305,6 +1305,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.79", title: "più spazio al computer", html: `      <ul>
+        <li>Al computer, con il mouse, le <strong>schede della sezione</strong> (Cloze, Leggi, Mappe… Audio) vanno a capo invece di finire tagliate: si vedono tutte.</li>
+        <li>Nella scheda <strong>Mappe</strong> la pagina usa tutta la larghezza dello schermo e la mappa quasi tutta l’altezza.</li>
+        <li>Accanto allo zoom della mappa: <strong>⤢ Adatta</strong> (la mappa intera nello spazio) e <strong>⛶ Schermo intero</strong> (Esc per uscire; in modifica la barra degli strumenti resta in alto).</li>
+      </ul>` },
   { v: "3.78", title: "mappe: sommari, frecce, testo formattato, elenco accanto", html: `      <ul>
         <li><strong>Sommario</strong> (in Modifica): una graffa che raggruppa il nodo scelto e quelli dopo, con il suo testo, come in XMind.</li>
         <li><strong>→ Freccia</strong>: scegli un nodo, tocca Freccia, poi il nodo di arrivo; la freccia collega due rami qualsiasi, anche lontani. Toccandola (in Modifica) scrivi un’etichetta, la inverti o la elimini. Sommari e frecce si salvano anche nel file XMind.</li>
