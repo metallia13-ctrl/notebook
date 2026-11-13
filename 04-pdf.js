@@ -30,6 +30,7 @@ const PDF_TOOLS = [
   ['text', 'Testo', '<svg viewBox="0 0 24 24"><path d="M5 5h14M12 5v14M9 19h6"/></svg>', 'Scrivi un testo sulla pagina'],
   ['note', 'Nota', '<svg viewBox="0 0 24 24"><path d="M5 4h14v12l-5 5H5z"/><path d="M14 21v-5h5"/></svg>', 'Una nota dove tocchi'],
   ['occ', 'Occludi', '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M8 12h8"/></svg>', 'Copri etichette e valori per ripassarli'],
+  ['crop', 'Ritaglia', '<svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg>', 'Trascina un riquadro su un’immagine o uno schema: lo salvi nell’atlante, in una sezione o come file'],
   ['eraser', 'Gomma', '<svg viewBox="0 0 24 24"><path d="M16 3l5 5-11 11H5l-2-2z"/><path d="M9 21h12"/></svg>', 'Cancella annotazioni']
 ];
 function shapeSvg(a, live = false) {
@@ -856,6 +857,19 @@ function viewPdf(id, pageParam) {
       ink = { id: e.pointerId, el, shape: g, p0, box: [...p0, ...p0] };
       return;
     }
+    if (R.tool === 'crop') {
+      // v3.80: ritaglio di una parte della pagina (immagini, schemi, tabelle, anche nelle scansioni)
+      if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
+      if (e.button > 0) return;
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      const svg = el.querySelector('svg.pdf-ann') || (drawAnnots(+el.dataset.p), el.querySelector('svg.pdf-ann'));
+      const r = document.createElementNS(SVG_NS, 'rect');
+      r.setAttribute('class', 'ann-crop live');
+      svg.append(r);
+      ink = { id: e.pointerId, el, occ: r, p0: pointInPage(el, e), crop: true };
+      return;
+    }
     if (R.tool === 'occ') {
       if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
       if (e.button > 0) return;
@@ -924,6 +938,12 @@ function viewPdf(id, pageParam) {
       cur.shape.remove();
       const [x1, y1, x2, y2] = cur.box;
       if (Math.hypot(x2 - x1, y2 - y1) > 6) addAnnots([{ id: uid(), type: 'shape', kind: R.shape, page: +cur.el.dataset.p, box: cur.box.map(v => +v.toFixed(2)), color: R.ink, w: Math.min(R.inkW, 4), created: Date.now() }]);
+      return;
+    }
+    if (cur.crop) {
+      const box = cur.box;
+      if (box && box[2] > 12 && box[3] > 12) cropFlow(+cur.el.dataset.p, box, cur.occ);
+      else { cur.occ.remove(); toast('Trascina un riquadro intorno all’immagine da ritagliare'); }
       return;
     }
     if (cur.occ) {
@@ -1274,6 +1294,8 @@ function viewPdf(id, pageParam) {
         { key: 'add', label: 'Aggiungi a una sezione' },
         { key: 'labels', label: 'Aggiungi a una sezione e fai l’esercizio delle etichette' },
         { key: 'side', label: 'Apri la pagina di fianco' },
+        { key: 'anat', label: 'Salva nell’atlante di anatomia' },
+        { key: 'atlas', label: 'Salva nell’atlante diagnostico' },
         { key: 'save', label: 'Scarica l’immagine' }
       ]);
       if (choice === 'go') { goTo(f.page, { flash: true }); if (window.innerWidth < 900) closePanel(); return; }
@@ -1282,6 +1304,7 @@ function viewPdf(id, pageParam) {
       const cv = await figCanvas(f, 1600);
       if (!cv) { toast('Non riesco a ritagliare questa figura', 'err'); return; }
       if (choice === 'save') { cv.toBlob(b => downloadBlob(b, `${meta.name} p${f.page}.jpg`), 'image/jpeg', 0.9); return; }
+      if (choice === 'anat' || choice === 'atlas') { await saveCropToAtlas(choice, cv, `${meta.name}, p. ${f.page}`); return; }
       const sec = await pickSectionSheet('Aggiungi la figura a…', meta.sectionId);
       if (!sec) return;
       const im = await saveImage(await canvasToImage(cv, 0.9), sec.notebookId);
@@ -1289,6 +1312,31 @@ function viewPdf(id, pageParam) {
       if (choice === 'labels') openLabelEditor(sec, im.id);
       else toast(`Figura aggiunta a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
     };
+  }
+  // v3.80: il riquadro ritagliato con lo strumento Ritaglia
+  async function cropFlow(page, box, liveRect) {
+    const sz = sizeOf(page);
+    const f = { page, box: { x: box[0] / sz.width, y: box[1] / sz.height, w: box[2] / sz.width, h: box[3] / sz.height } };
+    const cv = await figCanvas(f, 1800);
+    if (liveRect) liveRect.remove();
+    if (!cv) { toast('Non riesco a ritagliare questa parte della pagina', 'err'); return; }
+    const choice = await actionSheet(`Ritaglio di pagina ${page}`, [
+      { key: 'anat', label: 'Salva nell’atlante di anatomia' },
+      { key: 'atlas', label: 'Salva nell’atlante diagnostico' },
+      { key: 'add', label: 'Aggiungi a una sezione' },
+      { key: 'labels', label: 'Aggiungi a una sezione e fai l’esercizio delle etichette' },
+      { key: 'save', label: 'Scarica l’immagine' }
+    ]);
+    if (!choice) return;
+    const src = `${meta.name}, p. ${page}`;
+    if (choice === 'save') { cv.toBlob(b => downloadBlob(b, `${meta.name} p${page}.jpg`), 'image/jpeg', 0.9); return; }
+    if (choice === 'anat' || choice === 'atlas') { await saveCropToAtlas(choice, cv, src); return; }
+    const sec = await pickSectionSheet('Aggiungi il ritaglio a…', meta.sectionId);
+    if (!sec) return;
+    const im = await saveImage(await canvasToImage(cv, 0.9), sec.notebookId);
+    await appendImagesUnder(sec, 'Figure dal PDF', [imageMd(im.id, src)]);
+    if (choice === 'labels') openLabelEditor(sec, im.id);
+    else toast(`Ritaglio aggiunto a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
   }
   // ritaglio di una figura dalla sua pagina, alla larghezza voluta
   async function figCanvas(f, width) {

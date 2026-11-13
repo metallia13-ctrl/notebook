@@ -4009,3 +4009,11 @@ body.view-wide .map-scroll { max-height: calc(100dvh - 210px); min-height: 55vh;
 body.map-full-edit .map-box.map-full { top: 72px; }
 body.map-full-edit .map-etools { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 71; flex-wrap: nowrap; max-width: calc(100vw - 24px); overflow-x: auto; padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
+
+/* v3.80: ritaglio dal PDF */
+.pdf-app[data-tool="crop"] .pdf-page { cursor: crosshair; }
+.pdf-app[data-tool="crop"] .textLayer { pointer-events: none; }
+.ann-crop { fill: color-mix(in srgb, var(--accent) 14%, transparent); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 3; }
+.crop-prev { display: block; max-width: 100%; max-height: 36vh; margin: 0 auto 10px; border-radius: var(--r); background: #fff; object-fit: contain; }
+.cm-new[hidden], .cm-add[hidden] { display: none; }
+.pdf-app[data-tool="crop"] .pdf-page { touch-action: none; -webkit-user-select: none; user-select: none; }

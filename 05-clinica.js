@@ -3957,3 +3957,98 @@ async function paperAiSummary(p) {
     };
   });
 }
+
+/* ---------- v3.80: un ritaglio dal PDF nell’atlante ----------
+   Nuova scheda (nome, apparato o esame, regione o quadro, tag) oppure una scheda
+   che c’è già; l’immagine va sotto “Immagine” (o “Immagini”), la fonte è il PDF e la pagina. */
+function saveCropToAtlas(kind, canvas, source) {
+  const cfg = SPECIALS[kind];
+  const nbx = specialNb(kind);
+  const others = nbx ? secsOf(nbx.id) : [];
+  const groups = [...new Set(others.map(s => s.sp?.group).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+  const last = S()[`cropType_${kind}`] || Object.keys(cfg.types)[0];
+  const preview = canvas.toDataURL('image/jpeg', 0.7);
+  return new Promise(resolve => {
+    let mode = 'new', picked = null;
+    const sh = openSheet(`
+      <h2>${esc(cfg.name)}</h2>
+      <img class="crop-prev" src="${preview}" alt="Il ritaglio">
+      <div class="seg" role="tablist" aria-label="Dove">
+        <button type="button" data-cm="new" aria-selected="true">Nuova scheda</button>
+        <button type="button" data-cm="add" aria-selected="false" ${others.length ? '' : 'disabled'}>Aggiungi a una scheda</button>
+      </div>
+      <div class="cm-new">
+        <label class="field"><span>Nome</span><input class="input" id="cpTitle" placeholder="${esc(cfg.namePh || '')}"></label>
+        <div class="grid2">
+          <label class="field"><span>${esc(cfg.typeLabel)}</span><select class="input" id="cpType">${Object.entries(cfg.types).map(([k, l]) => `<option value="${k}" ${k === last ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+          <label class="field"><span>${esc(cfg.groupLabel || 'Gruppo')}</span><input class="input" id="cpGroup" list="cpGroups" placeholder="${esc(cfg.groupPh || '')}"><datalist id="cpGroups">${groups.map(g => `<option value="${esc(g)}">`).join('')}</datalist></label>
+        </div>
+        <label class="field"><span>Tag, separati da virgole</span><input class="input" id="cpTags" placeholder="Es. esame, da ripassare"></label>
+      </div>
+      <div class="cm-add" hidden>
+        <input type="search" class="input" id="cpQ" placeholder="Cerca la scheda" autocomplete="off">
+        <ul class="list pick-list" id="cpList"></ul>
+      </div>
+      <p class="hint">Fonte: ${esc(source)}</p>
+      <label class="check"><input type="checkbox" id="cpLab"><span>Poi segna le strutture con le etichette</span></label>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-cp="no">Annulla</button><button class="btn primary" type="button" data-cp="ok">Salva nell’atlante</button></div>`, { label: cfg.name, onClose: v => resolve(v || null) });
+    const drawList = () => {
+      const f = foldAccents($('#cpQ', sh.el).value.trim());
+      const list = others.filter(s => !f || foldAccents(`${s.title} ${s.sp?.group || ''} ${tagsOf(s).join(' ')}`).includes(f)).sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0)).slice(0, 30);
+      $('#cpList', sh.el).innerHTML = list.map(s => `<li><button type="button" class="row ${picked === s ? 'on' : ''}" data-cps="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(specialMetaBits(s).join(' · '))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna scheda trovata.</li>';
+    };
+    sh.el.addEventListener('click', async e => {
+      const m = e.target.closest('[data-cm]');
+      if (m && !m.disabled) {
+        mode = m.dataset.cm;
+        $$('[data-cm]', sh.el).forEach(b => b.setAttribute('aria-selected', String(b === m)));
+        $('.cm-new', sh.el).hidden = mode !== 'new';
+        $('.cm-add', sh.el).hidden = mode !== 'add';
+        if (mode === 'add') { drawList(); $('#cpQ', sh.el).focus(); }
+        return;
+      }
+      const ps = e.target.closest('[data-cps]');
+      if (ps) { picked = others.find(s => s.id === ps.dataset.cps); drawList(); return; }
+      const b = e.target.closest('[data-cp]');
+      if (!b) return;
+      if (b.dataset.cp === 'no') { sh.close(null); return; }
+      let sec;
+      if (mode === 'new') {
+        const title = $('#cpTitle', sh.el).value.trim();
+        if (!title) { toast('Scrivi il nome della scheda'); $('#cpTitle', sh.el).focus(); return; }
+        const type = $('#cpType', sh.el).value;
+        S()[`cropType_${kind}`] = type;
+        Settings.save();
+        const nb = await ensureSpecialNb(cfg);
+        const parts = cfg.parts(type);
+        sec = newSection(nb.id, { title, md: parts.map((p, i) => `## ${p}\n\n`).join('') });
+        sec.sp = { type, group: $('#cpGroup', sh.el).value.trim(), links: [] };
+        sec.tags = parseTags($('#cpTags', sh.el).value);
+        const im = await saveImage(await canvasToImage(canvas, 0.9), nb.id);
+        // l’immagine sotto la prima parte (Immagine, Tracciato…)
+        sec.md = sec.md.replace(`## ${parts[0]}\n\n`, `## ${parts[0]}\n\n${imageMd(im.id, source)}\n\n`);
+        sec.sources = [source];
+        await saveSection(sec);
+        const lab = $('#cpLab', sh.el)?.checked;
+        sh.close(sec);
+        toast(`Scheda “${title}” nell’${cfg.name.toLowerCase()}`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
+        // dopo che la scheda si è chiusa, se no la chiusura toglierebbe anche l’editor
+        if (lab) setTimeout(() => openLabelEditor(sec, im.id), 400);
+        return;
+      }
+      if (!picked) { toast('Tocca la scheda a cui aggiungerlo'); return; }
+      sec = picked;
+      const im = await saveImage(await canvasToImage(canvas, 0.9), sec.notebookId);
+      const head = (cfg.parts(sec.sp?.type)[0]) || 'Immagini';
+      await appendImagesUnder(sec, head, [imageMd(im.id, source)]);
+      sec.sources = [...new Set([...sourcesOf(sec), source])];
+      await saveSection(sec);
+      const lab = $('#cpLab', sh.el)?.checked;
+      sh.close(sec);
+      toast(`Immagine aggiunta a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
+      if (lab) setTimeout(() => openLabelEditor(sec, im.id), 400);
+    });
+    $('#cpQ', sh.el).addEventListener('input', drawList);
+    setTimeout(() => $('#cpTitle', sh.el)?.focus(), 40);
+  });
+}

@@ -1305,6 +1305,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.80", title: "ritagliare dal PDF per gli atlanti", html: `      <ul>
+        <li>Nel lettore PDF c’è lo strumento <strong>✂ Ritaglia</strong>: trascini un riquadro intorno a un’immagine, uno schema o una tabella (anche nelle pagine scansionate) e scegli dove salvarla: <strong>nell’atlante di anatomia</strong>, <strong>nell’atlante diagnostico</strong>, in una sezione (anche con l’esercizio delle etichette) o come file.</li>
+        <li>Nell’atlante crei una <strong>nuova scheda</strong> (nome, apparato o esame, regione, tag) oppure aggiungi l’immagine a una scheda che c’è già. La fonte (libro e pagina) si scrive da sola, e puoi passare subito a segnare le strutture con le etichette.</li>
+        <li>Anche dalla galleria delle figure puoi salvare nell’atlante.</li>
+      </ul>` },
   { v: "3.79", title: "più spazio al computer", html: `      <ul>
         <li>Al computer, con il mouse, le <strong>schede della sezione</strong> (Cloze, Leggi, Mappe… Audio) vanno a capo invece di finire tagliate: si vedono tutte.</li>
         <li>Nella scheda <strong>Mappe</strong> la pagina usa tutta la larghezza dello schermo e la mappa quasi tutta l’altezza.</li>
