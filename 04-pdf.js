@@ -1301,13 +1301,18 @@ function viewPdf(id, pageParam) {
       if (choice === 'go') { goTo(f.page, { flash: true }); if (window.innerWidth < 900) closePanel(); return; }
       if (choice === 'side') { Split.show({ kind: 'pdf', id: meta.id, page: f.page }); return; }
       if (!choice) return;
+      // v3.81: le figure trovate da sole sono solo il disegno; qui si allargano alle etichette e si sistemano
+      const fixed = await cropEditor({ doc: R.doc, page: f.page, box: f.box, title: `${meta.name}, pagina ${f.page}`, autoLabels: true });
+      if (!fixed) return;
+      f.box = fixed;
       const cv = await figCanvas(f, 1600);
       if (!cv) { toast('Non riesco a ritagliare questa figura', 'err'); return; }
       if (choice === 'save') { cv.toBlob(b => downloadBlob(b, `${meta.name} p${f.page}.jpg`), 'image/jpeg', 0.9); return; }
-      if (choice === 'anat' || choice === 'atlas') { await saveCropToAtlas(choice, cv, `${meta.name}, p. ${f.page}`); return; }
+      if (choice === 'anat' || choice === 'atlas') { await saveCropToAtlas(choice, cv, `${meta.name}, p. ${f.page}`, { pdf: meta.id, page: f.page, box: f.box }); return; }
       const sec = await pickSectionSheet('Aggiungi la figura a…', meta.sectionId);
       if (!sec) return;
       const im = await saveImage(await canvasToImage(cv, 0.9), sec.notebookId);
+      await setImageSource(im, meta.id, f.page, f.box);
       await appendImagesUnder(sec, 'Figure dal PDF', [imageMd(im.id, `${meta.name}, pagina ${f.page}`)]);
       if (choice === 'labels') openLabelEditor(sec, im.id);
       else toast(`Figura aggiunta a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
@@ -1316,9 +1321,13 @@ function viewPdf(id, pageParam) {
   // v3.80: il riquadro ritagliato con lo strumento Ritaglia
   async function cropFlow(page, box, liveRect) {
     const sz = sizeOf(page);
-    const f = { page, box: { x: box[0] / sz.width, y: box[1] / sz.height, w: box[2] / sz.width, h: box[3] / sz.height } };
-    const cv = await figCanvas(f, 1800);
+    let fbox = { x: box[0] / sz.width, y: box[1] / sz.height, w: box[2] / sz.width, h: box[3] / sz.height };
     if (liveRect) liveRect.remove();
+    // v3.81: prima si sistema il riquadro (maniglie, scritte vicine), poi si sceglie dove salvarlo
+    fbox = await cropEditor({ doc: R.doc, page, box: fbox, title: `${meta.name}, pagina ${page}` });
+    if (!fbox) return;
+    const f = { page, box: fbox };
+    const cv = await figCanvas(f, 1800);
     if (!cv) { toast('Non riesco a ritagliare questa parte della pagina', 'err'); return; }
     const choice = await actionSheet(`Ritaglio di pagina ${page}`, [
       { key: 'anat', label: 'Salva nell’atlante di anatomia' },
@@ -1330,10 +1339,11 @@ function viewPdf(id, pageParam) {
     if (!choice) return;
     const src = `${meta.name}, p. ${page}`;
     if (choice === 'save') { cv.toBlob(b => downloadBlob(b, `${meta.name} p${page}.jpg`), 'image/jpeg', 0.9); return; }
-    if (choice === 'anat' || choice === 'atlas') { await saveCropToAtlas(choice, cv, src); return; }
+    if (choice === 'anat' || choice === 'atlas') { await saveCropToAtlas(choice, cv, src, { pdf: meta.id, page, box: fbox }); return; }
     const sec = await pickSectionSheet('Aggiungi il ritaglio a…', meta.sectionId);
     if (!sec) return;
     const im = await saveImage(await canvasToImage(cv, 0.9), sec.notebookId);
+    await setImageSource(im, meta.id, page, fbox);
     await appendImagesUnder(sec, 'Figure dal PDF', [imageMd(im.id, src)]);
     if (choice === 'labels') openLabelEditor(sec, im.id);
     else toast(`Ritaglio aggiunto a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
@@ -1918,3 +1928,197 @@ function viewPdfLibrary(p1, p2) {
   });
 }
 
+/* =====================================================================
+   v3.81: editor del ritaglio
+   La pagina intera con il riquadro proposto: lo allarghi o lo sposti con le
+   maniglie, ne disegni uno nuovo trascinando fuori, o lasci che includa da
+   solo le scritte vicine (le etichette delle tavole). Il riquadro è in
+   proporzione alla pagina: { x, y, w, h } da 0 a 1.
+   ===================================================================== */
+async function pdfDocFor(meta) {
+  await ensurePdfJs();
+  const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+  if (!rec || !rec.blob) throw new Error('Il PDF non è su questo dispositivo: aprilo una volta dalla libreria');
+  return window.pdfjsLib.getDocument({ data: new Uint8Array(await rec.blob.arrayBuffer()) }).promise;
+}
+// una parte della pagina come immagine, alla larghezza voluta
+async function renderPdfCrop(doc, pageNo, box, width) {
+  const page = await doc.getPage(pageNo);
+  const base = page.getViewport({ scale: 1 });
+  const scale = Math.min(4, Math.max(0.2, width / Math.max(1, box.w * base.width)));
+  const vp = page.getViewport({ scale });
+  const full = document.createElement('canvas');
+  full.width = Math.round(vp.width);
+  full.height = Math.round(vp.height);
+  const ctx = full.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, full.width, full.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  const sx = Math.round(box.x * full.width), sy = Math.round(box.y * full.height);
+  const sw = Math.max(1, Math.round(box.w * full.width)), sh = Math.max(1, Math.round(box.h * full.height));
+  const out = document.createElement('canvas');
+  out.width = sw;
+  out.height = sh;
+  out.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
+  return out;
+}
+// le scritte brevi (etichette) intorno a un riquadro: il riquadro si allarga fino a comprenderle
+async function boxWithLabels(doc, pageNo, box) {
+  const page = await doc.getPage(pageNo);
+  const vp = page.getViewport({ scale: 1 });
+  const tc = await page.getTextContent();
+  const near = { x: box.x - 0.16, y: box.y - 0.07, r: box.x + box.w + 0.16, b: box.y + box.h + 0.07 };
+  let { x, y } = box, r = box.x + box.w, b = box.y + box.h;
+  tc.items.forEach(it => {
+    const s = String(it.str || '').trim();
+    if (!s || s.length > 45) return;
+    const [ax, ay] = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+    const h = Math.abs(it.height || it.transform[3] || 8);
+    const ix = ax / vp.width, iy = (ay - h) / vp.height, ir = (ax + (it.width || s.length * h * 0.5)) / vp.width, ib = ay / vp.height;
+    if (ir < near.x || ix > near.r || ib < near.y || iy > near.b) return;
+    x = Math.min(x, ix); y = Math.min(y, iy); r = Math.max(r, ir); b = Math.max(b, ib);
+  });
+  const pad = 0.008;
+  x = Math.max(0, x - pad); y = Math.max(0, y - pad); r = Math.min(1, r + pad); b = Math.min(1, b + pad);
+  return { x, y, w: r - x, h: b - y };
+}
+function cropEditor({ doc, page, box, title = '', autoLabels = false }) {
+  return new Promise(async resolve => {
+    let bx = { ...(box || { x: 0.05, y: 0.05, w: 0.9, h: 0.9 }) };
+    const root = $('#modalRoot');
+    root.innerHTML = `
+      <div class="overlay full ce-wrap" role="dialog" aria-modal="true" aria-label="Ritaglio">
+        <div class="ce-head">
+          <b>${esc(title || `Ritaglio, pagina ${page}`)}</b>
+          <div class="inline">
+            <button class="btn sm" type="button" data-ce="labels" title="Allarga il riquadro fino a comprendere le etichette intorno">Includi le scritte vicine</button>
+            <button class="btn sm ghost" type="button" data-ce="page">Tutta la pagina</button>
+            <button class="btn sm ghost" type="button" data-ce="no">Annulla</button>
+            <button class="btn sm primary" type="button" data-ce="ok">Usa questo riquadro</button>
+          </div>
+        </div>
+        <p class="hint ce-hint">Trascina i quadratini per allargare o stringere, il riquadro per spostarlo; trascina fuori per disegnarne uno nuovo.</p>
+        <div class="ce-scroll"><div class="ce-stage"><canvas class="ce-cv"></canvas>
+          <div class="ce-box">${['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map(k => `<span class="ce-h ce-${k}" data-h="${k}"></span>`).join('')}</div></div></div>
+      </div>`;
+    const done = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } if (e.key === 'Enter') { e.preventDefault(); done(bx); } };
+    document.addEventListener('keydown', onKey, true);
+    const cv = $('.ce-cv', root), stage = $('.ce-stage', root), boxEl = $('.ce-box', root);
+    // la pagina, larga quanto lo schermo permette
+    try {
+      const pg = await doc.getPage(page);
+      const base = pg.getViewport({ scale: 1 });
+      const maxW = Math.min(1100, window.innerWidth - 32), maxH = window.innerHeight - 150;
+      const cssScale = Math.min(maxW / base.width, Math.max(maxH, 300) / base.height * 1.6, 3);
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const vp = pg.getViewport({ scale: cssScale * dpr });
+      cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+      cv.style.width = `${Math.round(vp.width / dpr)}px`; cv.style.height = `${Math.round(vp.height / dpr)}px`;
+      const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, cv.width, cv.height);
+      await pg.render({ canvasContext: c, viewport: vp }).promise;
+    } catch (err) { toast('Non riesco a mostrare la pagina', 'err'); done(null); return; }
+    if (!root.querySelector('.ce-wrap')) return;
+    const W = () => cv.clientWidth, H = () => cv.clientHeight;
+    const paint = () => {
+      boxEl.style.left = `${bx.x * W()}px`; boxEl.style.top = `${bx.y * H()}px`;
+      boxEl.style.width = `${bx.w * W()}px`; boxEl.style.height = `${bx.h * H()}px`;
+    };
+    if (autoLabels) { try { bx = await boxWithLabels(doc, page, bx); } catch { /* resta com’era */ } }
+    paint();
+    // il riquadro in vista
+    setTimeout(() => boxEl.scrollIntoView({ block: 'center', inline: 'center' }), 30);
+    let drag = null;
+    const pt = e => { const r = cv.getBoundingClientRect(); return [Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))]; };
+    stage.addEventListener('pointerdown', e => {
+      if (e.button > 0) return;
+      e.preventDefault();
+      const p = pt(e);
+      const h = e.target.closest('[data-h]');
+      if (h) drag = { k: h.dataset.h, p0: p, b0: { ...bx } };
+      else if (e.target.closest('.ce-box')) drag = { k: 'move', p0: p, b0: { ...bx } };
+      else drag = { k: 'new', p0: p, b0: { x: p[0], y: p[1], w: 0, h: 0 } };
+      stage.setPointerCapture(e.pointerId);
+    });
+    stage.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const [px, py] = pt(e);
+      const dx = px - drag.p0[0], dy = py - drag.p0[1];
+      const b = { ...drag.b0 };
+      let L = b.x, T = b.y, R2 = b.x + b.w, B = b.y + b.h;
+      if (drag.k === 'move') { const nx = Math.max(0, Math.min(1 - b.w, b.x + dx)), ny = Math.max(0, Math.min(1 - b.h, b.y + dy)); bx = { ...b, x: nx, y: ny }; paint(); return; }
+      if (drag.k === 'new') { L = Math.min(drag.p0[0], px); R2 = Math.max(drag.p0[0], px); T = Math.min(drag.p0[1], py); B = Math.max(drag.p0[1], py); }
+      else {
+        if (drag.k.includes('w')) L = Math.min(R2 - 0.02, b.x + dx);
+        if (drag.k.includes('e')) R2 = Math.max(L + 0.02, b.x + b.w + dx);
+        if (drag.k.includes('n')) T = Math.min(B - 0.02, b.y + dy);
+        if (drag.k.includes('s')) B = Math.max(T + 0.02, b.y + b.h + dy);
+      }
+      L = Math.max(0, L); T = Math.max(0, T); R2 = Math.min(1, R2); B = Math.min(1, B);
+      bx = { x: L, y: T, w: R2 - L, h: B - T };
+      paint();
+    });
+    const end = () => { if (drag && drag.k === 'new' && (bx.w < 0.02 || bx.h < 0.02)) { bx = drag.b0.w ? drag.b0 : { x: 0.05, y: 0.05, w: 0.9, h: 0.9 }; paint(); } drag = null; };
+    stage.addEventListener('pointerup', end);
+    stage.addEventListener('pointercancel', end);
+    root.addEventListener('click', async e => {
+      const b = e.target.closest('[data-ce]');
+      if (!b) return;
+      if (b.dataset.ce === 'no') done(null);
+      if (b.dataset.ce === 'ok') done(bx);
+      if (b.dataset.ce === 'page') { bx = { x: 0, y: 0, w: 1, h: 1 }; paint(); }
+      if (b.dataset.ce === 'labels') { try { bx = await boxWithLabels(doc, page, bx); paint(); } catch { toast('Su questa pagina non trovo scritte da includere'); } }
+    });
+  });
+}
+// da dove viene un’immagine: il PDF, la pagina e il riquadro (per ritagliarla di nuovo)
+async function setImageSource(im, pdfId, page, box) {
+  if (!im) return;
+  im.src = { pdf: pdfId, page, box: { x: +box.x.toFixed(4), y: +box.y.toFixed(4), w: +box.w.toFixed(4), h: +box.h.toFixed(4) } };
+  im.updated = Date.now();
+  await DB.put('images', im);
+}
+function imageSourceOf(imageId) {
+  const im = imageById(imageId);
+  if (im && im.src && pdfById(im.src.pdf)) return { meta: pdfById(im.src.pdf), page: im.src.page, box: im.src.box };
+  // immagini salvate prima: la didascalia dice “Nome del PDF, p. 12”
+  const re = new RegExp(`!\\[([^\\]]*)\\]\\(img:${imageId}\\)`);
+  for (const s of state.sections) {
+    const m = String(s.md || '').match(re);
+    if (!m) continue;
+    const c = m[1].match(/^(.+?),\s*p(?:agina)?\.?\s*(\d+)\s*$/i);
+    if (!c) continue;
+    const meta = state.pdfs.find(p => p.name === c[1].trim()) || state.pdfs.find(p => foldAccents(p.name) === foldAccents(c[1].trim()));
+    if (meta) return { meta, page: +c[2], box: null };
+  }
+  return null;
+}
+async function recropImage(imageId) {
+  const src = imageSourceOf(imageId);
+  const im = imageById(imageId);
+  if (!src || !im) { toast('Non so da quale PDF viene questa immagine', 'err'); return false; }
+  let doc;
+  try { doc = await pdfDocFor(src.meta); } catch (err) { toast(err.message, 'err'); return false; }
+  // senza il riquadro di prima: parto dalla figura più grande della pagina, se c’è
+  let start = src.box;
+  if (!start) {
+    try {
+      const { boxes } = await findPageImages(doc, src.page);
+      const big = (boxes || []).slice().sort((a, b) => b.w * b.h - a.w * a.h)[0];
+      if (big && big.w * big.h > 0.02) start = big;
+    } catch { /* niente */ }
+  }
+  const box = await cropEditor({ doc, page: src.page, box: start || { x: 0.05, y: 0.05, w: 0.9, h: 0.9 }, title: `${src.meta.name}, pagina ${src.page}`, autoLabels: !src.box && !!start });
+  if (!box) { doc.destroy(); return false; }
+  const cv = await renderPdfCrop(doc, src.page, box, 1800);
+  doc.destroy();
+  const img = await canvasToImage(cv, 0.9);
+  // stessa immagine, contenuto nuovo: si aggiorna ovunque sia usata
+  Object.assign(im, { blob: img.blob, w: img.w, h: img.h, size: img.blob.size, mime: img.blob.type });
+  await setImageSource(im, src.meta.id, src.page, box);
+  forgetImageUrl(im.id);
+  scheduleSync();
+  const hadLabels = state.sections.some(s => (labelSets(s)[im.id]?.masks || []).length);
+  toast(hadLabels ? 'Immagine ritagliata di nuovo. Controlla le etichette: il riquadro è cambiato' : 'Immagine ritagliata di nuovo');
+  return true;
+}

@@ -3961,7 +3961,7 @@ async function paperAiSummary(p) {
 /* ---------- v3.80: un ritaglio dal PDF nell’atlante ----------
    Nuova scheda (nome, apparato o esame, regione o quadro, tag) oppure una scheda
    che c’è già; l’immagine va sotto “Immagine” (o “Immagini”), la fonte è il PDF e la pagina. */
-function saveCropToAtlas(kind, canvas, source) {
+function saveCropToAtlas(kind, canvas, source, origin = null) {
   const cfg = SPECIALS[kind];
   const nbx = specialNb(kind);
   const others = nbx ? secsOf(nbx.id) : [];
@@ -4025,6 +4025,7 @@ function saveCropToAtlas(kind, canvas, source) {
         sec.sp = { type, group: $('#cpGroup', sh.el).value.trim(), links: [] };
         sec.tags = parseTags($('#cpTags', sh.el).value);
         const im = await saveImage(await canvasToImage(canvas, 0.9), nb.id);
+        if (origin) await setImageSource(im, origin.pdf, origin.page, origin.box);
         // l’immagine sotto la prima parte (Immagine, Tracciato…)
         sec.md = sec.md.replace(`## ${parts[0]}\n\n`, `## ${parts[0]}\n\n${imageMd(im.id, source)}\n\n`);
         sec.sources = [source];
@@ -4039,6 +4040,7 @@ function saveCropToAtlas(kind, canvas, source) {
       if (!picked) { toast('Tocca la scheda a cui aggiungerlo'); return; }
       sec = picked;
       const im = await saveImage(await canvasToImage(canvas, 0.9), sec.notebookId);
+      if (origin) await setImageSource(im, origin.pdf, origin.page, origin.box);
       const head = (cfg.parts(sec.sp?.type)[0]) || 'Immagini';
       await appendImagesUnder(sec, head, [imageMd(im.id, source)]);
       sec.sources = [...new Set([...sourcesOf(sec), source])];

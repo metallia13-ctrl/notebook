@@ -4017,3 +4017,17 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
 .crop-prev { display: block; max-width: 100%; max-height: 36vh; margin: 0 auto 10px; border-radius: var(--r); background: #fff; object-fit: contain; }
 .cm-new[hidden], .cm-add[hidden] { display: none; }
 .pdf-app[data-tool="crop"] .pdf-page { touch-action: none; -webkit-user-select: none; user-select: none; }
+
+/* v3.81: editor del ritaglio */
+.ce-wrap { display: flex; flex-direction: column; padding: 10px; background: rgba(0, 0, 0, 0.82); }
+.ce-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-radius: 12px; background: var(--surface); color: var(--text); }
+.ce-hint { margin: 6px 4px; color: #ddd; }
+.ce-scroll { flex: 1; min-height: 0; overflow: auto; display: flex; justify-content: center; align-items: flex-start; }
+.ce-stage { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+.ce-cv { display: block; background: #fff; }
+.ce-box { position: absolute; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45); outline: 2px solid var(--accent); cursor: move; }
+.ce-h { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border: 2px solid #fff; border-radius: 4px; background: var(--accent); }
+.ce-nw { left: 0; top: 0; cursor: nwse-resize; } .ce-n { left: 50%; top: 0; cursor: ns-resize; } .ce-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.ce-e { left: 100%; top: 50%; cursor: ew-resize; } .ce-se { left: 100%; top: 100%; cursor: nwse-resize; } .ce-s { left: 50%; top: 100%; cursor: ns-resize; }
+.ce-sw { left: 0; top: 100%; cursor: nesw-resize; } .ce-w { left: 0; top: 50%; cursor: ew-resize; }
+@media (pointer: coarse) { .ce-h { width: 26px; height: 26px; margin: -13px 0 0 -13px; } }

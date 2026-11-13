@@ -1305,6 +1305,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.81", title: "ritaglio regolabile, con le etichette", html: `      <ul>
+        <li>Prima di salvare un ritaglio dal PDF (con Ritaglia o dalla galleria delle figure) si apre la pagina intera con il riquadro: lo <strong>allarghi o sposti con le maniglie</strong>, ne disegni uno nuovo trascinando fuori, oppure tocchi <strong>Includi le scritte vicine</strong> e si allarga da solo fino alle etichette della tavola. Per le figure della galleria lo fa già da sé.</li>
+        <li>Le immagini già salvate e tagliate: aprile (tocco sull’immagine) e scegli <strong>✂ Ritaglia di nuovo dal PDF</strong>. Si riapre la pagina giusta; l’immagine nuova sostituisce la vecchia ovunque sia usata.</li>
+      </ul>` },
   { v: "3.80", title: "ritagliare dal PDF per gli atlanti", html: `      <ul>
         <li>Nel lettore PDF c’è lo strumento <strong>✂ Ritaglia</strong>: trascini un riquadro intorno a un’immagine, uno schema o una tabella (anche nelle pagine scansionate) e scegli dove salvarla: <strong>nell’atlante di anatomia</strong>, <strong>nell’atlante diagnostico</strong>, in una sezione (anche con l’esercizio delle etichette) o come file.</li>
         <li>Nell’atlante crei una <strong>nuova scheda</strong> (nome, apparato o esame, regione, tag) oppure aggiungi l’immagine a una scheda che c’è già. La fonte (libro e pagina) si scrive da sola, e puoi passare subito a segnare le strutture con le etichette.</li>

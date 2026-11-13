@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.80';
+const APP_VERSION = '3.81';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -1961,6 +1961,7 @@ function openLightbox(imageId) {
       <div class="lb-actions">
         ${ctx ? '<button class="btn" data-lb="io">Crea image occlusion</button>' : ''}
         ${ctx && ctx.sectionId ? `<button class="btn" data-lb="labels">${(labelSets(secById(ctx.sectionId) || {})[imageId]?.masks || []).length ? 'Rimetti le etichette' : 'Ritaglia le etichette'}</button>` : ''}
+        ${typeof imageSourceOf === 'function' && imageSourceOf(imageId) ? '<button class="btn" data-lb="recrop">✂ Ritaglia di nuovo dal PDF</button>' : ''}
         <button class="btn primary" data-lb="close">Chiudi</button>
       </div>
     </div>`;
@@ -1970,6 +1971,8 @@ function openLightbox(imageId) {
   $('[data-lb="close"]', root).onclick = close;
   const io = $('[data-lb="io"]', root);
   if (io) io.onclick = () => { close(); openOcclusionEditor({ imageId, ...ctx }); };
+  const rc = $('[data-lb="recrop"]', root);
+  if (rc) rc.onclick = async () => { close(); if (await recropImage(imageId)) { rehydrateMissing(); hydrateImages(document.body); if (location.hash.startsWith('#/sec/')) route(); } };
   const lb = $('[data-lb="labels"]', root);
   if (lb) lb.onclick = () => { const sec = secById(ctx.sectionId); close(); if (sec) startLabels(sec, imageId); };
 }
