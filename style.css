@@ -3922,3 +3922,18 @@ html.pdf-open .overlay:not(.full) { backdrop-filter: none; -webkit-backdrop-filt
 .es-more summary { cursor: pointer; color: var(--accent); margin: 4px 0; }
 .es-grade { margin-top: 8px; }
 @media (max-width: 699px) { .eq-occ { grid-template-columns: 1fr 1fr; } .es-row { grid-template-columns: 1fr; } }
+
+/* =====================================================================
+   v3.76: lezioni audio del notebook
+   ===================================================================== */
+.lz-secs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 4px; }
+.lz-secs .lbl { color: var(--muted); font-size: 0.85rem; }
+.lz-add { width: auto; max-width: 100%; }
+.lz-add.sm { padding: 4px 8px; font-size: 0.85rem; min-height: 0; }
+.lz-marks li { display: block; padding: 6px 0; border-top: 1px solid var(--line); }
+.lz-mrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.lz-mlink { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 0 3.2em; }
+.lz-refs { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 8px; }
+.lz-refs small { color: var(--muted); }
+.lz-pts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.lz-item[hidden] { display: none; }

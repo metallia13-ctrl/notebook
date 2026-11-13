@@ -185,6 +185,7 @@ function viewNotebook(id, folderId = '') {
         <button class="btn" data-act="new-sec">Scrivi una sezione</button>
         <button class="btn" data-act="new-grp">Nuova cartella</button>
         <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
+        <a class="btn" href="#/lezioni/${nb.id}">Lezioni${(nb.audios || []).length ? ` (${nb.audios.length})` : ''}</a>
         ${secs.length ? `<a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
         <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
@@ -805,8 +806,10 @@ function modeRead(sec, body) {
       </div>` : ''}
     ${pdfRefsBlockHtml(sec)}
     ${eqSecBlockHtml(sec)}
+    ${lessonBlockHtml(sec)}
     ${sourcesBlockHtml(sec)}
   `;
+  bindLessonBlock(body, sec);
   bindSourcesBlock(body, sec, () => saveSection(sec), isCase(sec) ? 'caso' : 'sezione');
   $$('[data-eqopen]', body).forEach(b => b.addEventListener('click', async () => { const x = examQs().find(r => r.id === b.dataset.eqopen); if (x && await eqSheet(x)) route(); }));
   bindPdfRefsBlock(body, sec);
@@ -5056,6 +5059,44 @@ const AudioDB = {
   async keys() { const db = await this.open(); return new Promise(res => { const q = db.transaction('files').objectStore('files').getAllKeys(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); }); }
 };
 const audiosOf = sec => (Array.isArray(sec.audios) ? sec.audios : (sec.audios = []));
+// v3.76: gli audio stanno in una sezione o nel notebook (le lezioni, che parlano di più argomenti)
+const isSecRec = o => !!o && typeof o.md === 'string';
+const audioOwner = (k, id) => (k === 'nb' ? nbById(id) : secById(id));
+const ownerTitle = o => (isSecRec(o) ? o.title : `Lezioni · ${o.name}`);
+const saveOwner = o => (isSecRec(o) ? saveSection(o) : saveNotebook(o));
+// le lezioni di un notebook hanno nomi diversi: “⏱ 12:34 (nome)” deve ritrovare quella giusta
+function uniqueLessonName(nb, name, selfId = '') {
+  const base = String(name || 'Lezione').replace(/[()]/g, '').trim() || 'Lezione';
+  const taken = new Set((nb.audios || []).filter(a => a.id !== selfId).map(a => foldAccents(a.name).trim()));
+  if (!taken.has(foldAccents(base))) return base;
+  let k = 2;
+  while (taken.has(foldAccents(`${base} ${k}`))) k++;
+  return `${base} ${k}`;
+}
+// i punti delle lezioni che parlano di una sezione: lezioni intere collegate e segnalibri collegati
+function lessonRefsOf(sec) {
+  const nb = nbById(sec.notebookId);
+  if (!nb || !Array.isArray(nb.audios)) return [];
+  return nb.audios.map(a => ({ a, whole: (a.secIds || []).includes(sec.id), marks: (a.marks || []).filter(m => (m.secIds || []).includes(sec.id)) })).filter(x => x.whole || x.marks.length);
+}
+function lessonBlockHtml(sec) {
+  const refs = lessonRefsOf(sec);
+  if (!refs.length) return '';
+  return `<section class="fonti lz-sec" aria-label="Nelle lezioni">
+    <div class="fonti-head"><h3>Nelle lezioni</h3><a class="btn sm ghost" href="#/lezioni/${sec.notebookId}">Tutte le lezioni</a></div>
+    <ul class="lz-refs">${refs.map(r => `<li><b>${esc(r.a.name)}</b>${r.whole ? ' <small>(tutta la lezione)</small>' : ''}
+      <span class="lz-pts">${r.whole && !r.marks.length ? `<button type="button" class="btn sm" data-lz="${r.a.id}:${r.a.pos || 0}">▶ Ascolta</button>` : ''}${r.marks.map(m => `<button type="button" class="btn sm" data-lz="${r.a.id}:${m.t}">▶ ${fmtT(m.t)}${m.label ? ` ${esc(m.label)}` : ''}</button>`).join('')}</span></li>`).join('')}</ul>
+  </section>`;
+}
+function bindLessonBlock(root, sec) {
+  root.addEventListener('click', e => {
+    const b = e.target.closest('[data-lz]');
+    if (!b) return;
+    const [aid, t] = b.dataset.lz.split(':');
+    const nb = nbById(sec.notebookId);
+    if (nb) AudioPlayer.load(nb, aid, { at: +t || 0 });
+  });
+}
 const fmtT = s => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}` : `${m}:${String(x).padStart(2, '0')}`; };
 const parseT = str => { const p = String(str).split(':').map(Number); return p.some(Number.isNaN) ? null : p.reduce((a, x) => a * 60 + x, 0); };
 async function audioDuration(blob) {
@@ -5074,19 +5115,20 @@ async function audioDuration(blob) {
     a.src = url;
   });
 }
-async function addAudioFile(sec, file, extra = {}) {
+async function addAudioFile(sec, file, extra = {}) { // sec: una sezione o un notebook
   if (!file || !(file.type.startsWith('audio/') || /\.(mp3|m4a|aac|wav|ogg|oga|opus|webm|flac)$/i.test(file.name))) { toast('Questo file non sembra un audio', 'err'); return null; }
   const id = uid();
   try { await AudioDB.put(id, file); } catch (err) { toast(err.message || 'Non riesco a salvare l’audio', 'err'); return null; }
   const rec = { id, name: extra.name || file.name.replace(/\.[^.]+$/, ''), size: file.size, type: file.type, duration: await audioDuration(file), marks: extra.marks || [], created: Date.now() };
+  if (!isSecRec(sec)) { rec.secIds = extra.secIds || []; rec.name = uniqueLessonName(sec, rec.name); }
   audiosOf(sec).push(rec);
-  await saveSection(sec);
+  await saveOwner(sec);
   return rec;
 }
 // tolgo dall’archivio i file audio che nessuna sezione usa più
 async function pruneAudio() {
   try {
-    const used = new Set(state.sections.flatMap(s => (s.audios || []).map(a => a.id)));
+    const used = new Set([...state.sections, ...state.notebooks].flatMap(s => (s.audios || []).map(a => a.id)));
     if (AudioRec.active) used.add(AudioRec.id);
     for (const k of await AudioDB.keys()) if (!used.has(k)) await AudioDB.del(k);
   } catch { /* niente */ }
@@ -5094,8 +5136,9 @@ async function pruneAudio() {
 
 /* ---------- Lettore: uno solo, resta in basso tra una pagina e l’altra ---------- */
 const AudioPlayer = {
-  el: null, bar: null, secId: '', aId: '', url: '', saveT: 0,
-  sec() { return secById(this.secId); },
+  el: null, bar: null, ownK: 'sec', ownId: '', aId: '', url: '', saveT: 0,
+  get secId() { return this.ownK === 'sec' ? this.ownId : ''; },
+  sec() { return audioOwner(this.ownK, this.ownId); },
   rec() { const s = this.sec(); return s ? audiosOf(s).find(a => a.id === this.aId) : null; },
   isOn() { return !!this.aId; },
   build() {
@@ -5118,7 +5161,7 @@ const AudioPlayer = {
         <select class="input ink-size" data-au-rate aria-label="Velocità">${[0.75, 1, 1.25, 1.5, 1.75, 2].map(r => `<option value="${r}">${String(r).replace('.', ',')}×</option>`).join('')}</select>
         <button type="button" class="btn sm" data-au="mark" title="Segnalibro in questo punto (Alt+B)">＋ Segnalibro</button>
         <button type="button" class="btn sm ghost" data-au="stamp" title="Scrive il minuto nel testo che stai modificando (Alt+T)">⏱ Nel testo</button>
-        <button type="button" class="btn sm ghost" data-au="open" title="Apri la scheda Audio della sezione">Audio</button>
+        <button type="button" class="btn sm ghost" data-au="open" title="Apri la pagina dell’audio">Audio</button>
       </div>
       <div class="au-track"><input type="range" class="au-seek" min="0" max="1000" value="0" step="1" aria-label="Posizione"><div class="au-ticks"></div></div>`;
     document.body.append(bar);
@@ -5147,23 +5190,24 @@ const AudioPlayer = {
     const rec = audiosOf(sec).find(a => a.id === aId);
     if (!rec) return false;
     const f = await AudioDB.get(aId);
-    if (!f) { toast('Questo audio non è su questo dispositivo: ricaricalo dalla scheda Audio della sezione', 'err'); return false; }
+    if (!f) { toast(isSecRec(sec) ? 'Questo audio non è su questo dispositivo: ricaricalo dalla scheda Audio della sezione' : 'Questa lezione non è su questo dispositivo: ricaricala dalla pagina Lezioni', 'err'); return false; }
     if (typeof Playlist !== 'undefined' && Playlist.active()) Playlist.stop(true);
     if (this.url) URL.revokeObjectURL(this.url);
     this.url = URL.createObjectURL(f);
-    this.secId = sec.id;
+    this.ownK = isSecRec(sec) ? 'sec' : 'nb';
+    this.ownId = sec.id;
     this.aId = aId;
     this.el.src = this.url;
     this.el.playbackRate = +(S().audioRate || 1);
     $('[data-au-rate]', this.bar).value = String(S().audioRate || 1);
-    $('.au-name', this.bar).textContent = `${rec.name} · ${sec.title}`;
+    $('.au-name', this.bar).textContent = isSecRec(sec) ? `${rec.name} · ${sec.title}` : `${rec.name} · lezioni di ${sec.name}`;
     this.bar.hidden = false;
     document.body.classList.add('au-on');
     await new Promise(r => { if (this.el.readyState >= 1) r(); else this.el.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 1500); });
     this.el.currentTime = at !== null ? at : (rec.pos || 0);
     if ('mediaSession' in navigator) {
       try {
-        navigator.mediaSession.metadata = new MediaMetadata({ title: rec.name, artist: sec.title, album: nbById(sec.notebookId)?.name || 'Notebook' });
+        navigator.mediaSession.metadata = new MediaMetadata({ title: rec.name, artist: isSecRec(sec) ? sec.title : 'Lezioni', album: (isSecRec(sec) ? nbById(sec.notebookId)?.name : sec.name) || 'Notebook' });
         navigator.mediaSession.setActionHandler('seekbackward', () => this.act('back'));
         navigator.mediaSession.setActionHandler('seekforward', () => this.act('fwd'));
       } catch { /* niente */ }
@@ -5194,35 +5238,65 @@ const AudioPlayer = {
     $('.au-ticks', this.bar).innerHTML = r && d ? r.marks.map(m => `<button type="button" class="au-tick" data-tick="${m.t}" style="left:${(m.t / d) * 100}%" title="${esc(fmtT(m.t))} ${esc(m.label || '')}" aria-label="Vai a ${esc(fmtT(m.t))}"></button>`).join('') : '';
   },
   savePos() { const r = this.rec(); if (r) { r.pos = Math.floor(this.el.currentTime); this.saveSoon(); } },
-  saveSoon() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { const s = this.sec(); if (s) saveSection(s); }, 800); },
+  saveSoon() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { const s = this.sec(); if (s) saveOwner(s); }, 800); },
   async act(a) {
     if (a === 'play') { if (this.el.paused) this.el.play().catch(() => {}); else this.el.pause(); return; }
     if (a === 'back') { this.seek(this.el.currentTime - 10); return; }
     if (a === 'fwd') { this.seek(this.el.currentTime + 30); return; }
     if (a === 'close') { this.savePos(); this.el.pause(); this.aId = ''; this.bar.hidden = true; document.body.classList.remove('au-on'); return; }
-    if (a === 'open') { go(`#/sec/${this.secId}/audio`); return; }
+    if (a === 'open') { go(this.ownK === 'nb' ? `#/lezioni/${this.ownId}` : `#/sec/${this.ownId}/audio`); return; }
     if (a === 'mark') {
       const r = this.rec();
       if (!r) return;
       const m = { id: uid(), t: Math.floor(this.el.currentTime), label: '' };
+      // in una lezione, il segnalibro nasce collegato alla sezione che stai studiando
+      if (this.ownK === 'nb') { const s = currentStudySec(); m.secIds = s && s.notebookId === this.ownId ? [s.id] : []; }
       r.marks.push(m);
       r.marks.sort((x, y) => x.t - y.t);
       this.saveSoon();
       this.paintTicks();
       AudioMode.refresh();
-      toast(`Segnalibro a ${fmtT(m.t)}`, '', { label: 'Dagli un nome', fn: async () => { const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: '', placeholder: 'Es. Chiede all’esame', confirm: 'Salva' }); if (v) { m.label = String(v).trim(); this.saveSoon(); this.paintTicks(); AudioMode.refresh(); } } });
+      toast(`Segnalibro a ${fmtT(m.t)}${(m.secIds || []).length ? `, collegato a “${secById(m.secIds[0])?.title}”` : ''}`, '', { label: 'Dagli un nome', fn: async () => { const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: '', placeholder: 'Es. Chiede all’esame', confirm: 'Salva' }); if (v) { m.label = String(v).trim(); this.saveSoon(); this.paintTicks(); AudioMode.refresh(); } } });
       return;
     }
-    if (a === 'stamp') insertStamp(this.el.currentTime);
+    if (a === 'stamp') {
+      const r = this.rec();
+      insertStamp(this.el.currentTime, this.ownK === 'nb' && r ? r.name : '');
+      if (this.ownK === 'nb' && r) linkMarkToStudy(r, Math.floor(this.el.currentTime), () => this.saveSoon());
+    }
   }
 };
-// scrive “⏱ 12:34” dove stai scrivendo (anteprima di Modifica, codice, blocco di testo)
-function insertStamp(t) {
-  const txt = `⏱ ${fmtT(t)} `;
+// la sezione che stai studiando o scrivendo (pagina o pannello di Affianca)
+function currentStudySec() {
   const ae = document.activeElement;
-  if (ae && (ae.isContentEditable || ae.closest?.('[contenteditable="true"]'))) { document.execCommand('insertText', false, txt); return; }
+  if (ae && ae.closest && ae.closest('.split-edit') && typeof Split !== 'undefined' && Split.item) return secById(Split.item.id);
+  const m = location.hash.match(/^#\/sec\/([^/]+)/);
+  return m ? secById(m[1]) : null;
+}
+// ⏱ nel testo di una sezione da una lezione: il punto diventa anche un segnalibro collegato alla sezione
+function linkMarkToStudy(rec, t, save) {
+  const s = currentStudySec();
+  if (!s) return;
+  let m = rec.marks.find(x => Math.abs(x.t - t) <= 5);
+  if (!m) { m = { id: uid(), t, label: '' }; rec.marks.push(m); rec.marks.sort((x, y) => x.t - y.t); }
+  m.secIds = [...new Set([...(m.secIds || []), s.id])];
+  save();
+  AudioPlayer.paintTicks?.();
+}
+// scrive “⏱ 12:34” dove stai scrivendo (anteprima di Modifica, codice, blocco di testo)
+function insertStamp(t, lesson = '') {
+  const txt = `⏱ ${fmtT(t)}${lesson ? ` (${lesson.replace(/[()]/g, '')})` : ''} `;
+  const ae = document.activeElement;
+  if (ae && (ae.isContentEditable || ae.closest?.('[contenteditable="true"]'))) {
+    const sel = document.getSelection();
+    const r = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    const before = r && r.startContainer.nodeType === 3 ? r.startContainer.nodeValue.slice(0, r.startOffset) : '';
+    document.execCommand('insertText', false, (before && !/\s$/.test(before) ? ' ' : '') + txt);
+    return;
+  }
   if (ae && (ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text'))) {
-    ae.setRangeText(txt, ae.selectionStart, ae.selectionEnd, 'end');
+    const pre = ae.value.slice(0, ae.selectionStart);
+    ae.setRangeText((pre && !/\s$/.test(pre) ? ' ' : '') + txt, ae.selectionStart, ae.selectionEnd, 'end');
     ae.dispatchEvent(new Event('input', { bubbles: true }));
     return;
   }
@@ -5231,22 +5305,25 @@ function insertStamp(t) {
 }
 // in Leggi, i “⏱ 12:34” diventano pulsanti che portano a quel punto
 function linkStamps(article, sec) {
-  if (!audiosOf(sec).length) return;
-  const re = /⏱\s?((?:\d{1,2}:)?\d{1,2}:\d{2})/g;
+  const nb = nbById(sec.notebookId);
+  if (!audiosOf(sec).length && !(nb && (nb.audios || []).length)) return;
+  // “⏱ 12:34” è l’audio della sezione; “⏱ 12:34 (Lezione 5)” è una lezione del notebook
+  const re = /⏱\s?((?:\d{1,2}:)?\d{1,2}:\d{2})(?:\s?\(([^)]{1,80})\))?/g;
   const walker = document.createTreeWalker(article, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) if (re.test(walker.currentNode.nodeValue)) nodes.push(walker.currentNode);
   nodes.forEach(n => {
     const frag = document.createDocumentFragment();
     let last = 0;
-    n.nodeValue.replace(re, (m, t, i) => {
+    n.nodeValue.replace(re, (m, t, lz, i) => {
       frag.append(n.nodeValue.slice(last, i));
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'ts-jump';
       b.dataset.t = parseT(t);
-      b.textContent = `⏱ ${t}`;
-      b.title = 'Ascolta da qui';
+      if (lz) b.dataset.lz = lz;
+      b.textContent = lz ? `⏱ ${t} · ${lz}` : `⏱ ${t}`;
+      b.title = lz ? `Ascolta la lezione “${lz}” da qui` : 'Ascolta da qui';
       frag.append(b);
       last = i + m.length;
       return m;
@@ -5254,12 +5331,23 @@ function linkStamps(article, sec) {
     frag.append(n.nodeValue.slice(last));
     n.replaceWith(frag);
   });
-  article.addEventListener('click', e => { const b = e.target.closest('.ts-jump'); if (b) AudioPlayer.seekSection(sec, +b.dataset.t); });
+  article.addEventListener('click', e => {
+    const b = e.target.closest('.ts-jump');
+    if (!b) return;
+    if (b.dataset.lz && nb) {
+      const f = foldAccents(b.dataset.lz).trim();
+      const a = (nb.audios || []).find(x => foldAccents(x.name).replace(/[()]/g, '').trim() === f);
+      if (a) { AudioPlayer.load(nb, a.id, { at: +b.dataset.t }); return; }
+      toast(`Non trovo la lezione “${b.dataset.lz}” in questo notebook`, 'err');
+      return;
+    }
+    AudioPlayer.seekSection(sec, +b.dataset.t);
+  });
 }
 
 /* ---------- Registratore ---------- */
 const AudioRec = {
-  active: false, mr: null, chunks: [], start: 0, paused: 0, pauseAt: 0, marks: [], secId: '', id: '', bar: null, wake: null, tick: 0,
+  active: false, mr: null, chunks: [], start: 0, paused: 0, pauseAt: 0, marks: [], ownK: 'sec', ownId: '', name: '', id: '', bar: null, wake: null, tick: 0,
   elapsed() { return ((this.pauseAt || Date.now()) - this.start - this.paused) / 1000; },
   async begin(sec) {
     if (this.active) { toast('Stai già registrando'); return; }
@@ -5271,7 +5359,9 @@ const AudioRec = {
     this.mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 48000 } : undefined);
     this.chunks = [];
     this.marks = [];
-    this.secId = sec.id;
+    this.ownK = isSecRec(sec) ? 'sec' : 'nb';
+    this.ownId = sec.id;
+    this.name = `${isSecRec(sec) ? 'Registrazione' : 'Lezione'} ${new Date().toLocaleDateString('it-IT')} ${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
     this.id = uid();
     this.start = Date.now();
     this.paused = 0;
@@ -5305,13 +5395,22 @@ const AudioRec = {
     }
     this.bar.hidden = false;
     document.body.classList.add('au-on');
-    $('.rec-where', this.bar).textContent = secById(this.secId)?.title || '';
+    { const o = audioOwner(this.ownK, this.ownId); $('.rec-where', this.bar).textContent = o ? ownerTitle(o) : ''; }
     clearInterval(this.tick);
     this.tick = setInterval(() => { $('.rec-t', this.bar).textContent = fmtT(this.elapsed()); }, 500);
   },
   act(a) {
-    if (a === 'mark') { const t = Math.floor(this.elapsed()); this.marks.push({ id: uid(), t, label: '' }); toast(`Segnalibro a ${fmtT(t)}: il nome lo dai dopo, nella scheda Audio`); }
-    if (a === 'stamp') insertStamp(this.elapsed());
+    if (a === 'mark') {
+      const t = Math.floor(this.elapsed());
+      const m = { id: uid(), t, label: '' };
+      if (this.ownK === 'nb') { const s = currentStudySec(); if (s && s.notebookId === this.ownId) m.secIds = [s.id]; }
+      this.marks.push(m);
+      toast(`Segnalibro a ${fmtT(t)}: il nome lo dai dopo, ${this.ownK === 'nb' ? 'nella pagina Lezioni' : 'nella scheda Audio'}`);
+    }
+    if (a === 'stamp') {
+      insertStamp(this.elapsed(), this.ownK === 'nb' ? this.name : '');
+      if (this.ownK === 'nb') linkMarkToStudy({ marks: this.marks }, Math.floor(this.elapsed()), () => {});
+    }
     if (a === 'pause') {
       if (this.mr.state === 'recording') { this.mr.pause(); this.pauseAt = Date.now(); $('[data-rc="pause"]', this.bar).textContent = 'Riprendi'; this.bar.classList.add('paused'); }
       else { this.mr.resume(); this.paused += Date.now() - this.pauseAt; this.pauseAt = 0; $('[data-rc="pause"]', this.bar).textContent = 'Pausa'; this.bar.classList.remove('paused'); }
@@ -5329,23 +5428,23 @@ const AudioRec = {
     this.wake = null;
     this.bar.hidden = true;
     if (!AudioPlayer.isOn()) document.body.classList.remove('au-on');
-    const sec = secById(this.secId);
+    const sec = audioOwner(this.ownK, this.ownId);
     const blob = new Blob(this.chunks, { type: this.mr.mimeType || 'audio/webm' });
     this.chunks = [];
     if (!sec || !blob.size) { if (!quiet) toast('Registrazione vuota', 'err'); return; }
     const ext = /mp4/.test(blob.type) ? 'm4a' : 'webm';
-    const name = `Registrazione ${new Date().toLocaleDateString('it-IT')} ${new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`;
-    const file = new File([blob], `${name}.${ext}`, { type: blob.type });
+    const name = isSecRec(sec) ? this.name : uniqueLessonName(sec, this.name);
+    const file = new File([blob], `${name.replace(/[/:]/g, '-')}.${ext}`, { type: blob.type });
     try { await AudioDB.put(this.id, file); } catch (err) { toast(err.message || 'Non riesco a salvare la registrazione', 'err'); return; }
-    audiosOf(sec).push({ id: this.id, name, size: file.size, type: file.type, duration: dur, marks: this.marks, created: Date.now(), recorded: true });
-    await saveSection(sec);
-    if (!quiet) toast(`Registrazione salvata (${fmtT(dur)}, ${this.marks.length} segnalibri)`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/audio`) });
+    audiosOf(sec).push({ id: this.id, name, size: file.size, type: file.type, duration: dur, marks: this.marks, created: Date.now(), recorded: true, ...(isSecRec(sec) ? {} : { secIds: [] }) });
+    await saveOwner(sec);
+    if (!quiet) toast(`Registrazione salvata (${fmtT(dur)}, ${this.marks.length} segnalibri)`, '', { label: 'Apri', fn: () => go(isSecRec(sec) ? `#/sec/${sec.id}/audio` : `#/lezioni/${sec.id}`) });
     AudioMode.refresh();
   }
 };
 
 /* ---------- Scheda Audio della sezione ---------- */
-const AudioMode = { refresh() { const h = location.hash; if (/^#\/sec\/[^/]+\/audio/.test(h) && !$('#modalRoot').children.length && !document.activeElement?.matches('input, textarea')) { const y = window.scrollY; route(); window.scrollTo(0, y); } } };
+const AudioMode = { refresh() { const h = location.hash; if ((/^#\/sec\/[^/]+\/audio/.test(h) || /^#\/lezioni\//.test(h)) && !$('#modalRoot').children.length && !document.activeElement?.matches('input, textarea')) { const y = window.scrollY; route(); window.scrollTo(0, y); } } };
 function modeAudio(sec, body) {
   const list = audiosOf(sec);
   body.innerHTML = `
@@ -5353,6 +5452,7 @@ function modeAudio(sec, body) {
       <label class="btn primary file-btn">Carica un audio<input type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.webm,.flac" multiple hidden id="auFile"></label>
       <button class="btn" type="button" data-act="au-rec">● Registra</button>
     </div>
+    ${lessonBlockHtml(sec)}
     <p class="hint">Il lettore resta in basso anche se passi a Leggi o Modifica: scrivi mentre ascolti. <strong>＋ Segnalibro</strong> segna il punto (Alt+B al computer), <strong>⏱ Nel testo</strong> scrive il minuto dove hai il cursore (Alt+T): in Leggi quel minuto diventa un pulsante che fa ripartire l’audio da lì. I file audio restano su questo dispositivo; nome, durata e segnalibri si sincronizzano con la sezione.</p>
     ${list.length ? list.map(a => `
       <section class="au-item" data-aid="${a.id}">
@@ -5374,6 +5474,7 @@ function modeAudio(sec, body) {
     if (n) { toast(n === 1 ? 'Audio aggiunto' : `${n} audio aggiunti`); route(); }
   });
   on('[data-act="au-rec"]', 'click', () => AudioRec.begin(sec), body);
+  bindLessonBlock(body, sec);
   body.addEventListener('click', async e => {
     const it = e.target.closest('.au-item');
     if (!it) return;
@@ -5386,7 +5487,23 @@ function modeAudio(sec, body) {
     if (b.dataset.mr) { const m = a.marks.find(x => x.id === b.dataset.mr); const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: m.label || '', confirm: 'Salva', allowEmpty: true }); if (v !== null && v !== undefined) { m.label = String(v).trim(); await saveSection(sec); route(); } return; }
     if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveSection(sec); AudioPlayer.paintTicks?.(); route(); return; }
     if (b.dataset.a === 'menu') {
-      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Scarica il file' }, { key: 'del', label: 'Elimina l’audio', danger: true }]);
+      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'tolesson', label: 'Sposta nelle lezioni del notebook' }, { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Scarica il file' }, { key: 'del', label: 'Elimina l’audio', danger: true }]);
+      if (ch === 'tolesson') {
+        // la lezione resta collegata a questa sezione, con i suoi segnalibri
+        const nb = nbById(sec.notebookId);
+        if (!nb) return;
+        if (AudioPlayer.aId === a.id) AudioPlayer.act('close');
+        sec.audios = list.filter(x => x.id !== a.id);
+        a.secIds = [sec.id];
+        a.name = uniqueLessonName(nb, a.name, a.id);
+        a.marks = (a.marks || []).map(m => ({ ...m, secIds: [sec.id] }));
+        nb.audios = [...(nb.audios || []), a];
+        await saveSection(sec);
+        await saveNotebook(nb);
+        toast(`“${a.name}” è ora nelle lezioni di ${nb.name}, collegata a questa sezione`, '', { label: 'Apri', fn: () => go(`#/lezioni/${nb.id}`) });
+        route();
+        return;
+      }
       if (ch === 'rename') { const v = await modal({ title: 'Rinomina l’audio', input: true, value: a.name, confirm: 'Salva' }); if (v) { a.name = String(v).trim(); await saveSection(sec); route(); } }
       if (ch === 'save') { const f = await AudioDB.get(a.id); if (f) downloadBlob(f, f.name || `${a.name}.webm`); else toast('Il file non è su questo dispositivo', 'err'); }
       if (ch === 'reload') {
@@ -5401,6 +5518,117 @@ function modeAudio(sec, body) {
         if (AudioPlayer.aId === a.id) AudioPlayer.act('close');
         sec.audios = list.filter(x => x.id !== a.id);
         await saveSection(sec);
+        await AudioDB.del(a.id);
+        route();
+      }
+    }
+  });
+}
+
+/* ---------- v3.76: Lezioni del notebook ----------
+   Audio di lezioni che parlano di più argomenti: stanno nel notebook (nb.audios),
+   con segnalibri e sezioni collegate (alla lezione intera o a ogni segnalibro). */
+function secOptionsHtml(nb, exclude = []) {
+  const secs = secsOf(nb.id).filter(s => !exclude.includes(s.id));
+  const by = new Map();
+  secs.forEach(s => { const g = groupPathText(s) || 'Senza cartella'; if (!by.has(g)) by.set(g, []); by.get(g).push(s); });
+  return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0], 'it')).map(([g, list]) => `<optgroup label="${esc(g)}">${list.sort((a, b) => a.title.localeCompare(b.title, 'it')).map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</optgroup>`).join('');
+}
+const lzState = { q: '' };
+function viewLessons(nbId) {
+  const nb = nbById(nbId);
+  if (!nb || nb.kind) return notFound('Questo notebook');
+  const list = audiosOf(nb);
+  const tot = list.reduce((a, x) => a + (x.duration || 0), 0);
+  const chips = ids => (ids || []).map(id => secById(id)).filter(Boolean).map(s => `<span class="tag">${esc(s.title)}<button type="button" class="tag-x" data-lzun="${s.id}" aria-label="Scollega ${esc(s.title)}">×</button></span>`).join('');
+  setView(`
+    <a class="back" href="#/nb/${nb.id}">${esc(nb.name)}</a>
+    <header class="page-head">
+      <div><h1>Lezioni</h1><p class="lede">${list.length ? `${list.length} ${list.length === 1 ? 'lezione' : 'lezioni'}${tot ? `, ${fmtT(tot)} in tutto` : ''}. ` : ''}Gli audio delle lezioni che parlano di più argomenti: segnalibri con nome, collegati alle sezioni del notebook.</p></div>
+      <div class="actions">
+        <label class="btn primary file-btn">Carica un audio<input type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.webm,.flac" multiple hidden id="lzFile"></label>
+        <button class="btn" type="button" data-act="lz-rec">● Registra la lezione</button>
+      </div>
+    </header>
+    <p class="hint">Mentre ascolti, <strong>＋ Segnalibro</strong> segna il punto (Alt+B): se stai studiando una sezione di questo notebook, il segnalibro nasce già collegato a lei. <strong>⏱ Nel testo</strong> scrive il minuto e il nome della lezione negli appunti (Alt+T); in Leggi riparte da lì. Ogni sezione mostra i punti delle lezioni che la riguardano.</p>
+    ${list.length > 2 ? `<input type="search" class="input search" id="lzQ" placeholder="Cerca nelle lezioni, nei segnalibri e nelle sezioni collegate" aria-label="Cerca nelle lezioni" value="${esc(lzState.q)}">` : ''}
+    <div id="lzList">
+    ${list.length ? list.slice().sort((a, b) => (b.created || 0) - (a.created || 0)).map(a => `
+      <section class="au-item lz-item" data-aid="${a.id}" data-find="${esc(foldAccents(`${a.name} ${(a.marks || []).map(m => m.label).join(' ')} ${[...(a.secIds || []), ...(a.marks || []).flatMap(m => m.secIds || [])].map(id => secById(id)?.title || '').join(' ')}`))}">
+        <div class="au-head">
+          <button type="button" class="btn sm primary" data-a="play" aria-label="Ascolta ${esc(a.name)}">▶</button>
+          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrata' : '', new Date(a.created).toLocaleDateString('it-IT'), a.pos ? `ascoltata fino a ${fmtT(a.pos)}` : ''].filter(Boolean).join(' · ')}<span class="au-miss" hidden> · non su questo dispositivo</span></small></div>
+          <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
+        </div>
+        <div class="lz-secs"><span class="lbl">Sezioni della lezione:</span> <span class="tags" data-scope="lesson">${chips(a.secIds) || '<span class="hint">nessuna</span>'}</span>
+          <select class="input lz-add" data-addto="lesson" aria-label="Collega la lezione a una sezione"><option value="">＋ Collega una sezione</option>${secOptionsHtml(nb, a.secIds || [])}</select></div>
+        ${(a.marks || []).length ? `<ol class="au-marks lz-marks">${a.marks.map(m => `<li data-mid="${m.id}">
+          <div class="lz-mrow"><button type="button" class="link-btn" data-mt="${m.t}">${fmtT(m.t)}</button> <span class="au-ml">${esc(m.label || 'Senza nome')}</span>
+          <button type="button" class="btn sm ghost" data-mr="${m.id}" aria-label="Rinomina">✎</button><button type="button" class="btn sm ghost" data-md="${m.id}" aria-label="Elimina il segnalibro">✕</button></div>
+          <div class="lz-mlink"><span class="tags" data-scope="mark">${chips(m.secIds)}</span>
+          <select class="input lz-add sm" data-addto="mark" aria-label="Collega il segnalibro a una sezione"><option value="">＋ Sezione</option>${secOptionsHtml(nb, m.secIds || [])}</select></div></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti.</p>'}
+      </section>`).join('') : '<div class="empty"><p>Nessuna lezione. Carica la registrazione di una lezione (anche lunga e su più argomenti), oppure registrala adesso. Poi segni i punti e li colleghi alle sezioni.</p></div>'}
+    </div>`);
+  AudioDB.keys().then(keys => { const have = new Set(keys); $$('.au-item').forEach(it => { const x = $('.au-miss', it); if (x) x.hidden = have.has(it.dataset.aid); }); });
+  $('#lzQ')?.addEventListener('input', e => {
+    lzState.q = e.target.value;
+    const f = foldAccents(lzState.q.trim());
+    $$('.lz-item').forEach(it => { it.hidden = !!f && !it.dataset.find.includes(f); });
+  });
+  if (lzState.q) $('#lzQ')?.dispatchEvent(new Event('input'));
+  $('#lzFile').addEventListener('change', async e => {
+    let n = 0;
+    for (const f of [...e.target.files]) if (await addAudioFile(nb, f)) n++;
+    if (n) { toast(n === 1 ? 'Lezione aggiunta' : `${n} lezioni aggiunte`); route(); }
+  });
+  on('[data-act="lz-rec"]', 'click', () => AudioRec.begin(nb));
+  const box = $('#lzList');
+  const find = it => list.find(x => x.id === it?.dataset.aid);
+  box.addEventListener('change', async e => {
+    const s = e.target.closest('[data-addto]');
+    if (!s || !s.value) return;
+    const a = find(e.target.closest('.au-item'));
+    if (!a) return;
+    if (s.dataset.addto === 'lesson') a.secIds = [...new Set([...(a.secIds || []), s.value])];
+    else { const m = a.marks.find(x => x.id === e.target.closest('[data-mid]').dataset.mid); if (m) m.secIds = [...new Set([...(m.secIds || []), s.value])]; }
+    await saveNotebook(nb);
+    AudioMode.refresh();
+  });
+  box.addEventListener('click', async e => {
+    const it = e.target.closest('.au-item');
+    const a = find(it);
+    if (!a) return;
+    const un = e.target.closest('[data-lzun]');
+    if (un) {
+      const li = un.closest('[data-mid]');
+      if (li) { const m = a.marks.find(x => x.id === li.dataset.mid); if (m) m.secIds = (m.secIds || []).filter(id => id !== un.dataset.lzun); }
+      else a.secIds = (a.secIds || []).filter(id => id !== un.dataset.lzun);
+      await saveNotebook(nb);
+      AudioMode.refresh();
+      return;
+    }
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.a === 'play') { await AudioPlayer.load(nb, a.id); return; }
+    if (b.dataset.mt !== undefined) { if (AudioPlayer.aId === a.id) { AudioPlayer.seek(+b.dataset.mt); AudioPlayer.el.play().catch(() => {}); } else await AudioPlayer.load(nb, a.id, { at: +b.dataset.mt }); return; }
+    if (b.dataset.mr) { const m = a.marks.find(x => x.id === b.dataset.mr); const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: m.label || '', confirm: 'Salva', allowEmpty: true }); if (v !== null && v !== undefined) { m.label = String(v).trim(); await saveNotebook(nb); route(); } return; }
+    if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveNotebook(nb); AudioPlayer.paintTicks?.(); route(); return; }
+    if (b.dataset.a === 'menu') {
+      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Scarica il file' }, { key: 'del', label: 'Elimina la lezione', danger: true }]);
+      if (ch === 'rename') { const v = await modal({ title: 'Rinomina la lezione', text: 'I minuti già scritti negli appunti con il vecchio nome (⏱ 12:34 (nome)) non la ritroverebbero più: correggili, o tieni il nome.', input: true, value: a.name, confirm: 'Salva' }); if (v) { a.name = uniqueLessonName(nb, String(v).trim(), a.id); await saveNotebook(nb); route(); } }
+      if (ch === 'save') { const f = await AudioDB.get(a.id); if (f) downloadBlob(f, f.name || `${a.name}.webm`); else toast('Il file non è su questo dispositivo', 'err'); }
+      if (ch === 'reload') {
+        const inp = document.createElement('input');
+        inp.type = 'file';
+        inp.accept = 'audio/*';
+        inp.onchange = async () => { const f = inp.files[0]; if (!f) return; await AudioDB.put(a.id, f); a.size = f.size; if (!a.duration) a.duration = await audioDuration(f); await saveNotebook(nb); toast('File ricollegato: segnalibri e collegamenti restano'); route(); };
+        inp.click();
+      }
+      if (ch === 'del') {
+        if (!(await modal({ title: 'Eliminare la lezione?', text: 'Spariscono il file, i segnalibri e i collegamenti alle sezioni. I minuti scritti negli appunti restano, ma non portano più a niente.', confirm: 'Elimina', danger: true }))) return;
+        if (AudioPlayer.aId === a.id) AudioPlayer.act('close');
+        nb.audios = list.filter(x => x.id !== a.id);
+        await saveNotebook(nb);
         await AudioDB.del(a.id);
         route();
       }

@@ -1305,6 +1305,13 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.76", title: "lezioni audio nel notebook", html: `      <ul>
+        <li>Ogni notebook ha <strong>Lezioni</strong> (pulsante in alto nella pagina del notebook): carichi o registri l’audio di una lezione che parla di più argomenti, con lo stesso lettore di sempre, che resta in basso mentre studi.</li>
+        <li><strong>Segnalibri</strong> con nome e <strong>sezioni collegate</strong>: per ogni segnalibro, e per la lezione intera. Se metti un segnalibro mentre studi una sezione del notebook, nasce già collegato a lei.</li>
+        <li>In ogni sezione, in Leggi e nella scheda Audio, compare <strong>Nelle lezioni</strong>: i punti delle lezioni che parlano di quell’argomento, con ▶ per ascoltarli da lì.</li>
+        <li><strong>⏱ Nel testo</strong> con una lezione scrive anche il suo nome, per esempio “⏱ 12:34 (Lezione 5)”; in Leggi riparte quella lezione da quel minuto, e il punto diventa un segnalibro collegato alla sezione.</li>
+        <li>Un audio già messo in una sezione si può <strong>spostare nelle lezioni</strong> del notebook (scheda Audio → ⋯), con i suoi segnalibri.</li>
+      </ul>` },
   { v: "3.75", title: "domande d’esame: il modello di Gemini, la struttura dell’esame e la simulazione", html: `      <ul>
         <li><strong>Importa da Excel</strong> legge i file di Gemini: trova da solo il foglio “Database Singole Domande” e la riga dei titoli, e prende materia e docente dal titolo. L’<strong>argomento normalizzato</strong> diventa la domanda e le formulazioni diverse si sommano lì, visibili come “Chiesta come”. Reimportando un file aggiornato, le domande già contate non si contano di nuovo.</li>
         <li>Il <strong>modello</strong> da scaricare ha le stesse colonne, e c’è il <strong>prompt per Gemini</strong> da copiare.</li>

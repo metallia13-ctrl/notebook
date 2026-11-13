@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.75';
+const APP_VERSION = '3.76';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -1259,6 +1259,7 @@ function route() {
   if (back) Nav.restore();
   switch (p0) {
     case 'nb': return viewNotebook(p1, p2);
+    case 'lezioni': return viewLessons(p1);
     case 'sec': return p2 === 'pdf' ? go(`#/pdfs/${p1}`) : viewSection(p1, p2);
     case 'import': return viewImport(p1, p2);
     case 'review': return viewReview(p1 === 'exam');
