@@ -1305,6 +1305,14 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.78", title: "mappe: sommari, frecce, testo formattato, elenco accanto", html: `      <ul>
+        <li><strong>Sommario</strong> (in Modifica): una graffa che raggruppa il nodo scelto e quelli dopo, con il suo testo, come in XMind.</li>
+        <li><strong>→ Freccia</strong>: scegli un nodo, tocca Freccia, poi il nodo di arrivo; la freccia collega due rami qualsiasi, anche lontani. Toccandola (in Modifica) scrivi un’etichetta, la inverti o la elimini. Sommari e frecce si salvano anche nel file XMind.</li>
+        <li><strong>Testo formattato nei nodi</strong>: grassetto, corsivo, sottolineato e colori. Nell’elenco selezioni il testo e premi il tasto destro (sul tablet il menu compare da solo); sulla mappa il doppio tocco apre il nodo con gli stessi pulsanti.</li>
+        <li><strong>Chiudi/apri</strong> un ramo anche mentre modifichi: il pulsante nella barra, o il “−” accanto al nodo.</li>
+        <li>In <strong>Affianca</strong> la mappa si apre come elenco (outliner), con la sua vista: mappa nella pagina ed elenco accanto, e quello che cambi in uno compare subito nell’altro.</li>
+        <li>Spostando un nodo o aggiungendone uno dal PDF, la mappa <strong>non torna più in alto</strong>.</li>
+      </ul>` },
   { v: "3.77", title: "messaggi più chiari senza internet", html: `      <ul>
         <li>Senza internet l’app funziona come sempre (appunti, PDF, flashcard, ripasso, blocco note, lezioni già sul dispositivo). Ora le funzioni che hanno bisogno della rete lo dicono subito e chiaramente: l’AI risponde “sei offline” invece di riprovare, e la sincronizzazione con Drive non mostra errori ma aspetta che torni la connessione, poi parte da sola.</li>
       </ul>` },

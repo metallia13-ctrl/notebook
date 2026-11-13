@@ -2272,7 +2272,7 @@ async function parseXmind(file) {
   if (json) {
     const data = JSON.parse(await json.async('string'));
     const sheets = Array.isArray(data) ? data : (data.sheets || []);
-    return sheets.filter(s => s && s.rootTopic).map(s => ({ title: s.title || s.rootTopic.title || 'Mappa', root: jsonTopic(s.rootTopic) }));
+    return sheets.filter(s => s && s.rootTopic).map(s => ({ title: s.title || s.rootTopic.title || 'Mappa', root: jsonTopic(s.rootTopic), rels: (s.relationships || []).filter(r => r.end1Id && r.end2Id).map(r => ({ id: uid(), from: String(r.end1Id), to: String(r.end2Id), t: cleanTitle(r.title) })) }));
   }
   const xml = zip.file('content.xml');
   if (xml) {
@@ -2291,8 +2291,10 @@ function cleanTitle(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
 function jsonTopic(t) {
   const notes = t.notes?.plain?.content || (t.notes?.realHTML?.content || '').replace(/<[^>]+>/g, ' ');
   return {
+    id: t.id || '',
     title: cleanTitle(t.title) || '(senza titolo)',
     notes: String(notes || '').trim(),
+    sums: (t.summaries || []).map(x => { const m = String(x.range || '').match(/\((\d+)\s*,\s*(\d+)\)/); const top = (t.children?.summary || []).find(y => y.id === x.topicId); return m ? { a: +m[1], b: +m[2], t: cleanTitle(top?.title) } : null; }).filter(Boolean),
     children: (t.children?.attached || []).map(jsonTopic),
     floating: (t.children?.detached || []).map(jsonTopic)
   };
@@ -3690,9 +3692,227 @@ function chooseXmindFile() {
   });
 }
 // toglie i campi vuoti per tenere leggero il record della sezione
+/* =====================================================================
+   v3.78: testo formattato nei nodi delle mappe
+   n.t resta il testo semplice (ricerca, flashcard, XMind); n.r è lo stesso
+   testo con grassetto, corsivo, sottolineato e colori (b, i, u, span.rc-…).
+   n.r si usa solo se corrisponde ancora a n.t.
+   ===================================================================== */
+const RICH_COLORS = [['red', 'Rosso', '#dc2626'], ['blue', 'Blu', '#2563eb'], ['green', 'Verde', '#16a34a'], ['orange', 'Arancio', '#ea580c'], ['purple', 'Viola', '#9333ea']];
+const richColorOf = v => {
+  const s = String(v || '').toLowerCase().replace(/\s+/g, '');
+  const hex = s.startsWith('rgb') ? `#${(s.match(/\d+/g) || []).slice(0, 3).map(x => (+x).toString(16).padStart(2, '0')).join('')}` : s;
+  return (RICH_COLORS.find(c => c[2] === hex) || [])[0] || '';
+};
+function richSanitize(html) {
+  const doc = new DOMParser().parseFromString(`<div>${String(html || '')}</div>`, 'text/html');
+  const walk = (node, ctx) => [...node.childNodes].map(ch => {
+    if (ch.nodeType === 3) {
+      const t = esc(ch.nodeValue.replace(/\s+/g, ' '));
+      if (!t) return '';
+      let s = t;
+      if (ctx.u) s = `<u>${s}</u>`;
+      if (ctx.i) s = `<i>${s}</i>`;
+      if (ctx.b) s = `<b>${s}</b>`;
+      if (ctx.c) s = `<span class="rc-${ctx.c}">${s}</span>`;
+      return s;
+    }
+    if (ch.nodeType !== 1) return '';
+    const tag = ch.tagName.toLowerCase();
+    if (tag === 'br') return ' ';
+    const st = ch.style || {};
+    const cls = (ch.className && String(ch.className).match(/rc-(\w+)/)) || null;
+    return walk(ch, {
+      b: ctx.b || tag === 'b' || tag === 'strong' || /bold|[6-9]00/.test(st.fontWeight || ''),
+      i: ctx.i || tag === 'i' || tag === 'em' || st.fontStyle === 'italic',
+      u: ctx.u || tag === 'u' || /underline/.test(st.textDecoration || st.textDecorationLine || ''),
+      c: (cls && RICH_COLORS.some(c => c[0] === cls[1]) ? cls[1] : '') || richColorOf(ch.getAttribute('color')) || richColorOf(st.color) || ctx.c
+    });
+  }).join('');
+  // fonde i pezzi uguali vicini (<b>a</b><b>b</b> → <b>ab</b>)
+  let out = walk(doc.body.firstChild, {});
+  for (let k = 0; k < 3; k++) out = out.replace(/<\/(b|i|u)><\1>/g, '');
+  return out.replace(/\s{2,}/g, ' ').trim();
+}
+const richPlain = html => { const d = document.createElement('div'); d.innerHTML = html || ''; return d.textContent.replace(/\s+/g, ' ').trim(); };
+const richHas = html => /<(b|i|u|span)\b/.test(html || '');
+// l’HTML da mostrare per un nodo (sempre sicuro: viene da richSanitize o da esc)
+const nodeHtml = n => (n.r && richPlain(n.r) === String(n.t || '').replace(/\s+/g, ' ').trim() ? n.r : esc(n.t || ''));
+function setNodeRich(n, html) {
+  const clean = richSanitize(html);
+  n.t = richPlain(clean);
+  if (richHas(clean)) n.r = clean; else delete n.r;
+}
+// pezzi con il loro stile, per il disegno della mappa
+function richRuns(html) {
+  const d = document.createElement('div');
+  d.innerHTML = html || '';
+  const out = [];
+  const walk = (node, ctx) => node.childNodes.forEach(ch => {
+    if (ch.nodeType === 3) { if (ch.nodeValue) out.push({ t: ch.nodeValue, ...ctx }); return; }
+    if (ch.nodeType !== 1) return;
+    const tag = ch.tagName.toLowerCase();
+    const cls = String(ch.className || '').match(/rc-(\w+)/);
+    walk(ch, { b: ctx.b || tag === 'b', i: ctx.i || tag === 'i', u: ctx.u || tag === 'u', c: cls ? cls[1] : ctx.c });
+  });
+  walk(d, {});
+  // spazi come nel testo semplice
+  let txt = '';
+  out.forEach(r => { r.t = r.t.replace(/\s+/g, ' '); if (!txt || /\s$/.test(txt)) r.t = r.t.replace(/^\s+/, ''); txt += r.t; });
+  return out.filter(r => r.t);
+}
+// le righe di un nodo nell’SVG, con grassetto, corsivo, sottolineato e colori
+function richSvgLines(n, lines, x, y0, dy) {
+  const plainLine = (l, k) => `<text x="${x}" y="${y0 + k * dy}">${esc(l)}</text>`;
+  if (!n.r || nodeHtml(n) !== n.r) return lines.map(plainLine).join('');
+  const runs = richRuns(n.r);
+  const plain = runs.map(r => r.t).join('');
+  let pos = 0;
+  return lines.map((l, k) => {
+    const start = plain.indexOf(l, pos);
+    if (start < 0) return plainLine(l, k);
+    const end = start + l.length;
+    pos = end;
+    let at = 0;
+    const spans = [];
+    runs.forEach(r => {
+      const a = Math.max(start, at), b = Math.min(end, at + r.t.length);
+      if (b > a) spans.push(`<tspan${r.b ? ' font-weight="700"' : ''}${r.i ? ' font-style="italic"' : ''}${r.u ? ' text-decoration="underline"' : ''}${r.c ? ` class="rc-${r.c}"` : ''}>${esc(r.t.slice(a - at, b - at))}</tspan>`);
+      at += r.t.length;
+    });
+    return `<text x="${x}" y="${y0 + k * dy}">${spans.join('')}</text>`;
+  }).join('');
+}
+const richHasBold = n => !!(n.r && /<b>/.test(n.r));
+
+/* ---------- Il menu di formattazione ----------
+   Al computer: seleziona il testo di un nodo e premi il tasto destro.
+   Sul tablet: compare da solo sopra il testo selezionato. */
+const FormatMenu = {
+  el: null, host: null,
+  editable(node) { const el = node && (node.nodeType === 1 ? node : node.parentElement); return el && el.closest ? el.closest('.ml-t[contenteditable="true"], .rich-ed[contenteditable="true"]') : null; },
+  build() {
+    if (this.el) return;
+    const el = document.createElement('div');
+    el.className = 'fmt-menu';
+    el.setAttribute('role', 'toolbar');
+    el.setAttribute('aria-label', 'Formattazione del testo');
+    el.hidden = true;
+    el.innerHTML = `
+      <button type="button" data-fm="bold" title="Grassetto (Ctrl+B)"><b>G</b></button>
+      <button type="button" data-fm="italic" title="Corsivo (Ctrl+I)"><i>C</i></button>
+      <button type="button" data-fm="underline" title="Sottolineato (Ctrl+U)"><u>S</u></button>
+      <span class="fmt-sep" aria-hidden="true"></span>
+      ${RICH_COLORS.map(([k, l, hex]) => `<button type="button" class="fmt-c" data-fm="c:${hex}" title="${l}" aria-label="${l}" style="--c:${hex}"></button>`).join('')}
+      <span class="fmt-sep" aria-hidden="true"></span>
+      <button type="button" data-fm="clear" title="Togli la formattazione">✕</button>`;
+    document.body.append(el);
+    // i pulsanti non tolgono la selezione dal testo
+    el.addEventListener('pointerdown', e => e.preventDefault());
+    el.addEventListener('mousedown', e => e.preventDefault());
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-fm]');
+      if (!b) return;
+      try { document.execCommand('styleWithCSS', false, false); } catch { /* niente */ }
+      const k = b.dataset.fm;
+      if (k === 'clear') document.execCommand('removeFormat');
+      else if (k.startsWith('c:')) document.execCommand('foreColor', false, k.slice(2));
+      else document.execCommand(k);
+      if (this.host) this.host.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    this.el = el;
+  },
+  show(x, y, host) {
+    this.build();
+    this.host = host;
+    const el = this.el;
+    el.hidden = false;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = `${Math.max(6, Math.min(window.innerWidth - w - 6, x - w / 2))}px`;
+    el.style.top = `${Math.max(6, y - h - 10)}px`;
+  },
+  hide() { if (this.el) this.el.hidden = true; this.host = null; },
+  init() {
+    // tasto destro su un testo selezionato in un nodo
+    document.addEventListener('contextmenu', e => {
+      const host = this.editable(e.target);
+      const sel = document.getSelection();
+      if (!host || !sel || sel.isCollapsed || !host.contains(sel.anchorNode)) return;
+      e.preventDefault();
+      this.show(e.clientX, e.clientY, host);
+    });
+    let lastPointer = 'mouse';
+    document.addEventListener('pointerdown', e => { lastPointer = e.pointerType; if (this.el && !this.el.contains(e.target)) this.hide(); }, true);
+    // tablet e telefono: compare sopra la selezione
+    document.addEventListener('selectionchange', () => {
+      const sel = document.getSelection();
+      const host = sel && sel.rangeCount ? this.editable(sel.anchorNode) : null;
+      if (!host || sel.isCollapsed) { if (lastPointer !== 'mouse') this.hide(); return; }
+      if (lastPointer === 'mouse') return;
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      if (r.width || r.height) this.show(r.left + r.width / 2, r.top, host);
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') this.hide(); });
+    window.addEventListener('scroll', () => this.hide(), true);
+  }
+};
+FormatMenu.init();
+// scheda per modificare un nodo con il testo formattato
+function richEditSheet(title, html) {
+  return new Promise(resolve => {
+    const sh = openSheet(`
+      <h2>${esc(title)}</h2>
+      <div class="rich-tools" role="toolbar" aria-label="Formattazione">
+        <button type="button" class="btn sm" data-rt2="bold"><b>G</b></button>
+        <button type="button" class="btn sm" data-rt2="italic"><i>C</i></button>
+        <button type="button" class="btn sm" data-rt2="underline"><u>S</u></button>
+        ${RICH_COLORS.map(([k, l, hex]) => `<button type="button" class="btn sm fmt-c" data-rt2="c:${hex}" aria-label="${l}" title="${l}" style="--c:${hex}"></button>`).join('')}
+        <button type="button" class="btn sm ghost" data-rt2="clear" title="Togli la formattazione">✕</button>
+      </div>
+      <div class="input rich-ed" contenteditable="true" role="textbox" aria-label="Testo del nodo" spellcheck="true">${html || ''}</div>
+      <p class="hint">Seleziona una parte del testo e scegli lo stile; al computer anche con il tasto destro o Ctrl+B, Ctrl+I, Ctrl+U.</p>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-rx="no">Annulla</button><button class="btn primary" type="button" data-rx="ok">Salva</button></div>`, { label: title, onClose: v => resolve(v === undefined ? null : v) });
+    const ed = $('.rich-ed', sh.el);
+    $('.rich-tools', sh.el).addEventListener('pointerdown', e => { if (e.target.closest('button')) e.preventDefault(); });
+    $('.rich-tools', sh.el).addEventListener('click', e => {
+      const b = e.target.closest('[data-rt2]');
+      if (!b) return;
+      ed.focus();
+      try { document.execCommand('styleWithCSS', false, false); } catch { /* niente */ }
+      const k = b.dataset.rt2;
+      if (k === 'clear') document.execCommand('removeFormat');
+      else if (k.startsWith('c:')) document.execCommand('foreColor', false, k.slice(2));
+      else document.execCommand(k);
+    });
+    ed.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('[data-rx="ok"]', sh.el).click(); } });
+    ed.addEventListener('paste', e => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData?.getData('text/plain') || '').replace(/\s+/g, ' ')); });
+    $('[data-rx="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-rx="ok"]', sh.el).onclick = () => sh.close(ed.innerHTML);
+    setTimeout(() => { ed.focus(); const r = document.createRange(); r.selectNodeContents(ed); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }, 50);
+  });
+}
+
+// v3.78: sommari e frecce restano coerenti quando i rami si spostano o si eliminano
+function mapNormSheet(sheet) {
+  const ids = new Set();
+  const walk = n => {
+    if (n.id) ids.add(n.id);
+    if (n.sum) {
+      const L = (n.c || []).length;
+      n.sum = n.sum.filter(x => x.a < L).map(x => ({ ...x, b: Math.min(Math.max(x.a, x.b), L - 1) }));
+      if (!n.sum.length) delete n.sum;
+    }
+    (n.c || []).forEach(walk);
+  };
+  walk(sheet.root);
+  if (sheet.rels) { sheet.rels = sheet.rels.filter(r => ids.has(r.from) && ids.has(r.to) && r.from !== r.to); if (!sheet.rels.length) delete sheet.rels; }
+}
+function mapFindById(root, id) { let res = null; const w = n => { if (res) return; if (n.id === id) res = n; else (n.c || []).forEach(w); }; w(root); return res; }
 const slimTopic = t => {
   const o = { t: t.title };
+  if (t.id) o.id = String(t.id);
   if (t.notes) o.n = t.notes.slice(0, 2000);
+  if ((t.sums || []).length) o.sum = t.sums.map(x => ({ id: uid(), a: x.a, b: x.b, t: x.t || '…' }));
   const kids = [...(t.children || []), ...(t.floating || [])].map(slimTopic);
   if (kids.length) o.c = kids;
   return o;
@@ -3764,12 +3984,23 @@ function mdToMapTree(md, title) {
 async function exportXmind(m) {
   await ensureJSZip();
   const topic = n => {
-    const o = { id: uid() + uid(), class: 'topic', title: n.t || '' };
+    const o = { id: n.id || uid() + uid(), class: 'topic', title: n.t || '' };
     if (n.n) o.notes = { plain: { content: n.n } };
     if ((n.c || []).length) o.children = { attached: n.c.map(topic) };
+    // v3.78: i sommari
+    if ((n.sum || []).length && (n.c || []).length) {
+      const tops = n.sum.map(x => ({ id: uid() + uid(), title: x.t || '' }));
+      o.children.summary = tops;
+      o.summaries = n.sum.map((x, i) => ({ id: uid() + uid(), range: `(${x.a},${x.b})`, topicId: tops[i].id }));
+    }
     return o;
   };
-  const content = m.sheets.map(s => ({ id: uid() + uid(), class: 'sheet', title: s.title || m.name, rootTopic: { ...topic(s.root), structureClass: 'org.xmind.ui.map.unbalanced' } }));
+  const content = m.sheets.map(s => {
+    const o = { id: uid() + uid(), class: 'sheet', title: s.title || m.name, rootTopic: { ...topic(s.root), structureClass: 'org.xmind.ui.map.unbalanced' } };
+    // le frecce tra rami: in XMind sono le “relazioni”
+    if ((s.rels || []).length) o.relationships = s.rels.map(r => ({ id: uid() + uid(), end1Id: r.from, end2Id: r.to, ...(r.t ? { title: r.t } : {}) }));
+    return o;
+  });
   const zip = new window.JSZip();
   zip.file('content.json', JSON.stringify(content));
   zip.file('metadata.json', JSON.stringify({ creator: { name: 'StudyHub Notebook', version: APP_VERSION } }));
@@ -3789,7 +4020,11 @@ function modeMap(sec, body) {
   const st = S();
   let mi = Math.min(maps.length - 1, Math.max(0, maps.findIndex(m => m.id === st.mapLast)));
   let si = 0;
-  let view = st.mapView || (window.innerWidth < 700 ? 'list' : 'map');
+  // v3.78: nel pannello di Affianca la vista è sua (di solito l’elenco): mappa nella pagina, elenco accanto
+  const inPanel = !!body.closest('.split-body');
+  const instId = uid();
+  let view = (inPanel ? st.mapViewPanel : st.mapView) || (inPanel || window.innerWidth < 700 ? 'list' : 'map');
+  let connectFrom = null;
   let quiz = false;
   // v3.57: semaforo nel ripasso delle mappe; le parti rosse e arancio diventano punti deboli
   let rateFor = null;
@@ -3805,8 +4040,29 @@ function modeMap(sec, body) {
   const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(() => { saveT = 0; saveSection(sec); }, 600); };
   addCleanup(() => { if (saveT) { clearTimeout(saveT); saveSection(sec); } });
   const cur = () => { const m = maps[mi]; return m ? { m, sheet: m.sheets[si] || m.sheets[0] } : null; };
-  const touched = () => { const c = cur(); if (c) c.m.edited = Date.now(); saveSoon(); };
-  const snap = () => { const c = cur(); if (!c) return; undo.push({ si, root: JSON.stringify(c.sheet.root) }); if (undo.length > 60) undo.shift(); };
+  const touched = () => {
+    const c = cur();
+    if (c) { c.m.edited = Date.now(); mapNormSheet(c.sheet); }
+    saveSoon();
+    // l’altra copia aperta (pagina o Affianca) si ridisegna
+    window.dispatchEvent(new CustomEvent('nb-map-edit', { detail: { secId: sec.id, from: instId } }));
+  };
+  const snap = () => { const c = cur(); if (!c) return; undo.push({ si, root: JSON.stringify(c.sheet.root), rels: JSON.stringify(c.sheet.rels || []) }); if (undo.length > 60) undo.shift(); };
+  let extT = 0;
+  const onExt = e => {
+    if (!body.isConnected) { window.removeEventListener('nb-map-edit', onExt); return; }
+    if (!e.detail || e.detail.secId !== sec.id || e.detail.from === instId) return;
+    clearTimeout(extT);
+    extT = setTimeout(() => {
+      if (!body.isConnected) return;
+      // non disturbo mentre scrivi in questa copia
+      if (body.contains(document.activeElement) && document.activeElement.isContentEditable) return;
+      const c = cur();
+      if (selNode && c && !inTree(c.sheet.root, selNode)) selNode = null;
+      draw();
+    }, 200);
+  };
+  window.addEventListener('nb-map-edit', onExt);
 
   // v3.73: il testo che arriva dal PDF diventa un nodo
   const inTree = (n, x) => n === x || (n.c || []).some(k => inTree(k, x));
@@ -3832,6 +4088,8 @@ function modeMap(sec, body) {
       if (!edit) { edit = true; selNode = parent; }
       touched();
       draw();
+      // la mappa resta dov’era; se il nodo nuovo non si vede, lo porto in vista
+      setTimeout(() => { const k = pathOf(c.sheet.root, node); const el = k && $(`[data-mkey="${k}"]`, body); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }, 40);
       return { map: c.m.name, parent: parent.t };
     }
   });
@@ -3853,6 +4111,11 @@ function modeMap(sec, body) {
     }
     const sheet = m.sheets[si] || m.sheets[0];
     const total = mapCountNodes(sheet.root) - 1;
+    // v3.78: ridisegnando, la mappa e la pagina restano dove erano (prima tornavano in alto)
+    const oldSc = $('.map-scroll', body);
+    const keepSc = oldSc ? [oldSc.scrollLeft, oldSc.scrollTop] : null;
+    const host = body.closest('.split-body') || document.scrollingElement;
+    const keepY = host ? host.scrollTop : 0;
     body.innerHTML = `
       <div class="map-bar">
         ${maps.length > 1 ? `<select class="input map-sel" data-map-sel aria-label="Mappa">${maps.map((x, k) => `<option value="${k}" ${k === mi ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : `<b class="map-name">${esc(m.name)}</b>`}
@@ -3872,6 +4135,9 @@ function modeMap(sec, body) {
         <button type="button" class="btn sm" data-me="sib" title="Aggiunge un nodo accanto a quello scelto (Invio)">＋ Accanto</button>
         <button type="button" class="btn sm" data-me="rename" title="Rinomina (F2 o doppio tocco)">Rinomina</button>
         <button type="button" class="btn sm" data-me="note" title="Nota del nodo">Nota</button>
+        <button type="button" class="btn sm" data-me="sum" title="Una graffa che riassume il nodo scelto e quelli dopo (come il Sommario di XMind)">Sommario</button>
+        <button type="button" class="btn sm" data-me="arrow" title="Una freccia dal nodo scelto a un altro nodo">→ Freccia</button>
+        <button type="button" class="btn sm" data-me="fold" title="Chiude o apre i rami del nodo scelto">Chiudi/apri</button>
         <button type="button" class="btn sm" data-me="up" aria-label="Sposta su" title="Sposta su (Alt+↑)">↑</button>
         <button type="button" class="btn sm" data-me="down" aria-label="Sposta giù" title="Sposta giù (Alt+↓)">↓</button>
         <button type="button" class="btn sm" data-me="out" aria-label="Sposta fuori di un livello" title="Fuori di un livello (Maiusc+Tab)">←</button>
@@ -3886,8 +4152,12 @@ function modeMap(sec, body) {
         <span>Com’è andata con <b>${esc(findNode(sheet, rateFor).t)}</b>?</span>
         ${CZ_MARKS.map(c => `<button type="button" class="czm-dot ${c} ${mpMarks()[markKey(rateFor)] === c ? 'on' : ''}" data-mpr="${c}" aria-label="${CZ_MARK_NAMES[c]}" title="${CZ_MARK_NAMES[c]}"></button>`).join('')}
       </div>` : ''}
+      ${connectFrom ? '<p class="hint warn-hint map-connect">→ Ora tocca il nodo a cui arriva la freccia. <button type="button" class="btn sm ghost" data-act="map-noconn">Annulla</button></p>' : ''}
       <div id="mapBox" class="map-box ${quiz ? 'quiz' : ''} ${edit ? 'editing' : ''}"></div>`;
     view === 'map' ? drawSvg(sheet) : drawList(sheet);
+    const nsc = $('.map-scroll', body);
+    if (keepSc && nsc) { nsc.scrollLeft = keepSc[0]; nsc.scrollTop = keepSc[1]; }
+    if (host && host.scrollTop !== keepY) host.scrollTop = keepY;
   };
   const keyOf = path => path.join('.');
   const findNode = (sheet, key) => key.split('.').slice(1).reduce((n, k) => (n && n.c ? n.c[+k] : null), sheet.root);
@@ -3912,12 +4182,22 @@ function modeMap(sec, body) {
       return `<li class="ml-item d${Math.min(depth, 4)}" style="--h:${branchHue(path[1])}">
         <div class="ml-row ${edit && n === selNode ? 'sel' : ''}">
           ${kids.length ? `<button type="button" class="fold-btn" data-mtoggle="${key}" aria-expanded="${!isClosed}" aria-label="${isClosed ? 'Espandi' : 'Riduci'}">${CHEVRON}</button>` : '<span class="ml-dot" aria-hidden="true"></span>'}
-          <span class="ml-t ${hidden ? 'covered' : ''} ${mk ? `mk-${mk}` : ''}" data-mkey="${key}" ${edit ? 'contenteditable="true" spellcheck="true" role="textbox" aria-label="Nodo"' : hidden ? 'role="button" tabindex="0" aria-label="Ramo coperto: tocca per scoprirlo"' : ''}>${esc(n.t)}</span>
+          <span class="ml-t ${hidden ? 'covered' : ''} ${mk ? `mk-${mk}` : ''} ${connectFrom === n ? 'from' : ''}" data-mkey="${key}" ${edit ? 'contenteditable="true" spellcheck="true" role="textbox" aria-label="Nodo"' : hidden ? 'role="button" tabindex="0" aria-label="Ramo coperto: tocca per scoprirlo"' : ''}>${nodeHtml(n)}</span>
           ${n.n && !hidden ? `<button type="button" class="ml-note" data-mnote="${key}" aria-label="Nota">i</button>` : ''}
         </div>
-        ${kids.length && !isClosed ? `<ul>${kids.map((c, k) => walk(c, [...path, k], depth + 1)).join('')}</ul>` : ''}
+        ${relLines(n)}
+        ${kids.length && !isClosed ? `<ul>${kids.map((c, k) => walk(c, [...path, k], depth + 1) + (n.sum || []).map((s, i) => (s.b === k ? sumLi(key, s, i) : '')).join('')).join('')}</ul>` : ''}
       </li>`;
     };
+    function sumLi(key, s, i) {
+      const cov = quiz && !shown.has(`s:${key}|${i}`);
+      return `<li class="ml-sum"><span class="ml-sum-b" aria-hidden="true">⟩</span><span class="ml-sum-t ${cov ? 'covered' : ''}" data-msum="${key}|${i}" role="button" tabindex="0" title="Sommario">${esc(s.t)}</span></li>`;
+    }
+    function relLines(n) {
+      if (!n.id) return '';
+      const rs = (sheet.rels || []).filter(r => r.from === n.id || r.to === n.id);
+      return rs.length ? `<div class="ml-rels">${rs.map(r => { const out = r.from === n.id; const o = mapFindById(sheet.root, out ? r.to : r.from); return o ? `<button type="button" class="ml-rel" data-mrel="${r.id}" title="${edit ? 'Tocca per modificare la freccia' : 'Freccia'}">${out ? '→' : '←'} ${esc(richPlain(o.t).slice(0, 60))}${r.t ? ` <em>${esc(r.t)}</em>` : ''}</button>` : ''; }).join('')}</div>` : '';
+    }
     box.innerHTML = `<ul class="map-list">${walk(sheet.root, [0], 0)}</ul>`;
   }
   function drawSvg(sheet) {
@@ -3928,7 +4208,7 @@ function modeMap(sec, body) {
       const key = keyOf(path);
       const isRoot = depth === 0;
       const w = mapWrap(n.t || ' ', isRoot ? 240 : 200);
-      const node = { n, key, depth, path, lines: w.lines, w: Math.ceil(w.width) + 24, h: w.lines.length * 19 + 14, kids: [] };
+      const node = { n, key, depth, path, lines: w.lines, w: Math.ceil(w.width * (richHasBold(n) ? 1.08 : 1)) + 24, h: w.lines.length * 19 + 14, kids: [] };
       if (!collapsed.has(n)) node.kids = (n.c || []).map((c, k) => layout(c, [...path, k], depth + 1));
       node.sub = node.kids.length ? Math.max(node.h, node.kids.reduce((a, k) => a + k.sub, 0) + GAPY * (node.kids.length - 1)) : node.h;
       return node;
@@ -3946,8 +4226,8 @@ function modeMap(sec, body) {
       nd.kids.forEach(k => { place(k, y); y += k.sub + GAPY; });
     };
     place(root, 20);
-    const W = colX[colX.length - 1] + colW[colW.length - 1] + 60;
-    const H = root.sub + 40;
+    let W = colX[colX.length - 1] + colW[colW.length - 1] + 60;
+    let H = root.sub + 40;
     const links = [];
     const nodes = [];
     const walk = nd => {
@@ -3965,17 +4245,60 @@ function modeMap(sec, body) {
       const covered = quiz && !isRoot && !shown.has(nd.key);
       const kidsN = (nd.n.c || []).length;
       nodes.push(`
-        <g class="mn ${isRoot ? 'root' : ''} d${Math.min(nd.depth, 3)} ${covered ? 'covered' : ''} ${edit && nd.n === selNode ? 'sel' : ''} ${quiz && !covered && mpMarks()[markKey(nd.key)] ? `mk-${mpMarks()[markKey(nd.key)]}` : ''}" data-mkey="${nd.key}" style="--h:${hue}" transform="translate(${nd.x} ${nd.y})" role="button" tabindex="0" aria-label="${covered ? 'Ramo coperto' : esc(nd.n.t)}">
+        <g class="mn ${isRoot ? 'root' : ''} d${Math.min(nd.depth, 3)} ${covered ? 'covered' : ''} ${edit && nd.n === selNode ? 'sel' : ''} ${connectFrom === nd.n ? 'from' : ''} ${quiz && !covered && mpMarks()[markKey(nd.key)] ? `mk-${mpMarks()[markKey(nd.key)]}` : ''}" data-mkey="${nd.key}" style="--h:${hue}" transform="translate(${nd.x} ${nd.y})" role="button" tabindex="0" aria-label="${covered ? 'Ramo coperto' : esc(nd.n.t)}">
           <rect width="${nd.w}" height="${nd.h}" rx="${isRoot ? 14 : 10}"/>
-          ${nd.lines.map((l, k) => `<text x="12" y="${21 + k * 19}">${esc(l)}</text>`).join('')}
+          ${richSvgLines(nd.n, nd.lines, 12, 21, 19)}
           ${nd.n.n && !covered ? `<g class="mn-note" data-mnote="${nd.key}" transform="translate(${nd.w - 4} -4)"><circle r="9"/><text text-anchor="middle" y="4">i</text><title>${esc(String(nd.n.n).slice(0, 200))}</title></g>` : ''}
+          ${edit && kidsN && !collapsed.has(nd.n) ? `<g class="mn-more mn-fold" data-mtoggle="${nd.key}" transform="translate(${nd.w + 6} ${nd.h / 2 - 9})"><rect width="22" height="18" rx="9"/><text x="7" y="13">−</text><title>Chiudi questo ramo</title></g>` : ''}
           ${kidsN && collapsed.has(nd.n) ? `<g class="mn-more" data-mtoggle="${nd.key}" transform="translate(${nd.w + 6} ${nd.h / 2 - 9})"><rect width="${String(kidsN).length * 8 + 16}" height="18" rx="9"/><text x="8" y="13">+${kidsN}</text></g>` : ''}
         </g>`);
     };
     walk(root);
+    // v3.78: sommari (una graffa sui rami raggruppati) e frecce tra rami
+    const flat = [];
+    const fl = nd => { flat.push(nd); nd.kids.forEach(fl); };
+    fl(root);
+    const sums = [];
+    flat.forEach(nd => (nd.n.sum || []).forEach((s, i) => {
+      const ks = nd.kids.slice(s.a, s.b + 1);
+      if (!ks.length) return;
+      let top = Infinity, bot = -Infinity, right = -Infinity;
+      const ext = k => { top = Math.min(top, k.y); bot = Math.max(bot, k.y + k.h); right = Math.max(right, k.x + k.w); k.kids.forEach(ext); };
+      ks.forEach(ext);
+      const bx = right + 12, mid = (top + bot) / 2;
+      const wr = mapWrap(s.t || ' ', 180);
+      const w = Math.ceil(wr.width) + 24, h = wr.lines.length * 19 + 14;
+      const sx = bx + 26, sy = mid - h / 2;
+      const sk = `${nd.key}|${i}`;
+      const cov = quiz && !shown.has(`s:${sk}`);
+      sums.push(`<path class="mn-brace" d="M${bx} ${top}Q${bx + 9} ${top} ${bx + 9} ${top + 9}L${bx + 9} ${mid - 9}Q${bx + 9} ${mid} ${bx + 18} ${mid}Q${bx + 9} ${mid} ${bx + 9} ${mid + 9}L${bx + 9} ${bot - 9}Q${bx + 9} ${bot} ${bx} ${bot}"/>
+        <g class="mn msum ${cov ? 'covered' : ''}" data-msum="${sk}" transform="translate(${sx} ${sy})" role="button" tabindex="0" aria-label="${cov ? 'Sommario coperto' : `Sommario: ${esc(s.t)}`}"><rect width="${w}" height="${h}" rx="8"/>${wr.lines.map((l, k) => `<text x="12" y="${21 + k * 19}">${esc(l)}</text>`).join('')}</g>`);
+      W = Math.max(W, sx + w + 30);
+      H = Math.max(H, sy + h + 20);
+    }));
+    const byId = new Map(flat.filter(nd => nd.n.id).map(nd => [nd.n.id, nd]));
+    const rels = [];
+    const edgePt = (nd, tx, ty) => { const cx = nd.x + nd.w / 2, cy = nd.y + nd.h / 2; const dx = tx - cx, dy = ty - cy; const k = Math.min((nd.w / 2 + 3) / Math.max(Math.abs(dx), 1e-6), (nd.h / 2 + 3) / Math.max(Math.abs(dy), 1e-6)); return [cx + dx * k, cy + dy * k]; };
+    (sheet.rels || []).forEach(r => {
+      const A = byId.get(r.from), B = byId.get(r.to);
+      if (!A || !B) return;
+      const p1 = edgePt(A, B.x + B.w / 2, B.y + B.h / 2), p2 = edgePt(B, A.x + A.w / 2, A.y + A.h / 2);
+      const len = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) || 1;
+      const off = Math.min(70, len * 0.3);
+      const nx = -(p2[1] - p1[1]) / len * off, ny = (p2[0] - p1[0]) / len * off;
+      const c1 = [p1[0] + (p2[0] - p1[0]) / 3 + nx, p1[1] + (p2[1] - p1[1]) / 3 + ny];
+      const c2 = [p1[0] + 2 * (p2[0] - p1[0]) / 3 + nx, p1[1] + 2 * (p2[1] - p1[1]) / 3 + ny];
+      const f = v => v.toFixed(1);
+      const d = `M${f(p1[0])} ${f(p1[1])}C${f(c1[0])} ${f(c1[1])} ${f(c2[0])} ${f(c2[1])} ${f(p2[0])} ${f(p2[1])}`;
+      const mx = 0.125 * p1[0] + 0.375 * c1[0] + 0.375 * c2[0] + 0.125 * p2[0];
+      const my = 0.125 * p1[1] + 0.375 * c1[1] + 0.375 * c2[1] + 0.125 * p2[1];
+      const lt = r.t ? r.t.slice(0, 40) : '';
+      const lw = lt ? Math.ceil(mapWrap(lt, 400).width) + 14 : 0;
+      rels.push(`<g class="mrel" data-mrel="${r.id}"><path class="mrel-line" d="${d}" marker-end="url(#mArw-${instId})"/><path class="mrel-hit" d="${d}"><title>${esc(lt || 'Freccia')}</title></path>${lt ? `<rect class="mrel-lb" x="${f(mx - lw / 2)}" y="${f(my - 11)}" width="${lw}" height="20" rx="6"/><text class="mrel-t" x="${f(mx)}" y="${f(my + 4)}" text-anchor="middle">${esc(lt)}</text>` : ''}</g>`);
+    });
     box.innerHTML = `
       <div class="map-zoom"><button class="btn sm ghost" data-mz="-">−</button><button class="btn sm ghost" data-mz="0">${Math.round(zoom * 100)}%</button><button class="btn sm ghost" data-mz="+">+</button></div>
-      <div class="map-scroll"><svg class="map-svg" viewBox="0 0 ${W} ${H}" width="${Math.round(W * zoom)}" height="${Math.round(H * zoom)}" role="img" aria-label="Mappa: ${esc(sheet.root.t)}"><g class="links">${links.join('')}</g>${nodes.join('')}</svg></div>`;
+      <div class="map-scroll"><svg class="map-svg" viewBox="0 0 ${W} ${H}" width="${Math.round(W * zoom)}" height="${Math.round(H * zoom)}" role="img" aria-label="Mappa: ${esc(sheet.root.t)}"><defs><marker id="mArw-${instId}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="mrel-head" d="M0 0L10 5L0 10z"/></marker></defs><g class="links">${links.join('')}</g><g class="sums">${sums.join('')}</g>${nodes.join('')}<g class="rels">${rels.join('')}</g></svg></div>`;
     const sc = $('.map-scroll', box);
     const setZoom = (z, cx, cy) => {
       const svg = $('.map-svg', box);
@@ -4096,10 +4419,52 @@ function modeMap(sec, body) {
     } else el.focus({ preventScroll: false });
   };
   const rename = async n => {
-    const v = await modal({ title: 'Rinomina il nodo', input: true, value: n.t, confirm: 'Salva' });
+    const v = await richEditSheet('Modifica il nodo', nodeHtml(n));
     if (v === null || v === undefined) return;
     snap();
-    n.t = String(v).replace(/\s+/g, ' ').trim() || '…';
+    setNodeRich(n, v);
+    if (!n.t) { n.t = '…'; delete n.r; }
+    touched();
+    draw();
+  };
+  // frecce e sommari
+  const addRel = (a, b) => {
+    const c = cur();
+    if (!c) return;
+    connectFrom = null;
+    snap();
+    a.id = a.id || uid();
+    b.id = b.id || uid();
+    const r = { id: uid(), from: a.id, to: b.id, t: '' };
+    c.sheet.rels = [...(c.sheet.rels || []), r];
+    touched();
+    draw();
+    toast(`Freccia da “${richPlain(a.t).slice(0, 30)}” a “${richPlain(b.t).slice(0, 30)}”`, '', { label: 'Scrivi un’etichetta', fn: () => relMenu(c.sheet, r.id, 'label') });
+  };
+  const relMenu = async (sheet, id, direct = '') => {
+    const r = (sheet.rels || []).find(x => x.id === id);
+    if (!r) return;
+    const ch = direct || await actionSheet('Freccia', [{ key: 'label', label: r.t ? 'Cambia l’etichetta' : 'Scrivi un’etichetta' }, { key: 'flip', label: 'Inverti la direzione' }, { key: 'del', label: 'Elimina la freccia', danger: true }]);
+    if (!ch) return;
+    if (ch === 'label') {
+      const v = await modal({ title: 'Etichetta della freccia', text: 'Es. “causa”, “inibisce”, “porta a”. Lascia vuoto per toglierla.', input: true, value: r.t || '', confirm: 'Salva', allowEmpty: true });
+      if (v === null || v === undefined) return;
+      snap();
+      r.t = String(v).trim();
+    }
+    if (ch === 'flip') { snap(); [r.from, r.to] = [r.to, r.from]; }
+    if (ch === 'del') { snap(); sheet.rels = sheet.rels.filter(x => x !== r); }
+    touched();
+    draw();
+  };
+  const sumMenu = async (sheet, pk, i) => {
+    const p = findNode(sheet, pk);
+    const s = p && (p.sum || [])[i];
+    if (!s) return;
+    const ch = await actionSheet('Sommario', [{ key: 'ren', label: 'Cambia il testo' }, { key: 'del', label: 'Elimina il sommario', danger: true }]);
+    if (ch === 'ren') { const v = await modal({ title: 'Sommario', input: true, value: s.t, confirm: 'Salva' }); if (!v) return; snap(); s.t = String(v).trim(); }
+    else if (ch === 'del') { snap(); p.sum.splice(i, 1); if (!p.sum.length) delete p.sum; }
+    else return;
     touched();
     draw();
   };
@@ -4113,6 +4478,7 @@ function modeMap(sec, body) {
       si = u.si;
       const s2 = cur();
       s2.sheet.root = JSON.parse(u.root);
+      s2.sheet.rels = JSON.parse(u.rels || '[]');
       selNode = null;
       collapsed = new Set();
       touched();
@@ -4122,6 +4488,26 @@ function modeMap(sec, body) {
     if (!selNode) { selNode = root; }
     const n = selNode;
     const p = parentOf(root, n);
+    if (kind === 'fold') { if ((n.c || []).length) { if (collapsed.has(n)) collapsed.delete(n); else collapsed.add(n); draw(); } else toast('Questo nodo non ha rami da chiudere'); return; }
+    if (kind === 'arrow') { connectFrom = n; draw(); return; }
+    if (kind === 'sum') {
+      if (!p) { toast('Il sommario raggruppa dei rami: scegli un nodo che non sia il centro'); return; }
+      const idx = p.c.indexOf(n);
+      let b = idx;
+      const after = p.c.slice(idx);
+      if (after.length > 1) {
+        const ch = await actionSheet('Il sommario raggruppa da questo nodo fino a…', after.map((x, k) => ({ key: String(idx + k), label: richPlain(x.t || '…').slice(0, 60) })));
+        if (ch === null || ch === undefined || ch === '') return;
+        b = +ch;
+      }
+      const t = await modal({ title: 'Sommario', text: 'Cosa riassume questo gruppo di rami? Es. “Fattori di rischio”', input: true, value: '', confirm: 'Aggiungi' });
+      if (!t) return;
+      snap();
+      (p.sum || (p.sum = [])).push({ id: uid(), a: idx, b, t: String(t).trim() });
+      touched();
+      draw();
+      return;
+    }
     if (kind === 'child') {
       snap();
       const k = { t: '' };
@@ -4195,7 +4581,7 @@ function modeMap(sec, body) {
       toast('Leggo la mappa…');
       const sheets = await parseXmind(file);
       if (!sheets.length) throw new Error('La mappa è vuota.');
-      const rec = { id: uid(), name: file.name.replace(/\.xmind$/i, ''), sheets: sheets.map(s => ({ title: s.title, root: slimTopic(s.root) })), created: Date.now() };
+      const rec = { id: uid(), name: file.name.replace(/\.xmind$/i, ''), sheets: sheets.map(s => { const sh = { title: s.title, root: slimTopic(s.root) }; if ((s.rels || []).length) sh.rels = s.rels; mapNormSheet(sh); return sh; }), created: Date.now() };
       sec.maps = [...mapsOf(sec), rec];
       await saveSection(sec);
       S().mapLast = rec.id;
@@ -4241,6 +4627,7 @@ function modeMap(sec, body) {
     const c = cur();
     const n = c && findNode(c.sheet, t.dataset.mkey);
     if (!n) return;
+    if (connectFrom && edit && n !== connectFrom) { const from = connectFrom; t.blur(); addRel(from, n); return; }
     if (selNode !== n) { selNode = n; $$('.ml-row.sel', body).forEach(r => r.classList.remove('sel')); t.closest('.ml-row').classList.add('sel'); }
     textSnapFor = null;
   });
@@ -4251,7 +4638,7 @@ function modeMap(sec, body) {
     const n = c && findNode(c.sheet, t.dataset.mkey);
     if (!n) return;
     if (textSnapFor !== n) { snap(); textSnapFor = n; const u = $('[data-me="undo"]', body); if (u) u.disabled = false; }
-    n.t = t.textContent.replace(/\s+/g, ' ').trim();
+    setNodeRich(n, t.innerHTML);
     touched();
   });
   body.addEventListener('paste', e => {
@@ -4260,6 +4647,7 @@ function modeMap(sec, body) {
     document.execCommand('insertText', false, (e.clipboardData?.getData('text/plain') || '').replace(/\s+/g, ' '));
   });
   body.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && connectFrom) { connectFrom = null; draw(); return; }
     if (edit && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); op('undo'); return; }
     const t = e.target.closest('.ml-t[contenteditable]');
     if (t && edit) {
@@ -4296,7 +4684,7 @@ function modeMap(sec, body) {
     const sheet = m.sheets[si] || m.sheets[0];
     if (suppressClick) return;
     const v = e.target.closest('[data-view]');
-    if (v) { view = v.dataset.view; S().mapView = view; Settings.save(); draw(); return; }
+    if (v) { view = v.dataset.view; if (inPanel) S().mapViewPanel = view; else S().mapView = view; Settings.save(); draw(); return; }
     if (e.target.closest('[data-act="map-edit"]')) {
       edit = !edit;
       quiz = false;
@@ -4335,6 +4723,16 @@ function modeMap(sec, body) {
       if (n) { const sh = openSheet(`<h2>${esc(n.t)}</h2><div class="notes">${renderMd(n.n)}</div><div class="modal-actions"><button class="btn primary" type="button" data-x>Chiudi</button></div>`, { label: n.t }); $('[data-x]', sh.el).onclick = () => sh.close(); }
       return;
     }
+    if (e.target.closest('[data-act="map-noconn"]')) { connectFrom = null; draw(); return; }
+    const relEl = e.target.closest('[data-mrel]');
+    if (relEl && edit) { await relMenu(sheet, relEl.dataset.mrel); return; }
+    const sumEl = e.target.closest('[data-msum]');
+    if (sumEl) {
+      const [pk, i] = sumEl.dataset.msum.split('|');
+      if (quiz) { const kk = `s:${pk}|${i}`; if (shown.has(kk)) shown.delete(kk); else shown.add(kk); draw(); return; }
+      if (edit) await sumMenu(sheet, pk, +i);
+      return;
+    }
     const tg = e.target.closest('[data-mtoggle]');
     if (tg) { const n = findNode(sheet, tg.dataset.mtoggle); if (n) { if (collapsed.has(n)) collapsed.delete(n); else collapsed.add(n); draw(); } return; }
     const node = e.target.closest('[data-mkey]');
@@ -4342,6 +4740,7 @@ function modeMap(sec, body) {
       const k = node.dataset.mkey;
       const n = findNode(sheet, k);
       if (edit) {
+        if (connectFrom && n && n !== connectFrom) { addRel(connectFrom, n); return; }
         if (view === 'map' && n) { selNode = n; $$('g.mn.sel', body).forEach(x => x.classList.remove('sel')); node.classList.add('sel'); }
         return;
       }
