@@ -1305,6 +1305,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.83", title: "Evidenzia e Sottolinea con la penna", html: `      <ul>
+        <li>Nei PDF, con <strong>Evidenzia</strong>, <strong>Sottolinea</strong> e <strong>Barra</strong> la penna ora funziona come il mouse: trascini sul testo e appena alzi la punta viene evidenziato. Prima Android si prendeva il gesto (partiva la sua selezione con le maniglie) e lo strumento non si applicava.</li>
+        <li>Il dito resta com’era: scorre la pagina e, tenendo premuto, seleziona.</li>
+      </ul>` },
   { v: "3.82", title: "selezione precisa nei PDF scansionati", html: `      <ul>
         <li>Selezionando il testo di un PDF (con la penna, il dito o il mouse), se la punta passava su uno spazio vuoto tra le parole la selezione si allungava fino a metà pagina. Succedeva soprattutto nei PDF scansionati con l’OCR, che hanno molti vuoti. Ora la selezione si ferma all’ultima parola toccata, come nel lettore ufficiale dei PDF.</li>
       </ul>` },

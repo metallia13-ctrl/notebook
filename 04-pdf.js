@@ -871,6 +871,8 @@ function viewPdf(id, pageParam) {
     if (!a) return;
     e.preventDefault();
     ps = { id: e.pointerId, type: e.pointerType, layer, a, x: e.clientX, y: e.clientY, t: Date.now(), moved: !!e.shiftKey };
+    penDown = e.pointerType === 'pen';
+    penNative = false;
     if (e.shiftKey) { const f = textPos(layer, e.clientX, e.clientY); if (f) sel.setBaseAndExtent(a.node, a.offset, f.node, f.offset); }
     else sel.removeAllRanges();
   });
@@ -888,16 +890,55 @@ function viewPdf(id, pageParam) {
   };
   window.addEventListener('pointermove', onPsMove);
   addCleanup(() => window.removeEventListener('pointermove', onPsMove));
+  /* v3.83: su Android la penna, trascinata sul testo, veniva “presa” dal sistema: partiva la
+     selezione di Android (con le maniglie), l’app riceveva un pointercancel e Evidenzia,
+     Sottolinea e Barra non si applicavano mai. Ora il tocco della penna sul testo non passa
+     al sistema (il dito sì: scorre e seleziona come prima) e la selezione resta dell’app. */
+  let stylusTaken = false;
+  // Chrome non dice quali tocchi sono della penna: lo capisco dal pointerdown, che arriva prima
+  let penDown = false;
+  pagesEl.addEventListener('touchstart', e => {
+    stylusTaken = false;
+    if (!penDown || !ps || ps.type !== 'pen' || e.touches.length > 1) return;
+    if (e.cancelable) { e.preventDefault(); stylusTaken = true; }
+  }, { passive: false });
+  // se il sistema ha comunque preso il gesto (pointercancel), applico lo strumento quando alzi
+  // la penna: lo dice il touchend, oppure la penna che torna “sospesa” sopra lo schermo
+  let penNative = false;
+  const penLifted = () => {
+    if (!penNative) return;
+    penNative = false;
+    setTimeout(applyTextTool, 120); // timer a parte: i selectionchange successivi non devono annullarlo
+  };
+  const onNativeEnd = e => { if (penNative && !e.touches.length) penLifted(); };
+  const onPenHover = e => { if (penNative && e.pointerType === 'pen' && !e.buttons) penLifted(); };
+  document.addEventListener('touchend', onNativeEnd);
+  window.addEventListener('pointermove', onPenHover);
+  addCleanup(() => { document.removeEventListener('touchend', onNativeEnd); window.removeEventListener('pointermove', onPenHover); });
   const endPs = e => {
     if (!ps || e.pointerId !== ps.id) return;
     const cur = ps;
     ps = null;
+    penDown = false;
+    const quick = Date.now() - cur.t <= 450;
     // penna tenuta ferma su una parola: la seleziona (poi si allarga con le maniglie)
-    if (!cur.moved && cur.type === 'pen' && Date.now() - cur.t > 450) selectWordAt(cur.layer, e.clientX, e.clientY);
-    // col mouse gli strumenti del testo partono qui (il mouseup non arriva più)
-    if (cur.type === 'mouse' && cur.moved) { clearTimeout(textToolTimer); textToolTimer = setTimeout(applyTextTool, 30); }
+    if (!cur.moved && cur.type === 'pen' && !quick) selectWordAt(cur.layer, e.clientX, e.clientY);
+    // tocco veloce della penna: il clic non arriva (il tocco non è passato al sistema), lo ricreo
+    if (!cur.moved && cur.type === 'pen' && quick && stylusTaken) {
+      const t = document.elementFromPoint(e.clientX, e.clientY);
+      if (t && pagesEl.contains(t)) t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY, view: window }));
+    }
+    stylusTaken = false;
+    // mouse e penna: gli strumenti del testo partono appena alzi, dopo aver trascinato
+    if (cur.moved && cur.type === 'mouse') { clearTimeout(textToolTimer); textToolTimer = setTimeout(applyTextTool, 30); }
+    if (cur.moved && cur.type === 'pen') setTimeout(applyTextTool, 60);
   };
-  const onPsCancel = e => { if (ps && e.pointerId === ps.id) ps = null; };
+  const onPsCancel = e => {
+    if (!ps || e.pointerId !== ps.id) return;
+    if (ps.type === 'pen' && ['hl', 'ul', 'st'].includes(R.tool)) penNative = true;
+    ps = null;
+    penDown = false;
+  };
   window.addEventListener('pointerup', endPs);
   window.addEventListener('pointercancel', onPsCancel);
   addCleanup(() => { window.removeEventListener('pointerup', endPs); window.removeEventListener('pointercancel', onPsCancel); });
