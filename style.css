@@ -3885,3 +3885,40 @@ html.pdf-open .overlay:not(.full) { backdrop-filter: none; -webkit-backdrop-filt
 .cn-papers { margin: 4px 0; padding-left: 1.2em; }
 .cn-papers li { margin: 4px 0; }
 .cn-papers small { color: var(--muted); }
+.pdf-selbar .rt-btn[hidden] { display: none; }
+
+/* =====================================================================
+   v3.73: nuova sezione nelle scelte, scrivere in Affianca
+   ===================================================================== */
+.ns-open { margin-top: 8px; }
+.ns-form { margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); }
+.ns-form[hidden], .ns-open[hidden], .ns-newgrp[hidden], .sp-new[hidden] { display: none; }
+.ns-newgrp { margin: 0 0 10px; }
+.ns-newgrp .input { flex: 1; }
+.split-edit { padding: 10px 14px 30px; }
+.split-edit .edit-tools { top: 0 !important; }
+.split-edit .ed-head { grid-template-columns: 1fr; }
+
+/* =====================================================================
+   v3.75: domande d’esame, struttura e simulazione
+   ===================================================================== */
+.eq-vars { font-style: italic; }
+.eq-varlist { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.eq-st-sum { margin: 6px 0 0; }
+.eq-occ-box summary, .eq-mapbox summary { cursor: pointer; font-weight: 700; margin: 6px 0; }
+.eq-occ { grid-template-columns: 7.5em 1fr 1.4fr 1fr auto; }
+.es-part { margin: 0 0 6px; flex-wrap: nowrap; }
+.es-part [data-pn] { flex: 1; min-width: 0; }
+.es-n { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.es-n select { width: auto; }
+.es-map { display: grid; gap: 6px; }
+.es-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, 46%); gap: 8px; align-items: center; }
+.es-row small { color: var(--muted); margin-left: 4px; }
+.es-exam { display: grid; gap: 12px; padding-left: 1.4em; }
+.es-q { padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.es-q.r-ok { border-color: #22c55e; }
+.es-q.r-ko { border-color: var(--danger); }
+.es-part-l { margin: 0 0 2px; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.es-more summary { cursor: pointer; color: var(--accent); margin: 4px 0; }
+.es-grade { margin-top: 8px; }
+@media (max-width: 699px) { .eq-occ { grid-template-columns: 1fr 1fr; } .es-row { grid-template-columns: 1fr; } }

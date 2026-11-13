@@ -1,19 +1,17 @@
 {
   "id": "./",
-  "name": "StudyHub Notebook",
+  "name": "Notebook – StudyHub",
   "short_name": "Notebook",
-  "description": "Appunti di studio, PDF annotati, flashcard e active recall collegati a StudyHub.",
+  "description": "Appunti, ripasso attivo, flashcard, PDF e note cliniche per studiare medicina.",
   "lang": "it",
   "dir": "ltr",
-  "start_url": "./index.html#/review",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "display_override": ["standalone"],
   "orientation": "any",
   "background_color": "#0c1020",
   "theme_color": "#0c1020",
-  "categories": ["education", "productivity", "medical"],
-  "launch_handler": { "client_mode": "navigate-existing" },
+  "categories": ["education", "medical", "productivity"],
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
@@ -21,30 +19,12 @@
     { "src": "icon-monochrome-512.png", "sizes": "512x512", "type": "image/png", "purpose": "monochrome" }
   ],
   "shortcuts": [
-    {
-      "name": "Ripasso di oggi",
-      "short_name": "Ripasso",
-      "url": "./index.html#/review",
-      "icons": [{ "src": "shortcut-review.png", "sizes": "96x96", "type": "image/png" }]
-    },
-    {
-      "name": "Studia le flashcard",
-      "short_name": "Flashcard",
-      "url": "./index.html#/study/all",
-      "icons": [{ "src": "shortcut-cards.png", "sizes": "96x96", "type": "image/png" }]
-    },
-    {
-      "name": "Importa testo o PDF",
-      "short_name": "Importa",
-      "url": "./index.html#/import",
-      "icons": [{ "src": "shortcut-import.png", "sizes": "96x96", "type": "image/png" }]
-    },
-    {
-      "name": "Calendario",
-      "short_name": "Calendario",
-      "url": "./index.html#/calendar",
-      "icons": [{ "src": "shortcut-calendar.png", "sizes": "96x96", "type": "image/png" }]
-    }
+    { "name": "Ripasso", "short_name": "Ripasso", "description": "Le sezioni e le flashcard di oggi", "url": "./#/review", "icons": [{ "src": "shortcut-review.png", "sizes": "96x96", "type": "image/png" }] },
+    { "name": "Blocco note", "short_name": "Blocco note", "description": "Scrivi a mano", "url": "./#/pad", "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Articoli", "short_name": "Articoli", "description": "La tua bibliografia", "url": "./#/papers", "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Flashcard", "short_name": "Flashcard", "description": "Ripassa le flashcard", "url": "./#/cards", "icons": [{ "src": "shortcut-cards.png", "sizes": "96x96", "type": "image/png" }] },
+    { "name": "Importa", "short_name": "Importa", "description": "Importa testo o un PDF", "url": "./#/import", "icons": [{ "src": "shortcut-import.png", "sizes": "96x96", "type": "image/png" }] },
+    { "name": "Calendario", "short_name": "Calendario", "description": "Il calendario dei ripassi", "url": "./#/calendar", "icons": [{ "src": "shortcut-calendar.png", "sizes": "96x96", "type": "image/png" }] }
   ],
   "share_target": {
     "action": "./share-target",
@@ -54,9 +34,11 @@
       "title": "title",
       "text": "text",
       "url": "url",
-      "files": [
-        { "name": "files", "accept": ["application/pdf", ".pdf"] }
-      ]
+      "files": [{ "name": "files", "accept": ["application/pdf", ".pdf"] }]
     }
-  }
+  },
+  "file_handlers": [
+    { "action": "./?open=pdf", "accept": { "application/pdf": [".pdf"] } }
+  ],
+  "launch_handler": { "client_mode": ["focus-existing", "auto"] }
 }

@@ -495,7 +495,13 @@ function viewPdf(id, pageParam) {
     <button type="button" class="rt-btn" data-ps="bm" title="Segnalibro con questo testo come nome">Segnalibro</button>
     <button type="button" class="rt-btn rt-drag" data-ps="drag" title="Aggiunge il testo al pannello Trascina">Trascina</button>
     <button type="button" class="rt-btn rt-card" data-ps="card">Flashcard</button>
-    <button type="button" class="rt-btn" data-ps="copy">Copia</button>`;
+    <button type="button" class="rt-btn" data-ps="clin" title="Nuova nota clinica, o aggiungi a una che c’è già; la fonte è il PDF e la pagina">Nota clinica</button>
+    <button type="button" class="rt-btn" data-ps="gloss" title="Aggiungi al glossario">Glossario</button>
+    <button type="button" class="rt-btn" data-ps="sec" title="Aggiungi in fondo a una sezione, come citazione con la fonte">In una sezione</button>
+    <button type="button" class="rt-btn" data-ps="map" title="Nuovo nodo nella mappa aperta (in Affianca o nella pagina), sotto il nodo selezionato">Alla mappa</button>
+    <button type="button" class="rt-btn" data-ps="copy">Copia</button>
+    <button type="button" class="rt-btn rt-pend" data-ps="clearpend" hidden title="Lascia perdere le parti tenute da parte">✕ <span class="rt-pend-n"></span></button>
+    <button type="button" class="rt-btn rt-add" data-ps="add" title="Tiene da parte questa selezione: selezionane un’altra e poi scegli un’azione per tutte. Al computer: Ctrl (⌘ sul Mac) mentre selezioni">＋ Altra parte</button>`;
   const bar = document.createElement('div');
   bar.className = 'sel-bar rt-bar pdf-selbar';
   bar.hidden = true;
@@ -518,10 +524,39 @@ function viewPdf(id, pageParam) {
     place: () => { const r = scroller.getBoundingClientRect(); bar.classList.add('rt-top'); bar.style.top = `${Math.round(r.top + 8)}px`; bar.style.left = `${Math.round(r.left + r.width / 2)}px`; }
   });
   addCleanup(() => pdfStable.done());
+  // v3.71: più parti insieme, come nelle sezioni (Ctrl o “＋ Altra parte”); si vedono tratteggiate
+  let pending = [];
+  const hlOk = typeof Highlight !== 'undefined' && window.CSS && CSS.highlights;
+  const paintPending = () => {
+    if (hlOk) { if (pending.length) CSS.highlights.set('nb-pending', new Highlight(...pending.map(p => p.range))); else CSS.highlights.delete('nb-pending'); }
+    [bar, menu].forEach(el => {
+      const b = $('[data-ps="clearpend"]', el);
+      b.hidden = !pending.length;
+      $('.rt-pend-n', b).textContent = `${pending.length} ${pending.length === 1 ? 'parte' : 'parti'}`;
+      $('[data-ps="add"]', el).textContent = pending.length ? `＋ Altra parte (${pending.length + 1})` : '＋ Altra parte';
+    });
+  };
+  const addPending = () => {
+    const sel = document.getSelection();
+    const s = readSelection();
+    if (!s || !sel.rangeCount) return false;
+    if (pending.some(p => p.s.text === s.text && p.s.firstPage === s.firstPage)) return false;
+    pending.push({ s, range: sel.getRangeAt(0).cloneRange() });
+    paintPending();
+    return true;
+  };
+  const clearPending = () => { pending = []; paintPending(); };
+  addCleanup(() => { if (hlOk) CSS.highlights.delete('nb-pending'); });
+  pagesEl.addEventListener('pointerdown', e => {
+    if (R.tool !== 'select' || e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (e.ctrlKey || e.metaKey) { addPending(); return; }
+    if (pending.length) clearPending();
+  }, true);
   const onSel = () => {
     if (!barTool()) return;
     const s = readSelection();
     if (s) { clearTimeout(hideTimer); lastSel = s; lastSelAt = Date.now(); pdfStable.changed(); }
+    else if (pending.length) { pdfStable.cancel(); clearTimeout(hideTimer); bar.hidden = false; }
     else if (!bar.hidden) { pdfStable.cancel(); clearTimeout(hideTimer); hideTimer = setTimeout(() => { bar.hidden = true; }, 600); }
     else pdfStable.cancel();
   };
@@ -534,21 +569,89 @@ function viewPdf(id, pageParam) {
     openPanel('drag');
     refreshPanel('drag');
   };
+  // la fonte di quello che prendi dal PDF: la citazione se è un articolo, se no nome e pagina
+  const pdfSource = page => {
+    const pp = meta.paperId && typeof paperById === 'function' ? paperById(meta.paperId) : null;
+    return pp ? `${citation(pp)} (p. ${page})` : `${meta.name}, p. ${page}`;
+  };
   const selAction = async kind => {
-    const s = lastSel;
+    if (kind === 'add') {
+      if (addPending()) { lastSel = null; document.getSelection()?.removeAllRanges(); toast(SelGesture.touchy() ? 'Tenuta da parte: seleziona la prossima' : 'Tenuta da parte: seleziona la prossima (o tieni premuto Ctrl mentre selezioni)'); }
+      return;
+    }
+    if (kind === 'clearpend') { clearPending(); if (!readSelection()) bar.hidden = true; return; }
+    const cur = readSelection() || lastSel;
+    const pieces = [...pending.map(p => p.s), ...(cur && !pending.some(p => p.s.text === cur.text && p.s.firstPage === cur.firstPage) ? [cur] : [])];
+    clearPending();
+    const s = cur || pieces[pieces.length - 1];
     bar.hidden = true;
     menu.hidden = true;
     if (!s) return;
+    const many = pieces.length > 1;
+    // parole spezzate a fine riga (“influen-\nzato”) ricucite, righe unite
+    const clean = t => String(t).replace(/(\p{L}{3})-[ \t]*\n?[ \t]*(\p{Ll})/gu, (m, a, b) => (/\s/.test(m) ? a + b : m)).replace(/\s*\n\s*/g, ' ').trim();
+    const joined = many ? pieces.map(p => `- ${clean(p.text)}`).join('\n') : clean(s.text);
     if (kind !== 'copy') document.getSelection()?.removeAllRanges();
-    if (kind === 'hl' || kind === 'ul') { addAnnots(newAnnotsFromSel(s, kind, R.color)); return; }
+    if (kind === 'hl' || kind === 'ul') { addAnnots(pieces.flatMap(p => newAnnotsFromSel(p, kind, R.color))); if (many) toast(`${kind === 'hl' ? 'Evidenziate' : 'Sottolineate'} ${pieces.length} parti`); return; }
     if (kind === 'copy') {
-      try { await navigator.clipboard.writeText(s.text); toast('Testo copiato'); } catch { toast('Copia non riuscita', 'err'); }
+      try { await navigator.clipboard.writeText(many ? pieces.map(p => p.text).join('\n\n') : s.text); toast(many ? `${pieces.length} parti copiate` : 'Testo copiato'); } catch { toast('Copia non riuscita', 'err'); }
       return;
     }
-    if (kind === 'drag') { addDraft(s.text, s.firstPage); toast('Aggiunto a Trascina'); return; }
+    const pagesTxt = [...new Set(pieces.map(p => p.firstPage))].sort((a, b) => a - b).join(', ');
+    if (kind === 'gloss') {
+      const nb = nbById(meta.notebookId);
+      const short = !many && s.text.length <= 60 && !/[.;:]\s/.test(s.text);
+      await glossarySheet(null, { ...(short ? { term: s.text.trim() } : { def: joined }), nbId: nb && !nb.kind ? nb.id : '' });
+      return;
+    }
+    if (kind === 'map') {
+      // dentro Affianca il PDF è un’altra finestra: la mappa può essere nella pagina principale
+      const MT = EMBED ? (() => { try { return parent.MapTarget || MapTarget; } catch { return MapTarget; } })() : MapTarget;
+      let tgt = MT.get() || (EMBED ? MapTarget.get() : null);
+      if (!tgt) {
+        // nessuna mappa aperta: la apro in Affianca, nella sezione che scegli
+        const sec = await pickSectionSheet('Su quale mappa? Scegli la sezione', meta.sectionId || '');
+        if (!sec) return;
+        if (EMBED) { toast('Apri la mappa nella pagina principale, poi riprova da qui'); return; }
+        await Split.show({ kind: 'map', id: sec.id });
+        tgt = MapTarget.get();
+        if (!tgt) return;
+      }
+      const note = `Da ${pdfSource(pagesTxt)}`;
+      let r = null;
+      for (const p of (many ? pieces : [s])) r = tgt.add(clean(p.text), note);
+      if (r) toast(`${many ? `${pieces.length} nodi` : 'Nuovo nodo'} nella mappa “${String(r.map).slice(0, 40)}”, sotto “${String(r.parent).slice(0, 40)}”`);
+      return;
+    }
+    if (kind === 'sec') {
+      const sec = await pickSectionSheet('Aggiungi a una sezione', meta.sectionId || '');
+      if (!sec) return;
+      // in fondo, come citazione con la fonte
+      const quote = joined.split('\n').map(l => `> ${l}`).join('\n');
+      const base = String(sec.md || '').replace(/\s+$/, '');
+      sec.md = `${base ? `${base}\n\n` : ''}${quote}\n>\n> — ${pdfSource(pagesTxt)}\n`;
+      await saveSection(sec);
+      toast(`Aggiunto in fondo a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
+      return;
+    }
+    if (kind === 'clin') {
+      const how = await actionSheet('Nota clinica', [{ key: 'new', label: 'Nuova nota clinica' }, { key: 'add', label: 'Aggiungi a una nota che c’è già' }]);
+      if (!how) return;
+      if (how === 'add') { await addToClinicNoteSheet(joined, { source: pdfSource(pagesTxt), paperId: meta.paperId || '' }); return; }
+      const pages = [...new Set(pieces.map(p => p.firstPage))].sort((a, b) => a - b);
+      const nb = nbById(meta.notebookId);
+      await clinicSheet(null, {
+        title: '', body: joined, sectionId: meta.sectionId || '',
+        nbId: nb && !nb.kind ? nb.id : '',
+        sources: [pdfSource(pages.join(', '))],
+        papers: meta.paperId ? [meta.paperId] : []
+      });
+      return;
+    }
+    if (kind === 'drag') { pieces.forEach(p => addDraft(p.text, p.firstPage)); toast(many ? `${pieces.length} parti aggiunte a Trascina` : 'Aggiunto a Trascina'); return; }
     if (kind === 'bm') { await addBookmark(s.firstPage, s); return; }
     if (kind === 'card') {
-      const card = await openCardSheet({ back: s.text, sectionId: meta.sectionId, notebookId: meta.notebookId });
+      const card = await openCardSheet({ back: joined, sectionId: meta.sectionId, notebookId: meta.notebookId });
       if (card) { card.pdf = { id: meta.id, page: s.firstPage }; await saveCard(card); }
       return;
     }

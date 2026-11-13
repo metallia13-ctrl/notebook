@@ -232,6 +232,9 @@ const ALGO_EXAMPLE = `- Sospetta embolia polmonare: Wells
 function clinicSheet(entry = null, prefill = {}) {
   return new Promise(resolve => {
     const e = entry || {};
+    // nota nuova da un PDF: fonte e articolo già pronti, e i loro gruppi aperti
+    if (!entry && (prefill.sources || []).length) e.srcPre = '1';
+    if (!entry && (prefill.papers || []).length) e.papers = prefill.papers.slice();
     const syms = e.symptoms || prefill.symptoms || [];
     const all = clinicalNotes();
     const known = [...new Set(all.flatMap(n => n.symptoms || []))].filter(s => !syms.includes(s)).slice(0, 16);
@@ -289,9 +292,9 @@ function clinicSheet(entry = null, prefill = {}) {
         <button class="btn sm ghost" type="button" data-cnimg-add>＋ Aggiungi foto</button>
       </details>
       ${group('Note', ['body'], ta('cnBody', 'Note libere', e.body || prefill.body, 4))}
-      ${group('Link e fonti', ['links'], `
+      ${group('Link e fonti', ['links', 'srcPre'], `
         ${ta('cnLinks', 'Link utili, uno per riga (anche “Nome | indirizzo”)', (e.links || []).join('\n'), 2, 'Orphanet | https://www.orpha.net/…')}
-        <label class="field"><span>Fonti, una per riga</span><textarea class="input" id="cnSrc" rows="2" placeholder="Harrison, cap. 270">${esc(sourcesOf(e).join('\n'))}</textarea></label>`)}
+        <label class="field"><span>Fonti, una per riga</span><textarea class="input" id="cnSrc" rows="2" placeholder="Harrison, cap. 270">${esc((sourcesOf(e).length ? sourcesOf(e) : prefill.sources || []).join('\n'))}</textarea></label>`)}
       <label class="check"><input type="checkbox" id="cnIncChk" ${e.incomplete ? 'checked' : ''}><span>Incompleta</span></label>
       <label class="field" id="cnIncBox" ${e.incomplete ? '' : 'hidden'}><span>Cosa manca? Facoltativo</span><input class="input" id="cnIncNote" value="${esc(e.incomplete?.note || '')}" placeholder="Es. manca la terapia"></label>
       <div class="modal-actions">
@@ -301,7 +304,7 @@ function clinicSheet(entry = null, prefill = {}) {
       </div>`, { label: 'Nota clinica', onClose: resolve });
     bindTagField(sh.el, 'cnSyms');
     // v3.70: articoli collegati
-    let pps = [...(e.papers || [])].filter(id => paperById(id));
+    let pps = [...(e.papers || prefill.papers || [])].filter(id => paperById(id));
     const drawPps = () => { $('#cnPapers', sh.el).innerHTML = pps.map(paperById).filter(Boolean).map(p => `<span class="tag">${esc(p.title.slice(0, 70))}${p.title.length > 70 ? '…' : ''} <button type="button" class="tag-x" data-unpp="${p.id}" aria-label="Scollega">×</button></span>`).join('') || '<span class="hint">Nessun articolo collegato.</span>'; };
     drawPps();
     $('#cnPpQ', sh.el).addEventListener('input', ev => {
@@ -1230,29 +1233,93 @@ function downloadBlob(blob, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
 }
-const EQ_HEAD = ['Domanda', 'Risposta', 'Materia', 'Argomento', 'Docente', 'Anno', 'Data', 'Fonte', 'Tag'];
+/* ---------- v3.75: il modello delle domande d’esame ----------
+   Come il foglio “Database Singole Domande” dei file di Gemini: una riga per ogni
+   domanda uscita (data dell’appello, anno, studente, testo originale, argomento
+   normalizzato, macro-categoria). L’argomento normalizzato è la domanda della banca:
+   le formulazioni diverse si sommano e restano come varianti (occ[].text); la
+   macro-categoria è la parte del programma (x.cat), usata dalla struttura dell’esame. */
+const EQ_HEAD = ['Data Appello', 'Anno', 'Studente (Telegram)', 'Domanda Originale (Testo Esatto)', 'Argomento Normalizzato', 'Macro-Categoria', 'Risposta (facoltativa)'];
 const EQ_FIELDS = [
-  ['q', 'Domanda', /domand|quesit|question/i],
-  ['a', 'Risposta', /rispost|answer|soluzion/i],
-  ['subject', 'Materia', /materi|esame|corso|insegnam|subject/i],
-  ['topic', 'Argomento', /argoment|sezion|capitol|topic/i],
-  ['prof', 'Docente', /docent|prof|commission|esaminat/i],
-  ['year', 'Anno', /^anno|year/i],
-  ['date', 'Data o appello', /data|appell|session|date/i],
-  ['src', 'Fonte', /fonte|source|riferit|studente/i],
-  ['tags', 'Tag', /tag|etichett/i]
+  ['q', 'Argomento (raggruppa le domande uguali)', [/argoment\w*\s+normalizz|normalizzat/i, /domand|quesit|question/i, /argoment/i]],
+  ['orig', 'Testo originale della domanda', [/originale|testo esatto|formulazion|variant/i]],
+  ['cat', 'Macro-categoria (parte del programma)', [/macro|categor/i]],
+  ['a', 'Risposta', [/rispost|answer|soluzion/i]],
+  ['subject', 'Materia', [/materi|insegnam|corso|subject/i]],
+  ['topic', 'Sezione del notebook', [/sezion|capitol|topic/i]],
+  ['prof', 'Docente', [/docent|^prof|commission|esaminat/i]],
+  ['year', 'Anno', [/^\s*anno\b|year/i]],
+  ['date', 'Data dell’appello', [/data|appell|session|date/i]],
+  ['src', 'Studente o fonte', [/studente|telegram|fonte|source|riferit/i]],
+  ['tags', 'Tag', [/^\s*tag|etichett/i]]
 ];
+const GEMINI_PROMPT = `Analizza i messaggi del gruppo Telegram che ti allego, in cui gli studenti raccontano le domande uscite all’esame di [MATERIA] con [DOCENTE].
+Crea un file Excel (.xlsx). Nella prima riga scrivi il titolo così: “[MATERIA IN MAIUSCOLO] ([DOCENTE]) — DOMANDE D’ESAME”.
+Poi un foglio chiamato “Database Singole Domande” con una riga per ogni singola domanda raccontata e queste colonne, con questi titoli esatti:
+Data Appello | Anno | Studente (Telegram) | Domanda Originale (Testo Esatto) | Argomento Normalizzato | Macro-Categoria
+- Data Appello: la data dell’esame in formato GG/MM/AAAA (se manca, quella del messaggio).
+- Studente (Telegram): il nome di chi racconta.
+- Domanda Originale: il testo come l’ha scritto lo studente.
+- Argomento Normalizzato: lo stesso nome per le domande uguali scritte in modi diversi (per esempio “archicorteccia” e “archipallio” → “Formazione dell’ippocampo”).
+- Macro-Categoria: la parte del programma (per esempio “Tronco encefalico e nervi cranici”), sempre con gli stessi nomi.
+Non inventare domande: solo quelle raccontate nei messaggi.`;
 // numeri di Excel che sono date (giorni dal 1900)
 const xlDate = v => { const n = +v; if (!/^\d{5}(\.\d+)?$/.test(String(v)) || n < 20000 || n > 80000) return String(v || '').trim(); const d = new Date(Date.UTC(1899, 11, 30) + n * 86400000); return d.toISOString().slice(0, 10); };
+// date italiane (27/04/2026) o di Excel → 2026-04-27
+function eqDate(v) {
+  const s = xlDate(v);
+  const m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/);
+  if (m) { const y = m[3].length === 2 ? `20${m[3]}` : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
+  return s;
+}
+const eqDateIt = d => (/^\d{4}-\d{2}-\d{2}$/.test(d || '') ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : d || '');
+const eqYear = o => o.year || (o.date || '').slice(0, 4);
+const eqCat = x => x.cat || (x.tags || [])[0] || 'Senza categoria';
+// le formulazioni con cui è stata raccontata (senza doppioni)
+function eqVariants(x) {
+  const seen = new Map();
+  (x.occ || []).forEach(o => { const t = String(o.text || '').trim(); if (t && !seen.has(foldAccents(t))) seen.set(foldAccents(t), t); });
+  return [...seen.values()];
+}
+// materia: il notebook, se c’è, o il nome scritto nel file
+const eqSubjKey = x => x.notebookId || `subj:${foldAccents(x.subject || '').trim()}`;
+const eqSubjLabel = key => (key.startsWith('subj:') ? (examQs().find(x => eqSubjKey(x) === key)?.subject || 'Senza materia') : nbById(key)?.name || 'Senza materia');
+const eqOfSubj = key => examQs().filter(x => eqSubjKey(x) === key);
+const eqStructOf = key => state.links.find(l => l.kind === 'examstruct' && l.subjKey === key) || null;
+// gli esami veri: le domande fatte a uno studente in un giorno
+function eqRealExams(key) {
+  const g = new Map();
+  eqOfSubj(key).forEach(x => (x.occ || []).forEach(o => {
+    if (!o.date || !o.src) return;
+    const k = `${o.date}|${foldAccents(o.src)}`;
+    if (!g.has(k)) g.set(k, { date: o.date, src: o.src, items: [] });
+    const e = g.get(k);
+    if (!e.items.some(i => i.x === x)) e.items.push({ x, text: o.text || '' });
+  }));
+  return [...g.values()].sort((a, b) => b.date.localeCompare(a.date));
+}
+function eqTypicalCount(key) {
+  const n = eqRealExams(key).map(e => e.items.length).filter(k => k > 0).sort((a, b) => a - b);
+  return n.length ? { n: n[Math.floor(n.length / 2)], exams: n.length } : { n: 3, exams: 0 };
+}
+function eqMeta(x) {
+  const occ = x.occ || [];
+  const profs = [...new Set(occ.map(o => o.prof).filter(Boolean))];
+  const byYear = {};
+  occ.forEach(o => { const y = eqYear(o); if (y) byYear[y] = (byYear[y] || 0) + 1; });
+  const years = Object.keys(byYear).sort().slice(-3).map(y => `${y}: ${byYear[y]}`);
+  return [eqFreq(x) > 1 ? `uscita ${eqFreq(x)} volte` : 'uscita 1 volta', years.join(', '), profs.slice(0, 1).join('')].filter(Boolean).join(' · ');
+}
 
 /* ---------- Pagina delle domande d’esame ---------- */
-const eqState = { q: '', nb: '', prof: '', year: '', sort: 'freq' };
+const eqState = { q: '', nb: '', prof: '', year: '', cat: '', sort: 'freq' };
 function eqFiltered() {
   const toks = foldAccents(eqState.q).split(/\s+/).filter(Boolean);
-  let list = examQs().filter(x => (!eqState.nb || x.notebookId === eqState.nb || (eqState.nb === '_none' && !x.notebookId))
+  let list = examQs().filter(x => (!eqState.nb || eqSubjKey(x) === eqState.nb)
+    && (!eqState.cat || eqCat(x) === eqState.cat)
     && (!eqState.prof || (x.occ || []).some(o => o.prof === eqState.prof))
-    && (!eqState.year || (x.occ || []).some(o => (o.year || (o.date || '').slice(0, 4)) === eqState.year))
-    && (!toks.length || toks.every(t => foldAccents(`${x.q} ${x.a || ''} ${(x.tags || []).join(' ')} ${(x.secIds || []).map(id => secById(id)?.title || '').join(' ')}`).includes(t))));
+    && (!eqState.year || (x.occ || []).some(o => eqYear(o) === eqState.year))
+    && (!toks.length || toks.every(t => foldAccents(`${x.q} ${x.a || ''} ${eqCat(x)} ${(x.tags || []).join(' ')} ${eqVariants(x).join(' ')} ${(x.secIds || []).map(id => secById(id)?.title || '').join(' ')}`).includes(t))));
   const last = x => (x.occ || []).map(o => o.date || o.year || '').sort().pop() || '';
   const bad = x => (x.stats?.ko || 0) - (x.stats?.ok || 0) * 0.5;
   list.sort(eqState.sort === 'recent' ? (a, b) => last(b).localeCompare(last(a)) || eqFreq(b) - eqFreq(a)
@@ -1261,35 +1328,57 @@ function eqFiltered() {
     : (a, b) => eqFreq(b) - eqFreq(a) || last(b).localeCompare(last(a)));
   return list;
 }
-function viewExamQ(p1) {
+// la materia su cui lavorare (struttura, simulazione): quella scelta, l’unica, o la chiedo
+async function eqPickSubject(title) {
+  if (eqState.nb) return eqState.nb;
+  const keys = [...new Set(examQs().map(eqSubjKey))];
+  if (keys.length === 1) return keys[0];
+  if (!keys.length) { toast('Importa prima le domande d’esame'); return null; }
+  return actionSheet(title, keys.map(k => ({ key: k, label: `${eqSubjLabel(k)} · ${eqOfSubj(k).length} argomenti` })));
+}
+function viewExamQ(p1, p2) {
   if (p1 === 'quiz') return viewExamQuiz();
+  if (p1 === 'sim') return viewExamSim(decodeURIComponent(p2 || ''), false);
+  if (p1 === 'real') return viewExamSim(decodeURIComponent(p2 || ''), true);
   const all = examQs();
-  const nbs = [...new Set(all.map(x => x.notebookId).filter(Boolean))].map(nbById).filter(Boolean);
+  const subj = [...new Set(all.map(eqSubjKey))];
+  const inSubj = eqState.nb ? all.filter(x => eqSubjKey(x) === eqState.nb) : all;
+  const cats = [...new Set(inSubj.map(eqCat))].sort((a, b) => a.localeCompare(b, 'it'));
+  if (eqState.cat && !cats.includes(eqState.cat)) eqState.cat = '';
   const profs = [...new Set(all.flatMap(x => (x.occ || []).map(o => o.prof)).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
-  const years = [...new Set(all.flatMap(x => (x.occ || []).map(o => o.year || (o.date || '').slice(0, 4))).filter(Boolean))].sort().reverse();
+  const years = [...new Set(all.flatMap(x => (x.occ || []).map(eqYear)).filter(Boolean))].sort().reverse();
+  const st = eqState.nb ? eqStructOf(eqState.nb) : null;
   setView(`
     <header class="page-head">
-      <div><h1>Domande d’esame</h1><p class="lede">${all.length ? `${all.length} domande. ` : ''}Quelle uscite agli esami: si sommano quando escono di nuovo, così vedi cosa chiedono di più.</p></div>
+      <div><h1>Domande d’esame</h1><p class="lede">${all.length ? `${all.length} argomenti, ${all.reduce((a, x) => a + eqFreq(x), 0)} domande raccontate. ` : ''}Quelle uscite agli esami: le stesse domande si sommano, così vedi cosa chiedono di più.</p></div>
       <div class="inline">
-        <button class="btn primary" type="button" data-act="eq-new">Nuova domanda</button>
+        ${all.length ? '<button class="btn primary" type="button" data-act="eq-sim">Simulazione d’esame</button>' : ''}
         <button class="btn" type="button" data-act="eq-import">Importa da Excel</button>
+        <button class="btn ghost" type="button" data-act="eq-new">Nuova domanda</button>
       </div>
     </header>
     ${all.length ? `
       <div class="eq-tools">
-        <input type="search" class="input search" id="eqQ" placeholder="Cerca nelle domande e nelle risposte" aria-label="Cerca nelle domande" value="${esc(eqState.q)}">
+        <input type="search" class="input search" id="eqQ" placeholder="Cerca negli argomenti, nelle formulazioni e nelle risposte" aria-label="Cerca nelle domande" value="${esc(eqState.q)}">
         <div class="eq-filters">
-          <select class="input" id="eqNb" aria-label="Materia"><option value="">Tutte le materie</option>${nbs.map(n => `<option value="${n.id}" ${eqState.nb === n.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}${all.some(x => !x.notebookId) ? `<option value="_none" ${eqState.nb === '_none' ? 'selected' : ''}>Senza notebook</option>` : ''}</select>
-          ${profs.length ? `<select class="input" id="eqProf" aria-label="Docente"><option value="">Tutti i docenti</option>${profs.map(p => `<option ${eqState.prof === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>` : ''}
+          <select class="input" id="eqNb" aria-label="Materia"><option value="">Tutte le materie</option>${subj.map(k => `<option value="${esc(k)}" ${eqState.nb === k ? 'selected' : ''}>${esc(eqSubjLabel(k))}</option>`).join('')}</select>
+          ${cats.length > 1 ? `<select class="input" id="eqCat" aria-label="Categoria"><option value="">Tutte le categorie</option>${cats.map(c => `<option ${eqState.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>` : ''}
+          ${profs.length > 1 ? `<select class="input" id="eqProf" aria-label="Docente"><option value="">Tutti i docenti</option>${profs.map(p => `<option ${eqState.prof === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>` : ''}
           ${years.length ? `<select class="input" id="eqYear" aria-label="Anno"><option value="">Tutti gli anni</option>${years.map(y => `<option ${eqState.year === y ? 'selected' : ''}>${esc(y)}</option>`).join('')}</select>` : ''}
           <select class="input" id="eqSort" aria-label="Ordine">${[['freq', 'Le più frequenti'], ['recent', 'Uscite di recente'], ['wrong', 'Quelle che sbagli'], ['new', 'Aggiunte di recente']].map(([k, l]) => `<option value="${k}" ${eqState.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
         </div>
-        <div class="inline"><a class="btn" href="#/examq/quiz" id="eqQuizBtn">Allenati su queste</a><button class="btn ghost" type="button" data-act="eq-export">Scarica in Excel</button></div>
+        <div class="inline">
+          <a class="btn" href="#/examq/quiz" id="eqQuizBtn">Allenati su queste</a>
+          <button class="btn ghost" type="button" data-act="eq-struct">${st ? 'Struttura dell’esame' : 'Imposta la struttura dell’esame'}</button>
+          <button class="btn ghost" type="button" data-act="eq-real">Un appello vero</button>
+          <button class="btn ghost" type="button" data-act="eq-export">Scarica in Excel</button>
+        </div>
+        ${st ? `<p class="hint eq-st-sum">${esc(eqSubjLabel(eqState.nb))}: ${st.parts.map(p => `${esc(p.name)} (${p.n})`).join(' · ')}${st.notes ? ` · ${esc(st.notes.slice(0, 120))}` : ''}</p>` : ''}
       </div>
       <ul class="list eq-list" id="eqList"></ul>` : `
       <div class="empty">
-        <p>Raccogli qui le domande uscite agli esami (anche quelle che ti raccontano i compagni): materia, docente, anno, argomento. Puoi scriverle una per una o caricarle tutte da un foglio Excel o Google Fogli.</p>
-        <div class="inline" style="justify-content:center"><button class="btn primary" type="button" data-act="eq-import">Importa da Excel</button><button class="btn" type="button" data-act="eq-template">Scarica il modello</button></div>
+        <p>Raccogli qui le domande uscite agli esami. Il modo più veloce: fai analizzare a Gemini i messaggi del gruppo Telegram e importa il file Excel che ti dà (il modello e il prompt sono qui sotto). Puoi anche scriverle una per una.</p>
+        <div class="inline" style="justify-content:center"><button class="btn primary" type="button" data-act="eq-import">Importa da Excel</button><button class="btn" type="button" data-act="eq-template">Scarica il modello</button><button class="btn" type="button" data-act="eq-prompt">Copia il prompt per Gemini</button></div>
       </div>`}
   `);
   const draw = () => {
@@ -1297,30 +1386,42 @@ function viewExamQ(p1) {
     if (!box) return;
     const list = eqFiltered();
     $('#eqQuizBtn').textContent = `Allenati su queste (${list.length})`;
-    box.innerHTML = list.slice(0, 400).map(x => `
+    box.innerHTML = list.slice(0, 400).map(x => {
+      const vars = eqVariants(x);
+      return `
       <li><button type="button" class="row" data-eq="${x.id}">
         <span class="eq-n" title="Volte che è uscita">${eqFreq(x)}×</span>
         <span class="row-main">
           <span class="row-title eq-q">${esc(x.q)}</span>
-          <span class="row-sub">${esc([eqSubject(x), eqMeta(x)].join(' · '))}${(x.secIds || []).length ? ` · ${esc((x.secIds || []).map(id => secById(id)?.title).filter(Boolean).slice(0, 2).join(', '))}` : ''}</span>
+          <span class="row-sub">${esc([eqState.nb ? '' : eqSubject(x), eqCat(x) !== 'Senza categoria' ? eqCat(x) : '', eqMeta(x)].filter(Boolean).join(' · '))}${(x.secIds || []).length ? ` · ${esc((x.secIds || []).map(id => secById(id)?.title).filter(Boolean).slice(0, 2).join(', '))}` : ''}</span>
+          ${vars.length > 1 || (vars[0] && foldAccents(vars[0]) !== foldAccents(x.q)) ? `<span class="row-sub eq-vars">Chiesta come: ${esc(vars.slice(0, 5).join(' • '))}${vars.length > 5 ? ` • … (${vars.length})` : ''}</span>` : ''}
         </span>
         ${x.stats && (x.stats.ok || x.stats.ko) ? `<span class="eq-st" title="La sapevo / non la sapevo">✓${x.stats.ok || 0} ✗${x.stats.ko || 0}</span>` : ''}
-      </button></li>`).join('') || '<li class="hint">Nessuna domanda corrisponde.</li>';
+      </button></li>`;
+    }).join('') || '<li class="hint">Nessuna domanda corrisponde.</li>';
   };
   draw();
   $('#eqQ')?.addEventListener('input', e => { eqState.q = e.target.value; draw(); });
-  [['#eqNb', 'nb'], ['#eqProf', 'prof'], ['#eqYear', 'year'], ['#eqSort', 'sort']].forEach(([sel, k]) => $(sel)?.addEventListener('change', e => { eqState[k] = e.target.value; draw(); }));
+  $('#eqNb')?.addEventListener('change', e => { eqState.nb = e.target.value; eqState.cat = ''; route(); });
+  [['#eqCat', 'cat'], ['#eqProf', 'prof'], ['#eqYear', 'year'], ['#eqSort', 'sort']].forEach(([sel, k]) => $(sel)?.addEventListener('change', e => { eqState[k] = e.target.value; draw(); }));
   on('[data-act="eq-new"]', 'click', async () => { if (await eqSheet(null)) route(); });
   on('[data-act="eq-import"]', 'click', eqImportFlow);
-  on('[data-act="eq-template"]', 'click', async () => { downloadBlob(await writeXlsx([EQ_HEAD, ['Descrivi il ciclo cardiaco', 'Sistole e diastole…', 'Fisiologia', 'Ciclo cardiaco', 'prof. Rossi', '2025', '2025-06-12', 'Racconto di un compagno', 'orale']]), 'Modello domande d’esame.xlsx'); toast('Modello scaricato: compila una domanda per riga'); });
+  on('[data-act="eq-template"]', 'click', eqTemplate);
+  on('[data-act="eq-prompt"]', 'click', eqCopyPrompt);
+  on('[data-act="eq-sim"]', 'click', async () => { const k = await eqPickSubject('Simulazione: quale materia?'); if (k) go(`#/examq/sim/${encodeURIComponent(k)}`); });
+  on('[data-act="eq-real"]', 'click', async () => { const k = await eqPickSubject('Un appello vero: quale materia?'); if (k) go(`#/examq/real/${encodeURIComponent(k)}`); });
+  on('[data-act="eq-struct"]', 'click', async () => { const k = await eqPickSubject('Struttura dell’esame: quale materia?'); if (k && await eqStructSheet(k)) route(); });
   on('[data-act="eq-export"]', 'click', async () => {
-    const rows = [EQ_HEAD];
-    eqFiltered().forEach(x => {
+    const list = eqFiltered();
+    const sk = eqState.nb || (list[0] ? eqSubjKey(list[0]) : '');
+    const prof = (list.flatMap(x => (x.occ || []).map(o => o.prof)).find(Boolean)) || '';
+    const rows = [[`${(eqState.nb ? eqSubjLabel(sk) : 'Domande d’esame').toUpperCase()}${prof ? ` (${prof})` : ''} — esportato dal Notebook il ${eqDateIt(todayStr())}`], [], [...EQ_HEAD, 'Docente', 'Materia', 'Sezioni']];
+    list.forEach(x => {
       const occ = x.occ && x.occ.length ? x.occ : [{}];
-      occ.forEach(o => rows.push([x.q, x.a || '', eqSubject(x), (x.secIds || []).map(id => secById(id)?.title).filter(Boolean).join('; '), o.prof || '', o.year || '', o.date || '', o.src || '', (x.tags || []).join(', ')]));
+      occ.forEach(o => rows.push([eqDateIt(o.date || ''), eqYear(o), o.src || '', o.text || x.q, x.q, eqCat(x) === 'Senza categoria' ? '' : eqCat(x), x.a || '', o.prof || '', eqSubject(x), (x.secIds || []).map(id => secById(id)?.title).filter(Boolean).join('; ')]));
     });
-    downloadBlob(await writeXlsx(rows), `Domande d’esame ${todayStr()}.xlsx`);
-    toast('File Excel pronto: una riga per ogni volta che una domanda è uscita');
+    downloadBlob(await writeXlsx(rows, 'Database Singole Domande'), `Domande d’esame ${todayStr()}.xlsx`);
+    toast('File Excel pronto: una riga per ogni volta che una domanda è uscita, come il modello');
   });
   $('#eqList')?.addEventListener('click', async e => {
     const b = e.target.closest('[data-eq]');
@@ -1329,26 +1430,46 @@ function viewExamQ(p1) {
     if (x && await eqSheet(x)) route();
   });
 }
+async function eqTemplate() {
+  downloadBlob(await writeXlsx([
+    ['NEUROANATOMIA (PROF.SSA ROSSI) — DOMANDE D’ESAME'],
+    [],
+    EQ_HEAD,
+    ['27/04/2026', '2026', 'Giulia', 'archicorteccia', 'Formazione dell’ippocampo', 'Sistema limbico e rinencefalo', ''],
+    ['27/04/2026', '2026', 'Giulia', 'via gustativa', 'Via gustativa', 'Sensi speciali', ''],
+    ['19/03/2026', '2026', 'Marco', 'archipallio e giro dentato', 'Formazione dell’ippocampo', 'Sistema limbico e rinencefalo', 'Corno d’Ammone, giro dentato, subicolo…']
+  ], 'Database Singole Domande'), 'Modello domande d’esame.xlsx');
+  toast('Modello scaricato: una riga per ogni domanda uscita, come i file di Gemini');
+}
+async function eqCopyPrompt() {
+  try { await navigator.clipboard.writeText(GEMINI_PROMPT); toast('Prompt copiato: incollalo in Gemini con i messaggi di Telegram, e sostituisci materia e docente'); }
+  catch { await modal({ title: 'Prompt per Gemini', text: GEMINI_PROMPT, confirm: 'Chiudi' }); }
+}
+
 // Scheda di una domanda: si vede e si modifica nello stesso foglio
 function eqSheet(x, preset = {}) {
   return new Promise(resolve => {
     const isNew = !x;
-    const r = x || { id: uid(), kind: 'examq', notebookId: preset.notebookId || '', q: '', a: '', secIds: preset.secIds || [], occ: [{ prof: '', year: String(new Date().getFullYear()), date: '', src: '' }], tags: [], created: Date.now() };
+    const r = x || { id: uid(), kind: 'examq', notebookId: preset.notebookId || '', q: '', a: '', secIds: preset.secIds || [], occ: [{ prof: '', year: String(new Date().getFullYear()), date: '', src: '', text: '' }], tags: [], created: Date.now() };
     const nbs = state.notebooks.filter(n => !n.kind);
     const secsOfNb = id => state.sections.filter(s => s.notebookId === id).sort((a, b) => a.title.localeCompare(b.title, 'it'));
+    const catsAll = [...new Set(examQs().map(y => y.cat).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
     let occ = (r.occ || []).map(o => ({ ...o }));
     let secIds = [...(r.secIds || [])];
+    const vars = eqVariants(r);
     const sh = openSheet(`
       <h2>${isNew ? 'Nuova domanda d’esame' : 'Domanda d’esame'}</h2>
-      <label class="field"><span>Domanda</span><textarea class="input" id="eqQt" rows="3">${esc(r.q)}</textarea></label>
+      <label class="field"><span>Argomento o domanda</span><textarea class="input" id="eqQt" rows="2">${esc(r.q)}</textarea></label>
+      ${vars.length ? `<div class="field"><span class="lbl">Come l’hanno raccontata (${vars.length})</span><p class="eq-varlist">${vars.map(v => `<span class="tag">${esc(v)}</span>`).join(' ')}</p></div>` : ''}
       <label class="field"><span>Risposta o traccia, facoltativa</span><textarea class="input" id="eqAt" rows="4" placeholder="Anche in elenco: i punti da toccare">${esc(r.a || '')}</textarea></label>
       <div class="grid2">
-        <label class="field"><span>Materia (notebook)</span><select class="input" id="eqNbS"><option value="">Nessuno</option>${nbs.map(n => `<option value="${n.id}" ${n.id === r.notebookId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Tag</span><input class="input" id="eqTags" value="${esc((r.tags || []).join(', '))}" placeholder="Es. orale, scritto"></label>
+        <label class="field"><span>Materia (notebook)</span><select class="input" id="eqNbS"><option value="">${r.subject ? esc(r.subject) : 'Nessuno'}</option>${nbs.map(n => `<option value="${n.id}" ${n.id === r.notebookId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Macro-categoria (parte del programma)</span><input class="input" id="eqCatI" value="${esc(r.cat || '')}" list="eqCatList" placeholder="Es. Tronco encefalico e nervi cranici"><datalist id="eqCatList">${catsAll.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
       </div>
-      <div class="field"><span class="lbl">Argomenti collegati</span><div class="tags" id="eqSecs"></div>
-        <select class="input" id="eqSecAdd" aria-label="Collega un argomento"></select></div>
-      <div class="field"><span class="lbl">Quando è uscita</span><div id="eqOcc"></div><button class="btn sm ghost" type="button" data-eqx="occ">+ È uscita un’altra volta</button></div>
+      <label class="field"><span>Tag</span><input class="input" id="eqTags" value="${esc((r.tags || []).join(', '))}" placeholder="Es. orale, scritto"></label>
+      <div class="field"><span class="lbl">Sezioni collegate</span><div class="tags" id="eqSecs"></div>
+        <select class="input" id="eqSecAdd" aria-label="Collega una sezione"></select></div>
+      <details class="eq-occ-box" ${isNew ? 'open' : ''}><summary>Quando è uscita (${occ.filter(o => o.date || o.year || o.src).length || 0})</summary><div id="eqOcc"></div><button class="btn sm ghost" type="button" data-eqx="occ">+ È uscita un’altra volta</button></details>
       ${!isNew && (r.stats?.ok || r.stats?.ko) ? `<p class="hint">Nell’allenamento: la sapevi ${r.stats.ok || 0} volte, non la sapevi ${r.stats.ko || 0}.</p>` : ''}
       <div class="modal-actions">
         ${isNew ? '' : '<button class="btn ghost danger" type="button" data-eqx="del">Elimina</button>'}
@@ -1357,18 +1478,23 @@ function eqSheet(x, preset = {}) {
       </div>`, { label: 'Domanda d’esame', onClose: v => resolve(!!v) });
     const drawSecs = () => {
       const nbId = $('#eqNbS', sh.el).value;
-      $('#eqSecs', sh.el).innerHTML = secIds.map(id => secById(id)).filter(Boolean).map(s => `<span class="tag">${esc(s.title)} <button type="button" class="tag-x" data-eqsec="${s.id}" aria-label="Scollega ${esc(s.title)}">×</button></span>`).join('') || '<span class="hint">Nessuno</span>';
-      $('#eqSecAdd', sh.el).innerHTML = `<option value="">${nbId ? '+ Collega un argomento' : 'Scegli prima la materia'}</option>${nbId ? secsOfNb(nbId).filter(s => !secIds.includes(s.id)).map(s => `<option value="${s.id}">${esc(s.title)}${groupPathText(s) ? ` · ${esc(groupPathText(s))}` : ''}</option>`).join('') : ''}`;
+      $('#eqSecs', sh.el).innerHTML = secIds.map(id => secById(id)).filter(Boolean).map(s => `<span class="tag">${esc(s.title)} <button type="button" class="tag-x" data-eqsec="${s.id}" aria-label="Scollega ${esc(s.title)}">×</button></span>`).join('') || '<span class="hint">Nessuna</span>';
+      $('#eqSecAdd', sh.el).innerHTML = `<option value="">${nbId ? '+ Collega una sezione' : 'Scegli prima la materia'}</option>${nbId ? secsOfNb(nbId).filter(s => !secIds.includes(s.id)).map(s => `<option value="${s.id}">${esc(s.title)}${groupPathText(s) ? ` · ${esc(groupPathText(s))}` : ''}</option>`).join('') : ''}`;
     };
     const drawOcc = () => {
       $('#eqOcc', sh.el).innerHTML = occ.map((o, i) => `<div class="eq-occ" data-oi="${i}">
+        <input class="input" data-of="date" value="${esc(eqDateIt(o.date || ''))}" placeholder="Data (GG/MM/AAAA)" aria-label="Data dell’appello">
+        <input class="input" data-of="src" value="${esc(o.src || '')}" placeholder="Studente o fonte" aria-label="Studente o fonte">
+        <input class="input" data-of="text" value="${esc(o.text || '')}" placeholder="Com’è stata chiesta" aria-label="Testo originale">
         <input class="input" data-of="prof" value="${esc(o.prof || '')}" placeholder="Docente" aria-label="Docente">
-        <input class="input" data-of="year" value="${esc(o.year || '')}" placeholder="Anno" inputmode="numeric" aria-label="Anno">
-        <input class="input" data-of="date" value="${esc(o.date || '')}" placeholder="Data o appello" aria-label="Data o appello">
-        <input class="input" data-of="src" value="${esc(o.src || '')}" placeholder="Fonte (es. un compagno)" aria-label="Fonte">
         <button class="btn sm ghost" type="button" data-odel="${i}" aria-label="Togli">✕</button></div>`).join('') || '<p class="hint">Aggiungi almeno una volta in cui è uscita.</p>';
     };
-    const readOcc = () => $$('.eq-occ', sh.el).forEach(row => { const o = occ[+row.dataset.oi]; $$('[data-of]', row).forEach(i => { o[i.dataset.of] = i.value.trim(); }); });
+    const readOcc = () => $$('.eq-occ', sh.el).forEach(row => {
+      const o = occ[+row.dataset.oi];
+      $$('[data-of]', row).forEach(i => { o[i.dataset.of] = i.value.trim(); });
+      o.date = eqDate(o.date);
+      if (/^\d{4}-/.test(o.date)) o.year = o.date.slice(0, 4);
+    });
     drawSecs(); drawOcc();
     $('#eqNbS', sh.el).addEventListener('change', drawSecs);
     $('#eqSecAdd', sh.el).addEventListener('change', e => { if (e.target.value) { secIds.push(e.target.value); drawSecs(); } });
@@ -1381,7 +1507,7 @@ function eqSheet(x, preset = {}) {
       if (!b) return;
       const k = b.dataset.eqx;
       if (k === 'no') sh.close(false);
-      if (k === 'occ') { readOcc(); occ.push({ prof: occ[occ.length - 1]?.prof || '', year: String(new Date().getFullYear()), date: '', src: '' }); drawOcc(); }
+      if (k === 'occ') { readOcc(); occ.push({ prof: occ[occ.length - 1]?.prof || '', year: String(new Date().getFullYear()), date: '', src: '', text: '' }); drawOcc(); }
       if (k === 'del') {
         if (!(await modal({ title: 'Eliminare la domanda?', text: 'Sparisce dalla banca su tutti i tuoi dispositivi.', confirm: 'Elimina', danger: true }))) return;
         await removeRecords([{ store: 'links', rec: r }]);
@@ -1391,7 +1517,8 @@ function eqSheet(x, preset = {}) {
         readOcc();
         const q = $('#eqQt', sh.el).value.trim();
         if (!q) { toast('Scrivi la domanda'); $('#eqQt', sh.el).focus(); return; }
-        Object.assign(r, { q, a: $('#eqAt', sh.el).value.trim(), notebookId: $('#eqNbS', sh.el).value, secIds, tags: parseTags($('#eqTags', sh.el).value), occ: occ.filter(o => o.prof || o.year || o.date || o.src).length ? occ.filter(o => o.prof || o.year || o.date || o.src) : [{}] });
+        const keep = occ.filter(o => o.prof || o.year || o.date || o.src || o.text);
+        Object.assign(r, { q, a: $('#eqAt', sh.el).value.trim(), notebookId: $('#eqNbS', sh.el).value || (r.subject ? '' : ''), cat: $('#eqCatI', sh.el).value.trim(), secIds, tags: parseTags($('#eqTags', sh.el).value), occ: keep.length ? keep : [{}] });
         await saveLink(r);
         toast(isNew ? 'Domanda aggiunta' : 'Domanda salvata');
         sh.close(true);
@@ -1401,7 +1528,27 @@ function eqSheet(x, preset = {}) {
   });
 }
 
-/* ---------- Importazione da Excel o CSV ---------- */
+/* ---------- Importazione da Excel o CSV (anche i file di Gemini) ---------- */
+// la riga dei titoli: quella (tra le prime) che somiglia di più ai titoli attesi
+function eqFindHeader(rows) {
+  let best = -1, score = 1;
+  rows.slice(0, 15).forEach((r, i) => {
+    const cells = r.map(c => String(c || '').trim()).filter(Boolean);
+    if (cells.length < 2) return;
+    const sc = EQ_FIELDS.filter(([, , res]) => cells.some(c => c.length < 60 && res.some(re => re.test(c)))).length;
+    if (sc > score) { score = sc; best = i; }
+  });
+  return best;
+}
+// “NEUROANATOMIA (PROF.SSA SERRA) — …” → materia e docente
+function eqTitleInfo(rows, headAt, fileName) {
+  const t = rows.slice(0, Math.max(0, headAt)).map(r => r.find(c => String(c || '').trim())).find(Boolean) || '';
+  const m = String(t).match(/^\s*([^(—–\-]+?)\s*\(([^)]*)\)/);
+  const nice = s => s.toLowerCase().replace(/(^|[\s'’])(\p{L})/gu, (a, b, c) => b + c.toUpperCase()).replace(/\bProf\.?ssa\b/i, 'Prof.ssa').replace(/\bProf\b\.?/i, 'Prof.');
+  if (m) return { subject: nice(m[1].trim()), prof: /prof|dott|doc/i.test(m[2]) ? nice(m[2].trim()) : '' };
+  const f = String(fileName || '').replace(/\.[a-z]+$/i, '').split(/[_\s-]+/).filter(x => !/^\d+$/.test(x));
+  return { subject: f[0] ? nice(f[0]) : '', prof: f[1] ? `Prof. ${nice(f[1])}` : '' };
+}
 async function eqImportFlow() {
   const file = await new Promise(res => {
     const inp = document.createElement('input');
@@ -1416,34 +1563,52 @@ async function eqImportFlow() {
   sheets = sheets.filter(s => s.rows.length);
   if (!sheets.length) { toast('Il foglio è vuoto'); return; }
   const nbs = state.notebooks.filter(n => !n.kind);
-  let si = 0;
+  // il foglio con le singole domande, se c’è (nei file di Gemini è il quarto)
+  let si = Math.max(0, sheets.findIndex(s => /database|singol/i.test(s.name)));
+  if (!/database|singol/i.test(sheets[si].name)) si = sheets.reduce((b, s, i) => (s.rows.length > sheets[b].rows.length ? i : b), 0);
+  const resolveNb = (subject, fallback) => {
+    if (!subject) return fallback;
+    const f = foldAccents(subject).trim();
+    return (nbs.find(n => foldAccents(n.name).trim() === f) || nbs.find(n => { const t = foldAccents(n.name); return t.length > 3 && (t.includes(f) || f.includes(t)); }))?.id || '';
+  };
   const sh = openSheet(`
     <h2>Importa le domande</h2>
-    <p class="sheet-sub">${esc(file.name)}: dimmi in quali colonne sono domanda, risposta e gli altri dati. Le domande già presenti (stesso testo e stessa materia) si sommano: aumenta il numero di volte che sono uscite.</p>
-    ${sheets.length > 1 ? `<label class="field"><span>Foglio</span><select class="input" id="imSheet">${sheets.map((s, i) => `<option value="${i}">${esc(s.name)} (${s.rows.length} righe)</option>`).join('')}</select></label>` : ''}
-    <label class="check"><input type="checkbox" id="imHead" checked><span>La prima riga contiene i titoli delle colonne</span></label>
-    <div class="eq-map" id="imMap"></div>
+    <p class="sheet-sub">${esc(file.name)}. Le domande con lo stesso argomento si sommano; reimportando un file aggiornato, quelle già contate (stessa data, studente e testo) non si contano di nuovo.</p>
+    ${sheets.length > 1 ? `<label class="field"><span>Foglio</span><select class="input" id="imSheet">${sheets.map((s, i) => `<option value="${i}" ${i === si ? 'selected' : ''}>${esc(s.name)} (${s.rows.length} righe)</option>`).join('')}</select></label>` : ''}
+    <p class="hint" id="imHeadInfo"></p>
     <div class="grid2">
-      <label class="field"><span>Materia per le righe senza</span><select class="input" id="imNb"><option value="">Nessuna</option>${nbs.map(n => `<option value="${n.id}">${esc(n.name)}</option>`).join('')}</select></label>
-      <label class="check eq-auto"><input type="checkbox" id="imAuto" checked><span>Collega gli argomenti cercando i titoli delle sezioni nel testo della domanda</span></label>
+      <label class="field"><span>Materia</span><select class="input" id="imNb"></select></label>
+      <label class="field"><span>Docente</span><input class="input" id="imProf" placeholder="Es. Prof.ssa Serra"></label>
     </div>
+    <label class="field" id="imNewNbBox" hidden><span>Nome della materia (se non è un notebook)</span><input class="input" id="imSubj"></label>
+    <details class="eq-mapbox"><summary>Colonne</summary><div class="eq-map" id="imMap"></div></details>
+    <label class="check eq-auto"><input type="checkbox" id="imAuto" checked><span>Collega le sezioni del notebook cercando i loro titoli negli argomenti</span></label>
     <div id="imPrev" class="eq-prev"></div>
     <div class="modal-actions">
       <button class="btn ghost" type="button" data-im="no">Annulla</button>
       <button class="btn primary" type="button" data-im="ok">Importa</button>
     </div>`, { label: 'Importa le domande' });
+  let headAt = 0;
   const cols = () => {
     const s = sheets[si];
-    const head = $('#imHead', sh.el).checked;
     const w = Math.max(...s.rows.map(r => r.length));
-    return Array.from({ length: w }, (_, i) => (head ? String(s.rows[0][i] || '').trim() : '') || `Colonna ${String.fromCharCode(65 + (i % 26))}`);
+    return Array.from({ length: w }, (_, i) => (headAt >= 0 ? String(s.rows[headAt]?.[i] || '').trim() : '') || `Colonna ${String.fromCharCode(65 + (i % 26))}`);
   };
-  const drawMap = () => {
+  const setup = () => {
+    const s = sheets[si];
+    headAt = eqFindHeader(s.rows);
+    const info = eqTitleInfo(s.rows, headAt, file.name);
+    $('#imHeadInfo', sh.el).textContent = headAt >= 0 ? `Ho trovato i titoli delle colonne${info.subject ? `; dal titolo: ${info.subject}${info.prof ? `, ${info.prof}` : ''}` : ''}.` : 'Non trovo la riga dei titoli: scegli le colonne qui sotto.';
+    const nbGuess = resolveNb(info.subject, '');
+    $('#imNb', sh.el).innerHTML = `<option value="">${info.subject ? `Non è un notebook: “${esc(info.subject)}”` : 'Nessuna'}</option>${nbs.map(n => `<option value="${n.id}" ${n.id === nbGuess ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}`;
+    $('#imSubj', sh.el).value = info.subject;
+    $('#imNewNbBox', sh.el).hidden = !!nbGuess;
+    if (!$('#imProf', sh.el).value) $('#imProf', sh.el).value = info.prof;
     const names = cols();
-    const head = $('#imHead', sh.el).checked;
     const used = new Set();
-    $('#imMap', sh.el).innerHTML = EQ_FIELDS.map(([k, label, re]) => {
-      let pick = head ? names.findIndex((n, i) => re.test(n) && !used.has(i)) : -1;
+    $('#imMap', sh.el).innerHTML = EQ_FIELDS.map(([k, label, res]) => {
+      let pick = -1;
+      if (headAt >= 0) for (const re of res) { pick = names.findIndex((n, i) => n.length < 80 && re.test(n) && !used.has(i)); if (pick >= 0) break; }
       if (k === 'q' && pick < 0) pick = 0;
       if (pick >= 0) used.add(pick);
       return `<label class="field"><span>${label}${k === 'q' ? '' : ' <span class="muted-inline">facoltativa</span>'}</span><select class="input" data-map="${k}"><option value="-1">—</option>${names.map((n, i) => `<option value="${i}" ${i === pick ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>`;
@@ -1454,20 +1619,21 @@ async function eqImportFlow() {
   const rowsOut = () => {
     const s = sheets[si];
     const m = mapping();
-    const body = $('#imHead', sh.el).checked ? s.rows.slice(1) : s.rows;
+    const body = s.rows.slice(headAt + 1);
     const get = (r, k) => (m[k] >= 0 ? String(r[m[k]] ?? '').trim() : '');
-    return body.map(r => ({ q: get(r, 'q'), a: get(r, 'a'), subject: get(r, 'subject'), topic: get(r, 'topic'), prof: get(r, 'prof'), year: get(r, 'year').replace(/\.0+$/, ''), date: xlDate(get(r, 'date')), src: get(r, 'src'), tags: parseTags(get(r, 'tags')) })).filter(x => x.q);
+    return body.map(r => {
+      const date = eqDate(get(r, 'date'));
+      const orig = get(r, 'orig');
+      return { q: get(r, 'q') || orig, orig, cat: get(r, 'cat'), a: get(r, 'a'), subject: get(r, 'subject'), topic: get(r, 'topic'), prof: get(r, 'prof'), year: (get(r, 'year').replace(/\.0+$/, '') || (/^\d{4}-/.test(date) ? date.slice(0, 4) : '')), date, src: get(r, 'src'), tags: parseTags(get(r, 'tags')) };
+    }).filter(x => x.q && !/^(rank|totale|data appello)$/i.test(x.q));
   };
-  const resolveNb = (subject, fallback) => {
-    if (!subject) return fallback;
-    const f = foldAccents(subject).trim();
-    return (nbs.find(n => foldAccents(n.name).trim() === f) || nbs.find(n => { const t = foldAccents(n.name); return t.length > 3 && (t.includes(f) || f.includes(t)); }))?.id || '';
-  };
+  const nbOf = r => resolveNb(r.subject, $('#imNb', sh.el).value);
+  const subjOf = r => (nbOf(r) ? '' : r.subject || $('#imSubj', sh.el).value.trim());
   const linkSecs = (row, nbId) => {
     const out = new Set();
     if (row.topic) row.topic.split(/[;|]/).map(t => t.trim()).filter(Boolean).forEach(t => { const s = guessSection(t, nbId || null); if (s) out.add(s.id); });
     if ($('#imAuto', sh.el).checked && nbId) {
-      const fq = ` ${foldAccents(row.q).replace(/[^a-z0-9]+/g, ' ')} `;
+      const fq = ` ${foldAccents(`${row.q} ${row.orig}`).replace(/[^a-z0-9]+/g, ' ')} `;
       state.sections.filter(s => s.notebookId === nbId).forEach(s => {
         const t = foldAccents(s.title).replace(/[^a-z0-9]+/g, ' ').trim();
         if (t.length > 4 && fq.includes(` ${t} `) && out.size < 3) out.add(s.id);
@@ -1475,56 +1641,232 @@ async function eqImportFlow() {
     }
     return [...out];
   };
+  const keyOf = r => { const nb = nbOf(r); return eqKey(r.q, nb || `subj:${foldAccents(subjOf(r))}`); };
+  const bankKey = x => eqKey(x.q, x.notebookId || `subj:${foldAccents(x.subject || '')}`);
   const drawPrev = () => {
     const rows = rowsOut();
-    const fb = $('#imNb', sh.el).value;
-    const have = new Set(examQs().map(x => eqKey(x.q, x.notebookId)));
-    const keys = rows.map(r => eqKey(r.q, resolveNb(r.subject, fb)));
-    const dupOld = keys.filter(k => have.has(k)).length;
+    const have = new Set(examQs().map(bankKey));
+    const keys = rows.map(keyOf);
     const uniq = new Set(keys).size;
-    const linked = rows.slice(0, 200).filter(r => linkSecs(r, resolveNb(r.subject, fb)).length).length;
+    const cats = new Set(rows.map(r => r.cat).filter(Boolean));
+    const exams = new Set(rows.filter(r => r.date && r.src).map(r => `${r.date}|${r.src}`)).size;
     $('#imPrev', sh.el).innerHTML = rows.length ? `
-      <p class="hint"><strong>${rows.length}</strong> righe con una domanda: ${uniq} domande diverse${dupOld ? `, di cui ${new Set(keys.filter(k => have.has(k))).size} già nella banca (si sommano)` : ''}${uniq < rows.length ? `; ${rows.length - uniq} righe ripetono una domanda e ne aumentano la frequenza` : ''}. ${linked ? `Argomento trovato per ${linked}${rows.length > 200 ? ' delle prime 200' : ''}.` : ''}</p>
-      <div class="table-wrap"><table class="eq-ptable"><thead><tr><th>Domanda</th><th>Materia</th><th>Docente</th><th>Anno</th></tr></thead><tbody>
-        ${rows.slice(0, 6).map(r => `<tr><td>${esc(r.q.slice(0, 120))}</td><td>${esc(nbById(resolveNb(r.subject, fb))?.name || r.subject || '—')}</td><td>${esc(r.prof || '—')}</td><td>${esc(r.year || (r.date || '').slice(0, 4) || '—')}</td></tr>`).join('')}
-      </tbody></table></div>` : '<p class="hint">Nessuna riga con la domanda: controlla la colonna scelta.</p>';
+      <p class="hint"><strong>${rows.length}</strong> domande raccontate su <strong>${uniq}</strong> argomenti${cats.size ? `, in ${cats.size} macro-categorie` : ''}${exams ? `, da ${exams} esami (studente e giorno)` : ''}${keys.some(k => have.has(k)) ? `; ${new Set(keys.filter(k => have.has(k))).size} argomenti sono già nella banca e si aggiornano` : ''}.</p>
+      <div class="table-wrap"><table class="eq-ptable"><thead><tr><th>Argomento</th><th>Come è stata chiesta</th><th>Categoria</th><th>Data</th></tr></thead><tbody>
+        ${rows.slice(0, 6).map(r => `<tr><td>${esc(r.q.slice(0, 90))}</td><td>${esc((r.orig || '—').slice(0, 60))}</td><td>${esc(r.cat || '—')}</td><td>${esc(eqDateIt(r.date) || r.year || '—')}</td></tr>`).join('')}
+      </tbody></table></div>` : '<p class="hint">Nessuna riga con la domanda: controlla le colonne.</p>';
   };
-  drawMap();
+  setup();
   sh.el.addEventListener('change', e => {
-    if (e.target.id === 'imSheet') { si = +e.target.value; drawMap(); }
-    else if (e.target.id === 'imHead') drawMap();
-    else drawPrev();
+    if (e.target.id === 'imSheet') { si = +e.target.value; setup(); return; }
+    if (e.target.id === 'imNb') $('#imNewNbBox', sh.el).hidden = !!e.target.value;
+    drawPrev();
   });
+  $('#imSubj', sh.el).addEventListener('input', drawPrev);
   $('[data-im="no"]', sh.el).onclick = () => sh.close();
   $('[data-im="ok"]', sh.el).onclick = async () => {
     const rows = rowsOut();
     if (!rows.length) { toast('Nessuna domanda da importare'); return; }
-    const fb = $('#imNb', sh.el).value;
-    const byKey = new Map(examQs().map(x => [eqKey(x.q, x.notebookId), x]));
+    const profDef = $('#imProf', sh.el).value.trim();
+    const byKey = new Map(examQs().map(x => [bankKey(x), x]));
     const touched = new Set();
-    let added = 0, merged = 0;
+    let added = 0, merged = 0, newOcc = 0, skipped = 0;
+    const oKey = o => `${o.date || ''}|${foldAccents(o.src || '')}|${foldAccents(o.text || '')}`;
     for (const r of rows) {
-      const nbId = resolveNb(r.subject, fb);
-      const key = eqKey(r.q, nbId);
+      const nbId = nbOf(r);
+      const subject = subjOf(r);
+      const key = keyOf(r);
       let x = byKey.get(key);
-      const o = { prof: r.prof, year: r.year || (r.date || '').slice(0, 4), date: r.date, src: r.src };
       if (!x) {
-        x = { id: uid(), kind: 'examq', notebookId: nbId, subject: nbId ? '' : r.subject, q: r.q, a: r.a, secIds: [], occ: [], tags: [], created: Date.now() + added };
+        x = { id: uid(), kind: 'examq', notebookId: nbId, subject: nbId ? '' : subject, q: r.q, a: r.a, cat: r.cat, secIds: [], occ: [], tags: [], created: Date.now() + added };
         byKey.set(key, x);
         added++;
       } else if (!touched.has(x.id)) merged++;
       if (!x.a && r.a) x.a = r.a;
-      x.occ = [...(x.occ || []).filter(v => v.prof || v.year || v.date || v.src), o];
+      if (r.cat) x.cat = r.cat;
+      const o = { prof: r.prof || profDef, year: r.year, date: r.date, src: r.src, text: r.orig && foldAccents(r.orig) !== foldAccents(r.q) ? r.orig : (r.orig || '') };
+      const old = (x.occ || []).filter(v => v.prof || v.year || v.date || v.src || v.text);
+      // la stessa domanda dello stesso studente nello stesso giorno: già contata
+      if ((o.date || o.src) && old.some(v => oKey(v) === oKey(o))) skipped++;
+      else { x.occ = [...old, o]; newOcc++; }
       x.secIds = [...new Set([...(x.secIds || []), ...linkSecs(r, nbId)])];
       x.tags = [...new Set([...(x.tags || []), ...r.tags])];
       touched.add(x.id);
     }
-    for (const id of touched) await saveLink([...byKey.values()].find(x => x.id === id));
+    const recs = [...byKey.values()].filter(x => touched.has(x.id));
+    for (const x of recs) await saveLink(x);
     sh.close();
-    toast(`${added} domande nuove${merged ? `, ${merged} già presenti aggiornate` : ''}`);
+    toast(`${added} argomenti nuovi${merged ? `, ${merged} aggiornati` : ''}; ${newOcc} domande aggiunte${skipped ? `, ${skipped} già presenti` : ''}`);
+    const first = recs[0];
+    if (first) { eqState.nb = eqSubjKey(first); eqState.cat = ''; }
     go('#/examq');
     route();
+    // la prima volta, propongo la struttura dell’esame
+    const askedKey = 'nb-eq-struct-asked';
+    let asked = [];
+    try { asked = JSON.parse(localStorage.getItem(askedKey) || '[]'); } catch { asked = []; }
+    // la proposta compare una volta sola per materia
+    if (first && !eqStructOf(eqSubjKey(first)) && !asked.includes(eqSubjKey(first)) && (() => { try { localStorage.setItem(askedKey, JSON.stringify([...asked, eqSubjKey(first)].slice(-50))); } catch { /* niente */ } return true; })()) setTimeout(async () => { if (await modal({ title: 'Struttura dell’esame', text: `Vuoi dire all’app com’è fatto l’esame di ${eqSubjLabel(eqSubjKey(first))} (quante domande, da quali parti del programma)? Serve per la simulazione.`, confirm: 'Sì, adesso' })) { if (await eqStructSheet(eqSubjKey(first))) route(); } }, 400);
   };
+}
+
+/* ---------- Struttura dell’esame ----------
+   Record { kind: 'examstruct', subjKey, prof, parts: [{ id, name, n }], map: { categoria: idParte | 'any' | 'off' },
+   weight: 'freq' | 'equal', recent: true, notes } */
+function eqStructSheet(key) {
+  return new Promise(resolve => {
+    const qs = eqOfSubj(key);
+    const cats = [...new Set(qs.map(eqCat))].map(c => ({ c, n: qs.filter(x => eqCat(x) === c).reduce((a, x) => a + eqFreq(x), 0) })).sort((a, b) => b.n - a.n);
+    const typ = eqTypicalCount(key);
+    const old = eqStructOf(key);
+    const st = old ? JSON.parse(JSON.stringify(old)) : {
+      id: uid(), kind: 'examstruct', notebookId: '_examstruct', subjKey: key,
+      prof: (qs.flatMap(x => (x.occ || []).map(o => o.prof)).find(Boolean)) || '',
+      parts: Array.from({ length: typ.n }, (_, i) => ({ id: uid(), name: `Parte ${i + 1}`, n: 1 })),
+      map: {}, weight: 'freq', recent: true, notes: '', created: Date.now()
+    };
+    const sh = openSheet(`
+      <h2>Struttura dell’esame</h2>
+      <p class="sheet-sub">${esc(eqSubjLabel(key))}. ${typ.exams ? `Negli esami raccolti, di solito <strong>${typ.n} domande</strong> per studente (${typ.exams} esami).` : 'Dimmi com’è fatto l’esame: la simulazione farà lo stesso.'}</p>
+      <label class="field"><span>Docente</span><input class="input" id="esProf" value="${esc(st.prof || '')}"></label>
+      <div class="field"><span class="lbl">Parti dell’esame</span><div id="esParts"></div><button class="btn sm ghost" type="button" data-es="addpart">+ Aggiungi una parte</button></div>
+      <div class="field"><span class="lbl">Da quale parte esce ogni macro-categoria</span>
+        <p class="hint">Per esempio, se chiede una domanda sul tronco, una sulle vie e una sul telencefalo, metti le categorie nella parte giusta. “Qualsiasi parte”: può uscire in tutte; “Esclusa”: non la chiede.</p>
+        <div class="es-map" id="esMap"></div></div>
+      <div class="field"><span class="lbl">Scelta delle domande</span>
+        <label class="check"><input type="radio" name="esW" value="freq" ${st.weight !== 'equal' ? 'checked' : ''}><span>Più probabili quelle uscite più spesso</span></label>
+        <label class="check"><input type="radio" name="esW" value="equal" ${st.weight === 'equal' ? 'checked' : ''}><span>Tutte con la stessa probabilità</span></label>
+        <label class="check"><input type="checkbox" id="esRecent" ${st.recent !== false ? 'checked' : ''}><span>Contano di più gli appelli dell’ultimo anno</span></label>
+      </div>
+      <label class="field"><span>Note sull’esame</span><textarea class="input" id="esNotes" rows="3" placeholder="Es. chiede sempre le vie annesse; vuole il disegno">${esc(st.notes || '')}</textarea></label>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-es="no">Annulla</button><button class="btn primary" type="button" data-es="ok">Salva</button></div>`, { label: 'Struttura dell’esame', onClose: v => resolve(!!v) });
+    const readParts = () => $$('.es-part', sh.el).forEach(row => { const p = st.parts.find(x => x.id === row.dataset.pid); if (!p) return; p.name = $('[data-pn]', row).value.trim() || p.name; p.n = Math.max(1, +$('[data-pc]', row).value || 1); });
+    const readMap = () => $$('[data-mc]', sh.el).forEach(s => { st.map[s.dataset.mc] = s.value; });
+    const draw = () => {
+      $('#esParts', sh.el).innerHTML = st.parts.map((p, i) => `<div class="es-part inline" data-pid="${p.id}">
+        <input class="input" data-pn value="${esc(p.name)}" aria-label="Nome della parte ${i + 1}">
+        <label class="es-n"><select class="input" data-pc aria-label="Domande">${[1, 2, 3, 4, 5].map(n => `<option ${p.n === n ? 'selected' : ''}>${n}</option>`).join('')}</select><span>${p.n === 1 ? 'domanda' : 'domande'}</span></label>
+        ${st.parts.length > 1 ? `<button class="btn sm ghost" type="button" data-es-del="${p.id}" aria-label="Togli la parte">✕</button>` : ''}</div>`).join('');
+      $('#esMap', sh.el).innerHTML = cats.map(({ c, n }) => {
+        const v = st.map[c] || 'any';
+        return `<label class="es-row"><span>${esc(c)} <small>${n}</small></span><select class="input" data-mc="${esc(c)}">${st.parts.map(p => `<option value="${p.id}" ${v === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="any" ${v === 'any' ? 'selected' : ''}>Qualsiasi parte</option><option value="off" ${v === 'off' ? 'selected' : ''}>Esclusa</option></select></label>`;
+      }).join('') || '<p class="hint">Le domande non hanno macro-categorie: importa un file con la colonna Macro-Categoria, o scrivila nelle domande.</p>';
+    };
+    draw();
+    // il nome di una parte si aggiorna mentre scrivi, senza ridisegnare (il campo resta sotto il dito)
+    sh.el.addEventListener('input', e => {
+      const row = e.target.closest('.es-part');
+      if (!row || !e.target.matches('[data-pn]')) return;
+      const p = st.parts.find(x => x.id === row.dataset.pid);
+      if (!p) return;
+      p.name = e.target.value.trim() || p.name;
+      $$(`option[value="${p.id}"]`, sh.el).forEach(o => { o.textContent = p.name; });
+    });
+    sh.el.addEventListener('change', e => { if (e.target.matches('[data-pc]')) { readParts(); readMap(); draw(); } });
+    sh.el.addEventListener('click', async e => {
+      const d = e.target.closest('[data-es-del]');
+      if (d) { readParts(); readMap(); st.parts = st.parts.filter(p => p.id !== d.dataset.esDel); Object.keys(st.map).forEach(k => { if (st.map[k] === d.dataset.esDel) st.map[k] = 'any'; }); draw(); return; }
+      const b = e.target.closest('[data-es]');
+      if (!b) return;
+      if (b.dataset.es === 'addpart') { readParts(); readMap(); st.parts.push({ id: uid(), name: `Parte ${st.parts.length + 1}`, n: 1 }); draw(); return; }
+      if (b.dataset.es === 'no') { sh.close(false); return; }
+      if (b.dataset.es === 'ok') {
+        readParts(); readMap();
+        st.prof = $('#esProf', sh.el).value.trim();
+        st.weight = $('input[name="esW"]:checked', sh.el).value;
+        st.recent = $('#esRecent', sh.el).checked;
+        st.notes = $('#esNotes', sh.el).value.trim();
+        st.updated = Date.now();
+        await saveLink(st);
+        toast('Struttura dell’esame salvata: la simulazione la segue');
+        sh.close(true);
+      }
+    });
+  });
+}
+// estrae le domande di una simulazione seguendo la struttura
+function eqDrawExam(key) {
+  const qs = eqOfSubj(key);
+  const st = eqStructOf(key) || { parts: [{ id: 'all', name: 'Domande', n: eqTypicalCount(key).n }], map: {}, weight: 'freq', recent: true };
+  const lastYear = Math.max(0, ...qs.flatMap(x => (x.occ || []).map(o => +eqYear(o) || 0)));
+  const w = x => {
+    if (st.weight === 'equal') return 1;
+    return (x.occ || []).reduce((a, o) => a + (st.recent !== false && lastYear && +eqYear(o) === lastYear ? 2 : 1), 0) || 1;
+  };
+  const picked = new Set();
+  const out = [];
+  st.parts.forEach(p => {
+    const own = qs.filter(x => st.map[eqCat(x)] === p.id);
+    const anyCat = qs.filter(x => !st.map[eqCat(x)] || st.map[eqCat(x)] === 'any');
+    // una parte senza categorie sue pesca tra quelle “qualsiasi”
+    let pool = (own.length ? own : anyCat).filter(x => !picked.has(x.id));
+    if (!pool.length) pool = anyCat.filter(x => !picked.has(x.id));
+    for (let k = 0; k < p.n && pool.length; k++) {
+      const tot = pool.reduce((a, x) => a + w(x), 0);
+      let r = Math.random() * tot;
+      const x = pool.find(y => (r -= w(y)) <= 0) || pool[pool.length - 1];
+      picked.add(x.id);
+      out.push({ x, part: p.name });
+      pool = pool.filter(y => y !== x);
+    }
+  });
+  return { st, items: out };
+}
+function viewExamSim(key, real) {
+  if (!key || !eqOfSubj(key).length) { setView('<div class="empty"><p>Nessuna domanda per questa materia.</p><a class="btn primary" href="#/examq">Domande d’esame</a></div>'); return; }
+  let exam;
+  const make = () => {
+    if (real) {
+      const all = eqRealExams(key).filter(e => e.items.length > 1);
+      if (!all.length) return null;
+      const e = all[Math.floor(Math.random() * all.length)];
+      return { title: `Appello del ${eqDateIt(e.date)}, raccontato da ${e.src}`, items: e.items.map(i => ({ x: i.x, part: eqCat(i.x), asked: i.text })) };
+    }
+    const d = eqDrawExam(key);
+    return { title: d.st.prof ? `Come ${d.st.prof}` : '', notes: d.st.notes, items: d.items, noStruct: !eqStructOf(key) };
+  };
+  exam = make();
+  if (!exam || !exam.items.length) {
+    setView(`<div class="back-row"><a class="back" href="#/examq">Domande d’esame</a></div><div class="empty"><p>${real ? 'Negli appelli raccolti mancano data e studente: servono per ricostruire un esame vero.' : 'Non riesco a comporre un esame con la struttura scelta.'}</p><a class="btn primary" href="#/examq">Torna</a></div>`);
+    return;
+  }
+  const res = {};
+  const render = () => {
+    const done = exam.items.filter((_, i) => res[i]).length;
+    setView(`
+      <div class="back-row"><a class="back" href="#/examq">Domande d’esame</a></div>
+      <header class="page-head"><div><h1>${real ? 'Un appello vero' : 'Simulazione d’esame'}</h1><p class="lede">${esc(eqSubjLabel(key))}${exam.title ? ` · ${esc(exam.title)}` : ''}</p></div></header>
+      ${exam.noStruct ? '<p class="hint warn-hint">Non hai ancora impostato la struttura dell’esame: ho scelto le domande da tutto il programma. Impostala da Domande d’esame → Struttura dell’esame.</p>' : ''}
+      ${exam.notes ? `<p class="hint">Note: ${esc(exam.notes)}</p>` : ''}
+      <ol class="es-exam">${exam.items.map((it, i) => {
+        const vars = eqVariants(it.x);
+        const secs = (it.x.secIds || []).map(secById).filter(Boolean);
+        return `<li class="es-q ${res[i] ? `r-${res[i]}` : ''}">
+          <p class="es-part-l">${esc(it.part || '')}</p>
+          <p class="lab-q-t">${esc(it.asked && real ? it.asked : it.x.q)}</p>
+          ${real && it.asked && foldAccents(it.asked) !== foldAccents(it.x.q) ? `<p class="hint">Argomento: ${esc(it.x.q)}</p>` : ''}
+          <details class="es-more" data-i="${i}"><summary>Traccia e dettagli</summary>
+            <p class="hint">${esc(eqMeta(it.x))}</p>
+            ${vars.length ? `<p class="hint">Chiesta anche come: ${esc(vars.slice(0, 8).join(' • '))}</p>` : ''}
+            ${it.x.a ? `<div class="notes">${renderMd(it.x.a)}</div>` : ''}
+            ${secs.length ? `<p class="hint">Da ripassare: ${secs.map(s => `<a href="#/sec/${s.id}/read">${esc(s.title)}</a>`).join(', ')}</p>` : ''}
+          </details>
+          <div class="inline es-grade">${res[i] ? `<span class="pill ${res[i] === 'ok' ? 'soft' : 'due'}">${res[i] === 'ok' ? 'La sapevo' : 'Non la sapevo'}</span>` : `<button class="btn sm" type="button" data-esg="ko:${i}">Non la sapevo</button><button class="btn sm primary" type="button" data-esg="ok:${i}">La sapevo</button>`}</div>
+        </li>`;
+      }).join('')}</ol>
+      ${done === exam.items.length ? `<p class="lab-q-t">Risultato: ne sapevi ${exam.items.filter((_, i) => res[i] === 'ok').length} su ${exam.items.length}.</p>` : ''}
+      <div class="inline"><button class="btn primary" type="button" data-act="es-again">${real ? 'Un altro appello' : 'Nuova simulazione'}</button><a class="btn ghost" href="#/examq/${real ? 'sim' : 'real'}/${encodeURIComponent(key)}">${real ? 'Simulazione con la struttura' : 'Un appello vero'}</a></div>`);
+    on('[data-act="es-again"]', 'click', () => { exam = make(); Object.keys(res).forEach(k => delete res[k]); render(); });
+    on('[data-esg]', 'click', async e => {
+      const [v, i] = e.currentTarget.dataset.esg.split(':');
+      res[i] = v;
+      const x = exam.items[+i].x;
+      x.stats = { ok: (x.stats?.ok || 0) + (v === 'ok' ? 1 : 0), ko: (x.stats?.ko || 0) + (v === 'ko' ? 1 : 0), last: todayStr() };
+      await saveLink(x);
+      render();
+    });
+  };
+  render();
 }
 
 /* ---------- Allenamento ---------- */
@@ -1544,11 +1886,13 @@ function viewExamQuiz() {
     }
     const x = list[i];
     const secs = (x.secIds || []).map(secById).filter(Boolean);
+    const vars = eqVariants(x);
     $('#eqz').innerHTML = `
       <div class="lab-q">
-        <p class="hint">${i + 1} di ${list.length} · ${esc(eqSubject(x))} · ${esc(eqMeta(x))}</p>
+        <p class="hint">${i + 1} di ${list.length} · ${esc(eqSubject(x))}${eqCat(x) !== 'Senza categoria' ? ` · ${esc(eqCat(x))}` : ''} · ${esc(eqMeta(x))}</p>
         <p class="lab-q-t">${esc(x.q)}</p>
-        ${shown ? `<div class="lab-q-a notes">${x.a ? renderMd(x.a) : '<p class="hint">Nessuna traccia di risposta: aggiungila dalla scheda della domanda, oppure apri l’argomento.</p>'}</div>
+        ${shown ? `${vars.length ? `<p class="hint">Chiesta anche come: ${esc(vars.slice(0, 8).join(' • '))}</p>` : ''}
+          <div class="lab-q-a notes">${x.a ? renderMd(x.a) : '<p class="hint">Nessuna traccia di risposta: aggiungila dalla scheda della domanda, oppure apri l’argomento.</p>'}</div>
           ${secs.length ? `<p class="hint">Argomento: ${secs.map(s => `<a href="#/sec/${s.id}/read">${esc(s.title)}</a>`).join(', ')}</p>` : ''}
           <div class="inline"><button class="btn" type="button" data-qz="no">Non la sapevo</button><button class="btn primary" type="button" data-qz="yes">La sapevo</button></div>`
         : '<button class="btn primary" type="button" data-qz="show">Mostra la traccia</button>'}
@@ -3465,6 +3809,7 @@ function viewPaper(id) {
       <a class="btn ghost" href="https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(p.doi || p.title)}" target="_blank" rel="noopener">PubMed</a>
       <button class="btn ghost" type="button" data-act="pp-cite">Copia la citazione</button>
       <button class="btn ghost" type="button" data-act="pp-edit">Modifica</button>
+      ${pdf ? '<button class="btn ghost" type="button" data-act="pp-ai">✨ Sintesi con l’AI</button>' : ''}
     </div>
     <div class="pp-status inline">
       <div class="seg" role="radiogroup" aria-label="Stato">${PAPER_STATUS.map(([k, l]) => `<button type="button" role="radio" data-ppset="${k}" aria-checked="${(p.status || 'todo') === k}">${l}</button>`).join('')}</div>
@@ -3486,6 +3831,7 @@ function viewPaper(id) {
     </div>`);
   on('[data-act="pp-edit"]', 'click', async () => { if (await paperSheet(p)) route(); });
   on('[data-act="pp-split"]', 'click', () => Split.show({ kind: 'pdf', id: pdf.id, page: pdf.lastPage || 1 }));
+  on('[data-act="pp-ai"]', 'click', async () => { if (await paperAiSummary(p)) route(); });
   on('[data-act="pp-cite"]', 'click', async () => { try { await navigator.clipboard.writeText(citation(p)); toast('Citazione copiata'); } catch { toast('Non riesco a copiare: selezionala qui sotto', 'err'); } });
   on('[data-act="pp-star"]', 'click', async () => { p.star = !p.star; await saveLink(p); route(); });
   on('[data-ppset]', 'click', async e => { p.status = e.currentTarget.dataset.ppset; if (p.status === 'read' && !p.readOn) p.readOn = todayStr(); await saveLink(p); route(); });
@@ -3510,5 +3856,103 @@ function viewPaper(id) {
     const f = foldAccents(e.target.value.trim());
     const hits = f ? clinicalNotes().filter(n => !(n.papers || []).includes(p.id) && foldAccents(n.title).includes(f)).slice(0, 8) : [];
     $('#ppCnRes').innerHTML = hits.map(n => `<li><button type="button" class="row" data-pplink="${n.id}"><span class="row-main"><span class="row-title">${esc(n.title)}</span></span></button></li>`).join('') || (f ? '<li class="hint">Nessuna nota clinica con questo nome.</li>' : '');
+  });
+}
+
+/* ---------- v3.72: dal PDF a una nota clinica che c’è già ---------- */
+const CN_FIELDS = [['body', 'Note'], ['dxCriteria', 'Diagnosi: criteri'], ['dxFirst', 'Esami di primo livello'], ['dxSecond', 'Esami di secondo livello'], ['therapy', 'Terapia'], ['complications', 'Complicanze'], ['prognosis', 'Prognosi'], ['staging', 'Stadiazione o classificazione'], ['risk', 'Fattori di rischio'], ['ddxText', 'Diagnosi differenziale']];
+function addToClinicNoteSheet(text, { source = '', paperId = '' } = {}) {
+  return new Promise(resolve => {
+    const all = clinicalNotes().slice().sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0));
+    if (!all.length) { toast('Non hai ancora note cliniche: creane una con “Nuova nota clinica”'); resolve(false); return; }
+    let picked = null;
+    const sh = openSheet(`
+      <h2>Aggiungi a una nota clinica</h2>
+      <blockquote class="pdf-quote">${esc(text.slice(0, 500))}${text.length > 500 ? '…' : ''}</blockquote>
+      <input type="search" class="input" id="acQ" placeholder="Cerca la nota: scrivi il nome della malattia" autocomplete="off">
+      <ul class="list pick-list sp-link-res" id="acList"></ul>
+      <label class="field"><span>Dove</span><select class="input" id="acField">${CN_FIELDS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+      ${source ? `<label class="check"><input type="checkbox" id="acSrc" checked><span>Aggiungi la fonte: ${esc(source.slice(0, 120))}</span></label>` : ''}
+      <div class="modal-actions"><button class="btn ghost" type="button" data-ac="no">Annulla</button><button class="btn primary" type="button" data-ac="ok">Aggiungi</button></div>`, { label: 'Aggiungi a una nota clinica', onClose: v => resolve(v || false) });
+    const draw = () => {
+      const f = foldAccents($('#acQ', sh.el).value.trim());
+      const list = all.filter(n => !f || foldAccents(`${n.title} ${(n.symptoms || []).join(' ')}`).includes(f)).slice(0, f ? 30 : 8);
+      $('#acList', sh.el).innerHTML = list.map(n => `<li><button type="button" class="row ${picked === n ? 'on' : ''}" data-acn="${n.id}"><span class="row-main"><span class="row-title">${esc(n.title)}</span>${n.specialty ? `<span class="row-sub">${esc(n.specialty)}</span>` : ''}</span></button></li>`).join('') || '<li class="hint">Nessuna nota con questo nome.</li>';
+    };
+    draw();
+    $('#acQ', sh.el).addEventListener('input', draw);
+    sh.el.addEventListener('click', e => { const b = e.target.closest('[data-acn]'); if (b) { picked = all.find(n => n.id === b.dataset.acn); draw(); } });
+    $('[data-ac="no"]', sh.el).onclick = () => sh.close(false);
+    $('[data-ac="ok"]', sh.el).onclick = async () => {
+      if (!picked) { toast('Tocca la nota a cui aggiungerlo'); return; }
+      const k = $('#acField', sh.el).value;
+      // come voce di elenco, così le aggiunte successive restano in ordine
+      const add = /^\s*-\s/.test(text) ? text.trim() : `- ${text.replace(/\s*\n\s*/g, ' ').trim()}`;
+      picked[k] = `${String(picked[k] || '').trimEnd()}${picked[k] ? '\n' : ''}${add}`;
+      if (source && $('#acSrc', sh.el)?.checked) picked.sources = [...new Set([...sourcesOf(picked), source])];
+      if (paperId) picked.papers = [...new Set([...(picked.papers || []), paperId])];
+      picked.updated = Date.now();
+      await saveLink(picked);
+      const n = picked;
+      toast(`Aggiunto a “${n.title}” › ${CN_FIELDS.find(f => f[0] === k)[1]}`, '', { label: 'Apri', fn: () => showClinicNote(n.id) });
+      sh.close(true);
+    };
+    setTimeout(() => $('#acQ', sh.el)?.focus(), 40);
+  });
+}
+
+/* ---------- v3.72: sintesi di un articolo con l’AI ---------- */
+const PAPER_AI_SYS = `Sei un medico specialista che aiuta una studentessa di medicina a schedare un articolo scientifico per la sua bibliografia.
+Leggi l’ARTICOLO e rispondi SOLO con JSON valido, in italiano, senza altro testo:
+{"sintesi": "2-3 frasi: la domanda o lo scopo, come è stato fatto lo studio (se è uno studio), il messaggio principale", "punti": ["da 5 a 8 punti chiave brevi, con i numeri importanti se ci sono (percentuali, rischi, criteri, dosi)"], "tipo": "uno tra guide, sr, review, rct, obs, case, other (linee guida, review sistematica o meta-analisi, review narrativa, trial randomizzato, studio osservazionale, case report, altro)", "tag": ["da 2 a 4 tag brevi in minuscolo: le malattie o i temi principali"]}`;
+const blobToB64 = blob => new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1]); fr.readAsDataURL(blob); });
+async function paperAiSummary(p) {
+  if (!AI.ready()) { toast('Serve la chiave di Gemini o di Claude in Impostazioni'); return false; }
+  const meta = p.pdfId ? pdfById(p.pdfId) : null;
+  if (!meta) { toast('Carica prima il PDF dell’articolo (Modifica → Carica il PDF)'); return false; }
+  const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+  if (!rec || !rec.blob) { toast('Il PDF non è su questo dispositivo: aprilo una volta dalla libreria', 'err'); return false; }
+  const wait = toast('L’AI sta leggendo l’articolo… (può volerci un minuto)');
+  let j;
+  try {
+    let opts;
+    if (rec.blob.size < 15 * 1048576) opts = { pdfBase64: await blobToB64(rec.blob), text: `Titolo: ${p.title}` };
+    else {
+      // PDF molto grande: le prime pagine come testo
+      await ensurePdfJs();
+      const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await rec.blob.arrayBuffer()) }).promise;
+      let t = '';
+      for (let n = 1; n <= Math.min(doc.numPages, 15) && t.length < 60000; n++) t += `\n${await pageText(doc, n)}`;
+      doc.destroy();
+      opts = { text: `Titolo: ${p.title}\n\nARTICOLO:\n${t.slice(0, 60000)}` };
+    }
+    const r = await AI.generate({ system: PAPER_AI_SYS, maxTokens: 3000, ...opts });
+    const m = String(r.text || '').match(/\{[\s\S]*\}/);
+    j = JSON.parse(m ? m[0] : '{}');
+  } catch (err) { toast(err.message || 'La sintesi non è riuscita: riprova', 'err'); return false; }
+  finally { if (wait && wait.remove) wait.remove(); }
+  return new Promise(resolve => {
+    const sh = openSheet(`
+      <h2>Sintesi proposta dall’AI</h2>
+      <p class="hint">Controlla e correggi: viene salvata solo quando tocchi Salva.</p>
+      <label class="field"><span>Sintesi</span><textarea class="input" id="paSum" rows="4">${esc(String(j.sintesi || ''))}</textarea></label>
+      <label class="field"><span>Punti chiave, uno per riga</span><textarea class="input" id="paKey" rows="7">${esc((j.punti || []).map(x => `- ${String(x).replace(/^[-•]\s*/, '')}`).join('\n'))}</textarea></label>
+      <div class="grid2">
+        <label class="field"><span>Tipo</span><select class="input" id="paType"><option value="">—</option>${PAPER_TYPES.map(([k, l]) => `<option value="${k}" ${(p.ptype || j.tipo) === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="field"><span>Tag</span><input class="input" id="paTags" value="${esc([...new Set([...tagsOf(p), ...(j.tag || []).map(t => String(t).toLowerCase().trim())])].join(', '))}"></label>
+      </div>
+      ${p.summary || p.keys ? '<p class="hint warn-hint">L’articolo ha già una sintesi o dei punti chiave: salvando li sostituisci.</p>' : ''}
+      <div class="modal-actions"><button class="btn ghost" type="button" data-pa="no">Annulla</button><button class="btn primary" type="button" data-pa="ok">Salva</button></div>`, { label: 'Sintesi con l’AI', onClose: v => resolve(!!v) });
+    $('[data-pa="no"]', sh.el).onclick = () => sh.close(false);
+    $('[data-pa="ok"]', sh.el).onclick = async () => {
+      p.summary = $('#paSum', sh.el).value.trim();
+      p.keys = $('#paKey', sh.el).value.trim();
+      p.ptype = $('#paType', sh.el).value || p.ptype;
+      p.tags = parseTags($('#paTags', sh.el).value);
+      p.aiSummary = todayStr();
+      await saveLink(p);
+      toast('Sintesi salvata');
+      sh.close(true);
+    };
   });
 }

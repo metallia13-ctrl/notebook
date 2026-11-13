@@ -1350,7 +1350,7 @@ function bindGroupSelect(select, getNb, onPick = () => {}) {
   });
 }
 
-function modeEdit(sec, body) {
+function modeEdit(sec, body, opts = {}) {
   const otherNbs = state.notebooks.filter(n => n.id !== sec.notebookId);
   body.innerHTML = `
     <div class="grid2 ed-head">
@@ -1392,7 +1392,7 @@ function modeEdit(sec, body) {
     <label class="field"><span>Link a siti utili, uno per riga: Titolo | https://indirizzo</span>
       <textarea id="edLinks" class="input qs-edit links-edit" spellcheck="false" placeholder="Radiopaedia: stenosi aortica | https://radiopaedia.org/…">${esc(secLinksOf(sec).map(l => `${l.title} | ${l.url}`).join('\n'))}</textarea></label>
     ${AI.ready() ? `<button class="btn sm" data-act="ai-qs">Aggiungi domande con ${AI.name()}</button>` : ''}
-    ${otherNbs.length ? `
+    ${otherNbs.length && !opts.onDone ? `
       <details class="move">
         <summary>Sposta in un altro notebook</summary>
         <div class="inline">
@@ -1402,10 +1402,11 @@ function modeEdit(sec, body) {
       </details>` : ''}
     <div class="save-bar">
       <button class="btn primary" data-act="save">Salva</button>
-      <a class="btn ghost" href="#/sec/${sec.id}/read">Annulla</a>
-      <button class="btn ghost danger push" data-act="del">Elimina sezione</button>
+      ${opts.onDone ? '<button class="btn ghost" type="button" data-act="ed-cancel">Chiudi senza salvare</button>' : `<a class="btn ghost" href="#/sec/${sec.id}/read">Annulla</a>
+      <button class="btn ghost danger push" data-act="del">Elimina sezione</button>`}
     </div>`;
   bindGroupSelect($('#edGroup', body), () => nbById(sec.notebookId));
+  if (opts.onDone) on('[data-act="ed-cancel"]', 'click', () => opts.onDone(), body);
   if (editJump && editJump.secId === sec.id) {
     const jmp = editJump;
     editJump = null;
@@ -1572,6 +1573,7 @@ function modeEdit(sec, body) {
     await removeOrphanImages(before);
     const moved = await renameXrefs(oldTitle, sec.title, sec.id);
     toast(moved ? `Sezione salvata, collegamenti aggiornati in ${moved} ${moved === 1 ? 'sezione' : 'sezioni'}` : 'Sezione salvata');
+    if (opts.onDone) { opts.onDone(); return; }
     go(`#/sec/${sec.id}/read`);
   }, body);
 
@@ -2256,7 +2258,7 @@ async function pdfImagesMd(job, from, to, signal) {
 /* ---------------------------------------------------------------------
    Mappe XMind (.xmind): file nuovi (content.json) e XMind 8 (content.xml)
    --------------------------------------------------------------------- */
-async function ensureJSZip() { if (!window.JSZip) await loadScript(LIBS.jszip); }
+async function ensureJSZip() { if (!window.JSZip) await loadScript(libUrl(LIBS.jszip)); }
 
 async function parseXmind(file) {
   await ensureJSZip();
@@ -2464,6 +2466,7 @@ async function moveBlockFlow(sec, selText, occurrence) {
       <div id="mvPick">
         <input type="search" class="input search" id="mvQ" placeholder="Cerca la sezione di arrivo" aria-label="Cerca la sezione di arrivo">
         <ul class="list pick-list" id="mvList"></ul>
+        ${newSecFormHtml(sec.notebookId, sec.groupId || '')}
       </div>
       <div id="mvWhere" hidden>
         <p class="mv-to"></p>
@@ -2496,6 +2499,7 @@ async function moveBlockFlow(sec, selText, occurrence) {
       if (same) $('#mvPos', sh.el).value = String(same.at);
     };
     $('#mvList', sh.el).addEventListener('click', e => { const b = e.target.closest('[data-mvs]'); if (b) pick(secById(b.dataset.mvs)); });
+    bindNewSecForm(sh.el, s => { $('.ns-form', sh.el).hidden = true; pick(s); });
     $('[data-mv="no"]', sh.el).onclick = () => sh.close(false);
     $('[data-mv="back"]', sh.el).onclick = () => { $('#mvPick', sh.el).hidden = false; $('#mvWhere', sh.el).hidden = true; $('[data-mv="ok"]', sh.el).hidden = true; $('[data-mv="back"]', sh.el).hidden = true; };
     $('[data-mv="ok"]', sh.el).onclick = async () => {
@@ -3801,6 +3805,33 @@ function modeMap(sec, body) {
   const touched = () => { const c = cur(); if (c) c.m.edited = Date.now(); saveSoon(); };
   const snap = () => { const c = cur(); if (!c) return; undo.push({ si, root: JSON.stringify(c.sheet.root) }); if (undo.length > 60) undo.shift(); };
 
+  // v3.73: il testo che arriva dal PDF diventa un nodo
+  const inTree = (n, x) => n === x || (n.c || []).some(k => inTree(k, x));
+  MapTarget.set({
+    secId: sec.id,
+    alive: () => body.isConnected,
+    add(text, note = '') {
+      let c = cur();
+      if (!c) {
+        const name = sec.title;
+        const rec = { id: uid(), name, sheets: [{ title: name, root: { t: name } }], created: Date.now(), edited: Date.now() };
+        sec.maps = [...mapsOf(sec), rec];
+        maps = sec.maps; mi = maps.length - 1; si = 0;
+        c = cur();
+        S().mapLast = rec.id;
+      }
+      snap();
+      const parent = selNode && inTree(c.sheet.root, selNode) ? selNode : c.sheet.root;
+      const node = { t: String(text).slice(0, 300) };
+      if (note) node.n = note;
+      parent.c = [...(parent.c || []), node];
+      collapsed.delete(parent);
+      if (!edit) { edit = true; selNode = parent; }
+      touched();
+      draw();
+      return { map: c.m.name, parent: parent.t };
+    }
+  });
   const draw = () => {
     maps = mapsOf(sec);
     if (mi >= maps.length) mi = Math.max(0, maps.length - 1);
@@ -4372,6 +4403,18 @@ function modeMap(sec, body) {
     }
   });
   const flushSave = () => { if (saveT) { clearTimeout(saveT); saveT = 0; saveSection(sec); } };
+  // al computer: trascina del testo (dal PDF o da altrove) su un nodo
+  body.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('text/plain')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+  body.addEventListener('drop', e => {
+    const t = e.dataTransfer && e.dataTransfer.getData('text/plain');
+    if (!t || !t.trim()) return;
+    e.preventDefault();
+    const c = cur();
+    const k = e.target.closest && e.target.closest('[data-mkey]');
+    if (c && k) { const n = findNode(c.sheet, k.dataset.mkey); if (n) { selNode = n; edit = true; } }
+    const r = MapTarget.get()?.add(t.replace(/\s+/g, ' ').trim());
+    if (r) toast(`Nuovo nodo sotto “${String(r.parent).slice(0, 40)}”`);
+  });
   draw();
 }
 
@@ -5583,6 +5626,82 @@ async function appendImagesUnder(sec, heading, mdLines) {
   await saveSection(sec);
 }
 // scegli una sezione: prima quella proposta, poi quelle dello stesso notebook
+/* =====================================================================
+   v3.73: nuova sezione (e nuova cartella) dove si sceglie una destinazione
+   Un modulo dentro la stessa finestra: titolo, notebook, cartella; la cartella
+   nuova si crea lì, come su Windows quando sposti qualcosa.
+   ===================================================================== */
+function newSecFormHtml(defNbId = '', defGroupId = '') {
+  const nbs = state.notebooks.filter(n => !n.kind);
+  const nb = nbById(defNbId) && !nbById(defNbId).kind ? nbById(defNbId) : nbs[0];
+  return `
+    <button type="button" class="btn ghost block ns-open" data-ns="open">＋ Nuova sezione</button>
+    <div class="ns-form" hidden>
+      <label class="field"><span>Titolo della nuova sezione</span><input class="input" data-nsf="title" placeholder="Es. Artrite reumatoide: terapia"></label>
+      <div class="grid2">
+        <label class="field"><span>Notebook</span><select class="input" data-nsf="nb">${nbs.map(n => `<option value="${n.id}" ${nb && n.id === nb.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+        <label class="field"><span>Cartella</span><select class="input" data-nsf="grp">${nb ? groupOptions(nb, defGroupId) : '<option value="">Nessuno</option>'}</select></label>
+      </div>
+      <div class="ns-newgrp inline" hidden><input class="input" data-nsf="gname" placeholder="Nome della nuova cartella"><button type="button" class="btn sm" data-ns="mkgrp">Crea la cartella</button></div>
+      <div class="inline"><button type="button" class="btn primary" data-ns="create">Crea la sezione</button><button type="button" class="btn ghost" data-ns="close">Annulla</button></div>
+    </div>`;
+}
+function bindNewSecForm(root, onCreated) {
+  const box = $('.ns-form', root);
+  if (!box) return;
+  const f = k => $(`[data-nsf="${k}"]`, box);
+  const nbSel = f('nb'), grpSel = f('grp');
+  root.addEventListener('click', async e => {
+    const b = e.target.closest('[data-ns]');
+    if (!b) return;
+    const k = b.dataset.ns;
+    if (k === 'open') { box.hidden = false; b.hidden = true; f('title').focus(); return; }
+    if (k === 'close') { box.hidden = true; $('[data-ns="open"]', root).hidden = false; return; }
+    if (k === 'mkgrp') {
+      const name = f('gname').value.trim();
+      const nb = nbById(nbSel.value);
+      if (!name || !nb) { toast('Scrivi il nome della cartella'); return; }
+      const g = { id: uid(), name };
+      nb.groups = [...groupsOf(nb), g];
+      await saveNotebook(nb);
+      grpSel.innerHTML = groupOptions(nb, g.id);
+      grpSel.value = g.id;
+      $('.ns-newgrp', box).hidden = true;
+      toast(`Cartella “${name}” creata`);
+      return;
+    }
+    if (k === 'create') {
+      const title = f('title').value.trim();
+      const nb = nbById(nbSel.value);
+      if (!title) { toast('Scrivi il titolo della sezione'); f('title').focus(); return; }
+      if (!nb) { toast('Scegli il notebook'); return; }
+      const s = newSection(nb.id, { title, md: '' });
+      const gv = grpSel.value;
+      if (gv && gv !== '__new') s.groupId = gv;
+      await saveSection(s);
+      toast(`Sezione “${title}” creata`);
+      onCreated(s);
+    }
+  });
+  nbSel.addEventListener('change', () => { grpSel.innerHTML = groupOptions(nbById(nbSel.value), ''); $('.ns-newgrp', box).hidden = true; });
+  grpSel.addEventListener('change', () => {
+    const nw = grpSel.value === '__new';
+    $('.ns-newgrp', box).hidden = !nw;
+    if (nw) { grpSel.value = ''; f('gname').focus(); }
+  });
+  f('title').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('[data-ns="create"]', box).click(); } });
+}
+
+/* ---------- v3.73: il PDF manda il testo selezionato alla mappa aperta ----------
+   La mappa aperta (nel pannello di Affianca o nella pagina) si registra qui; il nodo
+   nuovo va sotto il nodo selezionato, o sotto il centro. */
+const MapTarget = {
+  cur: null,
+  set(t) { this.cur = t; },
+  get() { return this.cur && this.cur.alive() ? this.cur : null; }
+};
+// raggiungibile anche dal lettore PDF dentro Affianca (che è un’altra finestra)
+window.MapTarget = MapTarget;
 function pickSectionSheet(title, preferId = '') {
   return new Promise(resolve => {
     const pref = secById(preferId);
@@ -5592,7 +5711,9 @@ function pickSectionSheet(title, preferId = '') {
       <h2>${esc(title)}</h2>
       <input type="search" class="input search" id="psQ" placeholder="Cerca una sezione" aria-label="Cerca una sezione">
       <ul class="list pick-list" id="psList"></ul>
+      ${newSecFormHtml(pref ? pref.notebookId : '', pref ? pref.groupId || '' : '')}
       <div class="modal-actions"><button class="btn ghost" type="button" data-psx>Annulla</button></div>`, { label: title, onClose: v => resolve(v || null) });
+    bindNewSecForm(sh.el, s => sh.close(s));
     const draw = () => {
       const f = foldAccents($('#psQ', sh.el).value.trim());
       $('#psList', sh.el).innerHTML = all.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60)

@@ -10,19 +10,24 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.70';
+const APP_VERSION = '3.75';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
 const CHUNK_CHARS = 12000;          // caratteri massimi per sezione dal testo incollato
 const MAX_PDF_B64 = 24 * 1024 * 1024; // ~18 MB di PDF dopo la codifica base64
 
+// v3.74: le librerie sono dentro l’app (cartella lib): non serve internet per usarle
 const LIBS = {
-  pdfjs: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  pdfjsWorker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
-  pdflib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js',
-  jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'
+  pdfjs: 'lib/pdf.min.mjs',
+  pdfjsWorker: 'lib/pdf.worker.min.mjs',
+  pdflib: 'lib/pdf-lib.min.js',
+  jszip: 'lib/jszip.min.js',
+  // solo se il browser è troppo vecchio per il lettore PDF nuovo
+  pdfjsOld: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+  pdfjsOldWorker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
 };
+const libUrl = p => new URL(p, document.baseURI).href;
 
 /* ---------------------------------------------------------------------
    Utilità
@@ -981,13 +986,21 @@ async function aiFormatNotes({ text, pdfBase64, cloze, questions, signal, onWait
 /* ---------------------------------------------------------------------
    PDF
    --------------------------------------------------------------------- */
+let pdfjsLoading = null;
 async function ensurePdfJs() {
-  if (!window.pdfjsLib) {
-    await loadScript(LIBS.pdfjs);
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = LIBS.pdfjsWorker;
-  }
+  if (window.pdfjsLib) return;
+  if (!pdfjsLoading) pdfjsLoading = (async () => {
+    try {
+      window.pdfjsLib = await import(libUrl(LIBS.pdfjs));
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = libUrl(LIBS.pdfjsWorker);
+    } catch (err) {
+      await loadScript(LIBS.pdfjsOld);
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = LIBS.pdfjsOldWorker;
+    }
+  })();
+  try { await pdfjsLoading; } finally { if (!window.pdfjsLib) pdfjsLoading = null; }
 }
-async function ensurePdfLib() { if (!window.PDFLib) await loadScript(LIBS.pdflib); }
+async function ensurePdfLib() { if (!window.PDFLib) await loadScript(libUrl(LIBS.pdflib)); }
 
 async function pageText(doc, n) {
   const page = await doc.getPage(n);
@@ -1269,7 +1282,7 @@ function route() {
     case 'cases': return viewCases();
     case 'lab': return viewLab(p1, p2);
     case 'semei': return viewSemei();
-    case 'examq': return viewExamQ(p1);
+    case 'examq': return viewExamQ(p1, p2);
     case 'micro': case 'atlas': case 'anat': case 'pharma': case 'diary': return viewSpecial(p0, p1);
     case 'scores': return viewScores();
     case 'print': return viewPrint(p1, p2);

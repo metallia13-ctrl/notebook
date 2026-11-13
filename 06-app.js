@@ -942,6 +942,23 @@ function viewGuide() {
 /* ---------------------------------------------------------------------
    PDF o testo condivisi da altre app (menu Condividi di Android)
    --------------------------------------------------------------------- */
+// v3.74: un PDF aperto con il Notebook (Windows: tasto destro → Apri con → Notebook)
+function setupFileLaunch() {
+  if (!('launchQueue' in window) || EMBED) return;
+  window.launchQueue.setConsumer(async params => {
+    const files = params && params.files ? params.files : [];
+    if (!files.length) return;
+    try {
+      const file = await files[0].getFile();
+      if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { toast('Il Notebook apre solo PDF', 'err'); return; }
+      importJob = importJob && importJob.running ? importJob : null;
+      importDraft.src = 'pdf';
+      importDraft.pdf = await openPdf(file);
+      if (files.length > 1) toast(`Apro “${file.name}”: gli altri PDF aprili uno alla volta`);
+      if (location.hash === '#/import') route(); else location.hash = '#/import';
+    } catch (err) { toast('Non riesco ad aprire il PDF: ' + (err.message || err), 'err'); }
+  });
+}
 async function takeSharedFile() {
   const q = new URLSearchParams(location.search);
   if (!q.has('shared') || !('caches' in window)) return false;
@@ -1197,6 +1214,7 @@ async function init() {
   SelGesture.init();
   NavHide.init();
   FullScreen.init();
+  setupFileLaunch();
   Resume.init();
   Pad.init();
   Split.init();
@@ -1287,6 +1305,33 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.75", title: "domande d’esame: il modello di Gemini, la struttura dell’esame e la simulazione", html: `      <ul>
+        <li><strong>Importa da Excel</strong> legge i file di Gemini: trova da solo il foglio “Database Singole Domande” e la riga dei titoli, e prende materia e docente dal titolo. L’<strong>argomento normalizzato</strong> diventa la domanda e le formulazioni diverse si sommano lì, visibili come “Chiesta come”. Reimportando un file aggiornato, le domande già contate non si contano di nuovo.</li>
+        <li>Il <strong>modello</strong> da scaricare ha le stesse colonne, e c’è il <strong>prompt per Gemini</strong> da copiare.</li>
+        <li><strong>Struttura dell’esame</strong> per ogni materia: le parti (per esempio tre, una domanda ciascuna), da quale parte esce ogni macro-categoria, il docente e le note. L’app propone quante domande fa di solito, guardando gli esami raccolti.</li>
+        <li><strong>Simulazione d’esame</strong>: estrae le domande seguendo la struttura, più spesso quelle uscite di frequente e nell’ultimo anno; <strong>Un appello vero</strong> ripropone le domande fatte a uno studente in un giorno. Filtro per categoria ed esportazione nello stesso formato.</li>
+      </ul>` },
+  { v: "3.74", title: "app più “vera” e controllo generale", html: `      <ul>
+        <li><strong>Scorciatoie sull’icona</strong> dell’app installata (tieni premuta l’icona su Android, tasto destro su Windows): Ripasso, Blocco note, Articoli, Flashcard, Importa, Calendario.</li>
+        <li><strong>Aprire i PDF con il Notebook</strong> su Windows: tasto destro su un PDF → Apri con → Notebook; si apre l’importazione con quel PDF. Su Android resta “Condividi” verso il Notebook.</li>
+        <li>Le <strong>librerie sono dentro l’app</strong> (lettore PDF, Markdown, file Word e XMind): non servono più siti esterni per usarla. Internet serve solo per AI, Drive, voce e Crossref; i caratteri si salvano al primo uso.</li>
+        <li>Un controllo generale del codice, con le correzioni trovate.</li>
+      </ul>` },
+  { v: "3.73", title: "mappe dal PDF, nuova sezione ovunque, scrivere in Affianca", html: `      <ul>
+        <li><strong>Mappe dal PDF</strong>: apri la mappa di una sezione in Affianca (o nella pagina) e leggi il PDF accanto. Selezioni il testo e tocchi <strong>Alla mappa</strong>: diventa un nodo sotto il nodo selezionato nella mappa (o sotto il centro), con la pagina come nota. Tocca un altro nodo per cambiare dove vanno i successivi. Al computer puoi anche trascinare il testo selezionato direttamente su un nodo. Se la sezione non ha ancora una mappa, la crea.</li>
+        <li><strong>Nuova sezione</strong> dove scegli una destinazione: in Affianca, in Sposta, in “In una sezione” e quando aggiungi una figura dal PDF. Scegli notebook e cartella, e puoi creare anche una <strong>nuova cartella</strong> lì per lì.</li>
+        <li><strong>Scrivere in Affianca</strong>: una sezione nel pannello ha <strong>✎ Scrivi</strong>; le note si scrivono lì, accanto al PDF, e salvando torni alla lettura. Una sezione nuova creata da Affianca si apre subito così.</li>
+      </ul>` },
+  { v: "3.72", title: "dal PDF a note, glossario e sezioni; sintesi degli articoli con l’AI", html: `      <ul>
+        <li>Nel PDF, <strong>Nota clinica</strong> chiede se crearne una nuova o <strong>aggiungere a una che c’è già</strong>: cerchi la nota e scegli dove mettere il testo (note, criteri diagnostici, esami di primo o secondo livello, terapia, complicanze, prognosi, fattori di rischio, diagnosi differenziale). La fonte si aggiunge alla nota; un articolo della bibliografia si collega da solo.</li>
+        <li><strong>Glossario</strong> dal PDF: una parola o poche diventano il termine, una frase lunga la definizione.</li>
+        <li><strong>In una sezione</strong>: il testo va in fondo agli appunti della sezione che scegli, come citazione con la fonte.</li>
+        <li>Nella scheda di un articolo, <strong>✨ Sintesi con l’AI</strong>: l’AI legge il PDF e propone sintesi, punti chiave (con i numeri importanti), tipo e tag; li controlli e correggi prima di salvare.</li>
+      </ul>` },
+  { v: "3.71", title: "nel PDF: nota clinica dalla selezione e più parti insieme", html: `      <ul>
+        <li>Nella barra della selezione del PDF c’è <strong>Nota clinica</strong>: il testo selezionato va nelle note di una nuova nota clinica e la <strong>fonte si compila da sola</strong> (nome del PDF e pagina; per un articolo della bibliografia, la sua citazione, e l’articolo si collega alla nota).</li>
+        <li><strong>Più parti insieme</strong>, come nelle sezioni: al computer tieni premuto <strong>Ctrl</strong> (⌘ sul Mac) mentre selezioni; sul tablet tocca <strong>＋ Altra parte</strong> dopo ogni selezione. Le parti tenute da parte sono tratteggiate. Poi: evidenzia o sottolinea tutte insieme, oppure Nota clinica, Flashcard, Copia e Trascina con tutte le parti (come elenco).</li>
+      </ul>` },
   { v: "3.70", title: "Articoli: la tua bibliografia", html: `      <ul>
         <li><strong>Articoli</strong> (barra laterale o Altro): incolla il DOI e titolo, autori, rivista, anno, volume e pagine si compilano da soli; oppure carica il PDF, e se contiene il DOI l’app lo trova da sé. Il PDF si apre con il lettore completo, anche in Affianca.</li>
         <li>Per ogni articolo: tipo (linee guida, review sistematica, trial…), stato (da leggere, in lettura, letto), ★ importante, tag (per esempio la malattia), sintesi e punti chiave. Ricerca e filtri per stato, tipo e tag; ordine per data, anno o titolo.</li>
@@ -1517,7 +1562,9 @@ const Split = {
       <header class="split-head">
         <div class="split-title"><small class="split-kind"></small><strong class="split-name"></strong></div>
         <div class="split-acts">
+          <button type="button" class="btn sm ghost" data-sp="write" hidden title="Scrivi gli appunti di questa sezione qui nel pannello">✎ Scrivi</button>
           <button type="button" class="btn sm ghost" data-sp="pick" title="Mostra un’altra sezione o un altro PDF">Cambia</button>
+          ${helpBtn('splitView')}
           <button type="button" class="btn sm ghost" data-sp="open" title="Apri nella pagina principale">Apri qui</button>
           <button type="button" class="sh-ic" data-sp="close" aria-label="Chiudi il pannello" title="Chiudi">${SH_ICONS.close}</button>
         </div>
@@ -1603,6 +1650,22 @@ const Split = {
     if (this.io) { this.io.disconnect(); this.io = null; }
     this.rendered.clear();
     $('.split-pdfbar', this.el).hidden = item.kind !== 'pdf';
+    $('[data-sp="write"]', this.el).hidden = item.kind !== 'sec';
+    if (item.kind === 'edit') {
+      // v3.73: gli appunti si scrivono nel pannello, accanto al PDF; salvando si torna alla lettura
+      const sec = secById(item.id);
+      if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
+      this.dropDoc();
+      $('.split-kind', this.el).textContent = `Scrivi · ${[nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ')}`;
+      $('.split-name', this.el).textContent = sec.title;
+      body.innerHTML = '';
+      const box = document.createElement('div');
+      box.className = 'mode-body split-edit';
+      body.append(box);
+      modeEdit(sec, box, { onDone: () => this.show({ kind: 'sec', id: sec.id }) });
+      body.scrollTop = 0;
+      return;
+    }
     if (item.kind === 'map') {
       // la scheda Mappe di una sezione, intera: crei, modifichi e scarichi l’XMind mentre leggi
       const sec = secById(item.id);
@@ -1797,7 +1860,9 @@ const Split = {
         if (n) pg = n; else if (m) pg = +m[1];
       } catch { /* niente */ }
       this.close();
-      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${pg}`);
+      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'edit' ? `#/sec/${it.id}/edit` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${pg}`);
+    } else if (a === 'write') {
+      if (this.item && this.item.kind === 'sec') this.show({ kind: 'edit', id: this.item.id });
     } else if (a === 'swap' || a === 'orient') {
       this.setPrefs(a === 'swap' ? { swap: !this.swapped() } : { stack: !this.prefs().stack });
       this.applyMode();
@@ -1847,10 +1912,14 @@ const Split = {
         </div>
         <input type="search" class="input search" id="spQ" placeholder="Cerca" aria-label="Cerca">
         <ul class="list pick-list sp-list" id="spList"></ul>
+        <div class="sp-new">${newSecFormHtml(hereNb || '', here ? here.groupId || '' : '')}</div>
         <div class="modal-actions"><button class="btn ghost" type="button" data-spx>Chiudi</button></div>`, { label: 'Affianca', onClose: v => resolve(v || null) });
+      // la sezione nuova si apre nel pannello: da scrivere, o con le mappe se eri su Mappa
+      bindNewSecForm(sh.el, s => { const it = { kind: tab === 'map' ? 'map' : 'edit', id: s.id }; sh.close(it); this.show(it); });
       const list = $('#spList', sh.el);
       const draw = () => {
         const f = foldAccents($('#spQ', sh.el).value.trim());
+        $('.sp-new', sh.el).hidden = tab === 'pdf';
         if (tab === 'map') {
           // prima la sezione che stai leggendo (o quella del PDF), poi quelle con mappe
           const cands = [...(here ? [here] : []), ...state.sections.filter(s => s !== here).sort((a, b) => mapsOf(b).length - mapsOf(a).length || (b.updated || 0) - (a.updated || 0))];
@@ -3008,6 +3077,7 @@ const HELP = {
   calendar: { t: 'Calendario', b: `I ripassi in programma giorno per giorno, il tempo di studio e i punti deboli, cioè le parti che nel Cloze o nell’Orale sono rimaste più volte rosse o arancio.` },
   search: { t: 'Cerca', b: `Cerca in tutto: appunti, flashcard, testo dei PDF, glossario e note cliniche.` },
   links: { t: 'Link utili', b: `I siti che usi di più, a portata di tocco. Tieni premuto o usa Modifica per cambiarli.` },
+  eqSim: { t: 'Simulazione dalle domande d’esame', b: `Le domande sono estratte dalla banca delle domande d’esame seguendo la <b>struttura dell’esame</b> che hai impostato per la materia: una o più domande per ogni parte, prese dalle macro-categorie di quella parte. Con “più probabili quelle uscite più spesso”, un argomento uscito 20 volte esce molto più spesso di uno uscito una volta; con “ultimo anno”, gli appelli più recenti contano il doppio.<br><br>Rispondi a voce o per iscritto, poi apri <b>Traccia e dettagli</b> (come l’hanno chiesta, la risposta, le sezioni) e segna se la sapevi: finisce nelle statistiche della domanda.<br><br><b>Un appello vero</b> ripropone le domande fatte davvero a uno studente in un giorno, come le ha raccontate.` },
   exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
   papers: { t: 'Articoli', b: `La tua bibliografia. <b>Nuovo articolo</b>: incolla il DOI (o il link doi.org) e i dati si compilano da soli dal registro Crossref; oppure carica il PDF: se contiene il DOI, li trova da sé. Il PDF finisce nella libreria (notebook “Articoli”) e si apre con il lettore completo, anche in Affianca.<br><br>Per ogni articolo: <b>tipo</b> (linee guida, review, trial…), <b>stato</b> (da leggere, in lettura, letto), <b>★ importante</b>, <b>tag</b> (per esempio la malattia), <b>sintesi</b> e <b>punti chiave</b>. Lo colleghi alle note cliniche, che poi lo mostrano.<br><br><b>Copia la citazione</b> dà la citazione in stile Vancouver; <b>Esporta (RIS)</b> salva gli articoli che vedi (con i filtri) per Zotero, Mendeley o EndNote.` },
@@ -3019,7 +3089,7 @@ const HELP = {
   atlas: { t: 'Atlante diagnostico', b: `ECG, emogas, Rx e altre immagini da imparare a leggere. Carica l’immagine con <b>＋ Foto</b>, poi fanne l’esercizio delle etichette o l’image occlusion. Per ECG, emogas e Rx i titoli seguono l’ordine di lettura (ritmo, asse, onde… / pH, disturbo primario, compenso…).` },
   diary: { t: 'Diario di tirocinio', b: `Una pagina per ogni giornata: data, reparto, tutor e le <b>procedure</b> (eseguite, assistite, osservate, quante volte). Scrivi casi e cose imparate sotto i titoli pronti. La scheda <b>Procedure</b> fa il totale, con i reparti e l’ultima volta.` },
   examq: { t: 'Domande d’esame', b: `La banca delle domande uscite agli esami. Ogni domanda ha materia, argomenti collegati, risposta o traccia, e le volte in cui è uscita (docente, anno, data, fonte): quando esce di nuovo si somma, così l’elenco “Le più frequenti” ti dice cosa chiedono di più.<br><br><b>Importa da Excel</b>: un foglio .xlsx (anche scaricato da Google Fogli) o un CSV, una domanda per riga. Scegli quali colonne sono domanda, risposta, materia, argomento, docente, anno, data, fonte e tag; “Scarica il modello” ti dà un foglio già pronto. Le domande uguali si sommano e gli argomenti si collegano da soli quando il titolo di una sezione compare nella domanda.<br><br><b>Allenati</b> sulle domande filtrate: le più frequenti, quelle di un docente o di un anno, quelle che sbagli. In ogni sezione, in fondo a Leggi, trovi le domande uscite su quell’argomento.` },
-  split: { t: 'Affianca', b: `Apre di fianco una <b>sezione</b> o un <b>PDF</b>, mentre nella pagina principale resta quello che stai guardando: due sezioni, una sezione e le slide, due PDF, o un PDF accanto al lettore PDF.<br><br>Sul tablet e sul computer sta a destra (anche col tablet in verticale), sul telefono sotto. Trascina il bordo per dargli più o meno spazio.<br><br>Nel PDF: pagine ‹ ›, zoom (anche con due dita), salto ai segnalibri. <b>Cambia</b> mostra un’altra cosa, <b>Apri qui</b> la porta nella pagina principale.` },
+  splitView: { t: 'Affianca', b: `Apre di fianco una <b>sezione</b>, un <b>PDF</b> o una <b>mappa</b>, mentre nella pagina principale resta quello che stai guardando.<br><br>Il PDF ha il lettore completo (evidenziatori, penna, segnalibri, figure). Una sezione ha <b>✎ Scrivi</b> per scriverci gli appunti lì; una mappa si crea e modifica nel pannello, e dal PDF ci mandi il testo con <b>Alla mappa</b>. Da <b>Cambia</b> puoi anche creare una <b>nuova sezione</b>.<br><br>Sulla barretta tra le due finestre: <b>⇆ Scambia</b> le porta dall’altra parte, la <b>maniglia</b> le allarga, l’altro pulsante le mette <b>una sopra l’altra</b> o <b>una accanto all’altra</b>. <b>Apri qui</b> porta il contenuto nella pagina principale.` },
   pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Quando scrivi con la penna il palmo non lascia segni e con le dita scorri il foglio; <b>✍︎ Solo penna</b> lo attiva da subito.<br><br><b>Gomma della penna</b>: tieni premuto il pulsante laterale (S Pen) o gira la penna dalla parte della gomma (Staedtler Noris digital, Wacom, Surface). <b>Tocco con due dita</b>: annulla l’ultimo tratto (comodo con Apple Pencil, che non ha la gomma).<br><br><b>Zoom</b>: allarga due dita (spostandole scorri il foglio), oppure − / % / + tra gli strumenti, o Ctrl+rotellina. <b>Evidenziatore</b> trasparente; <b>tieni ferma la penna</b> alla fine di un tratto per farlo diventare una linea dritta; <b>Ripeti</b> accanto ad Annulla. Tocca due volte la gomma per passare da “per tratto” a “per area”. Con il <b>lazo</b>: trascina, ridimensiona dal quadratino nell’angolo, tocca un colore o uno spessore per cambiarli, Duplica.` },
   semei: { t: 'Semeiotica', b: `Una scheda per ogni <b>manovra</b>, <b>segno</b> o <b>punto di repere</b>, divise tra semeiotica <b>clinica</b> e <b>chirurgica</b> e per distretto (che scegli tu, per esempio Addome o Torace).<br><br>Ogni scheda è una sezione: descrivi i passaggi, aggiungi foto con <b>＋ Foto</b> (poi puoi farne etichette da rimettere al posto giusto o un’image occlusion) e video nella scheda Video.<br><br><b>Esercitati</b> apre una scheda a caso tra quelle filtrate in modalità Orale: descrivi la manovra a voce e confronta.` },
   labRef: { t: 'Leggi un referto', b: `Scrivi esame e valore (anche la sigla): l’app usa i range delle tue schede e segna in giallo i valori bassi o alti e in rosso quelli critici. Indica il sesso per i range diversi.<br><br>È un esercizio di lettura: in un referto vero vale sempre il range stampato dal laboratorio.` },
@@ -3056,7 +3126,9 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Calendario', key: 'calendar' },
   { sel: '.page-head h1', text: 'Cerca', key: 'search' },
   { sel: '.page-head h1', text: 'Link utili', key: 'links' },
-  { sel: '.page-head h1', text: 'Simulazione d’esame', key: 'exam' },
+  { sel: '.page-head h1', text: 'Simulazione d’esame', key: 'exam', hash: /^#\/exam(\/|$)/ },
+  { sel: '.page-head h1', text: 'Simulazione d’esame', key: 'eqSim', hash: /^#\/examq\/(sim|real)/ },
+  { sel: '.page-head h1', text: 'Un appello vero', key: 'eqSim', hash: /^#\/examq\/(sim|real)/ },
   { sel: '.page-head h1', text: 'Impostazioni', key: 'settings' },
   { sel: '.page-head h1', text: 'Medicina di laboratorio', key: 'lab' },
   { sel: '.page-head h1', text: 'Semeiotica', key: 'semei' },
@@ -3088,7 +3160,7 @@ const HELP_SPOTS = [
   { sel: '.provider .field > span', text: 'Modello', key: 'model' },
   { sel: '.field > span', text: 'Modelli di riserva', key: 'backupModels' },
   { sel: '.field > span.lbl', text: 'Voce per l’ascolto', key: 'tts' },
-  { sel: '#imGroupBox > label.lbl', text: 'Macro-argomento', key: 'importGroup' },
+  { sel: '#imGroupBox > label.lbl', text: 'Cartella o sottoargomento', key: 'importGroup' },
   { sel: '.opts > legend', text: 'Elaborazione', key: 'aiOpts' },
   { after: '.seg[aria-label="Tipo di fonte"]', key: 'importSrc' },
   { after: '.split-seg', key: 'split' },

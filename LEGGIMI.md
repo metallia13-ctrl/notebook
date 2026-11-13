@@ -15,6 +15,8 @@ L’app è una pagina web (GitHub Pages) senza passaggi di compilazione: quello 
 | `06-app.js` | Impostazioni, collegamento con StudyHub, link, guida, aiuto e tutorial, pagina Altro, Affianca, blocco note, Riprendi, protezione dei dati, novità; alla fine `init()` avvia l’app |
 | `style.css` | Tutto lo stile |
 | `sw.js` | Service worker: funziona anche offline; `VERSION` va aumentata a ogni aggiornamento |
+| `manifest.webmanifest` | L’app installabile: nome, icone, scorciatoie, condivisione da Android, “Apri con” per i PDF su Windows |
+| `lib/` | Le librerie, dentro l’app: lettore PDF (pdf.js 5.6), Markdown (marked), DOMPurify, pdf-lib, JSZip |
 
 ## Regole
 
