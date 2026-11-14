@@ -1306,6 +1306,12 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.90", title: "controllo generale", html: `      <ul>
+        <li>Le voci <strong>✨ Segnalibri automatici</strong> e <strong>✨ Bozza di appunti</strong> ora sono sempre nel menu ⋯ delle lezioni: se su questo dispositivo manca la chiave di Gemini te lo dicono, invece di sparire (le chiavi dell’AI non si sincronizzano: vanno messe su ogni dispositivo).</li>
+        <li><strong>Ascolto e sincronizzazione</strong>: mentre ascoltavi, l’app riscriveva tutta la sezione o il notebook ogni 15 secondi per salvare il punto di ascolto, e la risincronizzava. Se intanto la modificavi da un altro dispositivo, la copia vecchia poteva sovrascrivere quella nuova. Ora il punto di ascolto si salva a parte: niente più sincronizzazioni continue, e riprendi comunque da dove eri anche sull’altro dispositivo.</li>
+        <li><strong>Figura da un PDF</strong>, <strong>quiz delle etichette</strong> e <strong>ritaglio</strong>: riaprendoli più volte nella stessa sessione, ogni clic veniva gestito anche dalle finestre già chiuse (più lento a ogni apertura, e nel quiz delle etichette poteva contare un risultato in più). Chiudere “Figura da un PDF” mentre il PDF si apriva dava un messaggio d’errore.</li>
+        <li>Nel lettore PDF e nell’elenco delle flashcard restava un “ascolto” in più a ogni apertura: ora si toglie uscendo dalla pagina.</li>
+      </ul>` },
   { v: "3.89", title: "la B nelle mappe accanto al PDF", html: `      <ul>
         <li>Scrivendo in un nodo della mappa (o in un altro testo modificabile) con il PDF aperto accanto, il tasto <strong>B</strong> aggiungeva un segnalibro invece di scrivere la lettera. Ora le scorciatoie a un tasto valgono solo quando non stai scrivendo.</li>
       </ul>` },

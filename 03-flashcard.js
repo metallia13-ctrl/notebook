@@ -1636,6 +1636,8 @@ function bindCardSelect(listEl, getCards, btnHost) {
       route();
     }
   });
-  document.addEventListener('keydown', e => { if (on && e.key === 'Escape' && !$('#modalRoot').children.length) set(false); });
+  const onEsc = e => { if (on && e.key === 'Escape' && !$('#modalRoot').children.length) set(false); };
+  document.addEventListener('keydown', onEsc);
+  addCleanup(() => document.removeEventListener('keydown', onEsc));
 }
 

@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.89';
+const APP_VERSION = '3.90';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -2382,6 +2382,7 @@ function openPdfCropper(notebookId, { sec = null } = {}) {
       }
     };
     const usePdf = p => {
+      if (closed) return; // la finestra è stata chiusa mentre il PDF si apriva
       pdf = p;
       importDraft.pdf = p;
       $('#cpFileLabel', root).textContent = `${p.name}: tocca per sceglierne un altro`;
@@ -2398,7 +2399,10 @@ function openPdfCropper(notebookId, { sec = null } = {}) {
       try { usePdf(await openPdf(f)); }
       catch (err) { $('#cpFileLabel', root).textContent = 'Scegli un PDF dal dispositivo'; toast(err.message, 'err'); }
     });
-    root.addEventListener('click', async e => {
+    // v3.90: l’ascolto sta sulla finestra, non sul contenitore che resta: prima, a ogni apertura
+    // se ne aggiungeva uno nuovo e quelli vecchi continuavano a rispondere ai clic
+    root.firstElementChild.addEventListener('click', async e => {
+      if (closed) return;
       const lb = e.target.closest('[data-cplib]');
       if (lb) {
         const meta = pdfById(lb.dataset.cplib);

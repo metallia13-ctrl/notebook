@@ -5480,6 +5480,47 @@ const AudioDB = {
   async keys() { const db = await this.open(); return new Promise(res => { const q = db.transaction('files').objectStore('files').getAllKeys(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); }); }
 };
 const audiosOf = sec => (Array.isArray(sec.audios) ? sec.audios : (sec.audios = []));
+/* v3.90: il punto di ascolto non sta più dentro la sezione o il notebook. Prima, mentre
+   ascoltavi, l’app riscriveva tutta la sezione (o il notebook) ogni 15 secondi e la
+   risincronizzava: se nel frattempo la modificavi da un altro dispositivo, la copia vecchia
+   del telefono poteva sovrascrivere le modifiche nuove. Ora il punto si salva sul dispositivo
+   e, quando metti in pausa o chiudi il lettore, in un piccolo elenco a parte che si sincronizza. */
+const AudioPos = {
+  KEY: 'nb-audio-pos',
+  mem: null,
+  load() { if (!this.mem) { try { this.mem = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { this.mem = {}; } } return this.mem; },
+  rec() { return state.links.find(l => l.kind === 'audiopos') || null; },
+  get(a) {
+    if (!a) return 0;
+    const l = this.load()[a.id], r = this.rec()?.map?.[a.id];
+    const best = l && r ? ((r.t || 0) > (l.t || 0) ? r : l) : (l || r);
+    return best ? best.p || 0 : (a.pos || 0);
+  },
+  set(id, p) {
+    const m = this.load();
+    m[id] = { p: Math.max(0, Math.floor(p)), t: Date.now() };
+    const ids = Object.keys(m);
+    if (ids.length > 400) ids.sort((x, y) => m[x].t - m[y].t).slice(0, ids.length - 400).forEach(k => delete m[k]);
+    try { localStorage.setItem(this.KEY, JSON.stringify(m)); } catch { /* spazio pieno */ }
+  },
+  flushT: 0,
+  flushSoon() { clearTimeout(this.flushT); this.flushT = setTimeout(() => this.flush().catch(() => {}), 2500); },
+  async flush() {
+    const m = this.load();
+    const live = new Set([...state.sections, ...state.notebooks].flatMap(o => (o.audios || []).map(a => a.id)));
+    let rec = this.rec();
+    let changed = false;
+    if (!rec) rec = { id: 'audiopos', kind: 'audiopos', notebookId: '_audiopos', map: {}, created: Date.now() };
+    if (!rec.map || typeof rec.map !== 'object') rec.map = {};
+    Object.keys(m).forEach(id => {
+      if (!live.has(id)) return;
+      const o = rec.map[id];
+      if (!o || (o.t || 0) < m[id].t) { if (!o || Math.abs((o.p || 0) - m[id].p) >= 5) changed = true; rec.map[id] = m[id]; }
+    });
+    Object.keys(rec.map).forEach(id => { if (!live.has(id)) { delete rec.map[id]; changed = true; } });
+    if (changed) await saveLink(rec);
+  }
+};
 /* v3.87: ordine degli audio (lezioni del notebook o audio di una sezione), si sincronizza:
    per nome con i numeri in ordine (Lezione 2 prima di Lezione 10), per data, o a mano */
 const AUDIO_SORTS = [['name', 'Per nome (1, 2, 3…)'], ['new', 'Le più recenti prima'], ['old', 'Le meno recenti prima'], ['custom', 'A mano (con ↑ ↓)']];
@@ -5556,7 +5597,7 @@ function lessonBlockHtml(sec) {
   return `<section class="fonti lz-sec" aria-label="Nelle lezioni">
     <div class="fonti-head"><h3>Nelle lezioni</h3><a class="btn sm ghost" href="#/lezioni/${sec.notebookId}">Tutte le lezioni</a></div>
     <ul class="lz-refs">${refs.map(r => `<li><b>${esc(r.a.name)}</b>${r.whole ? ' <small>(tutta la lezione)</small>' : ''}
-      <span class="lz-pts">${r.whole && !r.marks.length ? `<button type="button" class="btn sm" data-lz="${r.a.id}:${r.a.pos || 0}">▶ Ascolta</button>` : ''}${r.marks.map(m => `<button type="button" class="btn sm" data-lz="${r.a.id}:${m.t}">▶ ${fmtT(m.t)}${m.label ? ` ${esc(m.label)}` : ''}</button>`).join('')}</span></li>`).join('')}</ul>
+      <span class="lz-pts">${r.whole && !r.marks.length ? `<button type="button" class="btn sm" data-lz="${r.a.id}:${AudioPos.get(r.a)}">▶ Ascolta</button>` : ''}${r.marks.map(m => `<button type="button" class="btn sm" data-lz="${r.a.id}:${m.t}">▶ ${fmtT(m.t)}${m.label ? ` ${esc(m.label)}` : ''}</button>`).join('')}</span></li>`).join('')}</ul>
   </section>`;
 }
 function bindLessonBlock(root, sec) {
@@ -5904,7 +5945,14 @@ const lessonGemMime = f => {
   const m = { mp3: 'audio/mp3', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', flac: 'audio/flac', webm: 'audio/webm', '3gp': 'audio/3gpp', amr: 'audio/amr' }[ext];
   return m || (f.type && f.type.startsWith('audio/') ? f.type.split(';')[0] : 'audio/mp3');
 };
-const lessonAiItems = () => (S().geminiKey.trim() ? [{ key: 'ai-marks', label: '✨ Segnalibri automatici (Gemini ascolta la lezione)' }, { key: 'ai-notes', label: '✨ Bozza di appunti dalla lezione (Gemini)' }] : []);
+// sempre nel menu: senza la chiave di Gemini spiegano cosa serve (prima sparivano e basta)
+const lessonAiItems = () => [{ key: 'ai-marks', label: '✨ Segnalibri automatici (Gemini ascolta la lezione)' }, { key: 'ai-notes', label: '✨ Bozza di appunti dalla lezione (Gemini)' }];
+async function lessonAiNeedsKey() {
+  if (S().geminiKey.trim()) return false;
+  const ok = await modal({ title: 'Serve la chiave di Gemini', text: `Per ascoltare una lezione intera serve Gemini${S().claudeKey.trim() ? ' (Claude non ascolta l’audio)' : ''}: la chiave è gratuita. Le chiavi dell’AI non si sincronizzano tra i dispositivi: va inserita su ognuno, in Impostazioni → Intelligenza artificiale.`, confirm: 'Vai alle impostazioni' });
+  if (ok) go('#/settings');
+  return true;
+}
 // carica l’audio su Gemini e fa la richiesta, con una finestra che dice a che punto è
 function lessonAiRun(owner, a, kind) {
   return new Promise(resolve => {
@@ -6051,6 +6099,7 @@ async function lessonAiNotes(owner, a) {
   };
 }
 async function lessonAiAct(ch, owner, a) {
+  if ((ch === 'ai-marks' || ch === 'ai-notes') && await lessonAiNeedsKey()) return true;
   if (ch === 'ai-marks') { await lessonAiMarks(owner, a); return true; }
   if (ch === 'ai-notes') { await lessonAiNotes(owner, a); return true; }
   return false;
@@ -6097,9 +6146,11 @@ const AudioPlayer = {
     seek.addEventListener('input', () => { if (this.el.duration) this.el.currentTime = (+seek.value / 1000) * this.el.duration; });
     this.el.addEventListener('timeupdate', () => this.paintTime());
     this.el.addEventListener('play', () => this.paintPlay());
-    this.el.addEventListener('pause', () => { this.paintPlay(); this.savePos(); });
+    this.el.addEventListener('pause', () => { this.paintPlay(); this.savePos(true); });
     this.el.addEventListener('loadedmetadata', () => { this.paintTicks(); const r = this.rec(); if (r && !r.duration && Number.isFinite(this.el.duration)) { r.duration = this.el.duration; this.saveSoon(); } });
-    this.el.addEventListener('ended', () => this.paintPlay());
+    this.el.addEventListener('ended', () => { this.paintPlay(); this.savePos(true); });
+    // se chiudi l’app o cambi scheda mentre ascolti, il punto è già salvato qui
+    document.addEventListener('visibilitychange', () => { if (document.hidden && this.isOn()) this.savePos(); });
     document.addEventListener('keydown', e => {
       if (!this.isOn() || !e.altKey || e.ctrlKey || e.metaKey) return;
       if (e.key === 'b' || e.key === 'B') { e.preventDefault(); this.act('mark'); }
@@ -6140,7 +6191,7 @@ const AudioPlayer = {
     this.bar.hidden = false;
     document.body.classList.add('au-on');
     await new Promise(r => { if (this.el.readyState >= 1) r(); else this.el.addEventListener('loadedmetadata', r, { once: true }); setTimeout(r, 1500); });
-    this.el.currentTime = at !== null ? at : (rec.pos || 0);
+    this.el.currentTime = at !== null ? at : AudioPos.get(rec);
     if ('mediaSession' in navigator) {
       try {
         navigator.mediaSession.metadata = new MediaMetadata({ title: rec.name, artist: isSecRec(sec) ? sec.title : 'Lezioni', album: (isSecRec(sec) ? nbById(sec.notebookId)?.name : sec.name) || 'Notebook' });
@@ -6160,13 +6211,13 @@ const AudioPlayer = {
     if (!a) { toast('Questa sezione non ha audio'); return; }
     await this.load(sec, a.id, { at: t });
   },
-  seek(t) { if (this.el) { this.el.currentTime = Math.max(0, t); this.paintTime(); } },
+  seek(t) { if (this.el) { this.el.currentTime = Math.max(0, t); this.paintTime(); this.savePos(); } },
   paintPlay() { const b = $('.au-play', this.bar); b.textContent = this.el.paused ? '▶' : '❚❚'; b.setAttribute('aria-label', this.el.paused ? 'Riproduci' : 'Pausa'); },
   paintTime() {
     const d = this.el.duration || this.rec()?.duration || 0;
     $('.au-time', this.bar).textContent = `${fmtT(this.el.currentTime)} / ${fmtT(d)}`;
     if (d) $('.au-seek', this.bar).value = String(Math.round((this.el.currentTime / d) * 1000));
-    if (Math.abs((this.rec()?.pos || 0) - this.el.currentTime) > 15) this.savePos();
+    if (!this.el.paused && Math.abs(AudioPos.get(this.rec()) - this.el.currentTime) > 15) this.savePos();
   },
   paintTicks() {
     if (!this.bar) return;
@@ -6174,13 +6225,14 @@ const AudioPlayer = {
     const d = this.el.duration || r?.duration || 0;
     $('.au-ticks', this.bar).innerHTML = r && d ? r.marks.map(m => `<button type="button" class="au-tick" data-tick="${m.t}" style="left:${(m.t / d) * 100}%" title="${esc(fmtT(m.t))} ${esc(m.label || '')}" aria-label="Vai a ${esc(fmtT(m.t))}"></button>`).join('') : '';
   },
-  savePos() { const r = this.rec(); if (r) { r.pos = Math.floor(this.el.currentTime); this.saveSoon(); } },
+  // il punto di ascolto resta sul dispositivo; va nell’elenco sincronizzato solo in pausa o alla chiusura
+  savePos(flush = false) { const r = this.rec(); if (r && this.el && (this.el.currentTime > 0 || AudioPos.get(r))) { AudioPos.set(r.id, this.el.currentTime); if (flush) AudioPos.flushSoon(); } },
   saveSoon() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { const s = this.sec(); if (s) saveOwner(s); }, 800); },
   async act(a) {
     if (a === 'play') { if (this.el.paused) this.el.play().catch(() => {}); else this.el.pause(); return; }
     if (a === 'back') { this.seek(this.el.currentTime - 10); return; }
     if (a === 'fwd') { this.seek(this.el.currentTime + 30); return; }
-    if (a === 'close') { this.savePos(); this.el.pause(); this.aId = ''; this.bar.hidden = true; document.body.classList.remove('au-on'); return; }
+    if (a === 'close') { this.savePos(true); this.el.pause(); this.aId = ''; this.bar.hidden = true; document.body.classList.remove('au-on'); return; }
     if (a === 'open') { go(this.ownK === 'nb' ? `#/lezioni/${this.ownId}` : `#/sec/${this.ownId}/audio`); return; }
     if (a === 'mark') {
       const r = this.rec();
@@ -6508,7 +6560,7 @@ function viewLessons(nbId) {
       <section class="au-item lz-item" data-aid="${a.id}" data-find="${esc(foldAccents(`${a.name} ${(a.marks || []).map(m => m.label).join(' ')} ${[...(a.secIds || []), ...(a.marks || []).flatMap(m => m.secIds || [])].map(id => secById(id)?.title || '').join(' ')}`))}">
         <div class="au-head">
           <button type="button" class="btn sm primary" data-a="play" aria-label="Ascolta ${esc(a.name)}">▶</button>
-          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrata' : '', new Date(a.created).toLocaleDateString('it-IT'), a.pos ? `ascoltata fino a ${fmtT(a.pos)}` : ''].filter(Boolean).join(' · ')}<span class="au-miss" hidden></span></small><small class="au-drv" data-drv="${a.id}" hidden></small></div>
+          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrata' : '', new Date(a.created).toLocaleDateString('it-IT'), AudioPos.get(a) ? `ascoltata fino a ${fmtT(AudioPos.get(a))}` : ''].filter(Boolean).join(' · ')}<span class="au-miss" hidden></span></small><small class="au-drv" data-drv="${a.id}" hidden></small></div>
           ${audioMoveBtns(nb, a)}
           <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
         </div>
@@ -6518,7 +6570,7 @@ function viewLessons(nbId) {
           <div class="lz-mrow"><button type="button" class="link-btn" data-mt="${m.t}">${fmtT(m.t)}</button> <span class="au-ml">${esc(m.label || 'Senza nome')}</span>
           <button type="button" class="btn sm ghost" data-mr="${m.id}" aria-label="Rinomina">✎</button><button type="button" class="btn sm ghost" data-md="${m.id}" aria-label="Elimina il segnalibro">✕</button></div>
           <div class="lz-mlink"><span class="tags" data-scope="mark">${chips(m.secIds)}</span>
-          <select class="input lz-add sm" data-addto="mark" aria-label="Collega il segnalibro a una sezione"><option value="">＋ Sezione</option>${secOptionsHtml(nb, m.secIds || [])}</select></div></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti.</p>'}
+          <select class="input lz-add sm" data-addto="mark" aria-label="Collega il segnalibro a una sezione"><option value="">＋ Sezione</option>${secOptionsHtml(nb, m.secIds || [])}</select></div></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti, oppure <button type="button" class="link-btn" data-a="ai-marks">✨ falli proporre a Gemini</button>.</p>'}
       </section>`).join('') : '<div class="empty"><p>Nessuna lezione. Carica la registrazione di una lezione (anche lunga e su più argomenti), oppure registrala adesso. Poi segni i punti e li colleghi alle sezioni.</p></div>'}
     </div>`);
   // dov’è il file di ogni lezione; in cima, quante sono da scaricare o da caricare su Drive
@@ -6599,6 +6651,7 @@ function viewLessons(nbId) {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.a === 'play') { await AudioPlayer.load(nb, a.id); return; }
+    if (b.dataset.a === 'ai-marks') { await lessonAiAct('ai-marks', nb, a); return; }
     if (b.dataset.mt !== undefined) { if (AudioPlayer.aId === a.id) { AudioPlayer.seek(+b.dataset.mt); AudioPlayer.el.play().catch(() => {}); } else await AudioPlayer.load(nb, a.id, { at: +b.dataset.mt }); return; }
     if (b.dataset.mr) { const m = a.marks.find(x => x.id === b.dataset.mr); const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: m.label || '', confirm: 'Salva', allowEmpty: true }); if (v !== null && v !== undefined) { m.label = String(v).trim(); await saveNotebook(nb); route(); } return; }
     if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveNotebook(nb); AudioPlayer.paintTicks?.(); route(); return; }
@@ -7802,7 +7855,9 @@ function openLabelQuiz(sec, imageId) {
 
   /* trascinamento con dito o mouse; un tocco senza movimento seleziona */
   let drag = null;
-  root.addEventListener('pointerdown', e => {
+  // v3.90: gli ascolti stanno sulla finestra del quiz, non sul contenitore che resta (se no si sommavano a ogni apertura)
+  const win = root.firstElementChild;
+  win.addEventListener('pointerdown', e => {
     const p = e.target.closest('.lq-piece');
     if (!p || e.button > 0) return;
     e.preventDefault();
@@ -7810,7 +7865,7 @@ function openLabelQuiz(sec, imageId) {
     drag = { id: e.pointerId, pid: p.dataset.p, el: p, x0: e.clientX, y0: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height, ghost: null };
     try { p.setPointerCapture(e.pointerId); } catch { /* va bene lo stesso */ }
   });
-  root.addEventListener('pointermove', e => {
+  win.addEventListener('pointermove', e => {
     if (!drag || e.pointerId !== drag.id) return;
     if (!drag.ghost) {
       if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
@@ -7849,13 +7904,13 @@ function openLabelQuiz(sec, imageId) {
     if (over) place(d.pid, over.dataset.s);
     else { unplace(d.pid); picked = null; draw(); }
   };
-  root.addEventListener('pointerup', endDrag);
-  root.addEventListener('pointercancel', e => { if (drag && drag.ghost) drag.ghost.remove(); if (drag) drag.el.classList.remove('lifting'); drag = null; draw(); });
-  root.addEventListener('click', e => {
+  win.addEventListener('pointerup', endDrag);
+  win.addEventListener('pointercancel', e => { if (drag && drag.ghost) drag.ghost.remove(); if (drag) drag.el.classList.remove('lifting'); drag = null; draw(); });
+  win.addEventListener('click', e => {
     const s = e.target.closest('.lq-slot');
     if (s && picked && !e.target.closest('.lq-piece')) { place(picked, s.dataset.s); return; }
   });
-  root.addEventListener('keydown', e => {
+  win.addEventListener('keydown', e => {
     const p = e.target.closest('.lq-piece');
     if (p && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); picked = picked === p.dataset.p ? null : p.dataset.p; draw(); $(`.lq-piece[data-p="${p.dataset.p}"]`, root)?.focus(); }
   });
@@ -7877,7 +7932,7 @@ function openLabelQuiz(sec, imageId) {
   const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', sizeTray);
-  root.addEventListener('click', async e => {
+  win.addEventListener('click', async e => {
     const b = e.target.closest('[data-q]');
     if (!b) return;
     const q = b.dataset.q;

@@ -1231,12 +1231,6 @@ const eqKey = (q, nbId) => `${nbId || ''}|${foldAccents(q).replace(/[^a-z0-9]+/g
 const eqFreq = x => Math.max(1, (x.occ || []).length);
 const eqOfSec = id => examQs().filter(x => (x.secIds || []).includes(id));
 function eqSubject(x) { return nbById(x.notebookId)?.name || x.subject || 'Senza materia'; }
-function eqMeta(x) {
-  const occ = x.occ || [];
-  const profs = [...new Set(occ.map(o => o.prof).filter(Boolean))];
-  const years = [...new Set(occ.map(o => o.year || (o.date || '').slice(0, 4)).filter(Boolean))].sort();
-  return [eqFreq(x) > 1 ? `uscita ${eqFreq(x)} volte` : 'uscita 1 volta', profs.slice(0, 2).join(', '), years.slice(-3).join(', ')].filter(Boolean).join(' · ');
-}
 
 /* ---------- Lettura di fogli Excel (.xlsx) e CSV, senza librerie esterne oltre a JSZip ---------- */
 async function readSheetFile(file) {
@@ -3721,7 +3715,7 @@ function vivaScope(kind, id) {
   }
   if (kind === 'nb') { const nb = nbById(id); return nb ? { title: nb.name, secs: secsOf(nb.id) } : null; }
   // v3.85: esame orale con le domande vere (una materia intera o una sola domanda)
-  if (kind === 'exam') { const key = decodeURIComponent(id || ''); return eqOfSubj(key).length ? { title: eqSubjLabel(key), exam: true, key } : null; }
+  if (kind === 'exam') { let key = id || ''; try { key = decodeURIComponent(key); } catch { /* è già a posto */ } return eqOfSubj(key).length ? { title: eqSubjLabel(key), exam: true, key } : null; }
   if (kind === 'examq') { const x = examQs().find(r => r.id === id); return x ? { title: eqSubjLabel(eqSubjKey(x)), exam: true, key: eqSubjKey(x), one: x } : null; }
   return null;
 }

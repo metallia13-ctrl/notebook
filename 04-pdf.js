@@ -969,11 +969,14 @@ function viewPdf(id, pageParam) {
     // timer a parte: il selectionchange che arriva subito dopo non deve annullarlo
     setTimeout(applyTextTool, 60);
   });
-  document.addEventListener('selectionchange', () => {
+  const onSelTool = () => {
     if (!['hl', 'ul', 'st'].includes(R.tool)) return;
     clearTimeout(textToolTimer);
     if (SelGesture.lastType === 'mouse') textToolTimer = setTimeout(applyTextTool, 1100);
-  });
+  };
+  document.addEventListener('selectionchange', onSelTool);
+  // v3.90: si toglie uscendo dal PDF (prima restava, uno in più a ogni PDF aperto)
+  addCleanup(() => { document.removeEventListener('selectionchange', onSelTool); clearTimeout(textToolTimer); });
   const eraseAt = e => {
     const hit = document.elementFromPoint(e.clientX, e.clientY);
     const g = hit && hit.closest && hit.closest('svg.pdf-ann [data-id], svg.pdf-occ [data-id]');
@@ -1761,6 +1764,8 @@ function viewPdf(id, pageParam) {
     };
     document.addEventListener('dragend', done, true);
     document.addEventListener('drop', done, true);
+    // se il browser non avvisa della fine del trascinamento, non resto in attesa per sempre
+    setTimeout(done, 60000);
   });
 
   // ---------- barra in alto e scorrimento
@@ -2170,6 +2175,7 @@ function cropEditor({ doc, page, box, title = '', autoLabels = false }) {
         <div class="ce-scroll"><div class="ce-stage"><canvas class="ce-cv"></canvas>
           <div class="ce-box">${['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map(k => `<span class="ce-h ce-${k}" data-h="${k}"></span>`).join('')}</div></div></div>
       </div>`;
+    const ceWin = root.firstElementChild;
     const done = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
     const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); done(null); } if (e.key === 'Enter') { e.preventDefault(); done(bx); } };
     document.addEventListener('keydown', onKey, true);
@@ -2230,7 +2236,7 @@ function cropEditor({ doc, page, box, title = '', autoLabels = false }) {
     const end = () => { if (drag && drag.k === 'new' && (bx.w < 0.02 || bx.h < 0.02)) { bx = drag.b0.w ? drag.b0 : { x: 0.05, y: 0.05, w: 0.9, h: 0.9 }; paint(); } drag = null; };
     stage.addEventListener('pointerup', end);
     stage.addEventListener('pointercancel', end);
-    root.addEventListener('click', async e => {
+    ceWin.addEventListener('click', async e => {
       const b = e.target.closest('[data-ce]');
       if (!b) return;
       if (b.dataset.ce === 'no') done(null);
