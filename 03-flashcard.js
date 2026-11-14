@@ -200,7 +200,7 @@ function cardCounts(list, { limitNew = true } = {}) {
     const s = c.srs;
     if (s.state === 'new') { if (!cardHeld(c)) newBy[c.notebookId] = (newBy[c.notebookId] || 0) + 1; }
     else if (s.state === 'review') { if (s.due <= now) r++; }
-    else if (s.due <= now + LEARN_AHEAD) l++;
+    else if (s.due <= now) l++; // v3.92: solo quelle già tornate (le altre aspettano il loro momento)
   }
   for (const nb in newBy) n += limitNew ? Math.min(newBy[nb], newLeftToday(nb)) : newBy[nb];
   return { n, l, r };
@@ -696,7 +696,8 @@ function pickNext() {
     if (c && !c.suspended && ((c.srs.state === 'new' && !cardHeld(c)) || (c.srs.state === 'review' && c.srs.due <= now))) return c;
     session.queue.shift();
   }
-  if (learning.length && learning[0].srs.due <= now + LEARN_AHEAD) return learning[0];
+  // v3.92: niente più “in anticipo” (Anki ripropone subito le carte che tornano entro 20 minuti):
+  // si aspetta il momento giusto, e CardReminder avvisa quando arriva
   return null;
 }
 function sessionCounts() {
@@ -708,7 +709,7 @@ function sessionCounts() {
     if (c.srs.state === 'new') { if (!cardHeld(c)) n++; }
     else if (c.srs.state === 'review' && c.srs.due <= now) r++;
   }
-  const l = scopeCards(session.scope).filter(c => (c.srs.state === 'learning' || c.srs.state === 'relearning') && c.srs.due <= now + LEARN_AHEAD).length;
+  const l = scopeCards(session.scope).filter(c => (c.srs.state === 'learning' || c.srs.state === 'relearning') && c.srs.due <= now).length;
   return { n, l, r };
 }
 
@@ -920,6 +921,7 @@ async function answerCard(grade) {
     if (newLeech) c.tags = [...tagsOf(c), LEECH_TAG];
     await saveCard(c);
     Stats.addReview();
+    CardReminder.schedule();
     if (newLeech) toast(`Questa flashcard l’hai sbagliata ${c.srs.lapses} volte: prova a riscriverla più semplice o a spezzarla in due`, '', { label: 'Modifica', fn: () => go(`#/card/${c.id}`) });
     session.undo.push({ id: c.id, prev, inQueue: session.queue.includes(c.id) });
     if (session.undo.length > 30) session.undo.shift();
@@ -1001,7 +1003,10 @@ function renderStudyDone() {
         <p class="lede">${session.done ? `${session.done} ${session.done === 1 ? 'risposta' : 'risposte'} in questa sessione.` : 'Non ci sono flashcard da studiare adesso.'}</p>
       </div>
     </header>
-    ${later.length ? `<p>${later.length} ${later.length === 1 ? 'flashcard in apprendimento torna' : 'flashcard in apprendimento tornano'} tra ${nextMin} ${nextMin === 1 ? 'minuto' : 'minuti'}.</p>` : ''}
+    ${later.length ? `<div class="callout wait-card">
+      <p><strong>${later.length === 1 ? 'Una flashcard torna' : `${later.length} flashcard tornano`}</strong> tra <b class="wait-left">${fmtWait(later[0].srs.due - now)}</b>, come hai scelto.</p>
+      <p class="hint">Puoi restare qui (ricomincia da sola) oppure leggere altro: quando è il momento compare un promemoria in alto; lo tocchi e la flashcard si apre dove sei.</p>
+    </div>` : ''}
     ${learned.map(s => `
       <div class="callout learned" data-sec="${s.id}">
         <p>Hai appreso <strong>${esc(s.title)}</strong>. Vuoi segnarla come studiata in StudyHub? StudyHub pianificherà i ripassi successivi.</p>
@@ -1012,7 +1017,7 @@ function renderStudyDone() {
       </div>`).join('')}
     ${session.mode === 'ripassa' && newWaiting ? `<p>Hai ripassato tutto. Ci sono ancora ${newWaiting} ${newWaiting === 1 ? 'flashcard nuova' : 'flashcard nuove'} per oggi.</p>` : ''}
     <div class="row-actions">
-      ${later.length ? '<button class="btn" data-act="continue">Continua lo stesso</button>' : ''}
+      ${later.length ? '<button class="btn ghost" data-act="continue">Ripassala adesso</button>' : ''}
       ${session.mode === 'ripassa' && newWaiting ? `<a class="btn" href="#/study/${sc}">Studia anche le nuove</a>` : ''}
       <a class="btn ${learned.length ? 'ghost' : 'primary'}" href="${scopeBack(sc)}">Torna indietro</a>
     </div>
@@ -1036,7 +1041,143 @@ function renderStudyDone() {
     session.revealed = false;
     renderStudy();
   });
+  // il conto alla rovescia; quando arriva il momento, la flashcard compare qui
+  if (later.length) {
+    const t = setInterval(() => {
+      const left = later[0].srs.due - Date.now();
+      const el = $('.wait-left');
+      if (!el) { clearInterval(t); return; }
+      if (left <= 0) { clearInterval(t); renderStudy(); return; }
+      el.textContent = fmtWait(left);
+    }, 1000);
+    addCleanup(() => clearInterval(t));
+  }
 }
+// “4 min 20 s”, “35 s”, “1 h 5 min”
+function fmtWait(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 && m < 10 ? `${m} min ${s % 60} s` : `${m + (s % 60 ? 1 : 0)} min`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/* =====================================================================
+   v3.92: promemoria delle flashcard in apprendimento
+   Una flashcard rimandata di 1 o 10 minuti torna esattamente a quell’ora.
+   Se in quel momento sei altrove nell’app (stai leggendo, sei in un PDF…)
+   compare un promemoria in alto: lo tocchi e la flashcard si apre lì, in
+   una finestra; rispondi e torni a quello che facevi.
+   ===================================================================== */
+const CardReminder = {
+  timer: 0, el: null, open: false, dismissedAt: 0,
+  learningDue() {
+    return state.cards.filter(c => !c.suspended && (c.srs.state === 'learning' || c.srs.state === 'relearning') && c.srs.due)
+      .sort((a, b) => a.srs.due - b.srs.due);
+  },
+  // sulla pagina del ripasso ci pensa già lei
+  onStudyPage() { return /^#\/study\//.test(location.hash); },
+  init() {
+    const el = document.createElement('div');
+    el.className = 'card-rem';
+    el.hidden = true;
+    el.setAttribute('role', 'status');
+    el.innerHTML = `<button type="button" class="card-rem-open" data-crem="open"><span class="card-rem-ic" aria-hidden="true">⏰</span><span class="card-rem-t"></span></button><button type="button" class="card-rem-x" data-crem="later" aria-label="Più tardi" title="Più tardi (te lo ricordo tra 2 minuti)">✕</button>`;
+    document.body.append(el);
+    this.el = el;
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-crem]');
+      if (!b) return;
+      if (b.dataset.crem === 'open') this.review();
+      else { this.dismissedAt = Date.now(); this.hide(); this.schedule(); }
+    });
+    window.addEventListener('hashchange', () => this.check());
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) this.check(); });
+    window.addEventListener('nb-live', () => this.schedule());
+    this.schedule();
+  },
+  // il prossimo controllo: quando scade la prima flashcard (al massimo tra un minuto)
+  schedule() {
+    clearTimeout(this.timer);
+    const list = this.learningDue();
+    const snooze = this.dismissedAt ? this.dismissedAt + 120000 - Date.now() : 0;
+    const next = list.length ? Math.max(list[0].srs.due - Date.now(), snooze, 0) : 60000;
+    this.timer = setTimeout(() => this.check(), Math.min(60000, next + 200));
+  },
+  check() {
+    const now = Date.now();
+    try { updateBadge(); } catch { /* niente */ }
+    const due = this.learningDue().filter(c => c.srs.due <= now);
+    const snoozed = this.dismissedAt && now - this.dismissedAt < 120000;
+    if (!due.length || this.onStudyPage() || this.open || snoozed || $('#modalRoot').children.length) this.hide();
+    else this.show(due);
+    this.schedule();
+  },
+  show(due) {
+    if (!this.el) return;
+    $('.card-rem-t', this.el).textContent = due.length === 1 ? 'È il momento di ripassare una flashcard' : `È il momento di ripassare ${due.length} flashcard`;
+    const was = this.el.hidden;
+    this.el.hidden = false;
+    if (was) { this.el.classList.remove('pop'); void this.el.offsetWidth; this.el.classList.add('pop'); try { navigator.vibrate?.(60); } catch { /* niente */ } }
+  },
+  hide() { if (this.el) this.el.hidden = true; },
+  // la flashcard si apre dove sei, senza cambiare pagina
+  review() {
+    this.hide();
+    const now = Date.now();
+    const due = this.learningDue().filter(c => c.srs.due <= now);
+    if (!due.length) { this.schedule(); return; }
+    let card = due[0];
+    let revealed = false;
+    let done = 0;
+    this.open = true;
+    const sh = openSheet('<div class="crem-sheet"></div>', { label: 'Flashcard', onClose: () => { this.open = false; this.dismissedAt = 0; this.check(); } });
+    const box = $('.crem-sheet', sh.el);
+    const draw = () => {
+      const t = Date.now();
+      const sec = card.sectionId ? secById(card.sectionId) : null;
+      const left = this.learningDue().filter(c => c.srs.due <= t && c.id !== card.id).length;
+      box.innerHTML = `
+        <p class="crem-head"><span>${esc(scopeTitle(card.notebookId))}${sec ? ` › ${esc(sec.title)}` : ''}</span>${left ? `<span class="crem-n">ancora ${left}</span>` : ''}</p>
+        <article class="fcard study ${card.type === 'occlusion' ? 'is-io' : ''}">${cardFaceHtml(card, revealed)}</article>
+        ${revealed ? `<div class="grade-btns">${CARD_GRADES.map((g, i) => `<button class="gbtn g-${g.key}" data-cg="${g.key}" aria-keyshortcuts="${i + 1}"><span>${g.label}</span><small>${fmtCardNext(scheduleCard(card.srs, g.key, t, true), t)}</small></button>`).join('')}</div>`
+          : '<button class="btn primary block big" type="button" data-cg="reveal" aria-keyshortcuts="Space">Mostra la risposta</button>'}
+        <div class="modal-actions"><button class="btn ghost" type="button" data-cg="close">Più tardi</button></div>`;
+    };
+    const answer = async g => {
+      const prev = JSON.parse(JSON.stringify(card.srs));
+      card.srs = scheduleCard(card.srs, g);
+      await saveCard(card);
+      Stats.addReview();
+      done++;
+      // se il ripasso è aperto con questa flashcard, non la ripropone
+      if (session && session.current === card.id) { session.current = null; session.revealed = false; }
+      if (session) session.undo.push({ id: card.id, prev, inQueue: false });
+      updateBadge();
+      const nextDue = this.learningDue().filter(c => c.srs.due <= Date.now());
+      if (nextDue.length) { card = nextDue[0]; revealed = false; draw(); return; }
+      sh.close(true);
+      const later = this.learningDue();
+      toast(`${done === 1 ? 'Fatto' : `Fatte ${done}`}${later.length ? `: la prossima torna tra ${fmtWait(later[0].srs.due - Date.now())}` : ''}`);
+    };
+    box.addEventListener('click', e => {
+      const b = e.target.closest('[data-cg]');
+      if (!b) return;
+      if (b.dataset.cg === 'close') { sh.close(false); this.dismissedAt = Date.now(); return; }
+      if (b.dataset.cg === 'reveal') { revealed = true; draw(); return; }
+      answer(b.dataset.cg);
+    });
+    const onKey = e => {
+      if (!box.isConnected) { document.removeEventListener('keydown', onKey, true); return; }
+      if (isTyping()) return;
+      if (!revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); e.stopPropagation(); revealed = true; draw(); return; }
+      const i = ['1', '2', '3', '4'].indexOf(e.key);
+      if (revealed && i >= 0) { e.preventDefault(); e.stopPropagation(); answer(CARD_GRADES[i].key); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    draw();
+  }
+};
 
 /* Eliminazione con traccia per la sincronizzazione */
 async function removeRecords(list) {

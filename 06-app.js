@@ -131,7 +131,7 @@ function viewSettings() {
       <div class="grid2">
         <label class="field"><span>Stile</span>
           <select class="input" id="stLook">
-            <option value="vetrino" ${st.look !== 'classic' ? 'selected' : ''}>Vetrino (nuovo): viola e rosa, carattere stretto</option>
+            <option value="vetrino" ${st.look !== 'classic' ? 'selected' : ''}>Vetrino (nuovo): blu e verde acqua, carattere stretto</option>
             <option value="classic" ${st.look === 'classic' ? 'selected' : ''}>Classico: quaderno a puntini, azzurro</option>
           </select></label>
         <label class="field"><span>Tema</span>
@@ -1225,6 +1225,7 @@ async function init() {
   Resume.init();
   Pad.init();
   Split.init();
+  CardReminder.init();
   // dal lettore PDF dentro Affianca: un collegamento verso un’altra pagina si apre qui
   window.addEventListener('message', e => { if (e.origin === location.origin && e.data && e.data.nbEmbed === 'nav' && typeof e.data.hash === 'string') go(e.data.hash); });
   PNote.init();
@@ -1312,9 +1313,14 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.92", title: "le flashcard tornano all’ora giusta, colori freddi", html: `      <ul>
+        <li><strong>Flashcard</strong>: una flashcard rimandata di 1 o 10 minuti ora torna esattamente a quell’ora, anche se è l’ultima rimasta (prima, come in Anki, te la riproponeva subito). Nel ripasso vedi il conto alla rovescia e la flashcard ricompare da sola.</li>
+        <li><strong>Promemoria</strong>: se intanto sei altrove nell’app (stai leggendo una sezione, sei in un PDF…), quando è il momento compare in alto “È il momento di ripassare una flashcard”. Lo tocchi e la flashcard si apre lì, in una finestra: rispondi e torni a quello che stavi facendo. Con ✕ te lo ricorda tra 2 minuti.</li>
+        <li><strong>Stile “Vetrino”</strong> con colori freddi: blu notte, verde acqua e blu pervinca.</li>
+      </ul>` },
   { v: "3.91", title: "le modifiche di due dispositivi si uniscono, nuovo stile", html: `      <ul>
         <li><strong>Sincronizzazione</strong>: se modifichi la stessa sezione, lo stesso notebook, una flashcard o una nota su due dispositivi prima che si sincronizzino, le modifiche ora <strong>si uniscono</strong> invece di sovrascriversi. Campi diversi restano entrambi; segnalibri, cartelle, mappe, domande e ripassi si uniscono voce per voce; il testo riga per riga. Solo se hai cambiato le stesse righe da entrambe le parti restano le due versioni, con un avviso ⚠️ nel testo. Non serve aggiornare lo script.</li>
-        <li><strong>Nuovo stile “Vetrino”</strong>, ispirato ai vetrini di istologia (ematossilina-eosina): viola e rosa, titoli e pulsanti in un carattere più stretto, angoli più netti. Vale per i temi scuro, chiaro e carta. Se preferisci quello di prima: Impostazioni → Stile → Classico.</li>
+        <li><strong>Nuovo stile “Vetrino”</strong>, ispirato ai vetrini di istologia: blu e verde acqua, titoli e pulsanti in un carattere più stretto, angoli più netti. Vale per i temi scuro, chiaro e carta. Se preferisci quello di prima: Impostazioni → Stile → Classico.</li>
       </ul>` },
   { v: "3.90", title: "controllo generale", html: `      <ul>
         <li>Le voci <strong>✨ Segnalibri automatici</strong> e <strong>✨ Bozza di appunti</strong> ora sono sempre nel menu ⋯ delle lezioni: se su questo dispositivo manca la chiave di Gemini te lo dicono, invece di sparire (le chiavi dell’AI non si sincronizzano: vanno messe su ogni dispositivo).</li>

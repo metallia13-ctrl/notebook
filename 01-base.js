@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.91';
+const APP_VERSION = '3.92';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -1258,7 +1258,7 @@ function applyTheme() {
   html.style.setProperty('--read-size', READ_SIZES[S().readSize] || READ_SIZES.m);
   html.style.setProperty('--read-lh', READ_LH[S().readSpacing] || READ_LH.normal);
   const meta = $('meta[name="theme-color"]');
-  if (meta) meta.content = (look === 'classic' ? { dark: '#0c1020', light: '#f3f5fb', sepia: '#f2e9d5' } : { dark: '#15112a', light: '#f8f3f7', sepia: '#f3e9e2' })[theme];
+  if (meta) meta.content = (look === 'classic' ? { dark: '#0c1020', light: '#f3f5fb', sepia: '#f2e9d5' } : { dark: '#0b1820', light: '#f1f7f9', sepia: '#eef0ea' })[theme];
 }
 
 function statusPill(s) {
