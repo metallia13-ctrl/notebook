@@ -4068,3 +4068,18 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
   .prep-row { grid-template-columns: 6px 1fr; }
   .prep-acts { grid-column: 2; }
 }
+
+/* v3.86: lezioni su Google Drive */
+.au-miss.ok { color: var(--muted); }
+.au-drv { color: var(--accent); font-weight: 600; }
+.lz-drvbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.drv-path { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 8px; }
+.drv-box { max-height: min(52vh, 460px); overflow: auto; border: 1px solid var(--line); border-radius: var(--r-md); padding: 4px 8px; }
+.drv-list { list-style: none; margin: 0; padding: 0; }
+.drv-list .row { width: 100%; }
+.drv-ic .fc-ic { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; color: var(--accent); }
+.drv-file { cursor: pointer; gap: 10px; align-items: center; }
+.drv-file input { flex: none; width: 18px; height: 18px; }
+.drv-file.done { opacity: 0.6; }
+.drv-allrow { padding: 6px 4px; border-bottom: 1px solid var(--line); }
+.drv-acts { flex-wrap: wrap; }

@@ -19,29 +19,44 @@
  * > Versione: "Nuova versione". Così l'indirizzo resta lo stesso.
  *
  * I dati finiscono nella cartella "StudyHub Notebook (sincronizzazione)" del tuo Drive:
- * un file per ogni notebook, un indice e le sottocartelle "immagini" e "pdf".
- * Non modificarli a mano.
+ * un file per ogni notebook, un indice e le sottocartelle "immagini", "pdf" e "lezioni".
+ * Non modificarli a mano (tranne "lezioni": lì ci sono file audio normali).
  *
- * Versione 2 (Notebook 3.8): aggiunge i PDF. Se avevi già la versione 1, incolla questo file
- * al posto del vecchio TENENDO LA TUA FRASE SEGRETA, poi Distribuisci > Gestisci distribuzioni
- * > Modifica (matita) > Versione: "Nuova versione" > Distribuisci. Non serve autorizzare di nuovo.
- * Ogni PDF è salvato in pezzi da 3 MB nella sottocartella "pdf": l'app li ricompone da sola.
+ * Versione 2 (Notebook 3.8): aggiunge i PDF.
+ *
+ * Versione 3 (Notebook 3.86): aggiunge le lezioni audio su Drive. L'app può aprire le
+ * cartelle del tuo Drive, aggiungere gli audio che ci trovi e scaricarli sul dispositivo,
+ * e caricare su Drive le lezioni registrate o caricate da un dispositivo.
+ * Per aggiornare dalla versione 2:
+ *   a. incolla questo file al posto del vecchio TENENDO LA TUA FRASE SEGRETA;
+ *   b. scegli di nuovo la funzione "autorizza" e premi Esegui: questa volta Google chiede
+ *      anche il permesso di "connettersi a un servizio esterno" (serve per leggere e scrivere
+ *      i file audio a pezzi). Consenti;
+ *   c. Distribuisci > Gestisci distribuzioni > Modifica (matita) > Versione: "Nuova versione"
+ *      > Distribuisci. L'indirizzo /exec resta lo stesso.
  */
 
 const SECRET = 'CAMBIA-QUESTA-FRASE';
 const FOLDER_NAME = 'StudyHub Notebook (sincronizzazione)';
 const MAX_SET_CONTENT = 7 * 1024 * 1024; // oltre questa misura il file viene ricreato invece che sovrascritto
+const DRIVE_CHUNK = 3 * 1024 * 1024;     // pezzi degli audio: 3 MB (multiplo di 256 KB, come vuole Drive)
+const AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|oga|opus|webm|flac|mp4|3gp|amr|wma)$/i;
 
 /** Da eseguire una volta dall'editor: concede l'accesso a Drive e crea la cartella. */
 function autorizza() {
   const folder = folder_();
   indexFile_(folder);
   imgFolder_(folder);
+  // chiede anche il permesso per i servizi esterni (gli audio passano dall'API di Drive)
+  UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
   Logger.log('Autorizzazione completata. Cartella: ' + folder.getName());
 }
 
 function doGet() {
-  return json_({ ok: true, app: 'studyhub-notebook-sync', version: 2, pdf: true });
+  return json_({ ok: true, app: 'studyhub-notebook-sync', version: 3, pdf: true, drive: true });
 }
 
 function doPost(e) {
@@ -56,6 +71,15 @@ function doPost(e) {
   }
   if (!req || req.secret !== SECRET) return json_({ ok: false, error: 'Frase segreta errata' });
 
+  // gli audio su Drive non toccano l'indice: niente attesa per la sincronizzazione
+  if (String(req.action || '').indexOf('drive-') === 0) {
+    try {
+      return json_(driveAction_(req));
+    } catch (err) {
+      return json_({ ok: false, error: driveError_(err) });
+    }
+  }
+
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return json_({ ok: false, error: 'Sincronizzazione già in corso da un altro dispositivo, riprova tra poco' });
   try {
@@ -65,7 +89,7 @@ function doPost(e) {
     if (!index.shards) index.shards = {};
     if (!index.images) index.images = {};
     if (!index.pdfs) index.pdfs = {};
-    if (req.action === 'ping') return json_({ ok: true, rev: index.rev, version: 2 });
+    if (req.action === 'ping') return json_({ ok: true, rev: index.rev, version: 3 });
     if (req.action === 'images') return json_(images_(index, req));
     if (req.action === 'pdf-info') return json_(pdfInfo_(index, req));
     if (req.action === 'pdf-up') return json_(pdfUp_(folder, indexFile, index, req));
@@ -281,6 +305,185 @@ function trashPdf_(index, id) {
   if (!m) return;
   trashParts_(m.parts);
   index.pdfs[id] = { deleted: true, updated: Date.now() };
+}
+
+/* ---------------------------------------------------------------------
+   Versione 3: lezioni audio su Drive.
+   - drive-list: le sottocartelle e i file audio di una cartella (anche "Il mio Drive")
+   - drive-token: un accesso temporaneo, così l'app scarica l'audio direttamente da Drive
+   - drive-part: un pezzo di un audio (se lo scaricamento diretto non va)
+   - drive-up-start / drive-up-part: carica un audio a pezzi in un unico file
+   --------------------------------------------------------------------- */
+function driveAction_(req) {
+  if (req.action === 'drive-list') return driveList_(req);
+  if (req.action === 'drive-token') return { ok: true, token: ScriptApp.getOAuthToken(), expires: Date.now() + 45 * 60 * 1000 };
+  if (req.action === 'drive-part') return drivePart_(req);
+  if (req.action === 'drive-up-start') return driveUpStart_(req);
+  if (req.action === 'drive-up-part') return driveUpPart_(req);
+  return { ok: false, error: 'Azione sconosciuta' };
+}
+
+function driveError_(err) {
+  const msg = String((err && err.message) || err);
+  if (/UrlFetchApp|external_request|autorizzazione|permission|permesso/i.test(msg)) {
+    return 'Lo script non ha ancora il permesso per gli audio: aprilo su script.google.com, scegli la funzione "autorizza", premi Esegui e consenti.';
+  }
+  if (/not found|non trovat|no item|Impossibile trovare/i.test(msg)) return 'Su Drive non trovo questo file o cartella (forse è stato spostato o cancellato).';
+  return msg;
+}
+
+/** La cartella da un link di Drive, da un id o "root" (Il mio Drive). */
+function folderFrom_(v) {
+  const s = String(v || '').trim();
+  if (!s || s === 'root') return DriveApp.getRootFolder();
+  const m = s.match(/folders\/([\w-]{10,})/) || s.match(/[?&]id=([\w-]{10,})/) || s.match(/^([\w-]{10,})$/);
+  if (!m) throw new Error('Link della cartella non valido: copia il link della cartella da Drive');
+  return DriveApp.getFolderById(m[1]);
+}
+
+function driveList_(req) {
+  const f = folderFrom_(req.folder);
+  const rootId = DriveApp.getRootFolder().getId();
+  const isRoot = f.getId() === rootId;
+  let parent = null;
+  if (!isRoot) {
+    try {
+      const ps = f.getParents();
+      if (ps.hasNext()) {
+        const p = ps.next();
+        parent = { id: p.getId(), name: p.getId() === rootId ? 'Il mio Drive' : p.getName() };
+      }
+    } catch (err) { /* cartella condivisa: niente cartella sopra */ }
+  }
+  const folders = [];
+  const fi = f.getFolders();
+  while (fi.hasNext() && folders.length < 300) {
+    const x = fi.next();
+    if (!x.isTrashed()) folders.push({ id: x.getId(), name: x.getName() });
+  }
+  const files = [];
+  const it = f.getFiles();
+  let seen = 0;
+  while (it.hasNext() && files.length < 500 && seen < 4000) {
+    const x = it.next();
+    seen++;
+    if (x.isTrashed()) continue;
+    const mime = x.getMimeType() || '';
+    const name = x.getName();
+    if (mime.indexOf('audio/') !== 0 && !AUDIO_EXT.test(name)) continue;
+    files.push({ id: x.getId(), name: name, size: x.getSize(), mime: mime, modified: x.getLastUpdated().getTime() });
+  }
+  const byName = function (a, b) { return a.name.localeCompare(b.name, 'it', { numeric: true }); };
+  folders.sort(byName);
+  files.sort(byName);
+  return { ok: true, id: isRoot ? 'root' : f.getId(), name: isRoot ? 'Il mio Drive' : f.getName(), parent: parent, folders: folders, files: files };
+}
+
+function validDriveId_(id) { return /^[\w-]{10,}$/.test(String(id || '')); }
+
+/** Un pezzo da 3 MB di un file audio, in base64. */
+function drivePart_(req) {
+  const id = String(req.id || '');
+  if (!validDriveId_(id)) return { ok: false, error: 'File non valido' };
+  const file = DriveApp.getFileById(id);
+  const size = file.getSize();
+  const total = Math.max(1, Math.ceil(size / DRIVE_CHUNK));
+  const part = Number(req.part) || 0;
+  if (part < 0 || part >= total || part % 1) return { ok: false, error: 'Pezzo non valido' };
+  const start = part * DRIVE_CHUNK;
+  const end = Math.min(size, start + DRIVE_CHUNK) - 1;
+  let bytes;
+  try {
+    const res = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + id + '?alt=media&supportsAllDrives=true', {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), Range: 'bytes=' + start + '-' + end },
+      muteHttpExceptions: true
+    });
+    const code = res.getResponseCode();
+    if (code !== 206 && code !== 200) throw new Error('Drive ha risposto ' + code);
+    bytes = res.getContent();
+    if (code === 200 && bytes.length > end - start + 1) bytes = bytes.slice(start, end + 1);
+  } catch (err) {
+    // ultima possibilità: tutto il file in memoria (va per i file fino a circa 50 MB)
+    bytes = file.getBlob().getBytes().slice(start, end + 1);
+  }
+  return { ok: true, part: part, total: total, size: size, mime: file.getMimeType(), data: Utilities.base64Encode(bytes) };
+}
+
+/** Prepara il caricamento di un audio: restituisce l'indirizzo a cui mandare i pezzi. */
+function driveUpStart_(req) {
+  const size = Number(req.size) || 0;
+  if (!(size > 0)) return { ok: false, error: 'File vuoto' };
+  let folder;
+  if (req.folder) folder = folderFrom_(req.folder);
+  else {
+    folder = lessonsFolder_(folder_());
+    const sub = String(req.sub || '').replace(/[\\/:*?"<>|]/g, '-').trim().slice(0, 100);
+    if (sub) {
+      const it = folder.getFoldersByName(sub);
+      folder = it.hasNext() ? it.next() : folder.createFolder(sub);
+    }
+  }
+  const meta = { name: String(req.name || 'Lezione').slice(0, 200), parents: [folder.getId()] };
+  const res = UrlFetchApp.fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name', {
+    method: 'post',
+    contentType: 'application/json; charset=UTF-8',
+    payload: JSON.stringify(meta),
+    headers: {
+      Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
+      'X-Upload-Content-Type': String(req.mime || 'application/octet-stream'),
+      'X-Upload-Content-Length': String(size)
+    },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) return { ok: false, error: 'Drive non accetta il caricamento (' + res.getResponseCode() + ')' };
+  const h = res.getAllHeaders();
+  const session = h.Location || h.location;
+  if (!session) return { ok: false, error: 'Drive non ha dato l’indirizzo per il caricamento' };
+  return { ok: true, session: session, folder: folder.getId(), folderName: folder.getName() };
+}
+
+/** Manda un pezzo: Drive risponde 308 finché manca qualcosa, 200 quando il file è completo. */
+function driveUpPart_(req) {
+  const session = String(req.session || '');
+  if (session.indexOf('https://www.googleapis.com/upload/drive/') !== 0) return { ok: false, error: 'Caricamento non valido' };
+  const start = Number(req.start) || 0;
+  const size = Number(req.size) || 0;
+  const bytes = Utilities.base64Decode(String(req.data || ''));
+  if (!bytes.length || !(size > 0)) return { ok: false, error: 'Pezzo vuoto' };
+  const end = start + bytes.length - 1;
+  const res = UrlFetchApp.fetch(session, {
+    method: 'put',
+    payload: bytes,
+    contentType: String(req.mime || 'application/octet-stream'),
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), 'Content-Range': 'bytes ' + start + '-' + end + '/' + size },
+    muteHttpExceptions: true,
+    followRedirects: false
+  });
+  const code = res.getResponseCode();
+  if (code === 200 || code === 201) {
+    const j = JSON.parse(res.getContentText() || '{}');
+    return { ok: true, done: true, fileId: j.id, name: j.name };
+  }
+  if (code === 308) {
+    const h = res.getAllHeaders();
+    const m = String(h.Range || h.range || '').match(/bytes=0-(\d+)/);
+    return { ok: true, done: false, next: m ? Number(m[1]) + 1 : 0 };
+  }
+  return { ok: false, error: 'Caricamento su Drive interrotto (' + code + '): riprova' };
+}
+
+function lessonsFolder_(folder) {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('LESSONS_FOLDER_ID');
+  if (id) {
+    try {
+      const f = DriveApp.getFolderById(id);
+      if (!f.isTrashed()) return f;
+    } catch (err) { /* cartella sparita: la ricreo */ }
+  }
+  const f = folder.createFolder('lezioni');
+  props.setProperty('LESSONS_FOLDER_ID', f.getId());
+  return f;
 }
 
 function pdfFolder_(folder) {

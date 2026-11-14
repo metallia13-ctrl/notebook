@@ -5553,6 +5553,277 @@ async function pruneAudio() {
   } catch { /* niente */ }
 }
 
+/* =====================================================================
+   v3.86: lezioni audio su Google Drive (tramite lo script, versione 3)
+   - “Da Google Drive”: apri le cartelle del tuo Drive e aggiungi gli audio
+     che ci trovi; il file si scarica sul dispositivo quando lo ascolti
+   - “Carica su Drive”: una lezione registrata o caricata qui finisce su
+     Drive, così gli altri dispositivi la scaricano
+   Nome, segnalibri e collegamenti viaggiano già con la sincronizzazione;
+   nella lezione resta { drive: { id, name, size } }.
+   ===================================================================== */
+const AUDIO_UP_CHUNK = 3 * 1024 * 1024; // multiplo di 256 KB, come vuole Drive
+const AUDIO_RE = /\.(mp3|m4a|aac|wav|ogg|oga|opus|webm|flac|mp4|3gp|amr|wma)$/i;
+const audioMimeOf = name => ({ mp3: 'audio/mpeg', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', webm: 'audio/webm', flac: 'audio/flac', '3gp': 'audio/3gpp', amr: 'audio/amr', wma: 'audio/x-ms-wma' })[String(name || '').split('.').pop().toLowerCase()] || '';
+const DriveAudio = {
+  token: '', tokenExp: 0, jobs: {},
+  ready() { return Sync.configured(); },
+  async call(body) {
+    if (navigator.onLine === false) throw new Error('Sei offline: per Drive serve la connessione');
+    try { return await Sync.post({ secret: S().syncSecret.trim(), ...body }); }
+    catch (e) {
+      if (/Azione sconosciuta/i.test(e.message || '')) throw new Error('Per le lezioni su Drive aggiorna lo script della sincronizzazione alla versione 3 (il file sync-notebook.gs nuovo) e autorizzalo di nuovo: le istruzioni sono in cima allo script.');
+      throw e;
+    }
+  },
+  list(folder) { return this.call({ action: 'drive-list', folder: folder || 'root' }); },
+  async getToken() {
+    if (this.token && Date.now() < this.tokenExp) return this.token;
+    const r = await this.call({ action: 'drive-token' });
+    this.token = r.token || '';
+    this.tokenExp = Math.min(+r.expires || 0, Date.now() + 40 * 60 * 1000);
+    return this.token;
+  },
+  busy(id) { return this.jobs[id] || null; },
+  paint(id) {
+    const j = this.jobs[id];
+    $$(`[data-drv="${id}"]`).forEach(el => { el.textContent = j ? `${j.kind === 'up' ? 'Carico su Drive' : 'Scarico da Drive'}… ${Math.round(j.p * 100)}%` : ''; el.hidden = !j; });
+    window.dispatchEvent(new CustomEvent('nb-drive-job', { detail: { id, job: j } }));
+  },
+  // scarica il file di una lezione e lo tiene sul dispositivo
+  download(rec) {
+    if (this.jobs[rec.id]) return this.jobs[rec.id].promise;
+    const job = { kind: 'down', p: 0 };
+    this.jobs[rec.id] = job;
+    const onP = p => { job.p = p; this.paint(rec.id); };
+    job.promise = (async () => {
+      try {
+        let blob;
+        try { blob = await this.direct(rec, onP); } catch { blob = await this.viaScript(rec, onP); }
+        const type = blob.type && blob.type !== 'application/octet-stream' ? blob.type : (rec.type || audioMimeOf(rec.drive.name) || 'audio/mpeg');
+        const file = new File([blob], rec.drive.name || `${rec.name}.m4a`, { type });
+        await AudioDB.put(rec.id, file);
+        return file;
+      } finally {
+        delete this.jobs[rec.id];
+        this.paint(rec.id);
+      }
+    })();
+    this.paint(rec.id);
+    return job.promise;
+  },
+  // diretto da Drive con l’accesso temporaneo dello script: veloce, a flusso
+  async direct(rec, onP) {
+    const tk = await this.getToken();
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(rec.drive.id)}?alt=media&supportsAllDrives=true`, { headers: { Authorization: `Bearer ${tk}` } });
+    if (!res.ok) { if (res.status === 401) this.token = ''; throw new Error(`Drive ${res.status}`); }
+    const total = +res.headers.get('content-length') || rec.drive.size || 0;
+    if (!res.body || !res.body.getReader) return res.blob();
+    const reader = res.body.getReader();
+    const parts = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      got += value.length;
+      if (total) onP(Math.min(0.99, got / total));
+    }
+    return new Blob(parts, { type: res.headers.get('content-type') || '' });
+  },
+  // a pezzi da 3 MB tramite lo script (più lento, ma va sempre)
+  async viaScript(rec, onP) {
+    const parts = [];
+    let total = 1, mime = '';
+    for (let i = 0; i < total; i++) {
+      const r = await this.call({ action: 'drive-part', id: rec.drive.id, part: i });
+      total = r.total || 1;
+      mime = r.mime || mime;
+      parts.push(base64ToBlob(r.data, 'application/octet-stream'));
+      onP((i + 1) / total);
+    }
+    return new Blob(parts, { type: mime });
+  },
+  // carica su Drive il file di questo dispositivo, in un unico file audio
+  upload(owner, rec) {
+    if (this.jobs[rec.id]) return this.jobs[rec.id].promise;
+    const job = { kind: 'up', p: 0 };
+    this.jobs[rec.id] = job;
+    job.promise = (async () => {
+      try {
+        const file = await AudioDB.get(rec.id);
+        if (!file) throw new Error('Il file di questa lezione non è su questo dispositivo');
+        const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
+        const ext = (String(file.name || '').match(/\.([a-z0-9]{2,5})$/i) || [, /mp4/.test(file.type) ? 'm4a' : /mpeg/.test(file.type) ? 'mp3' : 'webm'])[1];
+        const name = `${String(rec.name).replace(/[\\/:*?"<>|]/g, '-')}.${ext}`;
+        const mime = file.type || audioMimeOf(name) || 'application/octet-stream';
+        const st = await this.call({ action: 'drive-up-start', folder: nb?.lessonFolder?.id || '', sub: nb?.lessonFolder ? '' : (nb?.name || ''), name, mime, size: file.size });
+        let at = 0, out = null;
+        while (at < file.size) {
+          const data = await blobToBase64(file.slice(at, at + AUDIO_UP_CHUNK));
+          const r = await this.call({ action: 'drive-up-part', session: st.session, start: at, size: file.size, mime, data });
+          if (r.done) { out = r; break; }
+          at = r.next > at ? r.next : at + AUDIO_UP_CHUNK;
+          job.p = Math.min(0.99, at / file.size);
+          this.paint(rec.id);
+        }
+        if (!out || !out.fileId) throw new Error('Drive non ha confermato il caricamento: riprova');
+        // il proprietario può essere cambiato nel frattempo (sincronizzazione): riprendo quello di adesso
+        const cur = audioOwner(isSecRec(owner) ? 'sec' : 'nb', owner.id) || owner;
+        const r2 = audiosOf(cur).find(a => a.id === rec.id) || rec;
+        r2.drive = { id: out.fileId, name: out.name || name, size: file.size, folder: st.folderName || '' };
+        await saveOwner(cur);
+        return r2.drive;
+      } finally {
+        delete this.jobs[rec.id];
+        this.paint(rec.id);
+      }
+    })();
+    this.paint(rec.id);
+    return job.promise;
+  }
+};
+// lo stato del file di un audio, per la riga dell’elenco
+function audioWhereText(a, local) {
+  if (DriveAudio.busy(a.id)) return '';
+  if (a.drive) return local ? 'qui e su Drive' : 'su Drive: si scarica quando l’ascolti';
+  if (!local) return 'non su questo dispositivo';
+  return DriveAudio.ready() ? 'solo su questo dispositivo' : '';
+}
+function paintAudioWhere(root, list) {
+  AudioDB.keys().then(keys => {
+    const have = new Set(keys);
+    $$('.au-item', root).forEach(it => {
+      const a = list.find(x => x.id === it.dataset.aid);
+      const x = $('.au-miss', it);
+      if (!a || !x) return;
+      const t = audioWhereText(a, have.has(a.id));
+      x.textContent = t ? ` · ${t}` : '';
+      x.hidden = !t;
+      x.classList.toggle('ok', !!a.drive || have.has(a.id));
+      it.dataset.local = have.has(a.id) ? '1' : '';
+    });
+  });
+}
+// le voci del menu ⋯ che riguardano Drive
+function driveMenuItems(a, local) {
+  if (!DriveAudio.ready()) return [];
+  const out = [];
+  if (!a.drive && local) out.push({ key: 'drv-up', label: 'Carica su Drive (per gli altri dispositivi)' });
+  if (a.drive && !local) out.push({ key: 'drv-get', label: 'Scarica su questo dispositivo (per ascoltarla offline)' });
+  if (a.drive && local) out.push({ key: 'drv-free', label: 'Togli da questo dispositivo (resta su Drive)' });
+  if (a.drive) out.push({ key: 'drv-unlink', label: 'Scollega da Drive' });
+  return out;
+}
+async function driveMenuAct(ch, owner, a) {
+  if (ch === 'drv-up') {
+    toast('Carico la lezione su Drive: puoi continuare a usare l’app');
+    try { await DriveAudio.upload(owner, a); toast(`“${a.name}” è su Drive: sugli altri dispositivi si scarica quando l’ascolti`); } catch (e) { toast(e.message || 'Caricamento non riuscito', 'err'); }
+    AudioMode.refresh();
+    return true;
+  }
+  if (ch === 'drv-get') {
+    try { await DriveAudio.download(a); toast('Lezione scaricata: ora si ascolta anche offline'); } catch (e) { toast(e.message || 'Scaricamento non riuscito', 'err'); }
+    AudioMode.refresh();
+    return true;
+  }
+  if (ch === 'drv-free') {
+    if (AudioPlayer.aId === a.id) AudioPlayer.act('close');
+    await AudioDB.del(a.id);
+    toast('Tolta da questo dispositivo: resta su Drive, con i segnalibri');
+    AudioMode.refresh();
+    return true;
+  }
+  if (ch === 'drv-unlink') {
+    if (!(await modal({ title: 'Scollegare da Drive?', text: 'Il file su Drive resta dov’è; questa lezione non lo scaricherà più. Sugli altri dispositivi, se non hanno già il file, non si potrà ascoltare.', confirm: 'Scollega' }))) return true;
+    delete a.drive;
+    await saveOwner(owner);
+    AudioMode.refresh();
+    return true;
+  }
+  return false;
+}
+// sfoglia il Drive e aggiunge gli audio scelti (alle lezioni del notebook o a una sezione)
+async function driveAudioSheet(owner) {
+  if (!DriveAudio.ready()) { toast('Prima collega Drive: Impostazioni → Sincronizzazione', 'err'); return; }
+  const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
+  if (!nb) return;
+  const picked = new Map();
+  let cur = null;
+  const sh = openSheet(`
+    <h2>Da Google Drive</h2>
+    <p class="sheet-sub">Scegli gli audio da aggiungere ${isSecRec(owner) ? `a “${esc(owner.title)}”` : `alle lezioni di ${esc(nb.name)}`}. Si scaricano sul dispositivo quando li ascolti; nome, segnalibri e sezioni collegate si sincronizzano.</p>
+    <div class="drv-path" id="drvPath"></div>
+    <div class="drv-box" id="drvBox"><p class="hint">Apro Drive…</p></div>
+    <div class="modal-actions drv-acts">
+      <button class="btn ghost" type="button" data-drv-act="close">Chiudi</button>
+      <button class="btn ghost" type="button" data-drv-act="home" hidden>Cartella delle lezioni</button>
+      <button class="btn ghost" type="button" data-drv-act="use" hidden>Usa questa cartella per ${esc(nb.name)}</button>
+      <button class="btn primary" type="button" data-drv-act="add" disabled>Aggiungi</button>
+    </div>`, { label: 'Da Google Drive' });
+  const box = $('#drvBox', sh.el);
+  const paintAdd = () => { const b = $('[data-drv-act="add"]', sh.el); b.disabled = !picked.size; b.textContent = picked.size ? `Aggiungi (${picked.size})` : 'Aggiungi'; };
+  const have = new Set(audiosOf(owner).map(a => a.drive?.id).filter(Boolean));
+  const open = async folder => {
+    box.innerHTML = '<p class="hint">Apro la cartella…</p>';
+    try { cur = await DriveAudio.list(folder); } catch (e) { box.innerHTML = `<p class="err-line">${esc(e.message || 'Drive non risponde')}</p>`; return; }
+    if (!sh.el.isConnected) return;
+    $('#drvPath', sh.el).innerHTML = `${cur.parent ? `<button type="button" class="btn sm ghost" data-drv-dir="${esc(cur.parent.id)}">‹ ${esc(cur.parent.name)}</button>` : ''}<b>${esc(cur.name)}</b>`;
+    const isHome = nb.lessonFolder && nb.lessonFolder.id === cur.id;
+    $('[data-drv-act="use"]', sh.el).hidden = isHome || cur.id === 'root';
+    $('[data-drv-act="home"]', sh.el).hidden = !nb.lessonFolder || isHome;
+    box.innerHTML = `
+      ${cur.folders.length ? `<ul class="drv-list">${cur.folders.map(f => `<li><button type="button" class="row" data-drv-dir="${esc(f.id)}"><span class="drv-ic" aria-hidden="true">${FOLDER_SVG}</span><span class="row-main"><span class="row-title">${esc(f.name)}</span></span><span aria-hidden="true">›</span></button></li>`).join('')}</ul>` : ''}
+      ${cur.files.length ? `
+        <div class="drv-allrow"><label class="check"><input type="checkbox" id="drvAll"><span>Seleziona tutti (${cur.files.filter(f => !have.has(f.id)).length})</span></label></div>
+        <ul class="drv-list">${cur.files.map(f => `<li><label class="row drv-file ${have.has(f.id) ? 'done' : ''}">
+          <input type="checkbox" data-drv-file="${esc(f.id)}" ${have.has(f.id) ? 'disabled checked' : picked.has(f.id) ? 'checked' : ''}>
+          <span class="row-main"><span class="row-title">${esc(f.name.replace(AUDIO_RE, ''))}</span><span class="row-sub">${[fmtSize(f.size || 0), new Date(f.modified).toLocaleDateString('it-IT'), have.has(f.id) ? 'già aggiunto' : ''].filter(Boolean).join(' · ')}</span></span></label></li>`).join('')}</ul>`
+        : `<p class="hint">${cur.folders.length ? 'Qui non ci sono audio: apri una cartella.' : 'Questa cartella è vuota (o non ha audio).'}</p>`}`;
+  };
+  sh.el.addEventListener('click', async e => {
+    const d = e.target.closest('[data-drv-dir]');
+    if (d) { open(d.dataset.drvDir); return; }
+    const b = e.target.closest('[data-drv-act]');
+    if (!b) return;
+    if (b.dataset.drvAct === 'close') { sh.close(false); return; }
+    if (b.dataset.drvAct === 'home') { open(nb.lessonFolder.id); return; }
+    if (b.dataset.drvAct === 'use') {
+      nb.lessonFolder = { id: cur.id, name: cur.name };
+      await saveNotebook(nb);
+      b.hidden = true;
+      toast(`“${cur.name}” è la cartella delle lezioni di ${nb.name}: si apre da qui, e le lezioni caricate su Drive finiscono qui`);
+      return;
+    }
+    if (b.dataset.drvAct === 'add') {
+      const files = [...picked.values()];
+      for (const f of files) {
+        const rec = { id: uid(), name: f.name.replace(AUDIO_RE, '').trim() || 'Lezione', size: f.size || 0, type: f.mime && f.mime.startsWith('audio/') ? f.mime : audioMimeOf(f.name), duration: 0, marks: [], created: Date.now(), drive: { id: f.id, name: f.name, size: f.size || 0, folder: cur.name } };
+        if (!isSecRec(owner)) { rec.secIds = []; rec.name = uniqueLessonName(owner, rec.name); }
+        audiosOf(owner).push(rec);
+      }
+      await saveOwner(owner);
+      sh.close(true);
+      toast(files.length === 1 ? 'Lezione aggiunta da Drive' : `${files.length} lezioni aggiunte da Drive`);
+      route();
+    }
+  });
+  sh.el.addEventListener('change', e => {
+    if (e.target.id === 'drvAll') {
+      cur.files.filter(f => !have.has(f.id)).forEach(f => { if (e.target.checked) picked.set(f.id, f); else picked.delete(f.id); });
+      $$('[data-drv-file]', sh.el).forEach(c => { if (!c.disabled) c.checked = e.target.checked; });
+      paintAdd();
+      return;
+    }
+    const c = e.target.closest('[data-drv-file]');
+    if (!c) return;
+    const f = cur.files.find(x => x.id === c.dataset.drvFile);
+    if (c.checked) picked.set(f.id, f); else picked.delete(f.id);
+    paintAdd();
+  });
+  open(nb.lessonFolder?.id || 'root');
+}
+
 /* ---------- Lettore: uno solo, resta in basso tra una pagina e l’altra ---------- */
 const AudioPlayer = {
   el: null, bar: null, ownK: 'sec', ownId: '', aId: '', url: '', saveT: 0,
@@ -5608,8 +5879,22 @@ const AudioPlayer = {
     this.build();
     const rec = audiosOf(sec).find(a => a.id === aId);
     if (!rec) return false;
-    const f = await AudioDB.get(aId);
-    if (!f) { toast(isSecRec(sec) ? 'Questo audio non è su questo dispositivo: ricaricalo dalla scheda Audio della sezione' : 'Questa lezione non è su questo dispositivo: ricaricala dalla pagina Lezioni', 'err'); return false; }
+    let f = await AudioDB.get(aId);
+    // v3.86: è su Drive: la scarico adesso (il lettore mostra a che punto è)
+    if (!f && rec.drive && DriveAudio.ready()) {
+      this.bar.hidden = false;
+      document.body.classList.add('au-on');
+      $('.au-name', this.bar).textContent = rec.name;
+      const tm = $('.au-time', this.bar);
+      const onJob = e => { if (e.detail.id === aId && e.detail.job) tm.textContent = `Scarico da Drive… ${Math.round(e.detail.job.p * 100)}%`; };
+      window.addEventListener('nb-drive-job', onJob);
+      tm.textContent = 'Scarico da Drive…';
+      try { f = await DriveAudio.download(rec); }
+      catch (e) { tm.textContent = ''; if (!this.aId) { this.bar.hidden = true; document.body.classList.remove('au-on'); } toast(e.message || 'Non riesco a scaricare la lezione da Drive', 'err'); return false; }
+      finally { window.removeEventListener('nb-drive-job', onJob); }
+      if (!rec.duration) { rec.duration = await audioDuration(f); saveOwner(sec); }
+    }
+    if (!f) { toast(rec.drive ? 'Questa lezione è su Drive: collega Drive in Impostazioni → Sincronizzazione per scaricarla' : isSecRec(sec) ? 'Questo audio non è su questo dispositivo: ricaricalo dalla scheda Audio della sezione, o caricalo su Drive dal dispositivo dove c’è' : 'Questa lezione non è su questo dispositivo: dal dispositivo dove c’è, tocca ⋯ → Carica su Drive', 'err'); return false; }
     if (typeof Playlist !== 'undefined' && Playlist.active()) Playlist.stop(true);
     if (this.url) URL.revokeObjectURL(this.url);
     this.url = URL.createObjectURL(f);
@@ -5870,22 +6155,28 @@ function modeAudio(sec, body) {
     <div class="row-actions">
       <label class="btn primary file-btn">Carica un audio<input type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.webm,.flac" multiple hidden id="auFile"></label>
       <button class="btn" type="button" data-act="au-rec">● Registra</button>
+      ${DriveAudio.ready() ? '<button class="btn" type="button" data-act="au-drive">Da Google Drive</button>' : ''}
     </div>
     ${lessonBlockHtml(sec)}
-    <p class="hint">Il lettore resta in basso anche se passi a Leggi o Modifica: scrivi mentre ascolti. <strong>＋ Segnalibro</strong> segna il punto (Alt+B al computer), <strong>⏱ Nel testo</strong> scrive il minuto dove hai il cursore (Alt+T): in Leggi quel minuto diventa un pulsante che fa ripartire l’audio da lì. I file audio restano su questo dispositivo; nome, durata e segnalibri si sincronizzano con la sezione.</p>
+    <p class="hint">Il lettore resta in basso anche se passi a Leggi o Modifica: scrivi mentre ascolti. <strong>＋ Segnalibro</strong> segna il punto (Alt+B al computer), <strong>⏱ Nel testo</strong> scrive il minuto dove hai il cursore (Alt+T): in Leggi quel minuto diventa un pulsante che fa ripartire l’audio da lì. I file audio restano su questo dispositivo (o su Drive, se li carichi lì o li prendi da lì); nome, durata e segnalibri si sincronizzano con la sezione.</p>
     ${list.length ? list.map(a => `
       <section class="au-item" data-aid="${a.id}">
         <div class="au-head">
           <button type="button" class="btn sm primary" data-a="play" aria-label="Ascolta ${esc(a.name)}">▶</button>
-          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrato' : '', new Date(a.created).toLocaleDateString('it-IT')].filter(Boolean).join(' · ')}<span class="au-miss" hidden> · non su questo dispositivo</span></small></div>
+          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrato' : '', new Date(a.created).toLocaleDateString('it-IT')].filter(Boolean).join(' · ')}<span class="au-miss" hidden></span></small><small class="au-drv" data-drv="${a.id}" hidden></small></div>
           <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
         </div>
         ${a.marks.length ? `<ol class="au-marks">${a.marks.map(m => `<li><button type="button" class="link-btn" data-mt="${m.t}">${fmtT(m.t)}</button> <span class="au-ml">${esc(m.label || 'Senza nome')}</span>
           <button type="button" class="btn sm ghost" data-mr="${m.id}" aria-label="Rinomina">✎</button><button type="button" class="btn sm ghost" data-md="${m.id}" aria-label="Elimina il segnalibro">✕</button></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti.</p>'}
       </section>`).join('') : '<div class="empty"><p>Nessun audio in questa sezione. Carica la registrazione di una lezione, oppure registra adesso.</p></div>'}
   `;
-  // file mancanti su questo dispositivo (registrati altrove)
-  AudioDB.keys().then(keys => { const have = new Set(keys); $$('.au-item', body).forEach(it => { $('.au-miss', it).hidden = have.has(it.dataset.aid); }); });
+  // dov’è il file: qui, su Drive, altrove
+  paintAudioWhere(body, list);
+  list.forEach(a => DriveAudio.paint(a.id));
+  const onJob = e => { if (!e.detail.job && list.some(a => a.id === e.detail.id)) paintAudioWhere(body, list); };
+  window.addEventListener('nb-drive-job', onJob);
+  addCleanup(() => window.removeEventListener('nb-drive-job', onJob));
+  on('[data-act="au-drive"]', 'click', () => driveAudioSheet(sec), body);
   $('#auFile', body).addEventListener('change', async e => {
     const files = [...e.target.files];
     let n = 0;
@@ -5906,7 +6197,9 @@ function modeAudio(sec, body) {
     if (b.dataset.mr) { const m = a.marks.find(x => x.id === b.dataset.mr); const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: m.label || '', confirm: 'Salva', allowEmpty: true }); if (v !== null && v !== undefined) { m.label = String(v).trim(); await saveSection(sec); route(); } return; }
     if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveSection(sec); AudioPlayer.paintTicks?.(); route(); return; }
     if (b.dataset.a === 'menu') {
-      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'tolesson', label: 'Sposta nelle lezioni del notebook' }, { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Scarica il file' }, { key: 'del', label: 'Elimina l’audio', danger: true }]);
+      const local = it.dataset.local === '1';
+      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'tolesson', label: 'Sposta nelle lezioni del notebook' }, ...driveMenuItems(a, local), { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Salva il file (nei Download)' }, { key: 'del', label: 'Elimina l’audio', danger: true }]);
+      if (await driveMenuAct(ch, sec, a)) return;
       if (ch === 'tolesson') {
         // la lezione resta collegata a questa sezione, con i suoi segnalibri
         const nb = nbById(sec.notebookId);
@@ -5967,8 +6260,10 @@ function viewLessons(nbId) {
       <div class="actions">
         <label class="btn primary file-btn">Carica un audio<input type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.ogg,.opus,.webm,.flac" multiple hidden id="lzFile"></label>
         <button class="btn" type="button" data-act="lz-rec">● Registra la lezione</button>
+        ${DriveAudio.ready() ? '<button class="btn" type="button" data-act="lz-drive">Da Google Drive</button>' : ''}
       </div>
     </header>
+    <div class="lz-drvbar" id="lzDrvBar" hidden></div>
     <p class="hint">Mentre ascolti, <strong>＋ Segnalibro</strong> segna il punto (Alt+B): se stai studiando una sezione di questo notebook, il segnalibro nasce già collegato a lei. <strong>⏱ Nel testo</strong> scrive il minuto e il nome della lezione negli appunti (Alt+T); in Leggi riparte da lì. Ogni sezione mostra i punti delle lezioni che la riguardano.</p>
     ${list.length > 2 ? `<input type="search" class="input search" id="lzQ" placeholder="Cerca nelle lezioni, nei segnalibri e nelle sezioni collegate" aria-label="Cerca nelle lezioni" value="${esc(lzState.q)}">` : ''}
     <div id="lzList">
@@ -5976,7 +6271,7 @@ function viewLessons(nbId) {
       <section class="au-item lz-item" data-aid="${a.id}" data-find="${esc(foldAccents(`${a.name} ${(a.marks || []).map(m => m.label).join(' ')} ${[...(a.secIds || []), ...(a.marks || []).flatMap(m => m.secIds || [])].map(id => secById(id)?.title || '').join(' ')}`))}">
         <div class="au-head">
           <button type="button" class="btn sm primary" data-a="play" aria-label="Ascolta ${esc(a.name)}">▶</button>
-          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrata' : '', new Date(a.created).toLocaleDateString('it-IT'), a.pos ? `ascoltata fino a ${fmtT(a.pos)}` : ''].filter(Boolean).join(' · ')}<span class="au-miss" hidden> · non su questo dispositivo</span></small></div>
+          <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrata' : '', new Date(a.created).toLocaleDateString('it-IT'), a.pos ? `ascoltata fino a ${fmtT(a.pos)}` : ''].filter(Boolean).join(' · ')}<span class="au-miss" hidden></span></small><small class="au-drv" data-drv="${a.id}" hidden></small></div>
           <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
         </div>
         <div class="lz-secs"><span class="lbl">Sezioni della lezione:</span> <span class="tags" data-scope="lesson">${chips(a.secIds) || '<span class="hint">nessuna</span>'}</span>
@@ -5988,7 +6283,42 @@ function viewLessons(nbId) {
           <select class="input lz-add sm" data-addto="mark" aria-label="Collega il segnalibro a una sezione"><option value="">＋ Sezione</option>${secOptionsHtml(nb, m.secIds || [])}</select></div></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti.</p>'}
       </section>`).join('') : '<div class="empty"><p>Nessuna lezione. Carica la registrazione di una lezione (anche lunga e su più argomenti), oppure registrala adesso. Poi segni i punti e li colleghi alle sezioni.</p></div>'}
     </div>`);
-  AudioDB.keys().then(keys => { const have = new Set(keys); $$('.au-item').forEach(it => { const x = $('.au-miss', it); if (x) x.hidden = have.has(it.dataset.aid); }); });
+  // dov’è il file di ogni lezione; in cima, quante sono da scaricare o da caricare su Drive
+  const paintDrv = () => {
+    paintAudioWhere($('#lzList'), list);
+    AudioDB.keys().then(keys => {
+      const have = new Set(keys);
+      const bar = $('#lzDrvBar');
+      if (!bar || !DriveAudio.ready()) return;
+      const down = list.filter(a => a.drive && !have.has(a.id) && !DriveAudio.busy(a.id));
+      const up = list.filter(a => !a.drive && have.has(a.id) && !DriveAudio.busy(a.id));
+      bar.innerHTML = `${down.length ? `<button class="btn sm" type="button" data-lzd="down">Scarica qui per l’ascolto offline (${down.length})</button>` : ''}${up.length ? `<button class="btn sm" type="button" data-lzd="up">Carica su Drive per gli altri dispositivi (${up.length})</button>` : ''}`;
+      bar.hidden = !down.length && !up.length;
+      bar.dataset.down = down.map(a => a.id).join(',');
+      bar.dataset.up = up.map(a => a.id).join(',');
+    });
+  };
+  paintDrv();
+  list.forEach(a => DriveAudio.paint(a.id));
+  const onJob = e => { if (!e.detail.job && list.some(a => a.id === e.detail.id)) paintDrv(); };
+  window.addEventListener('nb-drive-job', onJob);
+  addCleanup(() => window.removeEventListener('nb-drive-job', onJob));
+  on('[data-act="lz-drive"]', 'click', () => driveAudioSheet(nb));
+  $('#lzDrvBar').addEventListener('click', async e => {
+    const b = e.target.closest('[data-lzd]');
+    if (!b) return;
+    const ids = ($('#lzDrvBar').dataset[b.dataset.lzd] || '').split(',').filter(Boolean);
+    b.disabled = true;
+    let ok = 0, err = '';
+    for (const id of ids) {
+      const a = list.find(x => x.id === id);
+      if (!a) continue;
+      try { if (b.dataset.lzd === 'down') await DriveAudio.download(a); else await DriveAudio.upload(nb, a); ok++; } catch (x) { err = x.message || 'non riuscito'; break; }
+    }
+    if (ok) toast(b.dataset.lzd === 'down' ? `${ok} ${ok === 1 ? 'lezione scaricata' : 'lezioni scaricate'}: si ascoltano anche offline` : `${ok} ${ok === 1 ? 'lezione caricata' : 'lezioni caricate'} su Drive`);
+    if (err) toast(err, 'err');
+    AudioMode.refresh();
+  });
   $('#lzQ')?.addEventListener('input', e => {
     lzState.q = e.target.value;
     const f = foldAccents(lzState.q.trim());
@@ -6033,7 +6363,9 @@ function viewLessons(nbId) {
     if (b.dataset.mr) { const m = a.marks.find(x => x.id === b.dataset.mr); const v = await modal({ title: `Segnalibro a ${fmtT(m.t)}`, input: true, value: m.label || '', confirm: 'Salva', allowEmpty: true }); if (v !== null && v !== undefined) { m.label = String(v).trim(); await saveNotebook(nb); route(); } return; }
     if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveNotebook(nb); AudioPlayer.paintTicks?.(); route(); return; }
     if (b.dataset.a === 'menu') {
-      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Scarica il file' }, { key: 'del', label: 'Elimina la lezione', danger: true }]);
+      const local = it.dataset.local === '1';
+      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, ...driveMenuItems(a, local), { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Salva il file (nei Download)' }, { key: 'del', label: 'Elimina la lezione', danger: true }]);
+      if (await driveMenuAct(ch, nb, a)) return;
       if (ch === 'rename') { const v = await modal({ title: 'Rinomina la lezione', text: 'I minuti già scritti negli appunti con il vecchio nome (⏱ 12:34 (nome)) non la ritroverebbero più: correggili, o tieni il nome.', input: true, value: a.name, confirm: 'Salva' }); if (v) { a.name = uniqueLessonName(nb, String(v).trim(), a.id); await saveNotebook(nb); route(); } }
       if (ch === 'save') { const f = await AudioDB.get(a.id); if (f) downloadBlob(f, f.name || `${a.name}.webm`); else toast('Il file non è su questo dispositivo', 'err'); }
       if (ch === 'reload') {
@@ -6044,7 +6376,7 @@ function viewLessons(nbId) {
         inp.click();
       }
       if (ch === 'del') {
-        if (!(await modal({ title: 'Eliminare la lezione?', text: 'Spariscono il file, i segnalibri e i collegamenti alle sezioni. I minuti scritti negli appunti restano, ma non portano più a niente.', confirm: 'Elimina', danger: true }))) return;
+        if (!(await modal({ title: 'Eliminare la lezione?', text: `Spariscono il file su questo dispositivo, i segnalibri e i collegamenti alle sezioni.${a.drive ? ' Il file su Drive resta dov’è.' : ''} I minuti scritti negli appunti restano, ma non portano più a niente.`, confirm: 'Elimina', danger: true }))) return;
         if (AudioPlayer.aId === a.id) AudioPlayer.act('close');
         nb.audios = list.filter(x => x.id !== a.id);
         await saveNotebook(nb);
