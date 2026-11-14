@@ -5478,6 +5478,56 @@ const AudioDB = {
   async keys() { const db = await this.open(); return new Promise(res => { const q = db.transaction('files').objectStore('files').getAllKeys(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); }); }
 };
 const audiosOf = sec => (Array.isArray(sec.audios) ? sec.audios : (sec.audios = []));
+/* v3.87: ordine degli audio (lezioni del notebook o audio di una sezione), si sincronizza:
+   per nome con i numeri in ordine (Lezione 2 prima di Lezione 10), per data, o a mano */
+const AUDIO_SORTS = [['name', 'Per nome (1, 2, 3…)'], ['new', 'Le più recenti prima'], ['old', 'Le meno recenti prima'], ['custom', 'A mano (con ↑ ↓)']];
+const audioNameCmp = (a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'it', { numeric: true, sensitivity: 'base' });
+function audioOrder(owner) {
+  const list = audiosOf(owner).slice();
+  const mode = owner.audioSort || 'name';
+  if (mode === 'new') return list.sort((a, b) => (b.created || 0) - (a.created || 0) || audioNameCmp(a, b));
+  if (mode === 'old') return list.sort((a, b) => (a.created || 0) - (b.created || 0) || audioNameCmp(a, b));
+  if (mode === 'custom') return list.sort((a, b) => (a.ord ?? 1e9) - (b.ord ?? 1e9) || audioNameCmp(a, b));
+  return list.sort(audioNameCmp);
+}
+const audioSortHtml = owner => (audiosOf(owner).length > 1 ? `<label class="au-sort"><span>Ordine</span><select class="input" data-au-sort aria-label="Ordine degli audio">${AUDIO_SORTS.map(([k, l]) => `<option value="${k}" ${(owner.audioSort || 'name') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : '');
+const audioMoveBtns = (owner, a) => ((owner.audioSort || 'name') === 'custom' ? `<span class="au-move"><button type="button" class="btn sm ghost" data-au-mv="-1" aria-label="Sposta su ${esc(a.name)}" title="Su">↑</button><button type="button" class="btn sm ghost" data-au-mv="1" aria-label="Sposta giù ${esc(a.name)}" title="Giù">↓</button></span>` : '');
+async function setAudioSort(owner, mode) {
+  // passando a “a mano” si parte dall’ordine che vedi adesso
+  if (mode === 'custom') audioOrder(owner).forEach((a, i) => { a.ord = i; });
+  owner.audioSort = mode;
+  await saveOwner(owner);
+}
+async function moveAudio(owner, aId, dir) {
+  const list = audioOrder(owner);
+  const i = list.findIndex(a => a.id === aId);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return false;
+  [list[i], list[j]] = [list[j], list[i]];
+  list.forEach((a, k) => { a.ord = k; });
+  await saveOwner(owner);
+  return true;
+}
+// selettore dell’ordine e frecce ↑ ↓, per la pagina Lezioni e la scheda Audio
+function bindAudioOrder(root, owner) {
+  root.addEventListener('change', async e => {
+    const sel = e.target.closest('[data-au-sort]');
+    if (!sel) return;
+    await setAudioSort(owner, sel.value);
+    AudioMode.refresh();
+  });
+  root.addEventListener('click', async e => {
+    const b = e.target.closest('[data-au-mv]');
+    if (!b) return;
+    e.stopPropagation();
+    const it = b.closest('.au-item');
+    if (it && await moveAudio(owner, it.dataset.aid, +b.dataset.auMv)) {
+      AudioMode.refresh();
+      // la lezione spostata resta sotto il dito
+      requestAnimationFrame(() => document.querySelector(`.au-item[data-aid="${it.dataset.aid}"] [data-au-mv="${b.dataset.auMv}"]`)?.focus({ preventScroll: false }));
+    }
+  }, true);
+}
 // v3.76: gli audio stanno in una sezione o nel notebook (le lezioni, che parlano di più argomenti)
 const isSecRec = o => !!o && typeof o.md === 'string';
 const audioOwner = (k, id) => (k === 'nb' ? nbById(id) : secById(id));
@@ -5496,7 +5546,7 @@ function uniqueLessonName(nb, name, selfId = '') {
 function lessonRefsOf(sec) {
   const nb = nbById(sec.notebookId);
   if (!nb || !Array.isArray(nb.audios)) return [];
-  return nb.audios.map(a => ({ a, whole: (a.secIds || []).includes(sec.id), marks: (a.marks || []).filter(m => (m.secIds || []).includes(sec.id)) })).filter(x => x.whole || x.marks.length);
+  return audioOrder(nb).map(a => ({ a, whole: (a.secIds || []).includes(sec.id), marks: (a.marks || []).filter(m => (m.secIds || []).includes(sec.id)) })).filter(x => x.whole || x.marks.length);
 }
 function lessonBlockHtml(sec) {
   const refs = lessonRefsOf(sec);
@@ -5924,7 +5974,7 @@ const AudioPlayer = {
   // dal testo: va al minuto nell’audio della sezione (quello aperto, se è suo, se no il primo)
   async seekSection(sec, t) {
     if (this.isOn() && this.secId === sec.id) { this.seek(t); this.el.play().catch(() => {}); return; }
-    const a = audiosOf(sec)[0];
+    const a = audioOrder(sec)[0];
     if (!a) { toast('Questa sezione non ha audio'); return; }
     await this.load(sec, a.id, { at: t });
   },
@@ -6159,11 +6209,13 @@ function modeAudio(sec, body) {
     </div>
     ${lessonBlockHtml(sec)}
     <p class="hint">Il lettore resta in basso anche se passi a Leggi o Modifica: scrivi mentre ascolti. <strong>＋ Segnalibro</strong> segna il punto (Alt+B al computer), <strong>⏱ Nel testo</strong> scrive il minuto dove hai il cursore (Alt+T): in Leggi quel minuto diventa un pulsante che fa ripartire l’audio da lì. I file audio restano su questo dispositivo (o su Drive, se li carichi lì o li prendi da lì); nome, durata e segnalibri si sincronizzano con la sezione.</p>
-    ${list.length ? list.map(a => `
+    ${list.length > 1 ? `<div class="au-tools">${audioSortHtml(sec)}</div>` : ''}
+    ${list.length ? audioOrder(sec).map(a => `
       <section class="au-item" data-aid="${a.id}">
         <div class="au-head">
           <button type="button" class="btn sm primary" data-a="play" aria-label="Ascolta ${esc(a.name)}">▶</button>
           <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrato' : '', new Date(a.created).toLocaleDateString('it-IT')].filter(Boolean).join(' · ')}<span class="au-miss" hidden></span></small><small class="au-drv" data-drv="${a.id}" hidden></small></div>
+          ${audioMoveBtns(sec, a)}
           <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
         </div>
         ${a.marks.length ? `<ol class="au-marks">${a.marks.map(m => `<li><button type="button" class="link-btn" data-mt="${m.t}">${fmtT(m.t)}</button> <span class="au-ml">${esc(m.label || 'Senza nome')}</span>
@@ -6177,6 +6229,7 @@ function modeAudio(sec, body) {
   window.addEventListener('nb-drive-job', onJob);
   addCleanup(() => window.removeEventListener('nb-drive-job', onJob));
   on('[data-act="au-drive"]', 'click', () => driveAudioSheet(sec), body);
+  bindAudioOrder(body, sec);
   $('#auFile', body).addEventListener('change', async e => {
     const files = [...e.target.files];
     let n = 0;
@@ -6265,13 +6318,14 @@ function viewLessons(nbId) {
     </header>
     <div class="lz-drvbar" id="lzDrvBar" hidden></div>
     <p class="hint">Mentre ascolti, <strong>＋ Segnalibro</strong> segna il punto (Alt+B): se stai studiando una sezione di questo notebook, il segnalibro nasce già collegato a lei. <strong>⏱ Nel testo</strong> scrive il minuto e il nome della lezione negli appunti (Alt+T); in Leggi riparte da lì. Ogni sezione mostra i punti delle lezioni che la riguardano.</p>
-    ${list.length > 2 ? `<input type="search" class="input search" id="lzQ" placeholder="Cerca nelle lezioni, nei segnalibri e nelle sezioni collegate" aria-label="Cerca nelle lezioni" value="${esc(lzState.q)}">` : ''}
+    <div class="au-tools" id="lzTools">${list.length > 2 ? `<input type="search" class="input search" id="lzQ" placeholder="Cerca nelle lezioni, nei segnalibri e nelle sezioni collegate" aria-label="Cerca nelle lezioni" value="${esc(lzState.q)}">` : ''}${audioSortHtml(nb)}</div>
     <div id="lzList">
-    ${list.length ? list.slice().sort((a, b) => (b.created || 0) - (a.created || 0)).map(a => `
+    ${list.length ? audioOrder(nb).map(a => `
       <section class="au-item lz-item" data-aid="${a.id}" data-find="${esc(foldAccents(`${a.name} ${(a.marks || []).map(m => m.label).join(' ')} ${[...(a.secIds || []), ...(a.marks || []).flatMap(m => m.secIds || [])].map(id => secById(id)?.title || '').join(' ')}`))}">
         <div class="au-head">
           <button type="button" class="btn sm primary" data-a="play" aria-label="Ascolta ${esc(a.name)}">▶</button>
           <div class="au-meta"><b>${esc(a.name)}</b><small>${[a.duration ? fmtT(a.duration) : '', a.size ? fmtSize(a.size) : '', a.recorded ? 'registrata' : '', new Date(a.created).toLocaleDateString('it-IT'), a.pos ? `ascoltata fino a ${fmtT(a.pos)}` : ''].filter(Boolean).join(' · ')}<span class="au-miss" hidden></span></small><small class="au-drv" data-drv="${a.id}" hidden></small></div>
+          ${audioMoveBtns(nb, a)}
           <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
         </div>
         <div class="lz-secs"><span class="lbl">Sezioni della lezione:</span> <span class="tags" data-scope="lesson">${chips(a.secIds) || '<span class="hint">nessuna</span>'}</span>
@@ -6304,6 +6358,8 @@ function viewLessons(nbId) {
   window.addEventListener('nb-drive-job', onJob);
   addCleanup(() => window.removeEventListener('nb-drive-job', onJob));
   on('[data-act="lz-drive"]', 'click', () => driveAudioSheet(nb));
+  bindAudioOrder($('#lzTools'), nb);
+  bindAudioOrder($('#lzList'), nb);
   $('#lzDrvBar').addEventListener('click', async e => {
     const b = e.target.closest('[data-lzd]');
     if (!b) return;

@@ -1305,6 +1305,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.87", title: "score di reumatologia, ordine delle lezioni, StudyHub più chiaro", html: `      <ul>
+        <li><strong>Score clinici → Reumatologia</strong>: DAS28 (con VES e con PCR), CDAI e SDAI, criteri ACR/EULAR 2010 per l’artrite reumatoide, criteri EULAR/ACR 2019 per il LES, BASDAI e ASDAS. Sotto ogni score compaiono i tuoi articoli che ne parlano.</li>
+        <li><strong>Ordine delle lezioni</strong> (e degli audio delle sezioni): per nome con i numeri in ordine (Lezione 2 prima di Lezione 10, è il nuovo ordine di partenza), per data, oppure a mano con ↑ ↓. L’ordine si sincronizza.</li>
+        <li><strong>Segna come studiata in StudyHub</strong>: in cima c’è la sezione del Notebook da cui parti, sotto “Dove va in StudyHub” con le materie e gli argomenti di StudyHub, ognuno con il suo percorso e lo stato (da studiare, in ripasso…).</li>
+      </ul>` },
   { v: "3.86", title: "lezioni audio su Google Drive", html: `      <ul>
         <li>Nelle <strong>Lezioni</strong> di un notebook (e nella scheda Audio delle sezioni): <strong>Da Google Drive</strong> apre le cartelle del tuo Drive e aggiunge gli audio che scegli. Su ogni dispositivo la lezione si scarica la prima volta che l’ascolti, poi resta lì anche offline. Segnalibri e sezioni collegate erano già sincronizzati.</li>
         <li>Una lezione registrata o caricata da un dispositivo: ⋯ → <strong>Carica su Drive</strong>, così la ascolti anche dagli altri. In cima alla pagina, i pulsanti per scaricare tutte quelle che mancano (per l’ascolto offline) o caricarle tutte su Drive.</li>
@@ -3099,7 +3104,7 @@ const HELP = {
   backupModels: { t: 'Modelli di riserva', b: `Con la chiave gratuita ogni modello ha un suo numero di richieste al giorno. Quando il modello principale le finisce, l’app passa da sola al primo modello di riserva, fino all’azzeramento del giorno dopo (verso le 8 o le 9 del mattino).<br><br>Puoi scriverne più d’uno, separati da virgola. Lascia vuoto per non usarne.` },
   prompts: { t: 'Prompt per l’AI', b: `Sono le istruzioni che l’app dà all’AI per ogni lavoro: formattare, creare flashcard, valutare l’orale…<br><br>Puoi riscriverle a tuo gusto (per esempio “usa più tabelle” o “domande da esame orale”). “Ripristina” torna al testo di partenza.` },
   sync: { t: 'Sincronizzazione con Google Drive', b: `Tiene uguali i dati su telefono e computer, salvandoli in una cartella del tuo Google Drive tramite il tuo script di Apps Script.<br><br>Su ogni dispositivo servono lo stesso <b>indirizzo dell’app web</b> (finisce con /exec) e la stessa <b>frase segreta</b>.<br><br>Le chiavi dell’AI non vengono sincronizzate. Se usi un solo dispositivo, basta il backup.<br><br>Con lo script nella <b>versione 3</b>, le lezioni audio possono stare su Drive: nella pagina Lezioni di un notebook, <b>Da Google Drive</b> apre le cartelle del tuo Drive; ⋯ → <b>Carica su Drive</b> porta lì una lezione registrata o caricata su un dispositivo.` },
-  lessons: { t: 'Lezioni', b: `Gli audio delle lezioni che parlano di più argomenti, con segnalibri con nome collegati alle sezioni. Nome, segnalibri e collegamenti si sincronizzano tra i dispositivi; il file audio no, a meno che non stia su Drive.<br><br><b>Da Google Drive</b>: sfogli il tuo Drive (per esempio la cartella dove salvi le lezioni dal computer), scegli gli audio e tocchi Aggiungi. Su ogni dispositivo la lezione si scarica la prima volta che l’ascolti e poi resta lì, anche offline. Con <b>Usa questa cartella</b> la cartella si apre subito le volte dopo. In cima, <b>Scarica qui per l’ascolto offline</b> scarica tutte quelle che mancano (comodo prima di uscire, con il Wi-Fi).<br><br>Una lezione registrata o caricata da un dispositivo: ⋯ → <b>Carica su Drive</b> (o il pulsante in cima per tutte). Finisce nella cartella delle lezioni del notebook, o in “StudyHub Notebook (sincronizzazione)/lezioni/nome del notebook”; gli altri dispositivi la scaricano quando la ascolti.<br><br>⋯ → <b>Togli da questo dispositivo</b> libera spazio: la lezione resta su Drive con i segnalibri. Eliminare una lezione nell’app non cancella il file su Drive.<br><br>Serve la sincronizzazione con lo script nella versione 3.` },
+  lessons: { t: 'Lezioni', b: `Gli audio delle lezioni che parlano di più argomenti, con segnalibri con nome collegati alle sezioni. Nome, segnalibri e collegamenti si sincronizzano tra i dispositivi; il file audio no, a meno che non stia su Drive.<br><br><b>Da Google Drive</b>: sfogli il tuo Drive (per esempio la cartella dove salvi le lezioni dal computer), scegli gli audio e tocchi Aggiungi. Su ogni dispositivo la lezione si scarica la prima volta che l’ascolti e poi resta lì, anche offline. Con <b>Usa questa cartella</b> la cartella si apre subito le volte dopo. In cima, <b>Scarica qui per l’ascolto offline</b> scarica tutte quelle che mancano (comodo prima di uscire, con il Wi-Fi).<br><br><b>Ordine</b>: per nome con i numeri in ordine (Lezione 2 prima di Lezione 10), per data, oppure “a mano”, con le frecce ↑ ↓ accanto a ogni lezione; si sincronizza.<br><br>Una lezione registrata o caricata da un dispositivo: ⋯ → <b>Carica su Drive</b> (o il pulsante in cima per tutte). Finisce nella cartella delle lezioni del notebook, o in “StudyHub Notebook (sincronizzazione)/lezioni/nome del notebook”; gli altri dispositivi la scaricano quando la ascolti.<br><br>⋯ → <b>Togli da questo dispositivo</b> libera spazio: la lezione resta su Drive con i segnalibri. Eliminare una lezione nell’app non cancella il file su Drive.<br><br>Serve la sincronizzazione con lo script nella versione 3.` },
   cardsSet: { t: 'Flashcard', b: `<b>Nuove al giorno</b>: quante flashcard mai viste ti propone ogni giorno per ogni notebook, così il ripasso non esplode.<br><br>La <b>nota del “Di nuovo”</b> ti chiede perché hai sbagliato: ti aiuta a riconoscere gli errori che ripeti.<br><br><b>Intervalli</b>: partono come in Anki. I <b>passi di apprendimento</b> sono le ripetizioni dello stesso giorno per una carta nuova (1 e 10 minuti); dopo l’ultimo, “Bene” la manda al <b>primo intervallo</b> (1 giorno). “Facile” su una carta nuova salta i passi e la manda subito a 4 giorni: se ti sembra troppo, abbassalo a 2 o 3. Poi ogni intervallo si moltiplica per la <b>facilità</b> (250%: circa 2,5 volte), che scende quando sbagli o premi “Difficile” e sale con “Facile”.` },
   images: { t: 'Immagini', b: `Quante immagini hai salvato e quanto spazio occupano.<br><br>“Elimina le immagini non usate” toglie quelle che non compaiono più in nessuna sezione o flashcard.` },
   studyhub: { t: 'StudyHub', b: `Il collegamento con il tuo planner. Quando segni una sezione come studiata, StudyHub la riceve e ne pianifica i ripassi; i voti dati qui gli arrivano.<br><br>Dal menu puoi aprire StudyHub <b>qui accanto</b> (in basso sul telefono). Lascia vuoto l’indirizzo per usare quello di sempre.` },
@@ -3362,8 +3367,10 @@ function shPlaceSheet(sec, { relink = false } = {}) {
     const ind = n => '\u00a0\u00a0\u00a0'.repeat(n);
     const sh = openSheet(`
       <h2>${relink ? 'Cambia materia o argomento in StudyHub' : 'Segna come studiata in StudyHub'}</h2>
-      <p class="hint">“${esc(sec.title)}” ${relink ? 'si sposta dove scegli; dalla materia di prima viene tolto se l’aveva creato il Notebook.' : 'entra in StudyHub, che da oggi ne pianifica i ripassi.'}</p>
-      <label class="field"><span>Materia in StudyHub</span>
+      <div class="sh-from"><span class="lbl">Sezione del Notebook</span><b>${esc(sec.title)}</b><small>${esc([nb?.name, groupPathText(sec)].filter(Boolean).join(' › '))}</small></div>
+      <p class="hint">${relink ? 'Si sposta dove scegli qui sotto; dalla materia di prima viene tolta se l’aveva creata il Notebook.' : 'Qui sotto scegli dove metterla <b>in StudyHub</b>, che da oggi ne pianifica i ripassi: gli elenchi mostrano le materie e gli argomenti di StudyHub, non le sezioni del Notebook.'}</p>
+      <h3 class="sh-to">Dove va in StudyHub</h3>
+      <label class="field"><span>Materia di StudyHub</span>
         <select class="input" id="shSub">
           <option value="" ${subName ? '' : 'selected'} disabled>Scegli la materia…</option>
           ${subs.map(n => `<option value="${esc(n)}" ${n === subName ? 'selected' : ''}>${esc(n)}</option>`).join('')}
@@ -3374,16 +3381,17 @@ function shPlaceSheet(sec, { relink = false } = {}) {
         <p class="hint warn-hint" id="shNewWarn" hidden></p>
       </div>
       <div class="seg sh-how" role="radiogroup" aria-label="Argomento">
-        <button type="button" role="radio" data-how="link">Argomento che c’è già</button>
-        <button type="button" role="radio" data-how="new">Nuovo argomento</button>
+        <button type="button" role="radio" data-how="link">Collega a un argomento di StudyHub</button>
+        <button type="button" role="radio" data-how="new">Nuovo argomento in StudyHub</button>
       </div>
       <div id="shLinkBox">
-        <input type="search" class="input search" id="shTopQ" placeholder="Cerca l’argomento in StudyHub" aria-label="Cerca l’argomento">
+        <p class="sh-list-h" id="shListH"></p>
+        <input type="search" class="input search" id="shTopQ" placeholder="Cerca tra gli argomenti di StudyHub" aria-label="Cerca tra gli argomenti di StudyHub">
         <ul class="list pick-list sh-topics" id="shTopList"></ul>
       </div>
       <div id="shNewTopBox" hidden>
-        <label class="field"><span>Nome dell’argomento</span><input class="input" id="shTopName" value="${esc(sec.title)}"></label>
-        <label class="field"><span>Dentro</span><select class="input" id="shParent"></select></label>
+        <label class="field"><span>Nome del nuovo argomento in StudyHub</span><input class="input" id="shTopName" value="${esc(sec.title)}"></label>
+        <label class="field"><span>Dentro l’argomento di StudyHub</span><select class="input" id="shParent"></select></label>
       </div>
       <p class="hint" id="shPosHint"></p>
       <div class="modal-actions">
@@ -3406,7 +3414,12 @@ function shPlaceSheet(sec, { relink = false } = {}) {
       const free = freeOf(tree);
       const f = shKey($('#shTopQ', sh.el).value);
       const list = free.filter(x => !f || shKey(x.t.name).includes(f)).slice(0, 80);
-      $('#shTopList', sh.el).innerHTML = list.map(x => `<li><button type="button" class="row ${x.t.id === topicId ? 'on' : ''}" data-top="${esc(x.t.id)}"><span class="row-main"><span class="row-title">${ind(x.depth)}${esc(x.t.name)}</span>${x.t.status === 'todo' ? '<span class="row-sub">da studiare</span>' : ''}</span></button></li>`).join('')
+      // v3.87: ogni argomento con il suo percorso in StudyHub e il suo stato
+      const byId = new Map(tree.map(x => [x.t.id, x.t]));
+      const pathOf = t => { const out = []; let p = byId.get(t.parent); let k = 0; while (p && k++ < 5) { out.unshift(p.name); p = byId.get(p.parent); } return out.join(' › '); };
+      const stOf = t => (t.status === 'todo' ? 'da studiare' : t.learn && typeof t.learn.due === 'number' ? 'in apprendimento' : t.next ? `in ripasso, prossimo ${fmtDue(t.next)}` : '');
+      $('#shListH', sh.el).textContent = subObj() ? `Argomenti di StudyHub · ${subName} (${free.length} liberi)` : '';
+      $('#shTopList', sh.el).innerHTML = list.map(x => `<li><button type="button" class="row ${x.t.id === topicId ? 'on' : ''}" data-top="${esc(x.t.id)}"><span class="row-main"><span class="row-title">${f ? '' : ind(x.depth)}${esc(x.t.name)}</span>${pathOf(x.t) || stOf(x.t) ? `<span class="row-sub">${esc([pathOf(x.t), stOf(x.t)].filter(Boolean).join(' · '))}</span>` : ''}</span></button></li>`).join('')
         || `<li class="hint">${subObj() ? 'Nessun argomento libero con questo nome.' : 'Scegli prima la materia.'}</li>`;
     };
     const drawSub = () => {

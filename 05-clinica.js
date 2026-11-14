@@ -1000,6 +1000,19 @@ function viewDiaryProcs(cfg, all) {
    score (fonte: Claude, da verificare). In reparto si ricontrolla sempre. */
 const yes = (k, label, pts = 1) => ({ k, label, type: 'check', pts });
 const opt = (k, label, opts) => ({ k, label, type: 'select', opts });
+const scFmt = (x, d = 2) => x.toFixed(d).replace('.', ',');
+const das28Class = x => (x < 2.6 ? 'remissione' : x <= 3.2 ? 'attività bassa' : x <= 5.1 ? 'attività moderata' : 'attività alta');
+// v3.87: sotto uno score, i tuoi articoli che ne parlano (titolo, rivista, note, tag)
+function scorePapers(s) {
+  if (!s.kw || typeof papers !== 'function') return [];
+  const kws = s.kw.map(k => foldAccents(k));
+  const strong = kws.slice(0, 2);
+  return papers().map(p => {
+    const t = foldAccents(`${p.title || ''} ${Array.isArray(p.tags) ? p.tags.join(' ') : p.tags || ''} ${p.keywords || ''} ${p.notes || ''} ${p.abstract || ''}`);
+    const hit = kws.filter(k => (k.length <= 3 ? new RegExp(`\\b${k}\\b`).test(t) : t.includes(k)));
+    return { p, sc: hit.length + hit.filter(k => strong.includes(k)).length };
+  }).filter(x => x.sc >= 2).sort((a, b) => b.sc - a.sc || (b.p.year || 0) - (a.p.year || 0)).slice(0, 4).map(x => x.p);
+}
 const SCORES = [
   { id: 'cha2ds2vasc', title: 'CHA₂DS₂-VASc', cat: 'Cardiologia', what: 'Rischio di ictus nella fibrillazione atriale',
     items: [yes('c', 'Scompenso cardiaco o disfunzione ventricolare sinistra'), yes('h', 'Ipertensione'), opt('a', 'Età', [['Sotto i 65 anni', 0], ['65–74 anni', 1], ['75 anni o più', 2]]), yes('d', 'Diabete'), yes('s', 'Ictus, TIA o tromboembolia precedenti', 2), yes('v', 'Malattia vascolare (infarto, arteriopatia periferica, placca aortica)'), yes('f', 'Sesso femminile')],
@@ -1070,7 +1083,85 @@ const SCORES = [
       }
       return `${out}.`;
     },
-    src: 'Formula UNOS: i valori sotto 1 contano come 1, la creatinina al massimo 4; il sodio tra 125 e 137 e la correzione solo con MELD sopra 11.' }
+    src: 'Formula UNOS: i valori sotto 1 contano come 1, la creatinina al massimo 4; il sodio tra 125 e 137 e la correzione solo con MELD sopra 11.' },
+  /* v3.87: reumatologia */
+  { id: 'das28', title: 'DAS28 (VES e PCR)', cat: 'Reumatologia', what: 'Attività dell’artrite reumatoide su 28 articolazioni',
+    kw: ['das28', 'das 28', 'disease activity score', 'rheumatoid arthritis', 'artrite reumatoide'],
+    items: [{ k: 'tjc', label: 'Articolazioni dolenti (0–28)', type: 'num', unit: '' }, { k: 'sjc', label: 'Articolazioni tumefatte (0–28)', type: 'num', unit: '' }, { k: 'gh', label: 'Valutazione globale del paziente (0–100)', type: 'num', unit: 'mm' }, { k: 'esr', label: 'VES', type: 'num', unit: 'mm/h' }, { k: 'crp', label: 'PCR', type: 'num', unit: 'mg/L (mg/dL × 10)' }],
+    calc: v => {
+      if (v.tjc === null || v.sjc === null || v.gh === null || (v.esr === null && v.crp === null)) return null;
+      const t = Math.sqrt(Math.min(28, Math.max(0, v.tjc))), s = Math.sqrt(Math.min(28, Math.max(0, v.sjc))), gh = Math.min(100, Math.max(0, v.gh));
+      const out = [];
+      if (v.esr !== null) out.push(['VES', 0.56 * t + 0.28 * s + 0.70 * Math.log(Math.max(1, v.esr)) + 0.014 * gh]);
+      if (v.crp !== null) out.push(['PCR', 0.56 * t + 0.28 * s + 0.36 * Math.log(Math.max(0, v.crp) + 1) + 0.014 * gh + 0.96]);
+      return out.map(([k, x]) => `DAS28-${k} <strong>${scFmt(x)}</strong>: ${das28Class(x)}`).join(' · ') + '.';
+    },
+    src: 'Prevoo 1995 (DAS28-VES) e la formula con la PCR; soglie EULAR: remissione sotto 2,6, bassa fino a 3,2, moderata fino a 5,1, alta sopra. Con la PCR le stesse soglie sottostimano un po’ l’attività.' },
+  { id: 'cdai', title: 'CDAI e SDAI', cat: 'Reumatologia', what: 'Attività dell’artrite reumatoide senza (CDAI) e con la PCR (SDAI)',
+    kw: ['cdai', 'sdai', 'clinical disease activity', 'rheumatoid arthritis', 'artrite reumatoide'],
+    items: [{ k: 'tjc', label: 'Articolazioni dolenti (0–28)', type: 'num', unit: '' }, { k: 'sjc', label: 'Articolazioni tumefatte (0–28)', type: 'num', unit: '' }, { k: 'pt', label: 'Valutazione globale del paziente (0–10)', type: 'num', unit: '' }, { k: 'ev', label: 'Valutazione globale del medico (0–10)', type: 'num', unit: '' }, { k: 'crp', label: 'PCR, per lo SDAI', type: 'num', unit: 'mg/dL' }],
+    calc: v => {
+      if ([v.tjc, v.sjc, v.pt, v.ev].some(x => x === null)) return null;
+      const c = Math.min(28, v.tjc) + Math.min(28, v.sjc) + Math.min(10, v.pt) + Math.min(10, v.ev);
+      let out = `CDAI <strong>${scFmt(c, 1)}</strong>: ${c <= 2.8 ? 'remissione' : c <= 10 ? 'attività bassa' : c <= 22 ? 'attività moderata' : 'attività alta'}`;
+      if (v.crp !== null) { const sd = c + Math.max(0, v.crp); out += ` · SDAI <strong>${scFmt(sd, 1)}</strong>: ${sd <= 3.3 ? 'remissione' : sd <= 11 ? 'attività bassa' : sd <= 26 ? 'attività moderata' : 'attività alta'}`; }
+      return `${out}.`;
+    },
+    src: 'Aletaha e Smolen 2005. CDAI: remissione fino a 2,8, bassa fino a 10, moderata fino a 22. SDAI (PCR in mg/dL): remissione fino a 3,3, bassa fino a 11, moderata fino a 26.' },
+  { id: 'acreular2010', title: 'Criteri ACR/EULAR 2010 per l’artrite reumatoide', cat: 'Reumatologia', what: 'Classificazione: in chi ha almeno un’articolazione con sinovite clinica non spiegata da altro',
+    kw: ['2010', 'classification criteria', 'criteri classificativi', 'rheumatoid arthritis', 'artrite reumatoide'],
+    items: [
+      opt('j', 'Articolazioni coinvolte', [['1 grande articolazione', 0], ['2–10 grandi', 1], ['1–3 piccole (con o senza grandi)', 2], ['4–10 piccole (con o senza grandi)', 3], ['Più di 10, almeno una piccola', 5]]),
+      opt('s', 'Sierologia (FR e anti-CCP)', [['Entrambi negativi', 0], ['Uno dei due debolmente positivo (fino a 3 volte il limite)', 2], ['Uno dei due fortemente positivo (oltre 3 volte il limite)', 3]]),
+      opt('a', 'Indici di flogosi', [['PCR e VES normali', 0], ['PCR o VES alterate', 1]]),
+      opt('d', 'Durata dei sintomi', [['Meno di 6 settimane', 0], ['6 settimane o più', 1]])],
+    read: n => (n >= 6 ? 'Almeno 6 su 10: <strong>artrite reumatoide definita</strong> (criteri di classificazione).' : 'Sotto 6: non classificabile ora come artrite reumatoide; i criteri si possono rivalutare nel tempo.'),
+    src: 'Aletaha 2010 (ACR/EULAR). Grandi articolazioni: spalle, gomiti, anche, ginocchia, caviglie; piccole: MCF, IFP, MTF dalla 2ª alla 5ª, IF del pollice, polsi. Sono criteri di classificazione, non di diagnosi.' },
+  { id: 'sle2019', title: 'Criteri EULAR/ACR 2019 per il LES', cat: 'Reumatologia', what: 'Classificazione del lupus eritematoso sistemico',
+    kw: ['2019', 'systemic lupus', 'lupus eritematoso', 'sle', 'les'],
+    items: [yes('ana', 'Criterio d’ingresso: ANA almeno 1:80 su cellule HEp-2 (una volta)', 0),
+      opt('c_cost', 'Costituzionale', [['Niente', 0], ['Febbre (oltre 38,3 °C)', 2]]),
+      opt('c_ema', 'Ematologico', [['Niente', 0], ['Leucopenia (sotto 4000/mm³)', 3], ['Piastrinopenia (sotto 100.000/mm³)', 4], ['Emolisi autoimmune', 4]]),
+      opt('c_neu', 'Neuropsichiatrico', [['Niente', 0], ['Delirium', 2], ['Psicosi', 3], ['Crisi epilettiche', 5]]),
+      opt('c_cut', 'Mucocutaneo', [['Niente', 0], ['Alopecia non cicatriziale', 2], ['Ulcere orali', 2], ['Lupus cutaneo subacuto o discoide', 4], ['Lupus cutaneo acuto', 6]]),
+      opt('c_ser', 'Sierose', [['Niente', 0], ['Versamento pleurico o pericardico', 5], ['Pericardite acuta', 6]]),
+      opt('c_ms', 'Muscoloscheletrico', [['Niente', 0], ['Interessamento articolare (sinovite in 2+ articolazioni, o dolore in 2+ con rigidità mattutina di 30 minuti)', 6]]),
+      opt('c_ren', 'Renale', [['Niente', 0], ['Proteinuria oltre 0,5 g/24 h', 4], ['Biopsia: nefrite lupica di classe II o V', 8], ['Biopsia: nefrite lupica di classe III o IV', 10]]),
+      opt('i_apl', 'Anticorpi antifosfolipidi', [['Niente', 0], ['Anticardiolipina, anti-β2GP1 o LAC', 2]]),
+      opt('i_com', 'Complemento', [['Normale', 0], ['C3 o C4 basso', 3], ['C3 e C4 bassi', 4]]),
+      opt('i_ab', 'Anticorpi specifici', [['Niente', 0], ['Anti-dsDNA o anti-Sm', 6]])],
+    calc: v => {
+      if (!v.ana) return 'Senza ANA almeno 1:80 il paziente non entra nei criteri: non si classifica come LES.';
+      const cl = Object.keys(v).filter(k => k.startsWith('c_')).reduce((a, k) => a + v[k], 0);
+      const im = Object.keys(v).filter(k => k.startsWith('i_')).reduce((a, k) => a + v[k], 0);
+      const n = cl + im;
+      return `Punteggio <strong>${n}</strong> (clinico ${cl}, immunologico ${im}). ${n >= 10 && cl > 0 ? '<strong>Classificabile come LES</strong> (almeno 10 punti e almeno un criterio clinico).' : n >= 10 ? 'Servono anche criteri clinici: con soli criteri immunologici non si classifica.' : 'Sotto 10: non classificabile come LES.'}`;
+    },
+    src: 'Aringer 2019 (EULAR/ACR). In ogni dominio conta solo il criterio più alto; un criterio vale solo se non c’è una spiegazione più probabile; basta che sia presente almeno una volta, anche non contemporaneo agli altri.' },
+  { id: 'basdai', title: 'BASDAI', cat: 'Reumatologia', what: 'Attività della spondilite anchilosante (spondiloartrite assiale), riferita all’ultima settimana',
+    kw: ['basdai', 'ankylosing spondylitis', 'spondiloartrite', 'axial spondyloarthritis', 'spondilite'],
+    items: [{ k: 'q1', label: '1. Stanchezza (0–10)', type: 'num', unit: '' }, { k: 'q2', label: '2. Dolore a collo, schiena o anche (0–10)', type: 'num', unit: '' }, { k: 'q3', label: '3. Dolore o gonfiore alle altre articolazioni (0–10)', type: 'num', unit: '' }, { k: 'q4', label: '4. Fastidio nei punti dolenti al tatto o alla pressione (0–10)', type: 'num', unit: '' }, { k: 'q5', label: '5. Intensità della rigidità mattutina (0–10)', type: 'num', unit: '' }, { k: 'q6', label: '6. Durata della rigidità mattutina (0 = nessuna, 10 = 2 ore o più)', type: 'num', unit: '' }],
+    calc: v => {
+      const q = ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'].map(k => v[k]);
+      if (q.some(x => x === null)) return null;
+      const c = q.map(x => Math.min(10, Math.max(0, x)));
+      const n = (c[0] + c[1] + c[2] + c[3] + (c[4] + c[5]) / 2) / 5;
+      return `BASDAI <strong>${scFmt(n, 1)}</strong>: ${n >= 4 ? 'malattia attiva (4 o più).' : 'sotto 4: attività bassa.'}`;
+    },
+    src: 'Garrett 1994. Media delle domande 1–4 e della media di 5 e 6. 4 o più è la soglia usata per l’attività (e per valutare i biologici, insieme al giudizio del reumatologo).' },
+  { id: 'asdas', title: 'ASDAS (PCR e VES)', cat: 'Reumatologia', what: 'Attività della spondiloartrite assiale',
+    kw: ['asdas', 'ankylosing spondylitis', 'spondiloartrite', 'axial spondyloarthritis', 'spondilite'],
+    items: [{ k: 'back', label: 'Dolore alla schiena (domanda 2 del BASDAI, 0–10)', type: 'num', unit: '' }, { k: 'stiff', label: 'Durata della rigidità mattutina (domanda 6 del BASDAI, 0–10)', type: 'num', unit: '' }, { k: 'glob', label: 'Valutazione globale del paziente (0–10)', type: 'num', unit: '' }, { k: 'per', label: 'Dolore o gonfiore periferico (domanda 3 del BASDAI, 0–10)', type: 'num', unit: '' }, { k: 'crp', label: 'PCR', type: 'num', unit: 'mg/L' }, { k: 'esr', label: 'VES', type: 'num', unit: 'mm/h' }],
+    calc: v => {
+      if ([v.back, v.stiff, v.glob, v.per].some(x => x === null) || (v.crp === null && v.esr === null)) return null;
+      const c = k => Math.min(10, Math.max(0, v[k]));
+      const out = [];
+      // con la PCR sotto 2 mg/L (o non misurabile) si usa 2
+      if (v.crp !== null) out.push(['PCR', 0.12 * c('back') + 0.06 * c('stiff') + 0.11 * c('glob') + 0.07 * c('per') + 0.58 * Math.log(Math.max(2, v.crp) + 1)]);
+      if (v.esr !== null) out.push(['VES', 0.08 * c('back') + 0.07 * c('stiff') + 0.11 * c('glob') + 0.09 * c('per') + 0.29 * Math.sqrt(Math.max(0, v.esr))]);
+      return out.map(([k, x]) => `ASDAS-${k} <strong>${scFmt(x, 1)}</strong>: ${x < 1.3 ? 'malattia inattiva' : x < 2.1 ? 'attività bassa' : x <= 3.5 ? 'attività alta' : 'attività molto alta'}`).join(' · ') + '.';
+    },
+    src: 'Lukas 2009 e van der Heijde (ASAS); soglie ASAS aggiornate nel 2018: sotto 1,3 inattiva, fino a 2,1 bassa, fino a 3,5 alta, oltre molto alta. Si preferisce la versione con la PCR; sotto 2 mg/L si usa 2.' }
 ];
 const scoreState = { q: '', cat: '' };
 function viewScores() {
@@ -1093,6 +1184,7 @@ function viewScores() {
           : `<label class="field"><span>${esc(it.label)}${it.unit ? ` <span class="muted-inline">${it.unit}</span>` : ''}</span><input class="input num" data-k="${it.k}" inputmode="decimal"></label>`).join('')}</div>
       <p class="lab-calc-out sc-out" aria-live="polite"></p>
       <p class="hint">Fonte: Claude, da ${esc(s.src)}</p>
+      ${scorePapers(s).length ? `<div class="sc-papers"><span class="lbl">I tuoi articoli</span><ul>${scorePapers(s).map(p => `<li><a href="#/papers/${p.id}">${esc(p.title)}</a>${p.year ? ` <small>· ${esc(String(p.year))}</small>` : ''}</li>`).join('')}</ul></div>` : ''}
     </section>`;
   const draw = () => {
     const f = foldAccents(scoreState.q);

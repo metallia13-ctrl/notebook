@@ -4083,3 +4083,18 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
 .drv-file.done { opacity: 0.6; }
 .drv-allrow { padding: 6px 4px; border-bottom: 1px solid var(--line); }
 .drv-acts { flex-wrap: wrap; }
+
+/* v3.87: StudyHub, da dove a dove */
+.sh-from { display: grid; gap: 2px; padding: 10px 12px; margin: 6px 0 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.sh-from .lbl { font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.sh-from small { color: var(--muted); }
+.sh-to { margin: 12px 0 6px; font-size: 1rem; }
+.sh-list-h { margin: 8px 0 6px; font-weight: 650; color: var(--accent); }
+.sc-papers { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.sc-papers ul { margin: 4px 0 0; padding-left: 18px; }
+.au-tools { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin: 0 0 8px; }
+.au-tools .search { flex: 1 1 260px; margin: 0; }
+.au-sort { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.9rem; }
+.au-sort select { width: auto; min-width: 190px; }
+.au-move { display: inline-flex; gap: 2px; flex: none; }
+.au-move .btn { min-width: 34px; padding-inline: 6px; }
