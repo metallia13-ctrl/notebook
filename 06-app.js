@@ -475,7 +475,7 @@ const Bridge = {
     // la sezione aperta mostra subito che StudyHub l’ha ricevuta
     const h = location.hash;
     if (changed.some(id => h.startsWith(`#/sec/${id}`)) && !/\/edit/.test(h) && !$('#modalRoot').children.length) {
-      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+      const typing = isTyping();
       if (!typing) { const y = window.scrollY; route(); window.scrollTo(0, y); }
     }
   }
@@ -1113,7 +1113,7 @@ function watchKeyboard() {
   if (!vv) return;
   let base = window.innerHeight;
   const check = () => {
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+    const typing = isTyping() || document.activeElement?.isContentEditable;
     const open = typing && vv.height < base - 120;
     document.documentElement.classList.toggle('kb-open', open);
     if (!typing) base = Math.max(base, window.innerHeight);
@@ -1306,6 +1306,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.89", title: "la B nelle mappe accanto al PDF", html: `      <ul>
+        <li>Scrivendo in un nodo della mappa (o in un altro testo modificabile) con il PDF aperto accanto, il tasto <strong>B</strong> aggiungeva un segnalibro invece di scrivere la lettera. Ora le scorciatoie a un tasto valgono solo quando non stai scrivendo.</li>
+      </ul>` },
   { v: "3.88", title: "dalla lezione agli appunti, mappa dei collegamenti", html: `      <ul>
         <li><strong>Segnalibri automatici</strong> (Lezioni → ⋯ → ✨): Gemini ascolta tutta la lezione e propone l’indice minuto per minuto, già collegato alle sezioni del notebook, con ★ dove il docente dice “questo lo chiedo”. Scegli quali tenere.</li>
         <li><strong>Bozza di appunti dalla lezione</strong> (⋯ → ✨): gli appunti in ordine, con i minuti che in Leggi fanno ripartire l’audio da lì; li salvi come sezione collegata alla lezione.</li>
@@ -2050,7 +2053,7 @@ const NavHide = {
     $('#navHide').addEventListener('click', () => this.set(true));
     $('#navShow').addEventListener('click', () => this.set(false));
     document.addEventListener('keydown', e => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'b' || e.key === 'B') && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) && !document.activeElement?.isContentEditable) {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'b' || e.key === 'B') && !isTyping() && !document.activeElement?.isContentEditable) {
         e.preventDefault();
         this.set(!document.body.classList.contains('nav-hidden'));
       }

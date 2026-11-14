@@ -652,7 +652,7 @@ function gradeBar(sec, slot, { mode, suggested } = {}) {
   };
   $$('.gbtn', slot).forEach(b => b.addEventListener('click', () => grade(+b.dataset.q)));
   const onKey = e => {
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || $('#modalRoot').children.length) return;
+    if (isTyping() || $('#modalRoot').children.length) return;
     const i = ['1', '2', '3', '4'].indexOf(e.key);
     if (i >= 0 && slot.isConnected) { e.preventDefault(); grade(GRADES[i].q); }
   };
@@ -986,7 +986,7 @@ function modeCloze(sec, body) {
   on('[data-act="reveal-all"]', 'click', () => marks.forEach(reveal), body);
   on('[data-act="hide-all"]', 'click', () => { marks.forEach(hide); slot.innerHTML = ''; update(); }, body);
   const onKey = e => {
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || $('#modalRoot').children.length) return;
+    if (isTyping() || $('#modalRoot').children.length) return;
     if (e.key !== ' ' && e.key !== 'Enter') return;
     const focused = document.activeElement?.closest?.('mark.cz.hidden, .cz-io.hidden');
     if (e.key === 'Enter' && !focused) return;

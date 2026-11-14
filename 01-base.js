@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.88';
+const APP_VERSION = '3.89';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -258,6 +258,8 @@ let importJob = null;
 const importDraft = { nbId: '', groupId: '', src: 'text', text: '', title: '', pdf: null, split: 'every', rangesText: '', xmind: null, topicLevel: 0, topicOff: new Set(), topicTitles: {}, topicGroups: true };
 let cleanups = [];
 
+// v3.89: stai scrivendo? Vale anche per i testi modificabili (nodi delle mappe, anteprima di Modifica), così le scorciatoie a un tasto non rubano le lettere
+const isTyping = () => { const a = document.activeElement; return !!a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable); };
 const nbById = id => state.notebooks.find(n => n.id === id);
 const secById = id => state.sections.find(s => s.id === id);
 const secsOf = nbId => state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.order - b.order);

@@ -1889,7 +1889,7 @@ function viewPdf(id, pageParam) {
   $('#pdfPage').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); goTo(+e.target.value, { flash: true }); e.target.blur(); } });
   const onKey = e => {
     if ($('#modalRoot').children.length) return;
-    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+    const typing = isTyping();
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !typing) { e.preventDefault(); undo(); return; }
     if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === 'b' || e.key === 'B') { e.preventDefault(); addBookmark(R.cur, selForBm()); }

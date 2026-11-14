@@ -819,7 +819,7 @@ function renderStudy() {
     renderStudy();
   });
   const onKey = e => {
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || $('#modalRoot').children.length) return;
+    if (isTyping() || $('#modalRoot').children.length) return;
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoAnswer(); return; }
     if (!session.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); session.revealed = true; renderStudy(); return; }
     const i = ['1', '2', '3', '4'].indexOf(e.key);
@@ -1352,7 +1352,7 @@ function examStep(sc) {
     if (ok) examFinish(sc);
   });
   const onKey = e => {
-    if ($('#modalRoot').children.length || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
+    if ($('#modalRoot').children.length || isTyping()) return;
     if (!run.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); show(); }
     else if (run.revealed && ['1', '2', '3'].includes(e.key)) { e.preventDefault(); grade([0, 0.5, 1][+e.key - 1]); }
   };
