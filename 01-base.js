@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.84';
+const APP_VERSION = '3.85';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -1251,6 +1251,7 @@ function route() {
   const navKey = p0 === 'nb' || p0 === 'sec' ? (state.fromReview ? 'review' : 'notebooks')
     : p0 === 'pdf' || p0 === 'pdfs' ? 'pdfs'
     : p0 === 'tag' || p0 === 'exam' ? 'notebooks'
+    : p0 === 'viva' && (p1 === 'exam' || p1 === 'examq') ? 'examq'
     : ['deck', 'card', 'study'].includes(p0) ? 'cards' : p0;
   $$('.nav a').forEach(a => {
     const onIt = a.dataset.nav === navKey || (a.dataset.nav === 'more' && MORE_KEYS.includes(navKey));

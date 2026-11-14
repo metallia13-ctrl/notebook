@@ -1340,6 +1340,7 @@ function viewExamQ(p1, p2) {
   if (p1 === 'quiz') return viewExamQuiz();
   if (p1 === 'sim') return viewExamSim(decodeURIComponent(p2 || ''), false);
   if (p1 === 'real') return viewExamSim(decodeURIComponent(p2 || ''), true);
+  if (p1 === 'prep') return viewExamPrep(decodeURIComponent(p2 || ''));
   const all = examQs();
   const subj = [...new Set(all.map(eqSubjKey))];
   const inSubj = eqState.nb ? all.filter(x => eqSubjKey(x) === eqState.nb) : all;
@@ -1352,7 +1353,7 @@ function viewExamQ(p1, p2) {
     <header class="page-head">
       <div><h1>Domande d’esame</h1><p class="lede">${all.length ? `${all.length} argomenti, ${all.reduce((a, x) => a + eqFreq(x), 0)} domande raccontate. ` : ''}Quelle uscite agli esami: le stesse domande si sommano, così vedi cosa chiedono di più.</p></div>
       <div class="inline">
-        ${all.length ? '<button class="btn primary" type="button" data-act="eq-sim">Simulazione d’esame</button>' : ''}
+        ${all.length ? '<button class="btn primary" type="button" data-act="eq-sim">Simulazione d’esame</button><button class="btn" type="button" data-act="eq-oral">Esame orale</button><button class="btn" type="button" data-act="eq-prep">Preparazione all’esame</button>' : ''}
         <button class="btn" type="button" data-act="eq-import">Importa da Excel</button>
         <button class="btn ghost" type="button" data-act="eq-new">Nuova domanda</button>
       </div>
@@ -1409,6 +1410,8 @@ function viewExamQ(p1, p2) {
   on('[data-act="eq-template"]', 'click', eqTemplate);
   on('[data-act="eq-prompt"]', 'click', eqCopyPrompt);
   on('[data-act="eq-sim"]', 'click', async () => { const k = await eqPickSubject('Simulazione: quale materia?'); if (k) go(`#/examq/sim/${encodeURIComponent(k)}`); });
+  on('[data-act="eq-oral"]', 'click', async () => { const k = await eqPickSubject('Esame orale: quale materia?'); if (k) go(`#/viva/exam/${encodeURIComponent(k)}`); });
+  on('[data-act="eq-prep"]', 'click', async () => { const k = await eqPickSubject('Preparazione: quale materia?'); if (k) go(`#/examq/prep/${encodeURIComponent(k)}`); });
   on('[data-act="eq-real"]', 'click', async () => { const k = await eqPickSubject('Un appello vero: quale materia?'); if (k) go(`#/examq/real/${encodeURIComponent(k)}`); });
   on('[data-act="eq-struct"]', 'click', async () => { const k = await eqPickSubject('Struttura dell’esame: quale materia?'); if (k && await eqStructSheet(k)) route(); });
   on('[data-act="eq-export"]', 'click', async () => {
@@ -1855,8 +1858,9 @@ function viewExamSim(key, real) {
         </li>`;
       }).join('')}</ol>
       ${done === exam.items.length ? `<p class="lab-q-t">Risultato: ne sapevi ${exam.items.filter((_, i) => res[i] === 'ok').length} su ${exam.items.length}.</p>` : ''}
-      <div class="inline"><button class="btn primary" type="button" data-act="es-again">${real ? 'Un altro appello' : 'Nuova simulazione'}</button><a class="btn ghost" href="#/examq/${real ? 'sim' : 'real'}/${encodeURIComponent(key)}">${real ? 'Simulazione con la struttura' : 'Un appello vero'}</a></div>`);
+      <div class="inline"><button class="btn primary" type="button" data-act="es-oral">Fai questo esame a voce</button><button class="btn" type="button" data-act="es-again">${real ? 'Un altro appello' : 'Nuova simulazione'}</button><a class="btn ghost" href="#/examq/${real ? 'sim' : 'real'}/${encodeURIComponent(key)}">${real ? 'Simulazione con la struttura' : 'Un appello vero'}</a></div>`);
     on('[data-act="es-again"]', 'click', () => { exam = make(); Object.keys(res).forEach(k => delete res[k]); render(); });
+    on('[data-act="es-oral"]', 'click', () => { vivaState.pendingExam = { key, real, title: exam.title, items: exam.items }; vivaState.s = null; go(`#/viva/exam/${encodeURIComponent(key)}`); });
     on('[data-esg]', 'click', async e => {
       const [v, i] = e.currentTarget.dataset.esg.split(':');
       res[i] = v;
@@ -1914,6 +1918,162 @@ function viewExamQuiz() {
   });
   draw();
 }
+/* =====================================================================
+   v3.85: Preparazione all’esame
+   La data dell’esame (record { kind: 'examprep', subjKey, date }) e, per ogni
+   argomento della banca delle domande, una priorità: quanto esce (più peso
+   all’ultimo anno) per quanto sei indietro (sezione mai studiata, ripasso in
+   ritardo, voti dell’interrogazione, “non la sapevo”, flashcard non fatte).
+   ===================================================================== */
+const eqPrepOf = key => state.links.find(l => l.kind === 'examprep' && l.subjKey === key) || null;
+const EQ_STOP = new Set('della delle dello degli dalla dalle dallo dagli nella nelle nello negli sulla sulle sullo sugli alla alle allo agli come cosa sono essere loro anche quale quali quando dove perché perche tra fra con per dei del gli una uno sua suo suoi sue questo questa questi queste quello quella parli parlare descriva descrivere spieghi spiegare tipo tipi generale generali principali'.split(' '));
+const eqStems = t => [...new Set(foldAccents(t).replace(/[^a-z0-9]+/g, ' ').split(' ').filter(w => w.length >= 4 && !EQ_STOP.has(w)).map(w => w.slice(0, 6)))];
+// le sezioni che parlano di un argomento: quelle collegate, altrimenti le più simili per titolo e titoletti
+function eqGuessSecs(x, max = 2) {
+  const linked = (x.secIds || []).map(secById).filter(Boolean);
+  if (linked.length) return { secs: linked, guessed: false };
+  if (!x.notebookId) return { secs: [], guessed: true };
+  const main = eqStems(x.q);
+  const extra = eqStems(`${eqVariants(x).join(' ')}`).filter(s => !main.includes(s));
+  if (!main.length && !extra.length) return { secs: [], guessed: true };
+  // conta quanta parte del titolo della sezione compare nell’argomento (un titolo corto e preciso vince)
+  const all = new Set([...main, ...extra]);
+  const scored = secsOf(x.notebookId).map(s => {
+    const title = eqStems(s.title);
+    if (!title.length) return { s, sc: 0 };
+    const hitMain = title.filter(t => main.includes(t)).length;
+    const hitAll = title.filter(t => all.has(t)).length;
+    const cover = (hitMain + (hitAll - hitMain) * 0.5) / title.length;
+    return { s, sc: hitMain ? cover + hitMain * 0.05 : 0, ok: hitMain && (cover >= 0.6 || hitMain >= 3) };
+  }).filter(o => o.ok).sort((a, b) => b.sc - a.sc);
+  return { secs: scored.slice(0, max).map(o => o.s), guessed: true };
+}
+// peso di un argomento: le volte che è uscito, con l’ultimo anno che conta il doppio
+function eqWeightFn(key) {
+  const qs = eqOfSubj(key);
+  const st = eqStructOf(key);
+  const lastYear = Math.max(0, ...qs.flatMap(x => (x.occ || []).map(o => +eqYear(o) || 0)));
+  return x => (x.occ || []).reduce((a, o) => a + (st?.recent !== false && lastYear && +eqYear(o) === lastYear ? 2 : 1), 0) || 1;
+}
+// quanto sei pronta su un argomento (0–1) e perché
+function eqReadiness(x, secs) {
+  const why = [];
+  let r = 0.15, known = false;
+  const today = todayStr();
+  secs.forEach(s => {
+    const hist = s.srs?.history || [];
+    if (s.studyhub || hist.length) {
+      known = true;
+      let v = 0.5;
+      const last = hist[hist.length - 1];
+      if (last) { v += last.q >= 4 ? 0.2 : last.q < 3 ? -0.2 : 0; }
+      if (!s.studyhub && s.srs?.due && s.srs.due < today) { v -= 0.15; why.push({ t: `ripasso in ritardo (${s.title})`, bad: true }); }
+      const vh = s.vivaHist || [];
+      const lv = vh[vh.length - 1];
+      if (lv) { v += lv.v >= 24 ? 0.2 : lv.v < 18 ? -0.2 : 0.05; why.push({ t: `all’interrogazione ${lv.v}/30`, bad: lv.v < 18 }); }
+      const cards = cardsOfSection(s.id);
+      if (cards.length) {
+        const fresh = cards.filter(c => !c.srs || c.srs.state === 'new').length;
+        if (fresh / cards.length > 0.5) { v -= 0.1; why.push({ t: `${fresh} flashcard mai fatte`, bad: true }); }
+      }
+      r = Math.max(r, Math.min(1, Math.max(0, v)));
+    }
+  });
+  if (secs.length && !known) why.unshift({ t: 'mai studiata', bad: true });
+  if (!secs.length) why.unshift({ t: 'nessuna sezione collegata', bad: true });
+  const ok = x.stats?.ok || 0, ko = x.stats?.ko || 0;
+  if (ok + ko) {
+    const ratio = ok / (ok + ko);
+    r = known ? r * 0.6 + ratio * 0.4 : Math.max(r, ratio * 0.6);
+    why.push({ t: ko > ok ? `la sbagli (✓${ok} ✗${ko})` : `la sai (✓${ok} ✗${ko})`, bad: ko > ok });
+  }
+  return { r: Math.max(0, Math.min(1, r)), why, known: known || ok + ko > 0 };
+}
+function eqPriorities(key) {
+  const st = eqStructOf(key);
+  const w = eqWeightFn(key);
+  const qs = eqOfSubj(key).filter(x => !st || st.map?.[eqCat(x)] !== 'off');
+  const maxW = Math.max(1, ...qs.map(w));
+  return qs.map(x => {
+    const g = eqGuessSecs(x);
+    const rd = eqReadiness(x, g.secs);
+    const imp = w(x) / maxW;
+    return { x, secs: g.secs, guessed: g.guessed, ...rd, imp, p: imp * (1 - rd.r) };
+  }).sort((a, b) => b.p - a.p || eqFreq(b.x) - eqFreq(a.x));
+}
+function viewExamPrep(key) {
+  if (!key || !eqOfSubj(key).length) { setView('<div class="empty"><p>Nessuna domanda per questa materia.</p><a class="btn primary" href="#/examq">Domande d’esame</a></div>'); return; }
+  const prep = eqPrepOf(key);
+  const date = prep?.date || '';
+  const days = date ? dayDiff(todayStr(), date) : null;
+  const list = eqPriorities(key);
+  const ready = list.filter(o => o.r >= 0.7).length;
+  const never = list.filter(o => !o.known && o.secs.length).length;
+  const nosec = list.filter(o => !o.known && !o.secs.length).length;
+  const todo = list.length - ready;
+  const perDay = days && days > 0 ? Math.ceil(todo / Math.max(1, days - Math.min(3, Math.floor(days / 5)))) : 0;
+  const lvl = o => (o.r >= 0.7 ? 'ok' : o.r >= 0.4 ? 'mid' : 'ko');
+  let showAll = false;
+  const render = () => {
+    const shown = showAll ? list : list.slice(0, 40);
+    setView(`
+      <div class="back-row"><a class="back" href="#/examq">Domande d’esame</a></div>
+      <header class="page-head"><div><h1>Preparazione all’esame</h1><p class="lede">${esc(eqSubjLabel(key))}: gli argomenti che escono di più, a partire da quelli su cui sei più indietro.</p></div>
+        <div class="inline"><a class="btn primary" href="#/viva/exam/${encodeURIComponent(key)}">Esame orale</a></div></header>
+      <div class="prep-top">
+        <div class="prep-count ${days === null ? '' : days < 0 ? 'past' : days <= 7 ? 'near' : ''}">
+          ${days === null ? '<b>?</b><span>Quando hai l’esame?</span>' : days < 0 ? `<b>✓</b><span>Esame del ${eqDateIt(date)} passato</span>` : days === 0 ? '<b>Oggi</b><span>In bocca al lupo!</span>' : `<b>${days}</b><span>${days === 1 ? 'giorno' : 'giorni'} all’esame del ${eqDateIt(date)}</span>`}
+          <label class="field prep-date"><span>Data dell’esame</span><input class="input" type="date" id="prepDate" value="${esc(date)}"></label>
+        </div>
+        <ul class="prep-stats">
+          <li><b>${ready}</b> ${ready === 1 ? 'argomento pronto' : 'argomenti pronti'}</li>
+          <li><b>${todo - never - nosec}</b> da rivedere</li>
+          <li><b>${never}</b> ${never === 1 ? 'mai studiato' : 'mai studiati'}</li>
+          ${nosec ? `<li><b>${nosec}</b> senza una sezione collegata (tocca ✎ per collegarla)</li>` : ''}
+          ${perDay ? `<li class="prep-plan">Per arrivarci con qualche giorno di margine: circa <b>${perDay}</b> ${perDay === 1 ? 'argomento' : 'argomenti'} al giorno, in quest’ordine.</li>` : ''}
+        </ul>
+      </div>
+      <p class="hint">La priorità mette insieme quanto esce un argomento (gli appelli dell’ultimo anno contano il doppio) e quanto sei indietro: sezione mai studiata, ripasso in ritardo, voti dell’interrogazione, domande segnate “non la sapevo”, flashcard mai fatte. Le sezioni segnate “trovata dal titolo” le ho abbinate io: se sbaglio, tocca ✎ e collega quella giusta.</p>
+      <ol class="prep-list">${shown.map(o => `
+        <li class="prep-row lv-${lvl(o)}">
+          <span class="prep-bar" title="Pronta al ${Math.round(o.r * 100)}%"><i style="height:${Math.max(6, Math.round(o.r * 100))}%"></i></span>
+          <div class="prep-main">
+            <p class="prep-q"><span class="eq-n" title="Volte che è uscita">${eqFreq(o.x)}×</span> ${esc(o.x.q)}</p>
+            <p class="prep-why">${eqCat(o.x) !== 'Senza categoria' ? `<span class="muted-inline">${esc(eqCat(o.x))}</span> ` : ''}${o.why.map(w => `<span class="chip ${w.bad ? 'bad' : 'good'}">${esc(w.t)}</span>`).join(' ')}</p>
+            ${o.secs.length ? `<p class="prep-secs">${o.secs.map(s => `<a href="#/sec/${s.id}/read">${esc(s.title)}</a>`).join(', ')}${o.guessed ? ' <small class="muted-inline">(trovata dal titolo)</small>' : ''}</p>` : ''}
+          </div>
+          <div class="prep-acts">
+            <a class="btn sm" href="#/viva/examq/${o.x.id}" title="Il professore ti fa questa domanda">Interrogami</a>
+            <button class="btn sm ghost" type="button" data-prep-edit="${o.x.id}" aria-label="Modifica la domanda e le sezioni collegate">✎</button>
+          </div>
+        </li>`).join('')}</ol>
+      ${!showAll && list.length > 40 ? `<button class="btn ghost" type="button" data-act="prep-all">Mostra tutti (${list.length})</button>` : ''}`);
+    $('#prepDate').addEventListener('change', async e => {
+      const v = e.target.value;
+      const rec = eqPrepOf(key) || { id: uid(), kind: 'examprep', notebookId: '_examprep', subjKey: key, created: Date.now() };
+      rec.date = v;
+      await saveLink(rec);
+      route();
+    });
+    on('[data-act="prep-all"]', 'click', () => { showAll = true; render(); });
+    $('.prep-list')?.addEventListener('click', async e => {
+      const b = e.target.closest('[data-prep-edit]');
+      if (!b) return;
+      const x = examQs().find(r => r.id === b.dataset.prepEdit);
+      if (x && await eqSheet(x)) route();
+    });
+  };
+  render();
+}
+// in cima alla pagina del notebook: quanto manca all’esame
+function eqPrepBanner(nbId) {
+  const p = eqPrepOf(nbId);
+  if (!p || !p.date || !eqOfSubj(nbId).length) return '';
+  const d = dayDiff(todayStr(), p.date);
+  if (d < 0 || d > 60) return '';
+  return `<a class="prep-banner" href="#/examq/prep/${encodeURIComponent(nbId)}"><b>${d === 0 ? 'Esame oggi' : `${d} ${d === 1 ? 'giorno' : 'giorni'} all’esame`}</b><span>Preparazione: cosa ripassare prima</span></a>`;
+}
+
 // Nella sezione, in fondo a Leggi
 function eqSecBlockHtml(sec) {
   const list = eqOfSec(sec.id).sort((a, b) => eqFreq(b) - eqFreq(a));
@@ -3238,6 +3398,9 @@ function vivaScope(kind, id) {
     return null;
   }
   if (kind === 'nb') { const nb = nbById(id); return nb ? { title: nb.name, secs: secsOf(nb.id) } : null; }
+  // v3.85: esame orale con le domande vere (una materia intera o una sola domanda)
+  if (kind === 'exam') { const key = decodeURIComponent(id || ''); return eqOfSubj(key).length ? { title: eqSubjLabel(key), exam: true, key } : null; }
+  if (kind === 'examq') { const x = examQs().find(r => r.id === id); return x ? { title: eqSubjLabel(eqSubjKey(x)), exam: true, key: eqSubjKey(x), one: x } : null; }
   return null;
 }
 function viewViva(kind, id) {
@@ -3245,13 +3408,14 @@ function viewViva(kind, id) {
   if (!kind) return vivaPicker();
   const sc = vivaScope(kind, id);
   if (!sc) return notFound('Questo argomento');
-  const usable = sc.secs.filter(s => aiText(s.md || '').length > 150);
+  const usable = (sc.secs || []).filter(s => aiText(s.md || '').length > 150);
   if (!st.s || st.s.key !== `${kind}/${id}`) st.s = null;
   if (!AI.ready()) {
     setView(`<header class="page-head"><div><h1>Interrogazione</h1><p class="lede">${esc(sc.title)}</p></div></header>
       <div class="empty"><p>L’interrogazione usa l’AI (Gemini o Claude) per fare le domande e valutare le risposte. Aggiungi la chiave in Impostazioni → Intelligenza artificiale: con Gemini è gratuita.</p><a class="btn primary" href="#/settings">Vai alle impostazioni</a></div>`);
     return;
   }
+  if (sc.exam) { if (!st.s) return vivaSetupExam(kind, id, sc); vivaRender(); return; }
   if (!usable.length) {
     setView(`<header class="page-head"><div><h1>Interrogazione</h1><p class="lede">${esc(sc.title)}</p></div></header><div class="empty"><p>Qui non ci sono ancora appunti abbastanza lunghi da cui fare domande.</p></div>`);
     return;
@@ -3291,15 +3455,105 @@ function vivaSetup(kind, id, sc, usable) {
     vivaNext();
   });
 }
+/* ---------- v3.85: esame orale con le domande vere ---------- */
+const VIVA_SYS_EXQ = `Sei il professore universitario di medicina che interroga all’esame orale, in Italia. Ti do le domande estratte per questo esame: per ciascuna l’argomento, la parte del programma e come l’hanno raccontata gli studenti dopo gli appelli veri.
+Per ciascuna, nello stesso ordine, formula la domanda come la faresti tu all’orale: una frase sola, naturale e diretta (per esempio “Mi parli della…”, “Come è organizzata…”), fedele all’argomento e al modo in cui è stata chiesta davvero, senza aggiungere argomenti diversi.
+Prepara anche una “traccia”: da 4 a 6 voci brevissime (2-5 parole) che una buona risposta dovrebbe toccare, in ordine logico, SENZA dare le risposte.
+Rispondi SOLO con JSON valido, senza altro testo: {"domande": [{"domanda": "...", "traccia": ["...", "..."]}]}`;
+// gli appunti su cui il professore valuta: le sezioni collegate (o trovate dal titolo) e la traccia salvata
+function eqCtx(x) {
+  const g = eqGuessSecs(x, 2);
+  let md = g.secs.map(s => `## ${s.title}\n${s.md || ''}`).join('\n\n');
+  if (x.a) md += `\n\n## Traccia di risposta salvata\n${x.a}`;
+  return { title: g.secs[0]?.title || '', md, secIds: g.secs.map(s => s.id) };
+}
+function vivaCtx(c) {
+  if (c.ctx) return c.ctx;
+  const sec = secById(c.secId);
+  return { title: sec ? sec.title : '', md: sec ? sec.md : '', secIds: sec ? [sec.id] : [] };
+}
+const vivaTotal = s => (s.exam ? s.exam.items.length : vivaState.setup.n);
+const eqDefaultAsk = it => it.asked || `Mi parli di questo argomento: ${it.x.q}`;
+function vivaSetupExam(kind, id, sc) {
+  const su = vivaState.setup;
+  const key = sc.key;
+  const st = eqStructOf(key);
+  const pend = vivaState.pendingExam && vivaState.pendingExam.key === key && !sc.one ? vivaState.pendingExam : null;
+  const reals = eqRealExams(key).filter(e => e.items.length > 1);
+  const typ = eqTypicalCount(key);
+  const nStruct = st ? st.parts.reduce((a, p) => a + p.n, 0) : typ.n;
+  setView(`
+    <div class="back-row"><a class="back" href="${sc.one ? `#/examq/prep/${encodeURIComponent(key)}` : '#/examq'}">${sc.one ? 'Preparazione all’esame' : 'Domande d’esame'}</a></div>
+    <header class="page-head"><div><h1>Esame orale</h1><p class="lede">${esc(sc.title)}${st?.prof ? ` · come ${esc(st.prof)}` : ''}</p></div></header>
+    <div class="viva-card">
+      <p>${sc.one ? `Il professore ti fa questa domanda d’esame: <b>${esc(sc.one.q)}</b>.` : 'Il professore ti fa le domande uscite davvero agli appelli, come all’esame.'} Rispondi a voce, poi tocca <b>Ho finito</b>: voto indicativo, cosa mancava, risposta modello e, se vuoi, l’approfondimento. Alla fine hai il voto dell’esame e cosa ripassare.</p>
+      <p class="hint">Valuta sui tuoi appunti: le sezioni collegate alla domanda o, se non ne ha, quelle con il titolo più simile. Senza appunti, sulle conoscenze mediche standard.</p>
+      ${sc.one ? '' : pend ? `<p class="hint"><b>${pend.items.length} domande</b>: quelle della ${pend.real ? 'simulazione dall’appello vero' : 'simulazione'} che avevi aperto.</p>` : `
+        <div class="field"><span class="lbl">Domande</span>
+          <label class="check"><input type="radio" name="vxSrc" value="struct" checked><span>${st ? `Con la struttura dell’esame: ${st.parts.map(p => `${esc(p.name)} (${p.n})`).join(', ')}` : `Da tutto il programma, ${nStruct} come negli esami raccolti (puoi impostare la struttura da Domande d’esame)`}</span></label>
+          ${reals.length ? `<label class="check"><input type="radio" name="vxSrc" value="real"><span>Un appello vero, con le domande fatte a uno studente (${reals.length} raccolti)</span></label>` : ''}
+        </div>`}
+      <div class="grid2">
+        <label class="field"><span>Approfondimenti per domanda</span><select class="input" id="vvF">${[0, 1, 2].map(n => `<option ${su.follow === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      </div>
+      <label class="check"><input type="checkbox" id="vvVoice" ${su.voice ? 'checked' : ''}><span>Leggi le domande ad alta voce</span></label>
+      ${S().geminiKey.trim() ? `<label class="field"><span>Riconoscimento della voce (in italiano)</span><select class="input" id="vvAsr">
+        <option value="gemini" ${(su.asr || 'gemini') === 'gemini' ? 'selected' : ''}>Gemini: più preciso con i termini medici (la risposta si legge dopo)</option>
+        ${SpeechRec ? `<option value="chrome" ${su.asr === 'chrome' ? 'selected' : ''}>Chrome: la risposta si scrive mentre parli</option>` : ''}
+      </select></label>` : ''}
+      ${SpeechRec ? '' : '<p class="hint warn-hint">Questo browser non trascrive la voce: risponderai scrivendo. Con Chrome sul tablet o sul telefono puoi rispondere a voce.</p>'}
+      <div class="actions"><button class="btn primary big" type="button" data-act="vx-start">Inizia l’esame</button></div>
+    </div>`);
+  on('[data-act="vx-start"]', 'click', () => {
+    su.follow = +$('#vvF').value; su.voice = $('#vvVoice').checked;
+    su.asr = $('#vvAsr') ? $('#vvAsr').value : 'chrome';
+    let items, real = false, title = '';
+    if (sc.one) items = [{ x: sc.one, part: eqCat(sc.one) !== 'Senza categoria' ? eqCat(sc.one) : '' }];
+    else if (pend) { items = pend.items; real = pend.real; title = pend.title; }
+    else if ($('input[name="vxSrc"]:checked')?.value === 'real' && reals.length) {
+      const e = reals[Math.floor(Math.random() * reals.length)];
+      real = true; title = `Appello del ${eqDateIt(e.date)}, raccontato da ${e.src}`;
+      items = e.items.map(i => ({ x: i.x, part: eqCat(i.x) !== 'Senza categoria' ? eqCat(i.x) : '', asked: i.text }));
+    } else items = eqDrawExam(key).items;
+    if (!items.length) { toast('Non riesco a comporre un esame con queste domande'); return; }
+    // senza struttura la “parte” è la macro-categoria della domanda
+    const catOf = x => (eqCat(x) !== 'Senza categoria' ? eqCat(x) : '');
+    items = items.map(it => ({ ...it, part: !st || !it.part || it.part === 'Domande' ? catOf(it.x) : it.part }));
+    vivaState.pendingExam = null;
+    vivaState.s = { key: `${kind}/${id}`, title: sc.one ? sc.one.q : `${sc.title}${title ? ` · ${title}` : ''}`, exam: { key, items, real, prof: st?.prof || '', notes: st?.notes || '', label: sc.title, one: !!sc.one }, pool: [], asked: [], items: [], qi: 0, phase: 'ask', cur: null };
+    vivaNext();
+  });
+}
+async function vivaExamQuestions(ex) {
+  try {
+    const text = `MATERIA: ${ex.label}${ex.prof ? ` (docente: ${ex.prof})` : ''}${ex.notes ? `\nNOTE SULL’ESAME: ${ex.notes}` : ''}\n\nDOMANDE:\n${ex.items.map((it, i) => {
+      const vars = eqVariants(it.x).filter(v => foldAccents(v) !== foldAccents(it.x.q)).slice(0, 4);
+      return `${i + 1}. Argomento: ${it.x.q}${it.part ? ` · Parte: ${it.part}` : ''}${vars.length ? ` · Raccontata come: ${vars.join(' | ')}` : ''}${it.asked ? ` · Questa volta chiesta così: ${it.asked}` : ''}`;
+    }).join('\n')}`;
+    const r = await AI.generate({ system: VIVA_SYS_EXQ, text, maxTokens: 2500 });
+    const j = vivaJson(r.text);
+    return Array.isArray(j.domande) ? j.domande : [];
+  } catch (err) {
+    if (/offline/i.test(err.message || '')) throw err;
+    return [];
+  }
+}
 async function vivaNext(follow = null) {
   const s = vivaState.s;
   if (!s) return;
-  if (!follow && s.items.length >= vivaState.setup.n) { s.phase = 'end'; vivaRender(); return; }
+  if (!follow && s.items.length >= vivaTotal(s)) { s.phase = 'end'; vivaRender(); return; }
   s.phase = 'loading';
   vivaRender();
   try {
     if (follow) {
-      s.cur = { secId: follow.secId, q: follow.q, traccia: [], follow: follow.depth, parent: follow.parent, t0: 0, tFirst: 0, last: 0, pauses: 0, text: '' };
+      s.cur = { secId: follow.secId, ctx: follow.ctx, eqId: follow.eqId, part: follow.part, q: follow.q, traccia: [], follow: follow.depth, parent: follow.parent, t0: 0, tFirst: 0, last: 0, pauses: 0, text: '' };
+    } else if (s.exam) {
+      const idx = s.items.length;
+      const it = s.exam.items[idx];
+      if (!s.exam.qs) s.exam.qs = await vivaExamQuestions(s.exam);
+      const g = s.exam.qs[idx] || {};
+      const ctx = eqCtx(it.x);
+      s.cur = { secId: ctx.secIds[0] || null, ctx, eqId: it.x.id, part: it.part || '', q: String(g.domanda || eqDefaultAsk(it)).trim(), traccia: (g.traccia || []).map(String).slice(0, 6), follow: 0, t0: 0, tFirst: 0, last: 0, pauses: 0, text: '' };
     } else {
       const secId = s.pool[s.items.length % s.pool.length];
       const sec = secById(secId);
@@ -3323,18 +3577,19 @@ function vivaRender() {
   if (vivaState.dict) { try { vivaState.dict.stop(); } catch { /* già fermo */ } vivaState.dict = null; }
   const s = vivaState.s;
   const su = vivaState.setup;
-  const head = `<header class="page-head"><div><h1>Interrogazione</h1><p class="lede">${esc(s.title)} · domanda ${Math.min(s.items.length + 1, su.n)} di ${su.n}</p></div>
+  const head = `<header class="page-head"><div><h1>${s.exam ? 'Esame orale' : 'Interrogazione'}</h1><p class="lede">${esc(s.title)}${vivaTotal(s) > 1 ? ` · domanda ${Math.min(s.items.length + 1, vivaTotal(s))} di ${vivaTotal(s)}` : ''}</p></div>
     <button class="btn ghost" type="button" data-act="vv-stop">Termina</button></header>`;
   if (s.phase === 'loading') { setView(`${head}<div class="viva-card"><p class="viva-wait">Il professore sta pensando alla domanda…</p></div>`); bindStop(); return; }
   if (s.phase === 'error') { setView(`${head}<div class="viva-card"><p class="err-line">${esc(s.err)}</p><div class="actions"><button class="btn primary" type="button" data-act="vv-retry">Riprova</button></div></div>`); bindStop(); on('[data-act="vv-retry"]', 'click', () => vivaNext()); return; }
   if (s.phase === 'end') return vivaSummary();
   const c = s.cur;
   const sec = secById(c.secId);
+  const ctx = vivaCtx(c);
   if (s.phase === 'ask') {
     const gem = su.asr === 'gemini' && !!S().geminiKey.trim();
     setView(`${head}
       <div class="viva-card">
-        <p class="viva-from">${c.follow ? 'Approfondimento' : 'Domanda'} · ${esc(sec ? sec.title : '')}</p>
+        <p class="viva-from">${c.follow ? 'Approfondimento' : 'Domanda'}${c.part || ctx.title ? ` · ${esc(c.part || ctx.title)}` : ''}</p>
         <p class="viva-q">${esc(c.q)}</p>
         <div class="inline viva-qacts">
           ${canSpeak || Voice.useGemini() ? '<button class="btn sm ghost" type="button" data-act="vv-say">Rileggi la domanda</button>' : ''}
@@ -3372,7 +3627,7 @@ function vivaRender() {
     const micBtn = $('[data-act="vv-mic"]');
     if (micBtn) {
       dict = createDictation({
-        vocab: vocabFrom(sec ? sec.md : ''),
+        vocab: vocabFrom(ctx.md || ''),
         onText: t => { heard(); ta.value = `${ta.value.trim()} ${t}`.trim(); c.text = ta.value; },
         onInterim: t => { if (t) heard(); $('.viva-interim').textContent = t; },
         onState: on2 => { micBtn.setAttribute('aria-pressed', String(on2)); $('span', micBtn).textContent = on2 ? 'Sto ascoltando… tocca per fermare' : 'Rispondi a voce'; micBtn.classList.toggle('on', on2); }
@@ -3426,11 +3681,11 @@ function vivaRender() {
       bindStop();
       try {
         const left = su.follow - (c.follow || 0);
-        const terms = useAudio ? [...vocabFrom(sec ? sec.md : '').values()].filter(t => t.length >= 6).slice(0, 250).join(', ') : '';
+        const terms = useAudio ? [...vocabFrom(ctx.md || '').values()].filter(t => t.length >= 6).slice(0, 250).join(', ') : '';
         const r = await AI.generate({
           ...(useAudio ? { provider: 'gemini', audio: { mime: c.audio.mime, data: c.audio.data } } : {}),
           system: useAudio ? VIVA_SYS_E + VIVA_AUDIO_NOTE : VIVA_SYS_E,
-          text: `APPUNTI (sezione “${sec ? sec.title : ''}”):\n${aiText(sec ? sec.md : '').slice(0, 14000)}\n\n${useAudio ? `TERMINI DEGLI APPUNTI: ${terms}\n\n` : ''}DOMANDA: ${c.q}\n\nRISPOSTA DELLO STUDENTE:\n${useAudio ? '(nell’audio allegato)' : c.text || '(lo studente ha detto di non saperlo)'}\n\n${left > 0 ? 'Fai una domanda di approfondimento.' : 'Non fare domande di approfondimento: "approfondimento" deve essere una stringa vuota.'}`,
+          text: `${s.exam ? `ESAME: ${s.exam.label}${s.exam.prof ? `, docente ${s.exam.prof}` : ''}.${s.exam.notes ? ` Note sull’esame: ${s.exam.notes}` : ''}\n\n` : ''}${ctx.md && aiText(ctx.md).trim() ? `APPUNTI (${s.exam ? 'sezioni' : 'sezione'} “${ctx.title}”):\n${aiText(ctx.md).slice(0, 14000)}` : `APPUNTI: nessun appunto su questo argomento. Valuta con le conoscenze mediche corrette per l’esame universitario di ${s.exam ? s.exam.label : 'medicina'}.`}\n\n${useAudio ? `TERMINI DEGLI APPUNTI: ${terms}\n\n` : ''}DOMANDA: ${c.q}\n\nRISPOSTA DELLO STUDENTE:\n${useAudio ? '(nell’audio allegato)' : c.text || '(lo studente ha detto di non saperlo)'}\n\n${left > 0 ? 'Fai una domanda di approfondimento.' : 'Non fare domande di approfondimento: "approfondimento" deve essere una stringa vuota.'}`,
           maxTokens: 3500
         });
         c.ev = vivaJson(r.text);
@@ -3441,6 +3696,11 @@ function vivaRender() {
         s.phase = 'result';
         // storico per la sezione: data e voto
         if (sec) { sec.vivaHist = [...(sec.vivaHist || []), { d: todayStr(), v: c.ev.voto }].slice(-30); saveSection(sec); }
+        // all’esame orale il voto finisce anche nelle statistiche della domanda (sufficiente = la sapevo)
+        if (s.exam && !c.follow && c.eqId) {
+          const x = examQs().find(r => r.id === c.eqId);
+          if (x) { const okv = c.ev.voto >= 18; x.stats = { ok: (x.stats?.ok || 0) + (okv ? 1 : 0), ko: (x.stats?.ko || 0) + (okv ? 0 : 1), last: todayStr() }; saveLink(x); }
+        }
         vivaRender();
       } catch (err) { s.phase = 'ask'; toast(err.message || 'Valutazione non riuscita', 'err'); vivaRender(); }
     };
@@ -3466,13 +3726,13 @@ function vivaRender() {
         ${e.modello ? `<details class="viva-model"><summary>Risposta modello</summary><p>${esc(e.modello)}</p>${canSpeak || Voice.useGemini() ? '<button class="btn sm ghost" type="button" data-act="vv-model">Ascoltala</button>' : ''}</details>` : ''}
         <div class="actions">
           ${canFollow ? `<button class="btn primary" type="button" data-act="vv-follow">Approfondimento: rispondi</button>` : ''}
-          <button class="btn ${canFollow ? '' : 'primary'}" type="button" data-act="vv-next">${s.items.length >= su.n ? 'Vedi il riepilogo' : 'Prossima domanda'}</button>
-          <a class="btn ghost" href="#/sec/${c.secId}/read">Apri la sezione</a>
+          <button class="btn ${canFollow ? '' : 'primary'}" type="button" data-act="vv-next">${s.items.length >= vivaTotal(s) ? 'Vedi il riepilogo' : 'Prossima domanda'}</button>
+          ${c.secId ? `<a class="btn ghost" href="#/sec/${c.secId}/read">Apri la sezione</a>` : ''}
         </div>
       </div>`);
     bindStop();
     on('[data-act="vv-model"]', 'click', () => speak(e.modello));
-    on('[data-act="vv-follow"]', 'click', () => vivaNext({ secId: c.secId, q: String(e.approfondimento).trim(), depth: (c.follow || 0) + 1, parent }));
+    on('[data-act="vv-follow"]', 'click', () => vivaNext({ secId: c.secId, ctx: c.ctx, eqId: c.eqId, part: c.part, q: String(e.approfondimento).trim(), depth: (c.follow || 0) + 1, parent }));
     on('[data-act="vv-next"]', 'click', () => vivaNext());
   }
 }
@@ -3498,19 +3758,19 @@ function vivaSummary() {
   const starts = all.filter(i => i.text && i.tFirst).map(i => (i.tFirst - i.t0) / 1000);
   const avgStart = starts.length ? Math.round(starts.reduce((a, b) => a + b, 0) / starts.length) : null;
   const pauses = all.reduce((a, i) => a + (i.pauses || 0), 0);
-  const miss = all.flatMap(i => (i.ev.mancava || []).map(m => ({ m, sec: i.secId })));
+  const miss = all.flatMap(i => (i.ev.mancava || []).map(m => ({ m, sec: i.secId, label: secById(i.secId)?.title || (s.exam ? examQs().find(r => r.id === i.eqId)?.q : '') || '' })));
   setView(`
-    <header class="page-head"><div><h1>Fine dell’interrogazione</h1><p class="lede">${esc(s.title)}</p></div></header>
+    <header class="page-head"><div><h1>${s.exam ? 'Fine dell’esame' : 'Fine dell’interrogazione'}</h1><p class="lede">${esc(s.title)}</p></div></header>
     <div class="viva-card">
-      <div class="viva-score ${avg >= 27 ? 'top' : avg >= 18 ? 'ok' : 'ko'}"><b>${avg}</b><span>/30 indicativo, media di ${all.length} ${all.length === 1 ? 'risposta' : 'risposte'}</span></div>
+      <div class="viva-score ${avg >= 27 ? 'top' : avg >= 18 ? 'ok' : 'ko'}"><b>${avg}</b><span>/30 indicativo${s.exam ? ' per l’esame' : ''}, media di ${all.length} ${all.length === 1 ? 'risposta' : 'risposte'}</span></div>
       <ul class="viva-sum">
         ${avgStart !== null ? `<li>In media sei partita dopo <b>${avgStart} s</b>${avgStart > 8 ? ': è il punto da allenare, prima ancora del contenuto.' : '.'}</li>` : ''}
         <li>${pauses ? `<b>${pauses}</b> ${pauses === 1 ? 'pausa lunga' : 'pause lunghe'} in tutto.` : 'Nessuna pausa lunga.'}</li>
       </ul>
       <h3 class="sub3">Domande</h3>
-      <ol class="viva-qs">${s.items.map(i => `<li><b>${i.ev.voto}/30</b> · ${esc(i.q)}${(i.followups || []).map(f => `<br><small>↳ ${f.ev.voto}/30 · ${esc(f.q)}</small>`).join('')}</li>`).join('')}</ol>
-      ${miss.length ? `<h3 class="sub3">Da ripassare</h3><ul class="viva-miss">${miss.slice(0, 15).map(x => `<li><a href="#/sec/${x.sec}/read">${esc(secById(x.sec)?.title || '')}</a>: ${esc(x.m)}</li>`).join('')}</ul>` : ''}
-      <div class="actions"><button class="btn primary" type="button" data-act="vv-again">Un’altra interrogazione</button><a class="btn ghost" href="#/viva">Cambia argomento</a></div>
+      <ol class="viva-qs">${s.items.map(i => `<li><b>${i.ev.voto}/30</b> · ${i.part ? `<small class="muted-inline">${esc(i.part)}</small> ` : ''}${esc(i.q)}${(i.followups || []).map(f => `<br><small>↳ ${f.ev.voto}/30 · ${esc(f.q)}</small>`).join('')}</li>`).join('')}</ol>
+      ${miss.length ? `<h3 class="sub3">Da ripassare</h3><ul class="viva-miss">${miss.slice(0, 15).map(x => `<li>${x.sec && secById(x.sec) ? `<a href="#/sec/${x.sec}/read">${esc(x.label)}</a>` : `<b>${esc(x.label)}</b>`}: ${esc(x.m)}</li>`).join('')}</ul>` : ''}
+      <div class="actions"><button class="btn primary" type="button" data-act="vv-again">${s.exam ? (s.exam.one ? 'Rifalla' : 'Un altro esame') : 'Un’altra interrogazione'}</button>${s.exam ? `<a class="btn ghost" href="#/examq/prep/${encodeURIComponent(s.exam.key)}">Preparazione all’esame</a>` : '<a class="btn ghost" href="#/viva">Cambia argomento</a>'}</div>
     </div>`);
   on('[data-act="vv-again"]', 'click', () => { vivaState.s = null; route(); });
 }

@@ -190,6 +190,7 @@ function viewNotebook(id, folderId = '') {
         <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
     </header>
+    ${typeof eqPrepBanner === 'function' ? eqPrepBanner(nb.id) : ''}
     ${secs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca nel notebook" aria-label="Cerca nel notebook">' : ''}
     <div id="nbFound" hidden></div>
     <div id="nbBody">
