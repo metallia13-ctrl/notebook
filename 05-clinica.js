@@ -1562,6 +1562,7 @@ function eqSheet(x, preset = {}) {
       ${!isNew && (r.stats?.ok || r.stats?.ko) ? `<p class="hint">Nell’allenamento: la sapevi ${r.stats.ok || 0} volte, non la sapevi ${r.stats.ko || 0}.</p>` : ''}
       <div class="modal-actions">
         ${isNew ? '' : '<button class="btn ghost danger" type="button" data-eqx="del">Elimina</button>'}
+        ${isNew ? '' : `<button class="btn" type="button" data-eqx="outline" title="La frase d’apertura e i punti nell’ordine in cui dirli">${outlineOf(r) ? 'Scaletta ✓' : 'Scaletta per l’orale'}</button>`}
         <button class="btn ghost" type="button" data-eqx="no">Annulla</button>
         <button class="btn primary" type="button" data-eqx="ok">Salva</button>
       </div>`, { label: 'Domanda d’esame', onClose: v => resolve(!!v) });
@@ -1596,6 +1597,7 @@ function eqSheet(x, preset = {}) {
       if (!b) return;
       const k = b.dataset.eqx;
       if (k === 'no') sh.close(false);
+      if (k === 'outline') { sh.close(false); await outlineSheet(r); route(); return; }
       if (k === 'occ') { readOcc(); occ.push({ prof: occ[occ.length - 1]?.prof || '', year: String(new Date().getFullYear()), date: '', src: '', text: '' }); drawOcc(); }
       if (k === 'del') {
         if (!(await modal({ title: 'Eliminare la domanda?', text: 'Sparisce dalla banca su tutti i tuoi dispositivi.', confirm: 'Elimina', danger: true }))) return;
@@ -2130,6 +2132,7 @@ function viewExamPrep(key) {
           </div>
           <div class="prep-acts">
             <a class="btn sm" href="#/viva/examq/${o.x.id}" title="Il professore ti fa questa domanda">Interrogami</a>
+            <button class="btn sm ${outlineOf(o.x) ? '' : 'ghost'}" type="button" data-prep-ol="${o.x.id}" title="La frase d’apertura e i punti nell’ordine in cui dirli">${outlineOf(o.x) ? 'Scaletta ✓' : 'Scaletta'}</button>
             <button class="btn sm ghost" type="button" data-prep-edit="${o.x.id}" aria-label="Modifica la domanda e le sezioni collegate">✎</button>
           </div>
         </li>`).join('')}</ol>
@@ -2143,6 +2146,8 @@ function viewExamPrep(key) {
     });
     on('[data-act="prep-all"]', 'click', () => { showAll = true; render(); });
     $('.prep-list')?.addEventListener('click', async e => {
+      const ol = e.target.closest('[data-prep-ol]');
+      if (ol) { const x = examQs().find(r => r.id === ol.dataset.prepOl); if (x && await outlineSheet(x)) render(); return; }
       const b = e.target.closest('[data-prep-edit]');
       if (!b) return;
       const x = examQs().find(r => r.id === b.dataset.prepEdit);
@@ -3703,6 +3708,134 @@ const VoiceCapture = {
     return { data, seconds: len / 16000 };
   }
 };
+/* =====================================================================
+   v3.94: Scaletta per l’orale
+   Per una domanda d’esame o per una sezione: una frase d’apertura sicura e
+   i punti nell’ordine in cui dirli. La propone l’AI dai tuoi appunti, la
+   modifichi tu, e compare a richiesta dove rispondi a voce (Interrogazione,
+   Esame orale, modalità Orale della sezione), senza fermare la trascrizione.
+   Sta nella domanda d’esame o nella sezione, quindi si sincronizza.
+   ===================================================================== */
+const OUTLINE_SYS = `Prepari la scaletta con cui uno studente di medicina risponde A VOCE a una domanda d’esame orale, in Italia. Lo studente tende a bloccarsi all’inizio: la scaletta gli serve per partire sicuro e seguire un ordine fisso.
+Usa gli APPUNTI che ti do (se ci sono); non aggiungere argomenti che non c’entrano con la domanda.
+- "apertura": UNA frase sola, completa e sicura, da dire per prima (la definizione o l’inquadramento dell’argomento), al massimo 30 parole.
+- "punti": 5 punti (da 4 a 6), nell’ordine logico in cui dirli. Ogni punto: un titolo breve (2-5 parole), poi i due punti, poi da 3 a 8 parole chiave da ricordare separate da virgole. Niente frasi intere, niente numerazione.
+Rispondi SOLO con JSON valido: {"apertura": "...", "punti": ["Titolo: parola, parola, parola", "..."]}`;
+const isExamQRec = o => !!o && o.kind === 'examq';
+const outlineOf = o => (o && o.outline && (String(o.outline.open || '').trim() || (o.outline.points || []).length) ? o.outline : null);
+const outlineTopic = o => (isExamQRec(o) ? o.q : o.title);
+const outlineSave = o => (isExamQRec(o) ? saveLink(o) : saveSection(o));
+function outlineHtml(ol) {
+  const pt = p => { const i = p.indexOf(':'); return i > 0 && i < 60 ? `<b>${esc(p.slice(0, i).trim())}</b>: ${esc(p.slice(i + 1).trim())}` : esc(p); };
+  return `${String(ol.open || '').trim() ? `<p class="ol-open"><span class="ol-k">Apri con</span> “${esc(ol.open.trim())}”</p>` : ''}
+    ${(ol.points || []).length ? `<ol class="ol-points">${ol.points.map(p => `<li>${pt(p)}</li>`).join('')}</ol>` : ''}`;
+}
+async function outlineAi(owner) {
+  let md = '', asked = '';
+  if (isExamQRec(owner)) {
+    md = eqCtx(owner).md;
+    asked = eqVariants(owner).slice(0, 6).join(' • ');
+  } else md = owner.md || '';
+  const notes = aiText(md).trim();
+  const r = await AI.generate({
+    system: OUTLINE_SYS,
+    text: `DOMANDA O ARGOMENTO: ${outlineTopic(owner)}${asked ? `\nCOME È STATA CHIESTA AGLI APPELLI: ${asked}` : ''}\n\n${notes ? `APPUNTI:\n${notes.slice(0, 14000)}` : 'APPUNTI: nessuno. Usa le conoscenze di un buon manuale universitario.'}`,
+    maxTokens: 2500
+  });
+  const j = vivaJson(r.text);
+  const points = (Array.isArray(j.punti) ? j.punti : []).map(p => String(p).replace(/^\s*(?:\d+[.)]|[-•])\s*/, '').trim()).filter(Boolean).slice(0, 8);
+  if (!points.length) throw new Error('L’AI non ha restituito una scaletta leggibile: riprova.');
+  return { open: String(j.apertura || '').trim(), points, fromNotes: !!notes };
+}
+// la finestra per scrivere, far proporre o correggere la scaletta
+function outlineSheet(owner) {
+  return new Promise(resolve => {
+    const cur = outlineOf(owner) || { open: '', points: [] };
+    const sh = openSheet(`
+      <h2>Scaletta per l’orale</h2>
+      <p class="sheet-sub">${esc(outlineTopic(owner))}</p>
+      <label class="field"><span>Frase d’apertura <span class="muted-inline">la prima cosa che dici, sempre uguale</span></span><textarea class="input" id="olOpen" rows="2" placeholder="Es. Il cervelletto è l’organo della fossa cranica posteriore che coordina il movimento…">${esc(cur.open || '')}</textarea></label>
+      <label class="field"><span>Punti, nell’ordine in cui dirli <span class="muted-inline">uno per riga; “Titolo: parole chiave”</span></span><textarea class="input" id="olPts" rows="7" placeholder="Suddivisione: archi, paleo, neocerebello&#10;Corteccia: tre strati, Purkinje&#10;…">${esc((cur.points || []).join('\n'))}</textarea></label>
+      <p class="hint" id="olMsg">${AI.ready() ? 'Puoi scriverla tu, oppure farla proporre dall’AI dai tuoi appunti e poi correggerla.' : 'Scrivila tu: con la chiave dell’AI in Impostazioni può anche proporla dai tuoi appunti.'}</p>
+      <div class="modal-actions">
+        ${outlineOf(owner) ? '<button class="btn ghost danger" type="button" data-ol="del">Elimina</button>' : ''}
+        ${AI.ready() ? `<button class="btn" type="button" data-ol="ai">✨ ${outlineOf(owner) ? 'Proponine un’altra' : `Proponi con ${AI.name()}`}</button>` : ''}
+        <button class="btn ghost" type="button" data-ol="no">Annulla</button>
+        <button class="btn primary" type="button" data-ol="ok">Salva</button>
+      </div>`, { label: 'Scaletta per l’orale', onClose: v => resolve(!!v) });
+    const op = $('#olOpen', sh.el), pts = $('#olPts', sh.el), msg = $('#olMsg', sh.el);
+    let before = null;
+    sh.el.addEventListener('click', async e => {
+      const b = e.target.closest('[data-ol]');
+      if (!b) return;
+      const k = b.dataset.ol;
+      if (k === 'no') sh.close(false);
+      else if (k === 'undo') { if (before) { op.value = before.open; pts.value = before.pts; before = null; msg.textContent = 'Ho rimesso la tua versione.'; } }
+      else if (k === 'del') { delete owner.outline; await outlineSave(owner); toast('Scaletta eliminata'); sh.close(true); }
+      else if (k === 'ok') {
+        const points = pts.value.split('\n').map(l => l.replace(/^\s*(?:\d+[.)]|[-•*])\s*/, '').trim()).filter(Boolean).slice(0, 12);
+        const open = op.value.trim().replace(/\s*\n\s*/g, ' ');
+        if (!open && !points.length) { toast('Scrivi almeno la frase d’apertura o un punto'); return; }
+        owner.outline = { open, points, t: Date.now() };
+        await outlineSave(owner);
+        toast('Scaletta salvata');
+        sh.close(true);
+      } else if (k === 'ai') {
+        b.disabled = true;
+        const label = b.textContent;
+        b.textContent = 'Preparo la scaletta…';
+        try {
+          const o = await outlineAi(owner);
+          if (!sh.el.isConnected) return;
+          // la tua versione resta da parte: un tocco e torna
+          if (op.value.trim() || pts.value.trim()) before = { open: op.value, pts: pts.value };
+          op.value = o.open;
+          pts.value = o.points.join('\n');
+          msg.innerHTML = `Proposta dell’AI${o.fromNotes ? ' dai tuoi appunti' : ' <b>senza appunti</b> (non c’è una sezione collegata): controllala bene'}. Correggila come vuoi, poi Salva.${before ? ' <button type="button" class="link-btn" data-ol="undo">Rimetti la mia</button>' : ''}`;
+        } catch (err) { if (sh.el.isConnected) msg.textContent = err.message || 'Non riuscito'; }
+        if (b.isConnected) { b.disabled = false; b.textContent = label; }
+      }
+    });
+  });
+}
+// il pulsante “Scaletta” e il suo riquadro, dove rispondi a voce: si apre e si chiude sul posto,
+// senza ridisegnare la pagina, così la trascrizione non si ferma
+function outlinePanelHtml(owner) {
+  if (!owner) return '';
+  return `<div class="ol-panel" data-ol-panel>
+    <button class="btn sm ghost" type="button" data-olp="toggle" aria-expanded="false">${outlineOf(owner) ? 'Scaletta' : 'Scaletta (da preparare)'}</button>
+    <div class="ol-box" hidden></div>
+  </div>`;
+}
+function bindOutlinePanel(root, owner, { onShow = () => {} } = {}) {
+  const panel = $('[data-ol-panel]', root);
+  if (!panel || !owner) return;
+  const btn = $('[data-olp="toggle"]', panel), box = $('.ol-box', panel);
+  const fill = () => {
+    const ol = outlineOf(owner);
+    box.innerHTML = ol ? `${outlineHtml(ol)}<p class="ol-acts"><button type="button" class="link-btn" data-olp="edit">Modifica la scaletta</button></p>` : '';
+    btn.textContent = ol ? (box.hidden ? 'Scaletta' : 'Nascondi la scaletta') : 'Scaletta (da preparare)';
+    btn.setAttribute('aria-expanded', String(!box.hidden));
+  };
+  const edit = async () => {
+    const saved = await outlineSheet(owner);
+    if (!panel.isConnected) return;
+    if (saved && outlineOf(owner)) { box.hidden = false; onShow(); }
+    if (!outlineOf(owner)) box.hidden = true;
+    fill();
+  };
+  panel.addEventListener('click', e => {
+    const b = e.target.closest('[data-olp]');
+    if (!b) return;
+    if (b.dataset.olp === 'edit') { edit(); return; }
+    if (!outlineOf(owner)) { edit(); return; }
+    box.hidden = !box.hidden;
+    if (!box.hidden) onShow();
+    fill();
+  });
+  fill();
+}
+
 const vivaState = { setup: { n: 3, follow: 1, voice: true, asr: '' }, s: null };
 function vivaScope(kind, id) {
   if (kind === 'sec') { const s = secById(id); return s ? { title: s.title, secs: [s] } : null; }
@@ -3782,6 +3915,10 @@ function eqCtx(x) {
   let md = g.secs.map(s => `## ${s.title}\n${s.md || ''}`).join('\n\n');
   if (x.a) md += `\n\n## Traccia di risposta salvata\n${x.a}`;
   return { title: g.secs[0]?.title || '', md, secIds: g.secs.map(s => s.id) };
+}
+// di chi è la scaletta: della domanda d’esame, se c’è, altrimenti della sezione
+function vivaOutlineOwner(c) {
+  return (c.eqId && examQs().find(r => r.id === c.eqId)) || (c.secId && secById(c.secId)) || null;
 }
 function vivaCtx(c) {
   if (c.ctx) return c.ctx;
@@ -3912,6 +4049,7 @@ function vivaRender() {
           ${c.traccia.length ? '<button class="btn sm ghost" type="button" data-act="vv-help">Aiutami a partire</button>' : ''}
         </div>
         <ol class="viva-trace" hidden>${c.traccia.map(t => `<li>${esc(t)}</li>`).join('')}</ol>
+        ${outlinePanelHtml(vivaOutlineOwner(c))}
         <div class="viva-meter" aria-live="polite"><span class="vm-t">0:00</span><span class="vm-first"></span><span class="vm-p"></span></div>
         ${gem ? `<button class="btn primary big mic-big" type="button" data-act="vv-rec" aria-pressed="false">${MIC_SVG}<span>${c.audio ? 'Registra di nuovo' : 'Registra la risposta'}</span></button>
           <div class="vv-level" aria-hidden="true"><i></i></div>
@@ -3984,6 +4122,8 @@ function vivaRender() {
       addCleanup(() => { if (vivaState.cap) { VoiceCapture.stop(vivaState.cap).catch(() => {}); vivaState.cap = null; } });
     }
     on('[data-act="vv-say"]', 'click', () => speak(c.q));
+    // v3.94: la tua scaletta, a richiesta, senza fermare la registrazione o la trascrizione
+    bindOutlinePanel($('#view'), vivaOutlineOwner(c), { onShow: () => { c.outlineSeen = true; } });
     on('[data-act="vv-help"]', 'click', e => { $('.viva-trace').hidden = false; c.helped = true; e.currentTarget.remove(); });
     const finish = async skip => {
       if (dict) dict.stop();
@@ -4065,6 +4205,7 @@ function vivaFluency(c) {
   if (c.pauses) out.push(`${c.pauses} ${c.pauses === 1 ? 'pausa lunga' : 'pause lunghe'} (oltre 3 secondi): ${c.pauses > 2 ? 'quando ti fermi, riparti dal punto successivo della traccia invece di cercare la parola perfetta.' : 'va bene, ma prova a collegare i punti con frasi ponte (“questo porta a…”, “di conseguenza…”).'}`);
   if (fillers > 2) out.push(`${fillers} intercalari (ehm, cioè, praticamente…): una breve pausa silenziosa suona più sicura.`);
   if (c.helped) out.push('Hai usato la traccia: la prossima volta prova a ricostruirla da sola prima di guardarla.');
+  if (c.outlineSeen) out.push('Hai guardato la scaletta: va bene per allenarsi; quando ti senti sicura prova a dirla senza aprirla.');
   return out;
 }
 function vivaSummary() {

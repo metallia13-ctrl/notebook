@@ -6,6 +6,47 @@
 /* ---------------------------------------------------------------------
    Vista: elenco notebook
    --------------------------------------------------------------------- */
+/* v3.94: “Adesso”: una sola cosa da fare, con il tempo che serve. “Altro” passa alla successiva. */
+let nowSkip = 0;
+function nextActions() {
+  const out = [];
+  const mins = m => { const n = Math.max(1, Math.round(m)); return n >= 60 ? `circa ${Math.floor(n / 60)} h ${n % 60 ? `${n % 60} min` : ''}`.trim() : `circa ${n} min`; };
+  const cc = cardCounts(state.cards);
+  if (cc.l) out.push({ t: cc.l === 1 ? 'Riprendi la flashcard che è tornata' : `Riprendi le ${cc.l} flashcard che sono tornate`, s: `In apprendimento · ${mins(cc.l * 0.3)}`, href: '#/study/all/ripassa', go: 'Inizia' });
+  const due = state.sections.filter(isDue);
+  if (due.length) {
+    const n = Math.min(due.length, 5);
+    out.push({ t: due.length === 1 ? `Ripassa “${due[0].title}”` : `Ripassa ${n === due.length ? `${n} sezioni` : `le prime ${n} sezioni di ${due.length}`}`, s: `In scadenza oggi · ${mins(n * 4)}`, href: '#/review', go: 'Inizia' });
+  }
+  if (cc.r) { const n = Math.min(cc.r, 40); out.push({ t: `Ripassa ${n === cc.r ? n : `${n} di ${cc.r}`} flashcard`, s: `In scadenza · ${mins(n * 0.25)}`, href: '#/study/all/ripassa', go: 'Inizia' }); }
+  // l’esame più vicino: l’argomento che conta di più e su cui sei meno pronta
+  const today = todayStr();
+  const preps = state.links.filter(l => l.kind === 'examprep' && l.date && l.date >= today && dayDiff(today, l.date) <= 60 && eqOfSubj(l.subjKey).length)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  for (const p of preps.slice(0, 2)) {
+    const top = eqPriorities(p.subjKey).find(o => o.r < 0.7);
+    if (!top) continue;
+    const d = dayDiff(today, p.date);
+    const when = `${eqSubjLabel(p.subjKey)}, ${d === 0 ? 'esame oggi' : `esame tra ${d} ${d === 1 ? 'giorno' : 'giorni'}`}`;
+    const sec = top.secs[0];
+    const fresh = sec && !(sec.srs?.history || []).length && !sec.studyhub;
+    if (sec && fresh) out.push({ t: `Studia “${sec.title}”`, s: `${when}: esce spesso e non l’hai ancora studiata · ${mins(aiText(sec.md || '').split(/\s+/).length / 150 + 2)}`, href: `#/sec/${sec.id}/read`, go: 'Apri' });
+    else out.push({ t: `Fatti interrogare: ${top.x.q.length > 70 ? `${top.x.q.slice(0, 69)}…` : top.x.q}`, s: `${when}: è l’argomento su cui sei più indietro · ${mins(6)}`, href: `#/viva/examq/${top.x.id}`, go: 'Inizia' });
+  }
+  const r = Resume.target();
+  if (r) out.push({ t: `Continua “${r.sec.title}”`, s: 'Da dove eri rimasta', href: '#/resume', go: 'Riprendi' });
+  if (cc.n) { const n = Math.min(cc.n, 20); out.push({ t: n === 1 ? 'Studia la flashcard nuova' : `Studia ${n} flashcard nuove`, s: `Nuove di oggi · ${mins(n * 0.5)}`, href: '#/study/all', go: 'Inizia' }); }
+  return out;
+}
+function nowCardHtml() {
+  const list = nextActions();
+  if (!list.length) return state.sections.length ? '<div class="now-card done"><span class="now-main"><span class="now-k">Adesso</span><span class="now-t">Per oggi sei a posto</span><span class="now-s">Niente in scadenza: puoi fermarti, oppure studiare qualcosa di nuovo.</span></span></div>' : '';
+  const a = list[nowSkip % list.length];
+  return `<div class="now-card">
+    <span class="now-main"><span class="now-k">Adesso${list.length > 1 ? ` · ${(nowSkip % list.length) + 1} di ${list.length}` : ''}</span><span class="now-t">${esc(a.t)}</span><span class="now-s">${esc(a.s)}</span></span>
+    <span class="now-acts">${list.length > 1 ? '<button class="btn sm ghost" type="button" data-act="now-next" title="Proponimi un’altra cosa">Altro</button>' : ''}<a class="btn primary" href="${a.href}">${a.go}</a></span>
+  </div>`;
+}
 function viewNotebooks() {
   const nbs = [...state.notebooks].sort((a, b) => a.created - b.created);
   const dueSecs = state.sections.filter(isDue).length;
@@ -21,14 +62,7 @@ function viewNotebooks() {
     </header>
     ${DataGuard.bannerHtml()}
     ${Resume.target() ? `<a class="resume-card" href="#/resume"><span class="resume-ic" aria-hidden="true">↺</span><span class="row-main"><span class="row-sub">Riprendi da dove eri</span><span class="row-title">${esc(Resume.target().sec.title)}</span></span></a>` : ''}
-    ${nbs.length && todayBits.length ? `
-      <a class="today" href="${dueSecs ? '#/review' : '#/study/all'}">
-        <span class="today-main">
-          <span class="today-title">Oggi</span>
-          <span class="today-sub">${todayBits.join(', ')}</span>
-        </span>
-        <span class="btn primary sm">${dueSecs ? 'Ripassa' : 'Studia'}</span>
-      </a>` : ''}
+    ${nbs.length ? nowCardHtml() : ''}
     ${nbs.length ? '<input type="search" class="input search" id="globalSearch" placeholder="Cerca in appunti, flashcard, PDF, glossario…" aria-label="Cerca in appunti, flashcard, PDF, glossario e note cliniche"><div id="searchOut" hidden></div>' : ''}
     ${nbs.length ? `
       <ul class="list" id="nbList">
@@ -58,6 +92,7 @@ function viewNotebooks() {
     const nb = await createNotebookFlow();
     if (nb) go(`#/nb/${nb.id}`);
   });
+  on('[data-act="now-next"]', 'click', () => { nowSkip++; const y = window.scrollY; viewNotebooks(); window.scrollTo(0, y); });
   const gs = $('#globalSearch');
   if (gs && $('#searchOut')) bindUnifiedSearch(gs, $('#searchOut'), $('#nbList'));
 }
@@ -1137,6 +1172,7 @@ function modeBlank(sec, body, { oral = false } = {}) {
         <button class="mic-btn" type="button" data-act="mic" aria-pressed="false">${MIC_SVG}<span class="mic-label">Inizia a parlare</span></button>
         <p class="oral-live" aria-live="polite"></p>
       </div>` : '<div class="callout"><p>Questo browser non trascrive la voce. Usa Chrome, oppure il microfono della tastiera del telefono nel riquadro qui sotto.</p></div>') : ''}
+    ${oral ? outlinePanelHtml(sec) : ''}
     ${headings.length ? `
       <details class="outline">
         <summary>Mostra i titoli come traccia</summary>
@@ -1149,6 +1185,7 @@ function modeBlank(sec, body, { oral = false } = {}) {
     <div id="rlSum"></div>
     <div id="gradeSlot"></div>`;
   const ta = $('#recall', body);
+  if (oral) bindOutlinePanel(body, sec);
   // segni a semaforo sugli appunti del confronto, come nel Cloze
   let rl = null;
   let aiSug = null;
@@ -1356,6 +1393,182 @@ function bindGroupSelect(select, getNb, onPick = () => {}) {
   });
 }
 
+/* =====================================================================
+   v3.94: Riformatta con uno schema fisso
+   Ogni tipo di argomento ha sempre gli stessi titoli, nello stesso ordine:
+   la sezione si riordina lì dentro senza aggiungere né togliere contenuti,
+   e la controlli (prima/dopo, con l’avviso se manca qualcosa) prima di usarla.
+   ===================================================================== */
+const FMT_SCHEMAS = [
+  { id: 'malattia', name: 'Malattia', heads: ['Definizione', 'Epidemiologia', 'Eziologia e fattori di rischio', 'Patogenesi', 'Clinica', 'Diagnosi', 'Diagnosi differenziale', 'Terapia', 'Complicanze e prognosi'] },
+  { id: 'farmaco', name: 'Farmaco o classe di farmaci', heads: ['Classe', 'Meccanismo d’azione', 'Farmacocinetica', 'Indicazioni', 'Effetti avversi', 'Controindicazioni e interazioni', 'Note pratiche'] },
+  { id: 'anatomia', name: 'Struttura anatomica', heads: ['Sede e limiti', 'Morfologia e suddivisione', 'Rapporti', 'Vascolarizzazione', 'Innervazione e connessioni', 'Funzione', 'Correlazioni cliniche'] },
+  { id: 'via', name: 'Via nervosa', heads: ['Funzione', 'Origine e recettori', 'Primo neurone', 'Secondo neurone', 'Terzo neurone', 'Decussazione', 'Terminazione', 'Lesioni e clinica'] },
+  { id: 'fisio', name: 'Meccanismo fisiologico', heads: ['A cosa serve', 'Strutture coinvolte', 'Come funziona, passo per passo', 'Regolazione', 'Valori e numeri da sapere', 'Quando si altera'] }
+];
+const schemasRec = () => state.links.find(l => l.kind === 'schemas') || null;
+const mySchemas = () => (schemasRec()?.list || []).filter(x => x && x.id && x.name && (x.heads || []).length);
+const allSchemas = () => [...FMT_SCHEMAS, ...mySchemas().map(x => ({ ...x, mine: true }))];
+async function saveMySchemas(list) {
+  const rec = schemasRec() || { id: '_schemas', kind: 'schemas', notebookId: '_schemas', list: [], created: Date.now() };
+  rec.list = list;
+  await saveLink(rec);
+}
+function schemaSystem(sc, missing) {
+  return `Riorganizzi gli appunti di uno studente di medicina dentro uno schema fisso, SENZA cambiarne il contenuto.
+
+SCHEMA: questi titoli di secondo livello ("## "), in questo ordine esatto, scritti esattamente così:
+${sc.heads.map(h => `## ${h}`).join('\n')}
+
+Regole:
+- Usa SOLO le informazioni che ci sono negli appunti: non aggiungere nozioni, non correggere, non riassumere togliendo dettagli, numeri o esempi. Ogni informazione degli appunti deve comparire sotto la voce giusta.
+- Quello che non rientra in nessuna voce va in fondo, sotto "## Altro" (se non c’è niente, non mettere "## Altro").
+- Voce per cui negli appunti non c’è niente: ${missing ? 'tieni il titolo e sotto scrivi solo "*(manca negli appunti)*".' : 'non mettere il titolo.'}
+- Dentro ogni voce: elenchi puntati brevi, con i sottopunti rientrati; una tabella Markdown quando 3 o più elementi hanno le stesse caratteristiche (classificazioni, confronti); grassetto solo sui termini chiave. Puoi usare titoli "### " dentro una voce.
+- La prima riga resta il titolo "# " degli appunti, uguale.
+- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (non aggiungerne e non toglierne), {{lettera|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", e qualsiasi altra sintassi che non riconosci.
+
+Rispondi SOLO con gli appunti in Markdown, senza nessun altro testo prima o dopo.`;
+}
+// cosa è cambiato davvero: parole sparite, cloze e immagini
+function reformatCheck(before, after) {
+  const words = t => (foldAccents(aiText(stripCloze(String(t || '')))).match(/[a-z0-9]{5,}/g) || []);
+  const aft = new Set(words(after).map(w => w.slice(0, 7)));
+  const lostMap = new Map();
+  (aiText(stripCloze(before)).match(/[A-Za-zÀ-ÿ0-9]{5,}/g) || []).forEach(w => { const k = foldAccents(w).toLowerCase().slice(0, 7); if (!aft.has(k) && !lostMap.has(k)) lostMap.set(k, w.toLowerCase()); });
+  const bef = new Set(words(before).map(w => w.slice(0, 7)));
+  const skip = new Set(words('manca negli appunti altro').map(w => w.slice(0, 7)));
+  const added = [...new Set(words(after).map(w => w.slice(0, 7)))].filter(k => !bef.has(k) && !skip.has(k));
+  const count = (t, re) => (String(t).match(re) || []).length;
+  return {
+    lost: [...lostMap.values()], total: bef.size, added: added.length,
+    cloze: [count(before, /==[^=\n]+==/g), count(after, /==[^=\n]+==/g)],
+    imgs: [imageRefs(before).length, imageRefs(after).length]
+  };
+}
+// scegli lo schema → l’AI riordina → controlli prima/dopo → restituisce il testo nuovo (o null)
+function reformatFlow(sec, text) {
+  return new Promise(resolve => {
+    let done = false;
+    const ctl = new AbortController();
+    const pick = () => {
+      const last = S().fmtSchema || 'generic';
+      const list = allSchemas();
+      const sh = openSheet(`
+        <h2>Riformatta con uno schema</h2>
+        <p class="sheet-sub">Scegli il tipo di argomento: la sezione viene riordinata sempre sotto gli stessi titoli, nello stesso ordine, senza aggiungere né togliere contenuti. Vedi il risultato prima di usarlo.</p>
+        <div class="sch-list" role="radiogroup" aria-label="Schema">
+          ${list.map(sc => `<label class="sch-opt"><input type="radio" name="sch" value="${esc(sc.id)}" ${last === sc.id ? 'checked' : ''}><span><b>${esc(sc.name)}</b>${sc.mine ? ' <small class="muted-inline">(tuo)</small>' : ''}<small>${esc(sc.heads.join(' · '))}</small></span>${sc.mine ? `<button type="button" class="btn sm ghost" data-sch="edit:${esc(sc.id)}" aria-label="Modifica lo schema ${esc(sc.name)}">✎</button>` : ''}</label>`).join('')}
+          <label class="sch-opt"><input type="radio" name="sch" value="generic" ${last === 'generic' || !list.some(x => x.id === last) ? 'checked' : ''}><span><b>Solo elenchi e tabelle</b><small>Senza titoli fissi: riordina come nell’importazione, con le tue regole di formattazione</small></span></label>
+        </div>
+        <label class="check"><input type="checkbox" id="schMiss" ${S().fmtMissing !== false ? 'checked' : ''}><span>Segna le voci che mancano negli appunti, così vedi cosa completare</span></label>
+        <p class="err-line" id="schErr" hidden></p>
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" data-sch="new">+ Il mio schema</button>
+          <button class="btn ghost" type="button" data-sch="no">Annulla</button>
+          <button class="btn primary" type="button" data-sch="go">Riformatta</button>
+        </div>`, { label: 'Riformatta con uno schema', onClose: () => { if (!done) { done = true; ctl.abort(); resolve(null); } } });
+      sh.el.addEventListener('click', async e => {
+        const b = e.target.closest('[data-sch]');
+        if (!b) return;
+        const k = b.dataset.sch;
+        if (k === 'no') { sh.close(null); return; }
+        if (k === 'new' || k.startsWith('edit:')) { e.preventDefault(); done = true; sh.close(null); done = false; editSchema(k === 'new' ? null : mySchemas().find(x => x.id === k.slice(5))); return; }
+        if (k !== 'go') return;
+        const id = $('input[name="sch"]:checked', sh.el)?.value || 'generic';
+        const missing = $('#schMiss', sh.el).checked;
+        S().fmtSchema = id; S().fmtMissing = missing; Settings.save();
+        const sc = allSchemas().find(x => x.id === id);
+        b.disabled = true;
+        b.textContent = 'Riformatto… (può servire un minuto)';
+        $('#schErr', sh.el).hidden = true;
+        try {
+          let md, truncated = false;
+          if (sc) {
+            const r = await AI.generate({ system: schemaSystem(sc, missing), text: `APPUNTI DA RIORDINARE (sezione “${sec.title}”):\n\n${text}`, signal: ctl.signal });
+            md = String(r.text || '').trim().replace(/^```(?:markdown|md)?[ \t]*\n/i, '').replace(/\n```\s*$/, '').trim();
+            truncated = !!r.truncated;
+          } else {
+            const r = await aiFormatNotes({ text, cloze: S().aiCloze, questions: false, signal: ctl.signal });
+            md = r.md; truncated = !!r.truncated;
+          }
+          if (!md) throw new Error('L’AI non ha restituito appunti utilizzabili.');
+          if (done) return;
+          done = true; sh.close(null); done = false;
+          preview(md, sc, truncated);
+        } catch (err) {
+          if (err.name === 'AbortError' || !sh.el.isConnected) return;
+          const el = $('#schErr', sh.el); el.textContent = err.message || 'Non riuscito'; el.hidden = false;
+          b.disabled = false; b.textContent = 'Riformatta';
+        }
+      });
+    };
+    const editSchema = cur => {
+      const sh = openSheet(`
+        <h2>${cur ? 'Modifica lo schema' : 'Il mio schema'}</h2>
+        <p class="sheet-sub">I titoli sotto cui vuoi sempre trovare questo tipo di argomento, nell’ordine che preferisci. Vale su tutti i tuoi dispositivi.</p>
+        <label class="field"><span>Nome</span><input class="input" id="msName" value="${esc(cur?.name || '')}" placeholder="Es. Sindrome, Nervo cranico, Esame diagnostico"></label>
+        <label class="field"><span>Titoli, uno per riga</span><textarea class="input" id="msHeads" rows="8" placeholder="Origine apparente&#10;Nuclei&#10;Decorso&#10;Rami&#10;Territorio&#10;Lesioni">${esc((cur?.heads || []).join('\n'))}</textarea></label>
+        <div class="modal-actions">
+          ${cur ? '<button class="btn ghost danger" type="button" data-ms="del">Elimina</button>' : ''}
+          <button class="btn ghost" type="button" data-ms="no">Indietro</button>
+          <button class="btn primary" type="button" data-ms="ok">Salva lo schema</button>
+        </div>`, { label: 'Il mio schema', onClose: () => { if (!done) pick(); } });
+      sh.el.addEventListener('click', async e => {
+        const b = e.target.closest('[data-ms]');
+        if (!b) return;
+        if (b.dataset.ms === 'no') { sh.close(null); return; }
+        if (b.dataset.ms === 'del') { await saveMySchemas(mySchemas().filter(x => x.id !== cur.id)); toast('Schema eliminato'); sh.close(null); return; }
+        const name = $('#msName', sh.el).value.trim();
+        const heads = $('#msHeads', sh.el).value.split('\n').map(l => l.replace(/^[#\-•*\d.)\s]+/, '').trim()).filter(Boolean).slice(0, 20);
+        if (!name || heads.length < 2) { toast('Servono un nome e almeno due titoli'); return; }
+        const list = mySchemas();
+        const id = cur ? cur.id : `my-${uid()}`;
+        const item = { id, name, heads };
+        await saveMySchemas(cur ? list.map(x => (x.id === id ? item : x)) : [...list, item]);
+        S().fmtSchema = id; Settings.save();
+        toast('Schema salvato');
+        sh.close(null);
+      });
+    };
+    const preview = (md, sc, truncated) => {
+      const ck = reformatCheck(text, md);
+      const warn = [];
+      if (truncated) warn.push('La risposta dell’AI è stata troncata: manca la fine. Meglio non usarla.');
+      if (ck.lost.length > Math.max(3, ck.total * 0.04)) warn.push(`${ck.lost.length} parole dei tuoi appunti non compaiono più (per esempio: ${ck.lost.slice(0, 8).join(', ')}). Controlla che non sia sparito qualcosa.`);
+      if (ck.added > Math.max(8, ck.total * 0.08)) warn.push(`Ci sono circa ${ck.added} parole che nei tuoi appunti non c’erano: controlla che l’AI non abbia aggiunto nozioni.`);
+      if (ck.cloze[1] !== ck.cloze[0]) warn.push(`I cloze erano ${ck.cloze[0]}, ora sono ${ck.cloze[1]}.`);
+      if (ck.imgs[1] < ck.imgs[0]) warn.push(`Mancano ${ck.imgs[0] - ck.imgs[1]} immagini.`);
+      // poche parole non ritrovate: di solito l’AI le ha solo scritte in un altro modo, ma è meglio saperlo
+      const note = !warn.some(w => w.includes('non compaiono più')) && ck.lost.length ? `Parole dei tuoi appunti che non ritrovo: ${ck.lost.slice(0, 10).join(', ')}. Di solito sono solo scritte in un altro modo: dai un’occhiata.` : '';
+      const sh = openSheet(`
+        <h2>Controlla prima di usarla</h2>
+        <p class="sheet-sub">${esc(sec.title)}${sc ? ` · schema “${esc(sc.name)}”` : ''}</p>
+        ${warn.length ? `<ul class="sch-warn">${warn.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : note ? '' : '<p class="sch-ok">Nessuna parola dei tuoi appunti è sparita; cloze e immagini sono gli stessi.</p>'}
+        ${note ? `<p class="sch-note">${esc(note)}</p>` : ''}
+        <div class="seg" role="tablist"><button type="button" class="seg-btn on" data-pv="after" role="tab" aria-selected="true">Dopo</button><button type="button" class="seg-btn" data-pv="before" role="tab" aria-selected="false">Prima</button></div>
+        <div class="sch-prev notes" id="schPrev">${renderMd(md)}</div>
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" data-pv="no">Lascia com’era</button>
+          <button class="btn" type="button" data-pv="back">Altro schema</button>
+          <button class="btn primary" type="button" data-pv="ok">Usa questa versione</button>
+        </div>`, { label: 'Anteprima della riformattazione', onClose: () => { if (!done) { done = true; resolve(null); } } });
+      sh.el.addEventListener('click', e => {
+        const b = e.target.closest('[data-pv]');
+        if (!b) return;
+        const k = b.dataset.pv;
+        if (k === 'after' || k === 'before') {
+          $$('.seg-btn', sh.el).forEach(x => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-selected', String(on)); });
+          $('#schPrev', sh.el).innerHTML = renderMd(k === 'after' ? md : text);
+        } else if (k === 'no') sh.close(null);
+        else if (k === 'back') { done = true; sh.close(null); done = false; pick(); }
+        else if (k === 'ok') { done = true; sh.close(null); resolve(md); }
+      });
+    };
+    pick();
+  });
+}
+
 function modeEdit(sec, body, opts = {}) {
   const edMd0 = sec.md; // com’era quando hai aperto Modifica
   const otherNbs = state.notebooks.filter(n => n.id !== sec.notebookId);
@@ -1382,7 +1595,7 @@ function modeEdit(sec, body, opts = {}) {
       <button class="btn sm" data-act="img">Immagine</button>
       <button class="btn sm" data-act="pdf-fig">Figura da PDF</button>
       <button class="btn sm" data-act="hw">Scrivi a mano</button>
-      ${AI.ready() ? `<button class="btn sm" data-act="ai-format">Riformatta con ${AI.name()}</button>` : ''}
+      ${AI.ready() ? '<button class="btn sm" data-act="ai-format" title="Riordina la sezione sotto titoli fissi (malattia, farmaco, struttura anatomica…), senza aggiungere contenuti">✨ Riformatta con uno schema</button>' : ''}
     </div>
     <p class="hint edit-hint">Scrivi direttamente nell’anteprima: seleziona il testo e usa i pulsanti qui sopra. Invio apre un nuovo paragrafo, Tab rientra una voce di elenco. Immagini e blocchi HTML si modificano nel codice: toccali per andarci.</p>
     <div class="wy-wrap">
@@ -1525,24 +1738,15 @@ function modeEdit(sec, body, opts = {}) {
     refresh();
   }, body);
 
-  on('[data-act="ai-format"]', 'click', async e => {
-    const btn = e.currentTarget;
+  on('[data-act="ai-format"]', 'click', async () => {
     if (!ta.value.trim()) { toast('Non c’è testo da riformattare'); return; }
-    const ok = await modal({ title: 'Riformattare la sezione?', text: 'Il testo attuale viene sostituito dalla versione riformattata. Potrai controllarla prima di salvare.', confirm: 'Riformatta' });
-    if (!ok) return;
-    btn.disabled = true;
-    btn.textContent = 'Riformattazione…';
-    try {
-      const r = await aiFormatNotes({ text: ta.value, cloze: S().aiCloze, questions: false });
-      ta.value = r.md;
-      if (r.truncated) toast('Risposta troncata: controlla la fine del testo', 'err');
-      else toast('Fatto. Controlla e salva.');
-      refresh();
-    } catch (err) {
-      toast(err.message, 'err');
-    }
-    btn.disabled = false;
-    btn.textContent = `Riformatta con ${AI.name()}`;
+    wy.flush();
+    const prev = ta.value;
+    const md = await reformatFlow(sec, prev);
+    if (!md || !ta.isConnected) return;
+    ta.value = md;
+    refresh();
+    toast('Fatto: controlla e poi Salva la sezione', '', { label: 'Annulla', fn: () => { if (ta.isConnected) { ta.value = prev; refresh(); } } });
   }, body);
 
   on('[data-act="ai-qs"]', 'click', async e => {

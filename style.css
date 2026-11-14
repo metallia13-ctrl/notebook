@@ -4336,3 +4336,34 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
 
 /* v3.93: Gemini sovraccarico, nuovi tentativi */
 .lai-note { margin: 4px 0 8px; padding: 8px 12px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--warn); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* v3.94: scaletta per l’orale */
+.ol-panel { margin: 8px 0 10px; }
+.ol-box { margin-top: 8px; padding: 12px 14px; border: 1.5px solid var(--accent); border-radius: var(--r-md); background: var(--accent-soft); }
+.ol-open { margin: 0 0 8px; font-size: 1.05rem; font-weight: 650; }
+.ol-k { display: block; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.ol-points { margin: 0; padding-left: 1.5em; display: grid; gap: 5px; }
+.ol-points li::marker { font-weight: 800; color: var(--accent); }
+.ol-acts { margin: 8px 0 0; font-size: 0.88rem; }
+.viva-card .ol-panel { margin-top: 0; }
+
+/* v3.94: riformatta con uno schema */
+.sch-list { display: grid; gap: 6px; margin: 8px 0 12px; max-height: min(46vh, 420px); overflow: auto; }
+.sch-opt { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1.5px solid var(--line); border-radius: var(--r-md); cursor: pointer; }
+.sch-opt:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.sch-opt input { flex: none; width: 18px; height: 18px; margin-top: 3px; }
+.sch-opt > span { flex: 1; min-width: 0; }
+.sch-opt small { display: block; color: var(--muted); font-size: 0.84rem; line-height: 1.35; }
+.sch-opt b + small.muted-inline { display: inline; }
+.sch-warn { margin: 8px 0; padding: 10px 12px 10px 30px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--warn); font-weight: 600; display: grid; gap: 4px; }
+.sch-ok { margin: 8px 0; padding: 8px 12px; border-radius: var(--r-md); background: var(--good-soft); color: var(--good); font-weight: 600; }
+.sch-prev { max-height: min(48vh, 480px); overflow: auto; padding: 6px 14px; border: 1px solid var(--line); border-radius: var(--r-md); }
+
+/* v3.94: “Adesso” in home */
+.now-card { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 14px; padding: 14px 16px; border: 1.5px solid var(--accent); border-radius: var(--r-lg); background: var(--accent-soft); }
+.now-main { flex: 1 1 220px; min-width: 0; }
+.now-k { display: block; font-size: 0.76rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.now-t { display: block; font-size: 1.12rem; font-weight: 750; line-height: 1.25; }
+.now-s { display: block; color: var(--muted); font-size: 0.9rem; }
+.now-acts { display: flex; gap: 6px; align-items: center; }
+.sch-note { margin: 8px 0; padding: 8px 12px; border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); font-size: 0.92rem; }
