@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.87';
+const APP_VERSION = '3.88';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -842,15 +842,18 @@ function geminiQuotaError(data, model) {
   return e;
 }
 
-async function callGemini({ system, text, pdfBase64, audio, maxTokens = 32768, signal, model: forced }) {
+async function callGemini({ system, text, pdfBase64, audio, file, json, maxTokens = 32768, signal, model: forced }) {
   const key = S().geminiKey.trim();
   const model = forced || GemQuota.main();
   const parts = [];
   if (pdfBase64) parts.push({ inline_data: { mime_type: 'application/pdf', data: pdfBase64 } });
   // v3.62: l’audio di una risposta a voce (WAV), per trascriverla e valutarla insieme
   if (audio) parts.push({ inline_data: { mime_type: audio.mime, data: audio.data } });
+  // v3.88: un file grande già caricato su Gemini (la lezione intera)
+  if (file) parts.push({ file_data: { mime_type: file.mime, file_uri: file.uri } });
   parts.push({ text });
   const body = { contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: maxTokens } };
+  if (json) body.generationConfig.responseMimeType = 'application/json';
   if (system) body.system_instruction = { parts: [{ text: system }] };
   let res;
   try {
@@ -889,6 +892,74 @@ async function callGemini({ system, text, pdfBase64, audio, maxTokens = 32768, s
   }
   return { text: out, truncated: cand.finishReason === 'MAX_TOKENS' };
 }
+
+/* v3.88: file grandi per Gemini (le lezioni audio). Il file si carica una volta sul
+   servizio File di Gemini, dove resta 48 ore; poi le richieste lo citano con il suo indirizzo. */
+const GemFiles = {
+  KEY: 'nb-gem-files',
+  read() { try { return JSON.parse(localStorage.getItem(this.KEY) || '{}'); } catch { return {}; } },
+  write(o) { try { localStorage.setItem(this.KEY, JSON.stringify(o)); } catch { /* niente */ } },
+  cached(id, size) {
+    const o = this.read();
+    const now = Date.now();
+    let changed = false;
+    Object.keys(o).forEach(k => { if (o[k].exp < now) { delete o[k]; changed = true; } });
+    if (changed) this.write(o);
+    const c = o[id];
+    return c && c.size === size && c.key === S().geminiKey.trim().slice(-6) ? c : null;
+  },
+  async ensure(id, blob, mime, name, onP = () => {}, signal) {
+    const hit = this.cached(id, blob.size);
+    if (hit) return { uri: hit.uri, mime: hit.mime };
+    const f = await this.upload(blob, mime, name, onP, signal);
+    const o = this.read();
+    // 48 ore sul servizio: ne conto 40, per sicurezza
+    o[id] = { uri: f.uri, mime: f.mime, size: blob.size, exp: Date.now() + 40 * 3600 * 1000, key: S().geminiKey.trim().slice(-6) };
+    this.write(o);
+    return f;
+  },
+  forget(id) { const o = this.read(); delete o[id]; this.write(o); },
+  async upload(blob, mime, name, onP, signal) {
+    const key = S().geminiKey.trim();
+    if (!key) throw apiError('Serve la chiave di Gemini: aggiungila in Impostazioni → Intelligenza artificiale.', 0);
+    if (navigator.onLine === false) throw apiError('Sei offline: per l’AI serve internet.', 0);
+    let start;
+    try {
+      start = await fetch('https://generativelanguage.googleapis.com/upload/v1beta/files', {
+        method: 'POST',
+        headers: { 'x-goog-api-key': key, 'X-Goog-Upload-Protocol': 'resumable', 'X-Goog-Upload-Command': 'start', 'X-Goog-Upload-Header-Content-Length': String(blob.size), 'X-Goog-Upload-Header-Content-Type': mime, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: { display_name: String(name || 'audio').slice(0, 100) } }),
+        signal
+      });
+    } catch (e) { if (e.name === 'AbortError') throw e; throw apiError('Connessione a Gemini non riuscita. Controlla internet.', 0); }
+    if (!start.ok) { const d = await start.json().catch(() => ({})); throw apiError(`Gemini non accetta il file: ${d.error?.message || start.statusText}`, start.status); }
+    const url = start.headers.get('x-goog-upload-url');
+    if (!url) throw apiError('Gemini non ha dato l’indirizzo per caricare il file.', 0);
+    // il caricamento vero, con l’avanzamento
+    const data = await new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('POST', url);
+      x.setRequestHeader('X-Goog-Upload-Offset', '0');
+      x.setRequestHeader('X-Goog-Upload-Command', 'upload, finalize');
+      x.upload.onprogress = e => { if (e.lengthComputable) onP(e.loaded / e.total); };
+      x.onload = () => { try { const j = JSON.parse(x.responseText || '{}'); if (x.status >= 200 && x.status < 300) resolve(j); else reject(apiError(`Caricamento su Gemini non riuscito: ${j.error?.message || x.status}`, x.status)); } catch { reject(apiError('Caricamento su Gemini non riuscito.', x.status)); } };
+      x.onerror = () => reject(apiError('Connessione interrotta durante il caricamento su Gemini.', 0));
+      x.onabort = () => reject(Object.assign(new Error('Annullato'), { name: 'AbortError' }));
+      if (signal) signal.addEventListener('abort', () => x.abort(), { once: true });
+      x.send(blob);
+    });
+    let f = data.file || data;
+    // Gemini prepara il file: di solito pochi secondi
+    for (let i = 0; i < 90 && f.state === 'PROCESSING'; i++) {
+      await sleepAbortable(2000, signal);
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/${f.name}`, { headers: { 'x-goog-api-key': key }, signal });
+      f = await r.json().catch(() => f);
+    }
+    if (f.state === 'FAILED' || !f.uri) throw apiError('Gemini non riesce a leggere questo file audio (formato non supportato?).', 0);
+    if (f.state === 'PROCESSING') throw apiError('Gemini sta ancora preparando il file: riprova tra un minuto.', 0);
+    return { uri: f.uri, mime: f.mimeType || mime, name: f.name };
+  }
+};
 
 async function callClaude({ system, text, pdfBase64, maxTokens = 16000, signal }) {
   const key = S().claudeKey.trim();
@@ -1250,7 +1321,7 @@ function route() {
   if (p0 !== 'import' && importJob && !importJob.running) importJob = null;
   const navKey = p0 === 'nb' || p0 === 'sec' ? (state.fromReview ? 'review' : 'notebooks')
     : p0 === 'pdf' || p0 === 'pdfs' ? 'pdfs'
-    : p0 === 'tag' || p0 === 'exam' ? 'notebooks'
+    : p0 === 'tag' || p0 === 'exam' || p0 === 'graph' ? 'notebooks'
     : p0 === 'viva' && (p1 === 'exam' || p1 === 'examq') ? 'examq'
     : ['deck', 'card', 'study'].includes(p0) ? 'cards' : p0;
   $$('.nav a').forEach(a => {
@@ -1291,6 +1362,7 @@ function route() {
     case 'scores': return viewScores();
     case 'print': return viewPrint(p1, p2);
     case 'viva': return viewViva(p1, p2);
+    case 'graph': return viewGraph(p1);
     case 'papers': return viewPapers(p1);
     case 'fs': { FullScreen.toggle(); if (history.length > 1) history.back(); else location.replace('#/notebooks'); return; }
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;

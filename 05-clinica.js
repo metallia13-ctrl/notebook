@@ -2111,7 +2111,7 @@ function viewExamPrep(key) {
     setView(`
       <div class="back-row"><a class="back" href="#/examq">Domande d’esame</a></div>
       <header class="page-head"><div><h1>Preparazione all’esame</h1><p class="lede">${esc(eqSubjLabel(key))}: gli argomenti che escono di più, a partire da quelli su cui sei più indietro.</p></div>
-        <div class="inline"><a class="btn primary" href="#/viva/exam/${encodeURIComponent(key)}">Esame orale</a></div></header>
+        <div class="inline"><a class="btn primary" href="#/viva/exam/${encodeURIComponent(key)}">Esame orale</a>${nbById(key) ? `<a class="btn" href="#/graph/${key}">Mappa dei collegamenti</a>` : ''}</div></header>
       <div class="prep-top">
         <div class="prep-count ${days === null ? '' : days < 0 ? 'past' : days <= 7 ? 'near' : ''}">
           ${days === null ? '<b>?</b><span>Quando hai l’esame?</span>' : days < 0 ? `<b>✓</b><span>Esame del ${eqDateIt(date)} passato</span>` : days === 0 ? '<b>Oggi</b><span>In bocca al lupo!</span>' : `<b>${days}</b><span>${days === 1 ? 'giorno' : 'giorni'} all’esame del ${eqDateIt(date)}</span>`}
@@ -2164,6 +2164,236 @@ function eqPrepBanner(nbId) {
   const d = dayDiff(todayStr(), p.date);
   if (d < 0 || d > 60) return '';
   return `<a class="prep-banner" href="#/examq/prep/${encodeURIComponent(nbId)}"><b>${d === 0 ? 'Esame oggi' : `${d} ${d === 1 ? 'giorno' : 'giorni'} all’esame`}</b><span>Preparazione: cosa ripassare prima</span></a>`;
+}
+
+/* =====================================================================
+   v3.88: Mappa dei collegamenti di una materia
+   Sezioni, cartelle, lezioni e domande d’esame come nodi, uniti dai
+   collegamenti che ci sono già ([[rimandi]], lezioni e segnalibri collegati,
+   domande d’esame). Il colore dice quanto sei pronta; la grandezza, quanto
+   l’argomento esce all’esame. I buchi si vedono a colpo d’occhio.
+   ===================================================================== */
+const graphState = { lessons: true, orphans: true, labels: true };
+function graphData(nb) {
+  const secs = secsOf(nb.id);
+  const nodes = [], edges = [], byId = new Map();
+  const add = n => { nodes.push(n); byId.set(n.id, n); return n; };
+  const link = (a, b, kind) => { if (a !== b && byId.has(a) && byId.has(b) && !edges.some(e => e.kind === kind && ((e.a === a && e.b === b) || (e.a === b && e.b === a)))) edges.push({ a, b, kind }); };
+  add({ id: 'nb', kind: 'nb', label: nb.name, r: 16 });
+  groupsOf(nb).forEach(g => add({ id: `g:${g.id}`, kind: 'grp', label: g.name, r: 11, g }));
+  groupsOf(nb).forEach(g => { const p = groupParent(nb, g); link(`g:${g.id}`, p ? `g:${p.id}` : 'nb', 'tree'); });
+  secs.forEach(s => {
+    const rd = eqReadiness({}, [s]);
+    add({ id: s.id, kind: 'sec', label: s.title, s, rd, lv: !rd.known ? 'new' : rd.r >= 0.7 ? 'ok' : rd.r >= 0.4 ? 'mid' : 'ko', exam: 0, eqs: [], lessons: [] });
+    link(s.id, s.groupId && byId.has(`g:${s.groupId}`) ? `g:${s.groupId}` : 'nb', 'tree');
+  });
+  // rimandi [[…]] tra le sezioni
+  const byTitle = new Map(secs.map(s => [s.title.trim().toLowerCase(), s]));
+  secs.forEach(s => [...String(s.md || '').matchAll(XREF_RE)].forEach(m => { const t = byTitle.get(m[1].trim().toLowerCase()); if (t) link(s.id, t.id, 'xref'); }));
+  // domande d’esame: pesano sulle loro sezioni; quelle senza sezione sono nodi a parte
+  const st = eqStructOf(nb.id);
+  const w = eqWeightFn(nb.id);
+  eqOfSubj(nb.id).filter(x => !st || st.map?.[eqCat(x)] !== 'off').forEach(x => {
+    const g = eqGuessSecs(x);
+    if (g.secs.length) g.secs.forEach(s => { const n = byId.get(s.id); if (n) { n.exam += w(x) / g.secs.length; n.eqs.push(x); } });
+    else if (graphState.orphans) add({ id: `q:${x.id}`, kind: 'eq', label: x.q, q: x, exam: w(x), r: 5 + Math.min(9, Math.sqrt(w(x)) * 1.6) });
+  });
+  nodes.filter(n => n.kind === 'sec').forEach(n => { n.r = 7 + Math.min(11, Math.sqrt(n.exam) * 2.2); });
+  // le domande senza sezione stanno vicino alla loro macro-categoria, tra loro
+  const cats = new Map();
+  nodes.filter(n => n.kind === 'eq').forEach(n => { const c = eqCat(n.q); if (!cats.has(c)) cats.set(c, []); cats.get(c).push(n); });
+  cats.forEach(list => list.forEach((n, i) => { if (i) link(list[0].id, n.id, 'cat'); else link('nb', n.id, 'far'); }));
+  // lezioni
+  if (graphState.lessons) audiosOf(nb).forEach(a => {
+    const ids = [...new Set([...(a.secIds || []), ...(a.marks || []).flatMap(m => m.secIds || [])])].filter(id => byId.has(id));
+    add({ id: `a:${a.id}`, kind: 'lz', label: a.name, a, r: 6 });
+    if (ids.length) ids.forEach(id => { link(`a:${a.id}`, id, 'lz'); byId.get(id).lessons.push(a); });
+    else link(`a:${a.id}`, 'nb', 'tree');
+  });
+  return { nodes, edges, byId };
+}
+// disposizione a molle: i nodi si respingono, i collegamenti li tengono vicini
+function graphLayout({ nodes, edges, byId }) {
+  const n = nodes.length;
+  const R = 60 + Math.sqrt(n) * 38;
+  const grp = nodes.filter(x => x.kind === 'grp');
+  nodes.forEach((x, i) => {
+    if (x.kind === 'nb') { x.x = 0; x.y = 0; return; }
+    const ang = x.kind === 'grp' ? (grp.indexOf(x) / Math.max(1, grp.length)) * Math.PI * 2 : (i / n) * Math.PI * 2;
+    const rad = x.kind === 'grp' ? R * 0.45 : R * (0.6 + ((i * 37) % 40) / 100);
+    x.x = Math.cos(ang) * rad; x.y = Math.sin(ang) * rad;
+  });
+  // le sezioni partono vicino alla loro cartella
+  edges.filter(e => e.kind === 'tree').forEach(e => { const a = byId.get(e.a), b = byId.get(e.b); if (a.kind === 'sec' && b.kind === 'grp') { const k = (nodes.indexOf(a) * 2.4); a.x = b.x + Math.cos(k) * 60; a.y = b.y + Math.sin(k) * 60; } });
+  const len = { tree: 100, xref: 120, lz: 100, cat: 75, far: 210 };
+  const steps = n > 500 ? 120 : n > 250 ? 200 : 320;
+  for (let it = 0; it < steps; it++) {
+    const cool = 1 - it / steps;
+    nodes.forEach(x => { x.fx = -x.x * 0.007; x.fy = -x.y * 0.007; });
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      const a = nodes[i], b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 > 160000) continue;
+      if (d2 < 0.01) { dx = (i % 3) - 1 + 0.1; dy = (j % 3) - 1 + 0.1; d2 = dx * dx + dy * dy; }
+      const d = Math.sqrt(d2);
+      const f = (3600 + (a.r + b.r) * 60) / d2;
+      a.fx += (dx / d) * f; a.fy += (dy / d) * f; b.fx -= (dx / d) * f; b.fy -= (dy / d) * f;
+    }
+    edges.forEach(e => {
+      const a = byId.get(e.a), b = byId.get(e.b);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 1;
+      const f = (d - (len[e.kind] || 80)) * 0.03;
+      a.fx += (dx / d) * f; a.fy += (dy / d) * f; b.fx -= (dx / d) * f; b.fy -= (dy / d) * f;
+    });
+    nodes.forEach(x => {
+      if (x.kind === 'nb') return;
+      const m = Math.sqrt(x.fx * x.fx + x.fy * x.fy) || 1;
+      const lim = 2 + 22 * cool;
+      x.x += (x.fx / m) * Math.min(m, lim); x.y += (x.fy / m) * Math.min(m, lim);
+    });
+  }
+}
+function viewGraph(nbId) {
+  if (!nbId) {
+    const nbs = state.notebooks.filter(n => !n.kind && secsOf(n.id).length);
+    setView(`<header class="page-head"><div><h1>Mappa dei collegamenti</h1><p class="lede">Tutta una materia in un colpo d’occhio: sezioni, lezioni e domande d’esame, colorate per quanto sei pronta.</p></div></header>
+      ${nbs.length ? `<ul class="list">${nbs.map(nb => `<li><a class="row" href="#/graph/${nb.id}"><span class="row-main"><span class="row-title">${esc(nb.name)}</span><span class="row-sub">${secsOf(nb.id).length} sezioni</span></span></a></li>`).join('')}</ul>` : '<div class="empty"><p>Crea prima un notebook con delle sezioni.</p></div>'}`);
+    return;
+  }
+  const nb = nbById(nbId);
+  if (!nb) return notFound('Questo notebook');
+  const G = graphData(nb);
+  graphLayout(G);
+  const secN = G.nodes.filter(n => n.kind === 'sec');
+  const cnt = lv => secN.filter(n => n.lv === lv).length;
+  const orph = G.nodes.filter(n => n.kind === 'eq').length;
+  const pad = 60;
+  const minX = Math.min(...G.nodes.map(n => n.x)) - pad, maxX = Math.max(...G.nodes.map(n => n.x)) + pad;
+  const minY = Math.min(...G.nodes.map(n => n.y)) - pad, maxY = Math.max(...G.nodes.map(n => n.y)) + pad;
+  const cut = (t, k) => (t.length > k ? `${t.slice(0, k - 1)}…` : t);
+  const shape = n => {
+    if (n.kind === 'lz') return `<rect x="${-n.r}" y="${-n.r}" width="${n.r * 2}" height="${n.r * 2}" rx="2" transform="rotate(45)"/>`;
+    return `<circle r="${n.r}"/>`;
+  };
+  setView(`
+    <a class="back" href="#/nb/${nb.id}">${esc(nb.name)}</a>
+    <header class="page-head"><div><h1>Mappa dei collegamenti</h1><p class="lede">${esc(nb.name)}: ${secN.length} sezioni${cnt('ok') ? `, ${cnt('ok')} pronte` : ''}${cnt('mid') + cnt('ko') ? `, ${cnt('mid') + cnt('ko')} da rivedere` : ''}${cnt('new') ? `, ${cnt('new')} mai studiate` : ''}${orph ? `; ${orph} argomenti d’esame senza una sezione` : ''}.</p></div>
+      ${eqOfSubj(nb.id).length ? `<a class="btn" href="#/examq/prep/${encodeURIComponent(nb.id)}">Preparazione all’esame</a>` : ''}</header>
+    <div class="gr-tools">
+      <span class="gr-leg"><i class="lv-ok"></i>pronta</span><span class="gr-leg"><i class="lv-mid"></i>da rivedere</span><span class="gr-leg"><i class="lv-ko"></i>indietro</span><span class="gr-leg"><i class="lv-new"></i>mai studiata</span>
+      <span class="gr-leg"><i class="k-eq"></i>domanda d’esame senza sezione</span><span class="gr-leg"><i class="k-lz"></i>lezione</span>
+      <span class="gr-leg muted-inline">più grande = esce di più all’esame</span>
+    </div>
+    <div class="gr-tools">
+      <label class="check"><input type="checkbox" data-gr="lessons" ${graphState.lessons ? 'checked' : ''}><span>Lezioni</span></label>
+      <label class="check"><input type="checkbox" data-gr="orphans" ${graphState.orphans ? 'checked' : ''}><span>Domande senza sezione</span></label>
+      <label class="check"><input type="checkbox" data-gr="labels" ${graphState.labels ? 'checked' : ''}><span>Nomi</span></label>
+      <span class="gr-zoom"><button class="btn sm ghost" type="button" data-gz="-1" aria-label="Rimpicciolisci">−</button><button class="btn sm ghost" type="button" data-gz="0">Tutta</button><button class="btn sm ghost" type="button" data-gz="1" aria-label="Ingrandisci">+</button></span>
+    </div>
+    <div class="gr-box ${graphState.labels ? '' : 'no-labels'}" id="grBox">
+      <svg id="grSvg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Mappa dei collegamenti di ${esc(nb.name)}">
+        <g class="gr-edges">${G.edges.map(e => { const a = G.byId.get(e.a), b = G.byId.get(e.b); return `<line class="e-${e.kind}" data-a="${esc(e.a)}" data-b="${esc(e.b)}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"/>`; }).join('')}</g>
+        <g class="gr-nodes">${G.nodes.map(n => `<g class="gn k-${n.kind} ${n.lv ? `lv-${n.lv}` : ''}" data-n="${esc(n.id)}" transform="translate(${n.x.toFixed(1)} ${n.y.toFixed(1)})" tabindex="0" role="button" aria-label="${esc(n.label)}">${shape(n)}<text y="${n.r + 11}" text-anchor="middle">${esc(cut(n.label, n.kind === 'sec' || n.kind === 'eq' ? 26 : 34))}</text></g>`).join('')}</g>
+      </svg>
+      <div class="gr-card" id="grCard" hidden></div>
+    </div>
+    <p class="hint">Tocca un nodo per vedere a cosa è collegato e aprirlo. Trascina per spostarti, rotellina o due dita per ingrandire. Le linee tratteggiate sono i rimandi [[…]] tra le sezioni; quelle viola portano alle lezioni.</p>`);
+  const svg = $('#grSvg'), box = $('#grBox'), card = $('#grCard');
+  const full = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+  let vb = { ...full };
+  const apply = () => { svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`); box.classList.toggle('far', vb.w > 1500); };
+  apply();
+  const zoomAt = (f, cx, cy) => {
+    const r = svg.getBoundingClientRect();
+    const px = cx === undefined ? 0.5 : (cx - r.left) / r.width, py = cy === undefined ? 0.5 : (cy - r.top) / r.height;
+    const w = Math.max(160, Math.min(full.w * 1.5, vb.w * f)), h = w * (vb.h / vb.w);
+    vb = { x: vb.x + (vb.w - w) * px, y: vb.y + (vb.h - h) * py, w, h };
+    apply();
+  };
+  $$('[data-gz]').forEach(b => b.addEventListener('click', () => { if (b.dataset.gz === '0') { vb = { ...full }; apply(); } else zoomAt(b.dataset.gz === '1' ? 0.7 : 1.4); }));
+  svg.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.deltaY > 0 ? 1.15 : 0.87, e.clientX, e.clientY); }, { passive: false });
+  // trascina per spostarti, due dita per ingrandire
+  const pts = new Map();
+  let moved = false, pinch = 0;
+  svg.addEventListener('pointerdown', e => { pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); moved = false; if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); } });
+  svg.addEventListener('pointermove', e => {
+    const p = pts.get(e.pointerId);
+    if (!p) return;
+    const r = svg.getBoundingClientRect();
+    if (pts.size === 2) {
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinch && d) { zoomAt(pinch / d, (a.x + b.x) / 2, (a.y + b.y) / 2); pinch = d; moved = true; }
+      return;
+    }
+    const dx = e.clientX - p.x, dy = e.clientY - p.y;
+    if (!moved && Math.hypot(dx, dy) < 5) return;
+    if (!moved) { try { svg.setPointerCapture(e.pointerId); } catch { /* niente */ } }
+    moved = true;
+    const k = Math.max(vb.w / r.width, vb.h / r.height);
+    vb.x -= dx * k; vb.y -= dy * k;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    apply();
+  });
+  const up = e => { pts.delete(e.pointerId); if (pts.size < 2) pinch = 0; };
+  svg.addEventListener('pointerup', up);
+  svg.addEventListener('pointercancel', up);
+  const neigh = id => new Set(G.edges.filter(e => e.a === id || e.b === id).map(e => (e.a === id ? e.b : e.a)));
+  const select = id => {
+    const n = id ? G.byId.get(id) : null;
+    const nb2 = n ? neigh(id) : null;
+    $$('.gn', svg).forEach(g => { g.classList.toggle('sel', g.dataset.n === id); g.classList.toggle('dim', !!n && g.dataset.n !== id && !nb2.has(g.dataset.n)); });
+    $$('.gr-edges line', svg).forEach(l => { const on = !!n && (l.dataset.a === id || l.dataset.b === id); l.classList.toggle('on', on); l.classList.toggle('dim', !!n && !on); });
+    card.hidden = !n;
+    if (!n) return;
+    const chips = why => why.map(w => `<span class="chip ${w.bad ? 'bad' : 'good'}">${esc(w.t)}</span>`).join(' ');
+    let html = '';
+    if (n.kind === 'sec') {
+      const xl = [...nb2].map(i => G.byId.get(i)).filter(x => x && x.kind === 'sec');
+      html = `<p class="gr-k">Sezione${groupPathText(n.s) ? ` · ${esc(groupPathText(n.s))}` : ''}</p><h3>${esc(n.s.title)}</h3>
+        <p class="prep-why">${n.lv === 'ok' ? '<span class="chip good">pronta</span> ' : ''}${chips(n.rd.why)}</p>
+        ${n.eqs.length ? `<p class="gr-l"><b>All’esame:</b> ${n.eqs.sort((a, b) => eqFreq(b) - eqFreq(a)).slice(0, 4).map(x => `${esc(cut(x.q, 60))} <small>${eqFreq(x)}×</small>`).join(' · ')}</p>` : '<p class="gr-l muted-inline">Nessuna domanda d’esame collegata.</p>'}
+        ${n.lessons.length ? `<p class="gr-l"><b>Nelle lezioni:</b> ${n.lessons.map(a => esc(a.name)).join(', ')}</p>` : ''}
+        ${xl.length ? `<p class="gr-l"><b>Rimandi:</b> ${xl.slice(0, 6).map(x => `<button type="button" class="link-btn" data-go="${x.id}">${esc(x.label)}</button>`).join(', ')}</p>` : ''}
+        <div class="inline"><a class="btn sm primary" href="#/sec/${n.s.id}">Apri</a><a class="btn sm" href="#/viva/sec/${n.s.id}">Interrogami</a></div>`;
+    } else if (n.kind === 'eq') {
+      html = `<p class="gr-k">Domanda d’esame senza sezione${eqCat(n.q) !== 'Senza categoria' ? ` · ${esc(eqCat(n.q))}` : ''}</p><h3>${esc(n.q.q)}</h3>
+        <p class="gr-l">${esc(eqMeta(n.q))}. Nei tuoi appunti non trovo una sezione su questo argomento: se c’è, collegala.</p>
+        <div class="inline"><a class="btn sm primary" href="#/viva/examq/${n.q.id}">Interrogami</a><button class="btn sm" type="button" data-gr-edit="${n.q.id}">Collega una sezione</button></div>`;
+    } else if (n.kind === 'lz') {
+      const ss = [...nb2].map(i => G.byId.get(i)).filter(x => x && x.kind === 'sec');
+      html = `<p class="gr-k">Lezione</p><h3>${esc(n.a.name)}</h3>
+        <p class="gr-l">${[n.a.duration ? fmtT(n.a.duration) : '', `${(n.a.marks || []).length} segnalibri`, ss.length ? `parla di: ${ss.map(x => esc(x.label)).join(', ')}` : 'non ancora collegata a sezioni'].filter(Boolean).join(' · ')}</p>
+        <div class="inline"><button class="btn sm primary" type="button" data-gr-play="${n.a.id}">▶ Ascolta</button><a class="btn sm" href="#/lezioni/${nb.id}">Lezioni</a></div>`;
+    } else if (n.kind === 'grp') {
+      const tree = groupTreeIds(nb, n.g);
+      const inside = secN.filter(x => tree.has(x.s.groupId));
+      html = `<p class="gr-k">Cartella</p><h3>${esc(n.g.name)}</h3>
+        <p class="gr-l">${inside.length} sezioni: ${inside.filter(x => x.lv === 'ok').length} pronte, ${inside.filter(x => x.lv === 'mid' || x.lv === 'ko').length} da rivedere, ${inside.filter(x => x.lv === 'new').length} mai studiate.</p>
+        <div class="inline"><a class="btn sm primary" href="#/nb/${nb.id}/${n.g.id}">Apri</a>${inside.length ? `<a class="btn sm" href="#/viva/grp/${n.g.id}">Interrogami</a>` : ''}</div>`;
+    } else {
+      html = `<p class="gr-k">Notebook</p><h3>${esc(nb.name)}</h3><div class="inline"><a class="btn sm primary" href="#/nb/${nb.id}">Apri</a></div>`;
+    }
+    card.innerHTML = `<button type="button" class="btn sm ghost gr-x" data-gr-x aria-label="Chiudi">✕</button>${html}`;
+  };
+  svg.addEventListener('click', e => { if (moved) return; const g = e.target.closest('.gn'); select(g ? g.dataset.n : ''); });
+  svg.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { const g = e.target.closest('.gn'); if (g) { e.preventDefault(); select(g.dataset.n); } } });
+  card.addEventListener('click', async e => {
+    if (e.target.closest('[data-gr-x]')) { select(''); return; }
+    const go2 = e.target.closest('[data-go]');
+    if (go2) { select(go2.dataset.go); return; }
+    const pl = e.target.closest('[data-gr-play]');
+    if (pl) { const a = audiosOf(nb).find(x => x.id === pl.dataset.grPlay); if (a) AudioPlayer.load(nb, a.id); return; }
+    const ed = e.target.closest('[data-gr-edit]');
+    if (ed) { const x = examQs().find(r => r.id === ed.dataset.grEdit); if (x && await eqSheet(x)) route(); }
+  });
+  $$('[data-gr]').forEach(c => c.addEventListener('change', () => {
+    graphState[c.dataset.gr] = c.checked;
+    if (c.dataset.gr === 'labels') box.classList.toggle('no-labels', !c.checked); else route();
+  }));
 }
 
 // Nella sezione, in fondo a Leggi

@@ -385,11 +385,13 @@ function viewNotebook(id, folderId = '') {
     const choice = await actionSheet(nb.name, [
       { key: 'listen', label: 'Ascolta tutto il notebook' },
       { key: 'print', label: 'Stampa o salva in PDF' },
+      { key: 'graph', label: 'Mappa dei collegamenti (sezioni, lezioni, domande d’esame)' },
       { key: 'viva', label: 'Interrogazione con l’AI su tutto il notebook' },
       { key: 'rename', label: 'Rinomina il notebook' },
       { key: 'delete', label: 'Elimina il notebook', danger: true }
     ]);
     if (choice === 'listen') Playlist.start(nbReadingOrder(nb), nb.name);
+    if (choice === 'graph') go(`#/graph/${nb.id}`);
     if (choice === 'print') go(`#/print/nb/${nb.id}`);
     if (choice === 'viva') go(`#/viva/nb/${nb.id}`);
     if (choice === 'rename') renameNb();
@@ -5874,6 +5876,186 @@ async function driveAudioSheet(owner) {
   open(nb.lessonFolder?.id || 'root');
 }
 
+/* =====================================================================
+   v3.88: dalla lezione agli appunti (con Gemini, che ascolta l’audio intero)
+   - Segnalibri automatici: l’indice della lezione, minuto per minuto, già
+     collegato alle sezioni del notebook, con i punti “da esame”
+   - Bozza di appunti: appunti in Markdown con i minuti, da tenere come sezione
+   L’audio si carica una volta sul servizio File di Gemini (resta 48 ore).
+   ===================================================================== */
+const LESSON_SYS_MARKS = `Sei un assistente che ascolta la registrazione di una lezione universitaria di medicina, in italiano, e ne ricava l’indice per uno studente.
+Ascolta TUTTO l’audio, dall’inizio alla fine. Individua ogni cambio di argomento e, per ognuno, scrivi:
+- "t": il minuto esatto in cui il docente comincia a parlarne, nel formato H:MM:SS (ore:minuti:secondi dall’inizio della registrazione);
+- "titolo": un titolo breve e preciso (3-8 parole), con i termini medici corretti;
+- "sezione": se l’argomento corrisponde a una delle SEZIONI DEGLI APPUNTI che ti elenco, copia il suo titolo ESATTO; altrimenti stringa vuota;
+- "esame": true solo se il docente dice esplicitamente che è importante, che lo chiede all’esame o che va saputo bene; altrimenti false;
+- "nota": una riga (massimo 15 parole) su cosa dice in quel punto; se "esame" è true, riporta cosa ha detto sull’esame.
+Regole: gli argomenti in ordine di tempo; uno ogni 3-8 minuti circa (da 8 a 45 voci secondo la durata); non inventare argomenti che non senti; ignora pause, appelli e chiacchiere. I minuti devono essere dentro la durata dell’audio.
+Rispondi SOLO con JSON valido: {"argomenti": [{"t": "0:12:40", "titolo": "...", "sezione": "...", "esame": false, "nota": "..."}]}`;
+const LESSON_SYS_NOTES = `Sei uno studente di medicina molto ordinato che prende appunti dalla registrazione di una lezione universitaria, in italiano.
+Ascolta TUTTO l’audio e scrivi gli appunti completi in Markdown:
+- un titolo "## " per ogni argomento e "### " per i sottoargomenti; subito dopo ogni titolo "## " una riga con il minuto di inizio nel formato "⏱ H:MM:SS";
+- elenchi puntati con definizioni, classificazioni, meccanismi, valori numerici, esempi clinici, come li dice il docente; tabelle quando confronta più voci;
+- segna con "**Esame:**" le cose che il docente dice di chiedere o di sapere bene;
+- solo quello che viene detto: non aggiungere nozioni tue; se un termine non si capisce scrivi "(non chiaro)";
+- niente introduzioni, saluti o commenti: solo gli appunti. Termini medici corretti.`;
+const lessonGemMime = f => {
+  const ext = String(f.name || '').split('.').pop().toLowerCase();
+  const m = { mp3: 'audio/mp3', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', flac: 'audio/flac', webm: 'audio/webm', '3gp': 'audio/3gpp', amr: 'audio/amr' }[ext];
+  return m || (f.type && f.type.startsWith('audio/') ? f.type.split(';')[0] : 'audio/mp3');
+};
+const lessonAiItems = () => (S().geminiKey.trim() ? [{ key: 'ai-marks', label: '✨ Segnalibri automatici (Gemini ascolta la lezione)' }, { key: 'ai-notes', label: '✨ Bozza di appunti dalla lezione (Gemini)' }] : []);
+// carica l’audio su Gemini e fa la richiesta, con una finestra che dice a che punto è
+function lessonAiRun(owner, a, kind) {
+  return new Promise(resolve => {
+    const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
+    const ctl = new AbortController();
+    let done = false;
+    const sh = openSheet(`
+      <h2>${kind === 'marks' ? 'Segnalibri automatici' : 'Bozza di appunti'}</h2>
+      <p class="sheet-sub">${esc(a.name)}${a.duration ? ` · ${fmtT(a.duration)}` : ''}</p>
+      <ol class="lai-steps">
+        <li data-st="file">Prendo il file della lezione</li>
+        <li data-st="up">Lo carico su Gemini <span class="lai-p"></span></li>
+        <li data-st="ai">Gemini ascolta la lezione${kind === 'notes' ? ' e scrive gli appunti' : ' e ne fa l’indice'} <span class="lai-p"></span></li>
+      </ol>
+      <p class="hint">Per una lezione di due ore servono alcuni minuti: lascia aperta questa finestra. L’audio resta su Gemini 48 ore (poi lo cancella da solo), così la seconda richiesta sulla stessa lezione parte subito.</p>
+      <p class="err-line" id="laiErr" hidden></p>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-lai="stop">Annulla</button></div>`, { label: 'Lezione con l’AI', onClose: () => { if (!done) { ctl.abort(); resolve(null); } } });
+    const step = (k, state, txt = '') => { const li = $(`[data-st="${k}"]`, sh.el); if (!li) return; li.className = state; const p = $('.lai-p', li); if (p) p.textContent = txt; };
+    $('[data-lai="stop"]', sh.el).onclick = () => sh.close(null);
+    const fail = msg => { const e = $('#laiErr', sh.el); if (e) { e.textContent = msg; e.hidden = false; } $$('.lai-steps .on', sh.el).forEach(li => { li.className = 'ko'; }); const b = $('[data-lai="stop"]', sh.el); if (b) b.textContent = 'Chiudi'; };
+    (async () => {
+      try {
+        step('file', 'on');
+        let file = await AudioDB.get(a.id);
+        if (!file && a.drive && DriveAudio.ready()) file = await DriveAudio.download(a);
+        if (!file) throw new Error('Il file di questa lezione non è su questo dispositivo.');
+        step('file', 'ok');
+        const mime = lessonGemMime(file);
+        let t0 = Date.now(), tick = 0;
+        const ask = async retry => {
+          step('up', 'on');
+          const gf = await GemFiles.ensure(a.id, file, mime, a.name, p => step('up', 'on', `${Math.round(p * 100)}%`), ctl.signal);
+          step('up', 'ok');
+          step('ai', 'on');
+          t0 = Date.now();
+          clearInterval(tick);
+          tick = setInterval(() => step('ai', 'on', fmtT((Date.now() - t0) / 1000)), 1000);
+          const secs = nb ? secsOf(nb.id).slice(0, 400) : [];
+          const text = kind === 'marks'
+            ? `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : ''}\n\nSEZIONI DEGLI APPUNTI (titoli esatti):\n${secs.map(s => `- ${s.title}`).join('\n') || '(nessuna)'}`
+            : `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : ''}`;
+          try {
+            return await AI.generate({ provider: 'gemini', file: gf, system: kind === 'marks' ? LESSON_SYS_MARKS : LESSON_SYS_NOTES, text, json: kind === 'marks', maxTokens: kind === 'marks' ? 16000 : 60000, signal: ctl.signal });
+          } catch (e) {
+            // il file su Gemini è scaduto o non si legge più: lo ricarico una volta
+            if (!retry && (e.status === 403 || e.status === 404 || /file/i.test(e.message || '')) && e.name !== 'AbortError' && !e.quota) { GemFiles.forget(a.id); return ask(true); }
+            throw e;
+          } finally { clearInterval(tick); }
+        };
+        const r = await ask(false);
+        step('ai', 'ok');
+        done = true;
+        sh.close(true);
+        resolve(r);
+      } catch (e) {
+        if (e.name === 'AbortError' || !sh.el.isConnected) return;
+        fail(/token|quota|limit/i.test(e.message || '') && e.status === 429 ? `${e.message} Una lezione lunga usa molte risorse della quota gratuita: riprova tra un minuto, o con un modello diverso in Impostazioni.` : (e.message || 'Non riuscito'));
+      }
+    })();
+  });
+}
+async function lessonAiMarks(owner, a) {
+  const r = await lessonAiRun(owner, a, 'marks');
+  if (!r) return;
+  const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
+  let items = [];
+  try { const j = vivaJson(r.text); items = Array.isArray(j.argomenti) ? j.argomenti : []; } catch { /* sotto */ }
+  const secs = nb ? secsOf(nb.id) : [];
+  const findSec = name => { const f = foldAccents(String(name || '')).trim(); if (!f) return null; return secs.find(s => foldAccents(s.title).trim() === f) || secs.find(s => { const t = foldAccents(s.title).trim(); return t.length > 5 && (t.includes(f) || f.includes(t)); }) || null; };
+  const dur = a.duration || Infinity;
+  items = items.map(x => ({ t: parseT(String(x.t || '').trim()), title: String(x.titolo || '').trim().slice(0, 120), sec: isSecRec(owner) ? null : findSec(x.sezione), exam: !!x.esame, note: String(x.nota || '').trim().slice(0, 200) }))
+    .filter(x => x.t !== null && x.t >= 0 && x.t <= dur + 5 && x.title).sort((x, y) => x.t - y.t);
+  if (!items.length) { toast('Gemini non ha restituito un indice leggibile: riprova', 'err'); return; }
+  const near = t => (a.marks || []).some(m => Math.abs(m.t - t) <= 15);
+  const sh = openSheet(`
+    <h2>Segnalibri proposti</h2>
+    <p class="sheet-sub">${esc(a.name)}: ${items.length} argomenti${items.some(x => x.exam) ? `, ${items.filter(x => x.exam).length} segnalati per l’esame (★)` : ''}. Togli la spunta a quelli che non vuoi; i minuti sono indicativi, controllali ascoltando.</p>
+    <ul class="lai-list">${items.map((x, i) => `<li><label class="row lai-row ${near(x.t) ? 'done' : ''}">
+      <input type="checkbox" data-lai-i="${i}" ${near(x.t) ? 'disabled' : 'checked'}>
+      <span class="lai-t">${fmtT(x.t)}</span>
+      <span class="row-main"><span class="row-title">${x.exam ? '★ ' : ''}${esc(x.title)}</span><span class="row-sub">${esc([x.sec ? `→ ${x.sec.title}` : '', near(x.t) ? 'c’è già un segnalibro qui' : '', x.note].filter(Boolean).join(' · '))}</span></span></label></li>`).join('')}</ul>
+    ${isSecRec(owner) ? '' : '<label class="check"><input type="checkbox" id="laiLink" checked><span>Collega i segnalibri alle sezioni trovate (→)</span></label>'}
+    <div class="modal-actions"><button class="btn ghost" type="button" data-lai="no">Annulla</button><button class="btn primary" type="button" data-lai="ok">Aggiungi i segnalibri</button></div>`, { label: 'Segnalibri proposti' });
+  $('[data-lai="no"]', sh.el).onclick = () => sh.close(null);
+  $('[data-lai="ok"]', sh.el).onclick = async () => {
+    const link = $('#laiLink', sh.el)?.checked;
+    const pick = $$('[data-lai-i]:checked:not(:disabled)', sh.el).map(c => items[+c.dataset.laiI]);
+    if (!pick.length) { sh.close(null); return; }
+    const cur = audioOwner(isSecRec(owner) ? 'sec' : 'nb', owner.id) || owner;
+    const rec = audiosOf(cur).find(x => x.id === a.id) || a;
+    pick.forEach(x => rec.marks.push({ id: uid(), t: x.t, label: `${x.exam ? '★ ' : ''}${x.title}`, ai: true, ...(isSecRec(cur) ? {} : { secIds: link && x.sec ? [x.sec.id] : [] }) }));
+    rec.marks.sort((x, y) => x.t - y.t);
+    await saveOwner(cur);
+    sh.close(true);
+    AudioPlayer.paintTicks?.();
+    toast(`${pick.length} segnalibri aggiunti${link && pick.some(x => x.sec) ? `, ${pick.filter(x => x.sec).length} collegati alle sezioni` : ''}`);
+    route();
+  };
+}
+async function lessonAiNotes(owner, a) {
+  // la bozza resta da parte finché non chiudi l’app: riaprendola non serve riascoltare
+  const KEY = `nb-lai-notes-${a.id}`;
+  let r = null;
+  try { const old = sessionStorage.getItem(KEY); if (old) r = JSON.parse(old); } catch { r = null; }
+  if (!r) {
+    r = await lessonAiRun(owner, a, 'notes');
+    if (!r) return;
+    try { sessionStorage.setItem(KEY, JSON.stringify({ text: r.text, truncated: !!r.truncated })); } catch { /* troppo grande: pazienza */ }
+  }
+  const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
+  // “⏱ 12:34” di una lezione del notebook ha bisogno del suo nome per ritrovarla
+  let md = String(r.text || '').replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/, '').trim();
+  if (!isSecRec(owner)) md = md.replace(/⏱\s?((?:\d{1,2}:)?\d{1,2}:\d{2})(?!\s?\()/g, (m, t) => `⏱ ${t} (${a.name.replace(/[()]/g, '')})`);
+  const sh = openSheet(`
+    <h2>Bozza di appunti</h2>
+    <p class="sheet-sub">${esc(a.name)}${r.truncated ? ' · la lezione è lunga: la bozza si ferma prima della fine' : ''}. È una bozza scritta dall’AI ascoltando l’audio: confrontala con i tuoi appunti. I minuti (⏱) in Leggi fanno ripartire la lezione da lì.</p>
+    <div class="lai-notes notes">${renderMd(md)}</div>
+    <div class="modal-actions">
+      <button class="btn ghost" type="button" data-lai="no">Chiudi</button>
+      <button class="btn ghost" type="button" data-lai="redo">Rifalla</button>
+      <button class="btn" type="button" data-lai="copy">Copia</button>
+      <button class="btn primary" type="button" data-lai="ok">${isSecRec(owner) ? 'Aggiungi in fondo alla sezione' : 'Crea una sezione con questi appunti'}</button>
+    </div>`, { label: 'Bozza di appunti' });
+  $('[data-lai="no"]', sh.el).onclick = () => { sh.close(null); toast('La bozza resta da parte finché non chiudi l’app: la ritrovi da ⋯ → Bozza di appunti'); };
+  $('[data-lai="redo"]', sh.el).onclick = () => { try { sessionStorage.removeItem(KEY); } catch { /* niente */ } sh.close(null); lessonAiNotes(owner, a); };
+  $('[data-lai="copy"]', sh.el).onclick = () => { navigator.clipboard?.writeText(md).then(() => toast('Appunti copiati'), () => toast('Non riesco a copiare', 'err')); };
+  $('[data-lai="ok"]', sh.el).onclick = async () => {
+    if (isSecRec(owner)) {
+      owner.md = `${String(owner.md || '').trimEnd()}\n\n## Dalla registrazione “${a.name}”\n\n${md.replace(/^## /gm, '### ')}\n`;
+      await saveSection(owner);
+      sh.close(true);
+      toast('Appunti aggiunti in fondo alla sezione');
+      go(`#/sec/${owner.id}/read`);
+      return;
+    }
+    try { sessionStorage.removeItem(KEY); } catch { /* niente */ }
+    const s = newSection(nb.id, { title: `${a.name} (appunti dalla lezione)`, md, source: `Bozza dell’AI dalla lezione “${a.name}”` });
+    await saveSection(s);
+    const rec = audiosOf(nb).find(x => x.id === a.id);
+    if (rec) { rec.secIds = [...new Set([...(rec.secIds || []), s.id])]; await saveNotebook(nb); }
+    sh.close(true);
+    toast('Sezione creata, collegata alla lezione');
+    go(`#/sec/${s.id}/read`);
+  };
+}
+async function lessonAiAct(ch, owner, a) {
+  if (ch === 'ai-marks') { await lessonAiMarks(owner, a); return true; }
+  if (ch === 'ai-notes') { await lessonAiNotes(owner, a); return true; }
+  return false;
+}
+
 /* ---------- Lettore: uno solo, resta in basso tra una pagina e l’altra ---------- */
 const AudioPlayer = {
   el: null, bar: null, ownK: 'sec', ownId: '', aId: '', url: '', saveT: 0,
@@ -5987,6 +6169,7 @@ const AudioPlayer = {
     if (Math.abs((this.rec()?.pos || 0) - this.el.currentTime) > 15) this.savePos();
   },
   paintTicks() {
+    if (!this.bar) return;
     const r = this.rec();
     const d = this.el.duration || r?.duration || 0;
     $('.au-ticks', this.bar).innerHTML = r && d ? r.marks.map(m => `<button type="button" class="au-tick" data-tick="${m.t}" style="left:${(m.t / d) * 100}%" title="${esc(fmtT(m.t))} ${esc(m.label || '')}" aria-label="Vai a ${esc(fmtT(m.t))}"></button>`).join('') : '';
@@ -6251,7 +6434,8 @@ function modeAudio(sec, body) {
     if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveSection(sec); AudioPlayer.paintTicks?.(); route(); return; }
     if (b.dataset.a === 'menu') {
       const local = it.dataset.local === '1';
-      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'tolesson', label: 'Sposta nelle lezioni del notebook' }, ...driveMenuItems(a, local), { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Salva il file (nei Download)' }, { key: 'del', label: 'Elimina l’audio', danger: true }]);
+      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, { key: 'tolesson', label: 'Sposta nelle lezioni del notebook' }, ...lessonAiItems(), ...driveMenuItems(a, local), { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Salva il file (nei Download)' }, { key: 'del', label: 'Elimina l’audio', danger: true }]);
+      if (await lessonAiAct(ch, sec, a)) return;
       if (await driveMenuAct(ch, sec, a)) return;
       if (ch === 'tolesson') {
         // la lezione resta collegata a questa sezione, con i suoi segnalibri
@@ -6420,7 +6604,8 @@ function viewLessons(nbId) {
     if (b.dataset.md) { a.marks = a.marks.filter(x => x.id !== b.dataset.md); await saveNotebook(nb); AudioPlayer.paintTicks?.(); route(); return; }
     if (b.dataset.a === 'menu') {
       const local = it.dataset.local === '1';
-      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, ...driveMenuItems(a, local), { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Salva il file (nei Download)' }, { key: 'del', label: 'Elimina la lezione', danger: true }]);
+      const ch = await actionSheet(a.name, [{ key: 'rename', label: 'Rinomina' }, ...lessonAiItems(), ...driveMenuItems(a, local), { key: 'reload', label: 'Ricarica il file (se qui manca)' }, { key: 'save', label: 'Salva il file (nei Download)' }, { key: 'del', label: 'Elimina la lezione', danger: true }]);
+      if (await lessonAiAct(ch, nb, a)) return;
       if (await driveMenuAct(ch, nb, a)) return;
       if (ch === 'rename') { const v = await modal({ title: 'Rinomina la lezione', text: 'I minuti già scritti negli appunti con il vecchio nome (⏱ 12:34 (nome)) non la ritroverebbero più: correggili, o tieni il nome.', input: true, value: a.name, confirm: 'Salva' }); if (v) { a.name = uniqueLessonName(nb, String(v).trim(), a.id); await saveNotebook(nb); route(); } }
       if (ch === 'save') { const f = await AudioDB.get(a.id); if (f) downloadBlob(f, f.name || `${a.name}.webm`); else toast('Il file non è su questo dispositivo', 'err'); }
