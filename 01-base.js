@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.92';
+const APP_VERSION = '3.93';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -722,7 +722,8 @@ const AI = {
       try {
         return await call();
       } catch (e) {
-        const max = e.quota === 'minute' ? 3 : 2;
+        // v3.93: sui modelli di riserva un solo nuovo tentativo per il sovraccarico (poi si cambia modello)
+        const max = e.quota === 'minute' ? 3 : (opts.overloadRetries ?? 2);
         if (e.retryable && i < max && !opts.signal?.aborted) {
           const ms = Math.min(120000, Math.max(e.retryAfter ? e.retryAfter * 1000 + 1500 : 0, waits[i]));
           opts.onWait && opts.onWait(ms, e);
@@ -743,17 +744,32 @@ const AI = {
     // modello principale, si passa al modello di riserva fino all’azzeramento.
     const chain = GemQuota.chain();
     if (!chain.length) throw apiError(GemQuota.allGoneMsg(), 429);
-    let last = null;
-    for (const model of chain) {
+    // v3.93: per i lavori lunghi (una lezione intera) ci sono altri modelli da provare se quelli scelti sono sovraccarichi
+    const extra = (opts.extraModels || []).filter(m => !chain.includes(m) && !GemQuota.read()[m]);
+    const all = [...chain, ...extra];
+    let last = null, overloaded = [];
+    for (const model of all) {
+      if (extra.includes(model) && !overloaded.length) break;   // gli extra servono solo contro il sovraccarico
       try {
-        const r = await this.withRetry(() => callGemini({ ...opts, model }), opts);
-        if (model !== chain[0] || last) GemQuota.noteSwitch(GemQuota.main(), model);
+        if (last && opts.onModel) opts.onModel(model, last);
+        const r = await this.withRetry(() => callGemini({ ...opts, model }), { ...opts, overloadRetries: model === all[0] ? 2 : 1 });
+        if (last && last.quota) GemQuota.noteSwitch(GemQuota.main(), model);
+        else if (overloaded.length) toast(`“${overloaded[0]}” era sovraccarico: ho usato “${model}”`);
         return r;
       } catch (e) {
+        if (e.name === 'AbortError') throw e;
         if (e.quota === 'day' || e.quota === 'zero') { GemQuota.markOut(model, e.quota); last = e; continue; }
-        if (last && e.status === 404) break;   // il modello di riserva non esiste: vale l’errore di prima
+        // sovraccarico anche dopo i nuovi tentativi: si prova il modello successivo
+        if ([500, 502, 503, 504, 529].includes(e.status)) { overloaded.push(model); last = e; continue; }
+        // un modello di riserva che non esiste (o non accetta la richiesta): si passa al prossimo
+        if (last && (e.status === 404 || e.status === 400 || e.status === 403)) continue;
         throw e;
       }
+    }
+    if (overloaded.length && last && !last.quota) {
+      const e = apiError(`Gemini è sovraccarico in questo momento: ho provato ${overloaded.length === 1 ? `“${overloaded[0]}”` : `${overloaded.length} modelli (${overloaded.join(', ')})`}, più volte. Non dipende dalla tua chiave né dalla lezione: di solito passa in qualche minuto o un’ora.`, last.status);
+      e.overloaded = true;
+      throw e;
     }
     throw last || apiError(GemQuota.allGoneMsg(), 429);
   }

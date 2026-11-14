@@ -5946,6 +5946,9 @@ Ascolta TUTTO l’audio e scrivi gli appunti completi in Markdown:
 - segna con "**Esame:**" le cose che il docente dice di chiedere o di sapere bene;
 - solo quello che viene detto: non aggiungere nozioni tue; se un termine non si capisce scrivi "(non chiaro)";
 - niente introduzioni, saluti o commenti: solo gli appunti. Termini medici corretti.`;
+// v3.93: se i modelli scelti in Impostazioni sono sovraccarichi, per una lezione intera provo anche questi
+// (tutti ascoltano l’audio; quelli che non esistono più vengono saltati)
+const LESSON_MODELS = ['gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
 const lessonGemMime = f => {
   const ext = String(f.name || '').split('.').pop().toLowerCase();
   const m = { mp3: 'audio/mp3', m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', flac: 'audio/flac', webm: 'audio/webm', '3gp': 'audio/3gpp', amr: 'audio/amr' }[ext];
@@ -5974,12 +5977,39 @@ function lessonAiRun(owner, a, kind) {
         <li data-st="ai">Gemini ascolta la lezione${kind === 'notes' ? ' e scrive gli appunti' : ' e ne fa l’indice'} <span class="lai-p"></span></li>
       </ol>
       <p class="hint">Per una lezione di due ore servono alcuni minuti: lascia aperta questa finestra. L’audio resta su Gemini 48 ore (poi lo cancella da solo), così la seconda richiesta sulla stessa lezione parte subito.</p>
+      <p class="lai-note" id="laiNote" aria-live="polite" hidden></p>
       <p class="err-line" id="laiErr" hidden></p>
-      <div class="modal-actions"><button class="btn ghost" type="button" data-lai="stop">Annulla</button></div>`, { label: 'Lezione con l’AI', onClose: () => { if (!done) { ctl.abort(); resolve(null); } } });
+      <div class="modal-actions"><button class="btn ghost" type="button" data-lai="stop">Annulla</button><button class="btn primary" type="button" data-lai="again" hidden>Riprova</button></div>`, { label: 'Lezione con l’AI', onClose: () => { if (!done) { ctl.abort(); clearInterval(waitT); resolve(null); } } });
     const step = (k, state, txt = '') => { const li = $(`[data-st="${k}"]`, sh.el); if (!li) return; li.className = state; const p = $('.lai-p', li); if (p) p.textContent = txt; };
+    // v3.93: cosa sta succedendo mentre Gemini è sovraccarico (nuovi tentativi, altri modelli)
+    let waitT = 0;
+    const note = txt => { const n = $('#laiNote', sh.el); if (!n) return; n.textContent = txt || ''; n.hidden = !txt; };
+    const onWait = (ms, e) => {
+      clearInterval(waitT);
+      const until = Date.now() + ms;
+      const why = e && e.status === 429 ? 'Limite di Gemini al minuto' : 'Gemini è sovraccarico';
+      const paint = () => { const left = Math.max(0, Math.ceil((until - Date.now()) / 1000)); note(left ? `${why}: riprovo tra ${left} s…` : `${why}: riprovo adesso…`); if (!left) clearInterval(waitT); };
+      paint();
+      waitT = setInterval(paint, 1000);
+    };
+    const onModel = model => { clearInterval(waitT); note(`Il modello di prima è sovraccarico: provo con “${model}”…`); };
     $('[data-lai="stop"]', sh.el).onclick = () => sh.close(null);
-    const fail = msg => { const e = $('#laiErr', sh.el); if (e) { e.textContent = msg; e.hidden = false; } $$('.lai-steps .on', sh.el).forEach(li => { li.className = 'ko'; }); const b = $('[data-lai="stop"]', sh.el); if (b) b.textContent = 'Chiudi'; };
-    (async () => {
+    const fail = (msg, canRetry) => {
+      clearInterval(waitT);
+      note('');
+      const e = $('#laiErr', sh.el); if (e) { e.textContent = msg; e.hidden = false; }
+      $$('.lai-steps .on', sh.el).forEach(li => { li.className = 'ko'; });
+      const b = $('[data-lai="stop"]', sh.el); if (b) b.textContent = 'Chiudi';
+      const r = $('[data-lai="again"]', sh.el); if (r) r.hidden = !canRetry;
+    };
+    $('[data-lai="again"]', sh.el).onclick = () => {
+      $('#laiErr', sh.el).hidden = true;
+      $('[data-lai="again"]', sh.el).hidden = true;
+      $('[data-lai="stop"]', sh.el).textContent = 'Annulla';
+      $$('.lai-steps li', sh.el).forEach(li => { li.className = ''; const p = $('.lai-p', li); if (p) p.textContent = ''; });
+      run();
+    };
+    const run = async () => {
       try {
         step('file', 'on');
         let file = await AudioDB.get(a.id);
@@ -6001,7 +6031,10 @@ function lessonAiRun(owner, a, kind) {
             ? `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : ''}\n\nSEZIONI DEGLI APPUNTI (titoli esatti):\n${secs.map(s => `- ${s.title}`).join('\n') || '(nessuna)'}`
             : `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : ''}`;
           try {
-            return await AI.generate({ provider: 'gemini', file: gf, system: kind === 'marks' ? LESSON_SYS_MARKS : LESSON_SYS_NOTES, text, json: kind === 'marks', maxTokens: kind === 'marks' ? 16000 : 60000, signal: ctl.signal });
+            return await AI.generate({
+              provider: 'gemini', file: gf, system: kind === 'marks' ? LESSON_SYS_MARKS : LESSON_SYS_NOTES, text, json: kind === 'marks', maxTokens: kind === 'marks' ? 16000 : 60000, signal: ctl.signal,
+              onWait, onModel, extraModels: LESSON_MODELS
+            });
           } catch (e) {
             // il file su Gemini è scaduto o non si legge più: lo ricarico una volta
             if (!retry && (e.status === 403 || e.status === 404 || /file/i.test(e.message || '')) && e.name !== 'AbortError' && !e.quota) { GemFiles.forget(a.id); return ask(true); }
@@ -6010,14 +6043,18 @@ function lessonAiRun(owner, a, kind) {
         };
         const r = await ask(false);
         step('ai', 'ok');
+        note('');
         done = true;
         sh.close(true);
         resolve(r);
       } catch (e) {
         if (e.name === 'AbortError' || !sh.el.isConnected) return;
-        fail(/token|quota|limit/i.test(e.message || '') && e.status === 429 ? `${e.message} Una lezione lunga usa molte risorse della quota gratuita: riprova tra un minuto, o con un modello diverso in Impostazioni.` : (e.message || 'Non riuscito'));
+        const retry = !!e.retryable || !!e.overloaded || e.status === 0;
+        fail(e.overloaded ? `${e.message} Il file della lezione resta su Gemini: con Riprova si riparte subito dall’ascolto.`
+          : /token|quota|limit/i.test(e.message || '') && e.status === 429 ? `${e.message} Una lezione lunga usa molte risorse della quota gratuita: riprova tra un minuto, o con un modello diverso in Impostazioni.` : (e.message || 'Non riuscito'), retry);
       }
-    })();
+    };
+    run();
   });
 }
 async function lessonAiMarks(owner, a) {

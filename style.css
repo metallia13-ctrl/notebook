@@ -4333,3 +4333,6 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
 .crem-n { color: var(--accent); font-weight: 700; white-space: nowrap; }
 .crem-sheet .grade-btns { margin-top: 8px; }
 .wait-card .wait-left { font-variant-numeric: tabular-nums; color: var(--accent); }
+
+/* v3.93: Gemini sovraccarico, nuovi tentativi */
+.lai-note { margin: 4px 0 8px; padding: 8px 12px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--warn); font-weight: 600; font-variant-numeric: tabular-nums; }

@@ -1313,6 +1313,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.93", title: "lezioni con Gemini anche quando è sovraccarico", html: `      <ul>
+        <li><strong>Segnalibri automatici</strong> e <strong>Bozza di appunti</strong>: se Gemini risponde “sovraccarico”, l’app ora riprova da sola mostrando il conto alla rovescia, poi passa agli altri modelli Gemini (quelli di riserva in Impostazioni e altri che ascoltano l’audio), finché uno risponde.</li>
+        <li>Se sono sovraccarichi tutti, c’è il pulsante <strong>Riprova</strong>: l’audio è già su Gemini, quindi si riparte subito dall’ascolto.</li>
+        <li>Lo stesso vale per tutte le altre funzioni con l’AI: se il modello principale è sovraccarico si passa a quello di riserva.</li>
+      </ul>` },
   { v: "3.92", title: "le flashcard tornano all’ora giusta, colori freddi", html: `      <ul>
         <li><strong>Flashcard</strong>: una flashcard rimandata di 1 o 10 minuti ora torna esattamente a quell’ora, anche se è l’ultima rimasta (prima, come in Anki, te la riproponeva subito). Nel ripasso vedi il conto alla rovescia e la flashcard ricompare da sola.</li>
         <li><strong>Promemoria</strong>: se intanto sei altrove nell’app (stai leggendo una sezione, sei in un PDF…), quando è il momento compare in alto “È il momento di ripassare una flashcard”. Lo tocchi e la flashcard si apre lì, in una finestra: rispondi e torni a quello che stavi facendo. Con ✕ te lo ricorda tra 2 minuti.</li>
