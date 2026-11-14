@@ -36,7 +36,7 @@
  *      > Distribuisci. L'indirizzo /exec resta lo stesso.
  */
 
-const SECRET = 'CAMBIA-QUESTA-FRASE';
+const SECRET = 'merlino';
 const FOLDER_NAME = 'StudyHub Notebook (sincronizzazione)';
 const MAX_SET_CONTENT = 7 * 1024 * 1024; // oltre questa misura il file viene ricreato invece che sovrascritto
 const DRIVE_CHUNK = 3 * 1024 * 1024;     // pezzi degli audio: 3 MB (multiplo di 256 KB, come vuole Drive)
