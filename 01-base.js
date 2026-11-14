@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.90';
+const APP_VERSION = '3.91';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -148,7 +148,7 @@ const DB = {
   db: null,
   open() {
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 6);
+      const req = indexedDB.open(DB_NAME, 7);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('notebooks')) db.createObjectStore('notebooks', { keyPath: 'id' });
@@ -168,6 +168,8 @@ const DB = {
         if (!db.objectStoreNames.contains('pdfblobs')) db.createObjectStore('pdfblobs', { keyPath: 'id' });
         // v6: testo dei PDF per la ricerca, solo su questo dispositivo
         if (!db.objectStoreNames.contains('pdftext')) db.createObjectStore('pdftext', { keyPath: 'id' });
+        // v7: com’era un elemento all’ultima sincronizzazione, per unire le modifiche di due dispositivi
+        if (!db.objectStoreNames.contains('bases')) db.createObjectStore('bases', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('images')) {
           const im = db.createObjectStore('images', { keyPath: 'id' });
           im.createIndex('notebookId', 'notebookId');
@@ -195,9 +197,16 @@ const DB = {
     });
   },
   all(store) { return this.run(store, 'readonly', tx => tx.objectStore(store).getAll()); },
-  put(store, obj) { return this.run(store, 'readwrite', tx => tx.objectStore(store).put(obj)).then(r => { Live.tell(store, [obj.id]); return r; }); },
+  async put(store, obj) {
+    await SyncBase.keep(store, [obj]);
+    return this.run(store, 'readwrite', tx => tx.objectStore(store).put(obj)).then(r => { Live.tell(store, [obj.id]); return r; });
+  },
   del(store, id) { return this.run(store, 'readwrite', tx => tx.objectStore(store).delete(id)).then(r => { Live.tell(store, [id], true); return r; }); },
-  bulkPut(store, arr) { return this.run(store, 'readwrite', tx => { const st = tx.objectStore(store); arr.forEach(o => st.put(o)); }).then(r => { Live.tell(store, arr.map(o => o.id)); return r; }); },
+  // raw: scritture della sincronizzazione stessa, che non sono modifiche di questo dispositivo
+  async bulkPut(store, arr, { raw = false } = {}) {
+    if (!raw) await SyncBase.keep(store, arr);
+    return this.run(store, 'readwrite', tx => { const st = tx.objectStore(store); arr.forEach(o => st.put(o)); }).then(r => { Live.tell(store, arr.map(o => o.id)); return r; });
+  },
   removeMany(pairs) {
     const stores = [...new Set(pairs.map(p => p[0]))];
     if (!stores.length) return Promise.resolve();
@@ -1242,11 +1251,14 @@ function applyTheme() {
   const theme = t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : (['light', 'sepia'].includes(t) ? t : 'dark');
   const html = document.documentElement;
   html.dataset.theme = theme;
+  // v3.91: lo stile (forme, caratteri, colori): il nuovo “Vetrino” o quello di prima
+  const look = S().look === 'classic' ? 'classic' : 'vetrino';
+  html.dataset.look = look;
   html.style.setProperty('--read-font', READ_FONTS[S().readFont] || READ_FONTS.literata);
   html.style.setProperty('--read-size', READ_SIZES[S().readSize] || READ_SIZES.m);
   html.style.setProperty('--read-lh', READ_LH[S().readSpacing] || READ_LH.normal);
   const meta = $('meta[name="theme-color"]');
-  if (meta) meta.content = { dark: '#0c1020', light: '#f3f5fb', sepia: '#f2e9d5' }[theme];
+  if (meta) meta.content = (look === 'classic' ? { dark: '#0c1020', light: '#f3f5fb', sepia: '#f2e9d5' } : { dark: '#15112a', light: '#f8f3f7', sepia: '#f3e9e2' })[theme];
 }
 
 function statusPill(s) {
@@ -1384,6 +1396,225 @@ function notFound(what = 'Questa pagina') {
    --------------------------------------------------------------------- */
 const SYNC_STORES = ['notebooks', 'sections', 'cards', 'links', 'pdfs'];
 
+/* =====================================================================
+   v3.91: le modifiche fatte su due dispositivi si uniscono
+   Prima valeva l’ultima versione salvata dell’intero elemento (sezione,
+   notebook, flashcard, nota…): se lo modificavi su due dispositivi prima
+   che si sincronizzassero, una delle due modifiche spariva.
+   Ora, quando un elemento sincronizzato viene modificato, l’app tiene da
+   parte com’era (la “base”). Alla sincronizzazione prende prima le modifiche
+   degli altri dispositivi e, se l’elemento è cambiato da entrambe le parti,
+   lo unisce campo per campo: ogni campo cambiato da una parte sola vince;
+   gli elenchi (segnalibri, cartelle, mappe, domande, ripassi…) si uniscono
+   voce per voce; i testi lunghi riga per riga. Solo se le due parti hanno
+   cambiato le stesse righe restano entrambe le versioni, con un avviso.
+   ===================================================================== */
+const MERGE_STORES = ['notebooks', 'sections', 'cards', 'links'];
+const MERGE_SKIP = new Set(['updated', '_sv']);
+const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+function mEq(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b || a === null || b === null || typeof a !== 'object') return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) { if (a.length !== b.length) return false; for (let i = 0; i < a.length; i++) if (!mEq(a[i], b[i])) return false; return true; }
+  const ka = Object.keys(a).filter(k => a[k] !== undefined), kb = Object.keys(b).filter(k => b[k] !== undefined);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) if (!mEq(a[k], b[k])) return false;
+  return true;
+}
+const sameRec = (a, b) => { const strip = o => { const c = { ...o }; MERGE_SKIP.forEach(k => delete c[k]); return c; }; return mEq(strip(a), strip(b)); };
+// le coppie di righe uguali tra due testi (sottosequenza comune più lunga)
+function lcsMatch(x, y) {
+  const out = new Map();
+  let s = 0;
+  while (s < x.length && s < y.length && x[s] === y[s]) { out.set(s, s); s++; }
+  let ex = x.length, ey = y.length;
+  const tail = [];
+  while (ex > s && ey > s && x[ex - 1] === y[ey - 1]) { ex--; ey--; tail.push([ex, ey]); }
+  const n = ex - s, m = ey - s;
+  if (n > 0 && m > 0 && n * m <= 6000000) {
+    const w = m + 1;
+    const t = new Uint16Array((n + 1) * w);
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+      t[i * w + j] = x[s + i] === y[s + j] ? t[(i + 1) * w + j + 1] + 1 : Math.max(t[(i + 1) * w + j], t[i * w + j + 1]);
+    }
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (x[s + i] === y[s + j]) { out.set(s + i, s + j); i++; j++; }
+      else if (t[(i + 1) * w + j] >= t[i * w + j + 1]) i++; else j++;
+    }
+  }
+  tail.forEach(([a, b]) => out.set(a, b));
+  return out;
+}
+const MERGE_NOTE = '> ⚠️ **Modificato su due dispositivi nello stesso punto**: sopra e sotto questo avviso ci sono le due versioni. Tieni quella giusta, cancella l’altra e questo avviso.';
+// unione a tre vie di un testo, riga per riga
+function mergeText3(base, mine, theirs) {
+  if (mine === theirs) return { text: mine, conflicts: 0 };
+  if (base === mine) return { text: theirs, conflicts: 0 };
+  if (base === theirs) return { text: mine, conflicts: 0 };
+  const o = String(base).split('\n'), a = String(mine).split('\n'), b = String(theirs).split('\n');
+  const ma = lcsMatch(o, a), mb = lcsMatch(o, b);
+  const out = [];
+  let io = 0, ia = 0, ib = 0, conflicts = 0;
+  const same = (p, q) => p.length === q.length && p.every((l, i) => l === q[i]);
+  const flush = (eo, ea, eb) => {
+    const so = o.slice(io, eo), sa = a.slice(ia, ea), sb = b.slice(ib, eb);
+    if (same(sa, sb)) out.push(...sa);
+    else if (same(so, sa)) out.push(...sb);
+    else if (same(so, sb)) out.push(...sa);
+    else if (!so.length) out.push(...sa, ...sb);                 // due aggiunte nello stesso punto: restano tutte e due
+    else if (!sa.length || !sa.join('').trim()) out.push(...sb); // qui cancellato, là modificato: resta la modifica
+    else if (!sb.length || !sb.join('').trim()) out.push(...sa);
+    else if (so.length === sa.length && so.length === sb.length && so.every((l, k) => sa[k] === l || sb[k] === l || sa[k] === sb[k])) {
+      // righe vicine cambiate una da una parte e una dall’altra: si prende, riga per riga, quella cambiata
+      so.forEach((l, k) => out.push(sa[k] === l ? sb[k] : sa[k]));
+    } else { out.push(...sa, '', MERGE_NOTE, '', ...sb); conflicts++; }
+  };
+  for (let i = 0; i < o.length; i++) {
+    if (!ma.has(i) || !mb.has(i)) continue;
+    const ja = ma.get(i), jb = mb.get(i);
+    if (ja < ia || jb < ib) continue;
+    flush(i, ja, jb);
+    out.push(a[ja]);
+    io = i + 1; ia = ja + 1; ib = jb + 1;
+  }
+  flush(o.length, a.length, b.length);
+  return { text: out.join('\n'), conflicts };
+}
+// la “chiave” delle voci di un elenco: l’id, oppure (nodi delle mappe, domande…) il testo, se è diverso per ognuna
+const ARR_KEYS = ['id', 't', 'q', 'name', 'title', 'label', 'front'];
+function arrKey(lists) {
+  const all = lists.filter(Array.isArray);
+  if (!all.some(a => a.length)) return null;
+  return ARR_KEYS.find(k => all.every(a => a.every(x => isObj(x) && (typeof x[k] === 'string' || typeof x[k] === 'number') && x[k] !== '') && new Set(a.map(x => x[k])).size === a.length)) || null;
+}
+const allPrim = a => a.every(x => typeof x === 'string') && new Set(a).size === a.length;
+function mergeIdArr(b, l, r, pl, st, k = 'id') {
+  const idOf = x => x[k];
+  const bm = new Map((b || []).map(x => [idOf(x), x])), lm = new Map(l.map(x => [idOf(x), x])), rm = new Map(r.map(x => [idOf(x), x]));
+  const order = a => a.map(idOf).join('\u0001');
+  // l’ordine: quello della parte che l’ha cambiato; se l’hanno cambiato entrambe, la più recente
+  const lMoved = !b || order(l.filter(x => bm.has(idOf(x)))) !== order(b.filter(x => lm.has(idOf(x))));
+  const rMoved = !b || order(r.filter(x => bm.has(idOf(x)))) !== order(b.filter(x => rm.has(idOf(x))));
+  const spineL = lMoved && rMoved ? pl : lMoved || !rMoved;
+  const [sp, ot, spm, otm] = spineL ? [l, r, lm, rm] : [r, l, rm, lm];
+  const out = [];
+  sp.forEach(x => {
+    const id = idOf(x);
+    if (otm.has(id)) out.push(merge3(bm.get(id), lm.get(id), rm.get(id), pl, st, 'item'));
+    else if (b && bm.has(id) && mEq(bm.get(id), x)) return;   // tolto dall’altra parte, qui non toccato
+    else out.push(x);
+  });
+  ot.forEach((x, i) => {
+    const id = idOf(x);
+    if (spm.has(id)) return;
+    if (b && bm.has(id) && mEq(bm.get(id), x)) return;         // tolto da questa parte, là non toccato
+    // voce nuova (o modificata dopo che qui era stata tolta): subito dopo quella che la precedeva
+    const prev = i > 0 ? idOf(ot[i - 1]) : undefined;
+    const at = prev !== undefined ? out.findIndex(y => idOf(y) === prev) : -1;
+    if (at >= 0) out.splice(at + 1, 0, x); else if (i === 0) out.unshift(x); else out.push(x);
+  });
+  return out;
+}
+function mergeSetArr(b, l, r) {
+  const B = new Set(b || []), L = new Set(l), R = new Set(r);
+  return [...l.filter(x => !(b && B.has(x) && !R.has(x))), ...r.filter(x => !L.has(x) && !(b && B.has(x)))];
+}
+function mergeListArr(b, l, r) {
+  const k = x => JSON.stringify(x);
+  const B = new Set((b || []).map(k)), L = new Set(l.map(k)), R = new Set(r.map(k));
+  const out = [...l.filter(x => !(b && B.has(k(x)) && !R.has(k(x)))), ...r.filter(x => !L.has(k(x)) && !(b && B.has(k(x))))];
+  // gli elenchi con una data (ripassi, voti, appelli) restano in ordine di tempo
+  const dk = out.length && out.every(x => isObj(x) && typeof (x.date || x.d) === 'string') ? (x => x.date || x.d) : null;
+  return dk ? out.map((x, i) => [x, i]).sort((p, q) => dk(p[0]).localeCompare(dk(q[0])) || p[1] - q[1]).map(p => p[0]) : out;
+}
+// unione a tre vie di un valore qualsiasi; pl = “in caso di dubbio vince la versione di questo dispositivo”
+function merge3(b, l, r, pl, st = { conflicts: 0 }, key = '') {
+  if (mEq(l, r)) return l;
+  if (b !== undefined && mEq(b, l)) return r;
+  if (b !== undefined && mEq(b, r)) return l;
+  if (isObj(l) && isObj(r)) {
+    const bo = isObj(b) ? b : undefined;
+    const out = {};
+    for (const k of new Set([...Object.keys(l), ...Object.keys(r)])) {
+      const inL = k in l && l[k] !== undefined, inR = k in r && r[k] !== undefined, inB = !!bo && k in bo && bo[k] !== undefined;
+      if (MERGE_SKIP.has(k)) { if (inL) out[k] = l[k]; continue; }
+      if (inL && inR) out[k] = merge3(bo ? bo[k] : undefined, l[k], r[k], pl, st, k);
+      else if (inL) { if (inB && mEq(bo[k], l[k])) continue; out[k] = l[k]; }
+      else if (inR) { if (inB && mEq(bo[k], r[k])) continue; out[k] = r[k]; }
+    }
+    return out;
+  }
+  if (Array.isArray(l) && Array.isArray(r)) {
+    const ba = Array.isArray(b) ? b : undefined;
+    if (allPrim(l) && allPrim(r) && (l.length || r.length) && [...l, ...r].every(x => typeof x === 'string')) return mergeSetArr(ba, l, r);
+    const k = arrKey([ba, l, r]);
+    if (k) return mergeIdArr(ba, l, r, pl, st, k);
+    if (l.every(isObj) && r.every(isObj)) return mergeListArr(ba, l, r);
+    return pl ? l : r;
+  }
+  if (typeof l === 'string' && typeof r === 'string' && typeof b === 'string' && (l.includes('\n') || r.includes('\n') || l.length > 160 || r.length > 160)) {
+    const m = mergeText3(b, l, r);
+    st.conflicts += m.conflicts;
+    return m.text;
+  }
+  return pl ? l : r;
+}
+// le basi: com’era un elemento l’ultima volta che questo dispositivo e Drive erano d’accordo
+const SyncBase = {
+  key: (store, id) => `${store}:${id}`,
+  isClean(rec, m) { return rec._sv !== undefined ? rec._sv === rec.updated : (!!m.lastPush && (rec.updated || 0) <= m.lastPush); },
+  // prima di salvare una modifica: se l’elemento era allineato con Drive, tengo da parte com’era
+  async keep(store, objs) {
+    if (!MERGE_STORES.includes(store) || !objs.length || !DB.db.objectStoreNames.contains('bases') || !Sync.configured()) return;
+    const m = Sync.meta();
+    try {
+      await DB.run([store, 'bases'], 'readwrite', tx => {
+        const st = tx.objectStore(store), bs = tx.objectStore('bases');
+        objs.forEach(o => {
+          if (!o || !o.id || this.isClean(o, m)) return;
+          const k = this.key(store, o.id);
+          const q = bs.getKey(k);
+          q.onsuccess = () => {
+            if (q.result !== undefined) return;
+            const g = st.get(o.id);
+            g.onsuccess = () => { const prev = g.result; if (prev && this.isClean(prev, m)) bs.put({ id: k, store, rec: prev, t: Date.now() }); };
+          };
+        });
+      });
+    } catch { /* senza la base si torna alla regola di prima: vale l’ultima modifica */ }
+  },
+  async get(store, id) { try { return (await DB.run('bases', 'readonly', tx => tx.objectStore('bases').get(this.key(store, id))))?.rec; } catch { return undefined; } },
+  async write(puts, dels) {
+    if (!puts.length && !dels.length) return;
+    try { await DB.run('bases', 'readwrite', tx => { const bs = tx.objectStore('bases'); dels.forEach(k => bs.delete(k)); puts.forEach(p => bs.put(p)); }); } catch { /* niente */ }
+  },
+  // dopo un invio riuscito: quello che ho mandato è la nuova versione comune
+  async pushed(list) {
+    const dels = [];
+    const by = {};
+    list.forEach(c => {
+      if (!MERGE_STORES.includes(c.store) || c.deleted) return;
+      const rec = state[c.store].find(x => x.id === c.id);
+      if (!rec || rec.updated !== c.updated) return;   // modificato di nuovo mentre inviavo: resta da inviare
+      rec._sv = rec.updated;
+      (by[c.store] = by[c.store] || []).push(rec);
+      dels.push(this.key(c.store, c.id));
+    });
+    for (const st of Object.keys(by)) await DB.bulkPut(st, by[st], { raw: true });
+    await this.write([], dels);
+  },
+  // toglie le basi che non servono più (elementi eliminati o di nuovo allineati)
+  async prune() {
+    try {
+      const all = await DB.all('bases');
+      const m = Sync.meta();
+      const dels = all.filter(b => { const rec = (state[b.store] || []).find(x => x.id === b.rec?.id); return !rec || this.isClean(rec, m); }).map(b => b.id);
+      await this.write([], dels);
+    } catch { /* niente */ }
+  }
+};
 const Sync = {
   META: 'nb-sync-meta',
   busy: false,
@@ -1439,10 +1670,22 @@ const Sync = {
     if (m.url !== url) { m.url = url; m.rev = 0; m.lastPush = 0; }
     const startedAt = Date.now();
     try {
+      // 1) prima prendo le modifiche degli altri dispositivi e le unisco alle mie
+      setSyncStatus('Sincronizzazione in corso…');
+      const first = await this.post({ secret: S().syncSecret.trim(), action: 'sync', since: m.rev || 0, records: [], pull: true });
+      let rev = first.rev;
+      let pulled = first.records || [];
+      const merged = [];
+      let changed = await applyRemote(pulled, m, merged);
+      let imgChanged = await syncImages(pulled.filter(x => x.store === 'images'));
+      m.rev = rev;
+      this.saveMeta(m);
+      // 2) poi mando le mie (comprese quelle appena unite)
+      const startedAt = Date.now();
+      const mergedBefore = merged.length;
       const changes = await collectChanges(m.lastPush || 0);
-      const batches = chunkRecords(changes, 2500000);
-      let pulled = [];
-      let rev = m.rev || 0;
+      const sent = changes.map(c => ({ store: c.store, id: c.id, updated: c.updated, deleted: !!c.deleted }));
+      const batches = changes.length ? chunkRecords(changes, 2500000) : [];
       for (let i = 0; i < batches.length; i++) {
         const last = i === batches.length - 1;
         if (batches.length > 1) setSyncStatus(`Invio dei dati ${i + 1} di ${batches.length}…`);
@@ -1455,12 +1698,15 @@ const Sync = {
         }
         const payload = batches[i].map(({ _est, ...rec }) => rec);
         const r = await this.post({ secret: S().syncSecret.trim(), action: 'sync', since: m.rev || 0, records: payload, pull: last });
-        batches[i].forEach(rec => { delete rec.data; });
+        batches[i].forEach(rec => { if (rec.store === 'images') delete rec.data; });
         rev = r.rev;
-        if (last) pulled = r.records || [];
+        // quello che è cambiato su Drive tra il primo passaggio e questo (raro)
+        if (last && (r.records || []).length) {
+          changed += await applyRemote(r.records, m, merged);
+          imgChanged += await syncImages(r.records.filter(x => x.store === 'images'));
+        }
       }
-      let changed = await applyRemote(pulled);
-      const imgChanged = await syncImages(pulled.filter(x => x.store === 'images'));
+      await SyncBase.pushed(sent);
       if (imgChanged) rehydrateMissing();
       changed += imgChanged;
       m.rev = rev;
@@ -1471,8 +1717,12 @@ const Sync = {
       this.errShown = false;
       setSyncStatus();
       await prunePdfBlobs();
+      SyncBase.prune();
       setTimeout(() => PdfCloud.uploadPending(), 400);
       if (changed) refreshAfterSync();
+      if (merged.length) mergeNotice(merged);
+      // un’unione fatta dopo l’invio (raro) parte subito con un altro giro
+      if (merged.length > mergedBefore) this.again = true;
       if (!silent) toast(changed ? `Sincronizzato: ${changed} ${changed === 1 ? 'elemento aggiornato' : 'elementi aggiornati'}` : 'Sincronizzato');
       return true;
     } catch (e) {
@@ -1536,8 +1786,10 @@ async function collectChanges(since) {
   const out = [];
   for (const store of SYNC_STORES) {
     for (const r of state[store]) {
-      if (since === 0 || (r.updated || 0) > since) {
-        out.push({ store, id: r.id, updated: r.updated || r.created || 1, notebookId: store === 'notebooks' ? r.id : r.notebookId, data: r });
+      if (since === 0 || ((r.updated || 0) > since && !(r._sv !== undefined && r._sv === r.updated))) {
+        let data = r;
+        if (r._sv !== undefined) { data = { ...r }; delete data._sv; }
+        out.push({ store, id: r.id, updated: r.updated || r.created || 1, notebookId: store === 'notebooks' ? r.id : r.notebookId, data });
       }
     }
   }
@@ -1574,19 +1826,27 @@ function normalizeRecord(store, d) {
   if (store === 'cards') return { ...newCard(d.notebookId), ...d, srs: { ...newCardSrs(), ...(d.srs || {}) } };
   return { ...d };
 }
-async function applyRemote(records) {
+// aggiorna lo stesso oggetto: chi lo sta usando (una pagina aperta) vede subito i dati nuovi
+function assignInPlace(cur, rec) {
+  Object.keys(cur).forEach(k => { if (!(k in rec)) delete cur[k]; });
+  Object.assign(cur, rec);
+  return cur;
+}
+async function applyRemote(records, m = Sync.meta(), merged = []) {
   if (!records.length) return 0;
   const tombs = new Map((await DB.all('deleted')).map(t => [t.id, t]));
   const puts = { notebooks: [], sections: [], cards: [], links: [], pdfs: [] };
   const dels = [];
+  const basePuts = [], baseDels = [];
   let changed = 0;
   for (const r of records) {
     if (!SYNC_STORES.includes(r.store) || !r.id) continue;
     const arr = state[r.store];
     const i = arr.findIndex(x => x.id === r.id);
     const local = i >= 0 ? arr[i] : null;
+    const bkey = SyncBase.key(r.store, r.id);
     if (r.deleted) {
-      if (local && (local.updated || 0) <= r.updated) { arr.splice(i, 1); dels.push([r.store, r.id]); changed++; }
+      if (local && (local.updated || 0) <= r.updated) { arr.splice(i, 1); dels.push([r.store, r.id]); baseDels.push(bkey); changed++; }
       continue;
     }
     if (!r.data) continue;
@@ -1596,18 +1856,66 @@ async function applyRemote(records) {
       if (mergePdfMeta(local, normalizeRecord('pdfs', r.data), r.updated)) { puts.pdfs.push(local); changed++; }
       continue;
     }
-    if (!local || (r.updated || 0) > (local.updated || 0)) {
-      const rec = normalizeRecord(r.store, r.data);
-      rec.updated = r.updated;
-      if (i >= 0) arr[i] = rec; else arr.push(rec);
-      puts[r.store].push(rec);
+    const canMerge = MERGE_STORES.includes(r.store);
+    const remote = normalizeRecord(r.store, r.data);
+    remote.updated = r.updated;
+    delete remote._sv;
+    if (!local) {
+      if (canMerge) remote._sv = r.updated;
+      arr.push(remote);
+      puts[r.store].push(remote);
+      changed++;
+      continue;
+    }
+    // modificato qui dopo l’ultima sincronizzazione, e nel frattempo anche altrove: si uniscono
+    if (canMerge && !SyncBase.isClean(local, m) && r.updated !== local._sv) {
+      if (sameRec(local, remote)) {
+        local.updated = r.updated; local._sv = r.updated;
+        puts[r.store].push(local); baseDels.push(bkey);
+        continue;
+      }
+      const base = await SyncBase.get(r.store, r.id);
+      const st = { conflicts: 0 };
+      const out = merge3(base, local, remote, (local.updated || 0) >= (r.updated || 0), st);
+      if (sameRec(out, remote)) {
+        assignInPlace(local, remote); local._sv = r.updated;
+        puts[r.store].push(local); baseDels.push(bkey);
+      } else {
+        assignInPlace(local, out);
+        local.updated = Math.max(Date.now(), (r.updated || 0) + 1);
+        delete local._sv;
+        puts[r.store].push(local);
+        // la versione di Drive è la nuova base: le prossime unioni partono da lì
+        basePuts.push({ id: bkey, store: r.store, rec: { ...remote }, t: Date.now() });
+        merged.push({ store: r.store, id: r.id, title: local.title || local.name || local.front || local.q || local.term || '', conflicts: st.conflicts });
+      }
+      changed++;
+      continue;
+    }
+    if ((r.updated || 0) > (local.updated || 0)) {
+      assignInPlace(local, remote);
+      if (canMerge) local._sv = r.updated;
+      puts[r.store].push(local);
+      baseDels.push(bkey);
       changed++;
     }
   }
-  for (const st of SYNC_STORES) if (puts[st].length) await DB.bulkPut(st, puts[st]);
+  for (const st of SYNC_STORES) if (puts[st].length) await DB.bulkPut(st, puts[st], { raw: true });
   if (dels.length) await DB.removeMany(dels);
+  await SyncBase.write(basePuts, baseDels);
   updateBadge();
   return changed;
+}
+// avvisa di cosa è stato unito (e dove restano due versioni da scegliere)
+function mergeNotice(merged) {
+  const conf = merged.filter(x => x.conflicts);
+  const names = list => list.map(x => x.title).filter(Boolean).slice(0, 3).map(t => `“${t.length > 40 ? `${t.slice(0, 39)}…` : t}”`).join(', ');
+  if (conf.length) {
+    const sec = conf.find(x => x.store === 'sections');
+    toast(`Modifiche di due dispositivi unite. In ${names(conf) || `${conf.length} elementi`} avevano cambiato le stesse righe: ho tenuto entrambe le versioni, segnate con ⚠️.`, '', sec ? { label: 'Apri', fn: () => go(`#/sec/${sec.id}/edit`) } : null);
+  } else {
+    toast(merged.length === 1 ? `Ho unito le modifiche fatte su due dispositivi${names(merged) ? ` in ${names(merged)}` : ''}` : `Ho unito le modifiche fatte su due dispositivi in ${merged.length} elementi`);
+  }
 }
 async function syncImages(recs) {
   if (!recs.length) return 0;

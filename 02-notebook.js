@@ -1357,6 +1357,7 @@ function bindGroupSelect(select, getNb, onPick = () => {}) {
 }
 
 function modeEdit(sec, body, opts = {}) {
+  const edMd0 = sec.md; // com’era quando hai aperto Modifica
   const otherNbs = state.notebooks.filter(n => n.id !== sec.notebookId);
   body.innerHTML = `
     <div class="grid2 ed-head">
@@ -1571,7 +1572,12 @@ function modeEdit(sec, body, opts = {}) {
     sec.tags = parseTags($('#edTags', body).value);
     const gv = $('#edGroup', body).value;
     sec.groupId = gv && gv !== '__new' ? gv : null;
-    sec.md = ta.value;
+    // v3.91: se mentre scrivevi la sezione è stata aggiornata da un altro dispositivo, le due versioni si uniscono
+    if (sec.md !== edMd0 && ta.value !== sec.md) {
+      const mg = mergeText3(edMd0, ta.value, sec.md);
+      sec.md = mg.text;
+      toast(mg.conflicts ? 'Questa sezione era stata modificata anche su un altro dispositivo: ho unito le due versioni; dove toccavano le stesse righe le trovi entrambe, segnate con ⚠️' : 'Questa sezione era stata modificata anche su un altro dispositivo: ho unito le due versioni');
+    } else sec.md = ta.value;
     sec.questions = parseQuestions($('#edQs', body).value);
     sec.links = parseSecLinks($('#edLinks', body).value);
     sec.needsFormat = false;
