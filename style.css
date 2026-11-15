@@ -4367,3 +4367,52 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
 .now-s { display: block; color: var(--muted); font-size: 0.9rem; }
 .now-acts { display: flex; gap: 6px; align-items: center; }
 .sch-note { margin: 8px 0; padding: 8px 12px; border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); font-size: 0.92rem; }
+
+/* v3.95: sessione a fuoco */
+.focus-bar { position: fixed; z-index: 55; top: calc(8px + env(safe-area-inset-top, 0px)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 16px); padding: 4px 6px 4px 14px; border: 1.5px solid var(--accent); border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); font-weight: 650; }
+.focus-bar.ph-break, .focus-bar.ph-ready { border-color: var(--good); }
+.focus-bar.paused .fx-time { opacity: 0.55; }
+.fx-goal { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46vw; }
+.fx-link { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
+.fx-time { font-variant-numeric: tabular-nums; font-size: 1.05rem; color: var(--accent); white-space: nowrap; }
+.ph-break .fx-time, .ph-ready .fx-time { color: var(--good); }
+body.focus-on .nav, body.focus-on .badge, body.focus-on .cap-fab { display: none !important; }
+body.focus-on .view { margin-left: auto !important; padding-top: calc(64px + env(safe-area-inset-top, 0px)); padding-bottom: 40px; }
+body.focus-on .card-rem { display: none; }
+@media (min-width: 900px) { .focus-bar { top: 12px; } }
+
+/* v3.95: appunti al volo */
+.cap-fab { position: fixed; z-index: 19; right: 16px; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); width: 46px; height: 46px; display: grid; place-items: center; border: 1.5px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--accent); box-shadow: var(--shadow); cursor: pointer; }
+.cap-fab svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
+.cap-fab:active { transform: scale(0.94); }
+html.pdf-open .cap-fab, html.kb-open .cap-fab, body.sh-open .cap-fab, body:has(#modalRoot > *) .cap-fab { display: none; }
+@media (min-width: 900px) { .cap-fab { right: 30px; bottom: 90px; } }
+.cap-tools { margin: 8px 0; }
+.inbox-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.inbox-item { display: flex; gap: 12px; padding: 12px 14px; border: 1.5px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.inbox-img { flex: none; width: 84px; height: 84px; object-fit: cover; border-radius: var(--r-md); }
+.inbox-main { flex: 1; min-width: 0; }
+.inbox-t { margin: 0 0 4px; font-size: 1.02rem; }
+.inbox-meta { margin: 0 0 8px; color: var(--muted); font-size: 0.85rem; }
+.ps-list { max-height: min(50vh, 440px); overflow: auto; margin: 8px 0; }
+
+/* v3.95: chiedi alle tue fonti */
+.ask-form { margin-bottom: 18px; }
+.ask-a { margin: 0 0 16px; padding: 14px 16px; border: 1.5px solid var(--line); border-radius: var(--r-lg); background: var(--surface); }
+.ask-q { margin: 0 0 6px; font-weight: 750; font-size: 1.05rem; }
+.ask-body { font-size: 0.98rem; }
+a.cite { display: inline-grid; place-items: center; min-width: 1.35em; height: 1.35em; padding: 0 3px; margin: 0 1px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); font-size: 0.75em; font-weight: 800; text-decoration: none; vertical-align: 0.2em; font-family: var(--ui-font); }
+.ask-src { margin: 10px 0 0; padding: 10px 12px 0 32px; border-top: 1px solid var(--line); font-size: 0.88rem; color: var(--muted); display: grid; gap: 3px; }
+
+/* v3.95: confronto e formato */
+.cmp-list { list-style: none; margin: 8px 0; padding: 4px 8px; max-height: min(40vh, 360px); overflow: auto; border: 1px solid var(--line); border-radius: var(--r-md); }
+.cmp-opt { margin: 4px 0; }
+.cmp-prev table { font-size: 0.9rem; }
+.fmt-rules { margin-bottom: 18px; }
+.fmt-count { font-weight: 700; }
+.fmt-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+.fmt-row .row-main { flex: 1; min-width: 0; }
+.fmt-row a.row-title { text-decoration: none; }
+.fmt-iss { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.fmt-iss .chip, .ask-a .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8rem; }
+.chip.bad { background: var(--danger-soft); color: var(--danger); }

@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.94';
+const APP_VERSION = '3.96';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -724,7 +724,8 @@ const AI = {
       } catch (e) {
         // v3.93: sui modelli di riserva un solo nuovo tentativo per il sovraccarico (poi si cambia modello)
         const max = e.quota === 'minute' ? 3 : (opts.overloadRetries ?? 2);
-        if (e.retryable && i < max && !opts.signal?.aborted) {
+        // un modello che non risponde in tempo non si riprova: si passa subito al prossimo
+        if (e.retryable && !e.timeout && i < max && !opts.signal?.aborted) {
           const ms = Math.min(120000, Math.max(e.retryAfter ? e.retryAfter * 1000 + 1500 : 0, waits[i]));
           opts.onWait && opts.onWait(ms, e);
           await sleepAbortable(ms, opts.signal);
@@ -767,7 +768,7 @@ const AI = {
       }
     }
     if (overloaded.length && last && !last.quota) {
-      const e = apiError(`Gemini è sovraccarico in questo momento: ho provato ${overloaded.length === 1 ? `“${overloaded[0]}”` : `${overloaded.length} modelli (${overloaded.join(', ')})`}, più volte. Non dipende dalla tua chiave né dalla lezione: di solito passa in qualche minuto o un’ora.`, last.status);
+      const e = apiError(`Gemini è sovraccarico in questo momento: ho provato ${overloaded.length === 1 ? `“${overloaded[0]}”` : `${overloaded.length} modelli (${overloaded.join(', ')})`}, più volte. Non dipende dalla tua chiave né da quello che hai chiesto: di solito passa in qualche minuto o un’ora.`, last.status);
       e.overloaded = true;
       throw e;
     }
@@ -869,7 +870,28 @@ function geminiQuotaError(data, model) {
   return e;
 }
 
-async function callGemini({ system, text, pdfBase64, audio, file, json, maxTokens = 32768, signal, model: forced }) {
+/* v3.96: ogni richiesta all’AI ha un tempo massimo. Prima, se il servizio non rispondeva,
+   l’attesa poteva durare all’infinito (“Preparo la scaletta…” bloccato). Scaduto il tempo,
+   vale come un sovraccarico: si riprova e poi si passa a un altro modello. */
+function aiTimer(signal, ms, who) {
+  const ctl = new AbortController();
+  let timedOut = false;
+  const t = setTimeout(() => { timedOut = true; ctl.abort(); }, ms);
+  const onAbort = () => ctl.abort();
+  if (signal) { if (signal.aborted) ctl.abort(); else signal.addEventListener('abort', onAbort, { once: true }); }
+  return {
+    signal: ctl.signal,
+    done() { clearTimeout(t); if (signal) signal.removeEventListener('abort', onAbort); },
+    check(e) {
+      if (!timedOut) return e;
+      const m = Math.round(ms / 60000);
+      const err = apiError(`${who} non ha risposto entro ${m >= 1 ? `${m} ${m === 1 ? 'minuto' : 'minuti'}` : `${Math.round(ms / 1000)} secondi`}: di solito è sovraccarico.`, 504);
+      err.timeout = true;
+      return err;
+    }
+  };
+}
+async function callGemini({ system, text, pdfBase64, audio, file, images, json, maxTokens = 32768, signal, model: forced, timeoutMs }) {
   const key = S().geminiKey.trim();
   const model = forced || GemQuota.main();
   const parts = [];
@@ -878,23 +900,30 @@ async function callGemini({ system, text, pdfBase64, audio, file, json, maxToken
   if (audio) parts.push({ inline_data: { mime_type: audio.mime, data: audio.data } });
   // v3.88: un file grande già caricato su Gemini (la lezione intera)
   if (file) parts.push({ file_data: { mime_type: file.mime, file_uri: file.uri } });
+  // v3.95: foto (lavagne, appunti a mano, diapositive)
+  (images || []).forEach(im => parts.push({ inline_data: { mime_type: im.mime, data: im.data } }));
   parts.push({ text });
   const body = { contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: maxTokens } };
   if (json) body.generationConfig.responseMimeType = 'application/json';
   if (system) body.system_instruction = { parts: [{ text: system }] };
-  let res;
+  let res, data;
+  const tm = aiTimer(signal, timeoutMs || (file || audio || pdfBase64 ? 600000 : 150000), 'Gemini');
   try {
     res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify(body),
-      signal
+      signal: tm.signal
     });
+    data = await res.json().catch(e => { if (e.name === 'AbortError') throw e; return {}; });
   } catch (e) {
+    tm.done();
+    const t = tm.check(e);
+    if (t !== e) throw t;
     if (e.name === 'AbortError') throw e;
     throw apiError('Connessione a Gemini non riuscita. Controlla internet.', 0);
   }
-  const data = await res.json().catch(() => ({}));
+  tm.done();
   if (!res.ok) {
     const m = data.error?.message || res.statusText;
     let msg = `Gemini: ${m}`;
@@ -988,15 +1017,17 @@ const GemFiles = {
   }
 };
 
-async function callClaude({ system, text, pdfBase64, maxTokens = 16000, signal }) {
+async function callClaude({ system, text, pdfBase64, images, maxTokens = 16000, signal, timeoutMs }) {
   const key = S().claudeKey.trim();
   const model = (S().claudeModel || '').trim() || Settings.defaults.claudeModel;
   const content = [];
   if (pdfBase64) content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } });
+  (images || []).forEach(im => content.push({ type: 'image', source: { type: 'base64', media_type: im.mime, data: im.data } }));
   content.push({ type: 'text', text });
   const body = { model, max_tokens: Math.min(maxTokens, 16000), messages: [{ role: 'user', content }] };
   if (system) body.system = system;
-  let res;
+  let res, data;
+  const tm = aiTimer(signal, timeoutMs || (pdfBase64 || (images || []).length ? 400000 : 180000), 'Claude');
   try {
     res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -1007,13 +1038,17 @@ async function callClaude({ system, text, pdfBase64, maxTokens = 16000, signal }
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify(body),
-      signal
+      signal: tm.signal
     });
+    data = await res.json().catch(e => { if (e.name === 'AbortError') throw e; return {}; });
   } catch (e) {
+    tm.done();
+    const t = tm.check(e);
+    if (t !== e) throw t;
     if (e.name === 'AbortError') throw e;
     throw apiError('Connessione a Claude non riuscita. Controlla internet.', 0);
   }
-  const data = await res.json().catch(() => ({}));
+  tm.done();
   if (!res.ok) {
     const m = data.error?.message || res.statusText;
     let msg = `Claude: ${m}`;
@@ -1050,7 +1085,7 @@ async function listModels(provider) {
 /* Istruzioni per l’AI */
 function formatSystem({ cloze, questions } = {}) {
   return [
-    promptText('format').trim(),
+    promptText('format').trim() + (typeof styleRulesBlock === 'function' ? styleRulesBlock() : ''),
     '',
     'Regole tecniche, da rispettare sempre:',
     '- Copia senza modifiche, nella stessa posizione, ogni riferimento a immagine nel formato ![testo](img:codice).',
@@ -1335,7 +1370,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers', 'graph', 'formato', 'ask', 'inbox'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1393,6 +1428,10 @@ function route() {
     case 'print': return viewPrint(p1, p2);
     case 'viva': return viewViva(p1, p2);
     case 'graph': return viewGraph(p1);
+    case 'formato': return viewFormat(p1);
+    case 'ask': return viewAsk(p1);
+    case 'inbox': return viewInbox();
+    case 'focus': location.replace('#/notebooks'); setTimeout(() => Focus.start(Resume.target()?.sec?.id || ''), 0); return;
     case 'papers': return viewPapers(p1);
     case 'fs': { FullScreen.toggle(); if (history.length > 1) history.back(); else location.replace('#/notebooks'); return; }
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
@@ -2855,6 +2894,11 @@ function searchResultsHtml(q) {
    ===================================================================== */
 
 const ICONS = {
+  graph: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="7" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.3 7.1l7.4-.2M7.3 8.2l3.6 7.6M16.8 9.2l-3.6 6.6"/></svg>',
+  ask: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/><path d="M10 9.5a2 2 0 1 1 2.8 1.8c-.5.3-.8.7-.8 1.2M12 14.5v.01"/></svg>',
+  inbox: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>',
+  focus: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/></svg>',
+  formato: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 10h10M4 14h16M4 18h10"/><path d="m17 10 2 2 3-4"/></svg>',
   scores: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   micro: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"/></svg>',
   atlas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2-6 3 12 3-9 2 3h6"/></svg>',

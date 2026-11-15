@@ -1109,7 +1109,8 @@ const CardReminder = {
     try { updateBadge(); } catch { /* niente */ }
     const due = this.learningDue().filter(c => c.srs.due <= now);
     const snoozed = this.dismissedAt && now - this.dismissedAt < 120000;
-    if (!due.length || this.onStudyPage() || this.open || snoozed || $('#modalRoot').children.length) this.hide();
+    // durante una sessione a fuoco i promemoria aspettano la pausa
+    if (!due.length || this.onStudyPage() || this.open || snoozed || $('#modalRoot').children.length || (typeof Focus !== 'undefined' && Focus.quiet())) this.hide();
     else this.show(due);
     this.schedule();
   },

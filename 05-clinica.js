@@ -3730,7 +3730,7 @@ function outlineHtml(ol) {
   return `${String(ol.open || '').trim() ? `<p class="ol-open"><span class="ol-k">Apri con</span> “${esc(ol.open.trim())}”</p>` : ''}
     ${(ol.points || []).length ? `<ol class="ol-points">${ol.points.map(p => `<li>${pt(p)}</li>`).join('')}</ol>` : ''}`;
 }
-async function outlineAi(owner) {
+async function outlineAi(owner, { signal, onWait, onModel } = {}) {
   let md = '', asked = '';
   if (isExamQRec(owner)) {
     md = eqCtx(owner).md;
@@ -3740,7 +3740,7 @@ async function outlineAi(owner) {
   const r = await AI.generate({
     system: OUTLINE_SYS,
     text: `DOMANDA O ARGOMENTO: ${outlineTopic(owner)}${asked ? `\nCOME È STATA CHIESTA AGLI APPELLI: ${asked}` : ''}\n\n${notes ? `APPUNTI:\n${notes.slice(0, 14000)}` : 'APPUNTI: nessuno. Usa le conoscenze di un buon manuale universitario.'}`,
-    maxTokens: 2500
+    maxTokens: 6000, json: true, signal, onWait, onModel, timeoutMs: 90000
   });
   const j = vivaJson(r.text);
   const points = (Array.isArray(j.punti) ? j.punti : []).map(p => String(p).replace(/^\s*(?:\d+[.)]|[-•])\s*/, '').trim()).filter(Boolean).slice(0, 8);
@@ -3762,9 +3762,20 @@ function outlineSheet(owner) {
         ${AI.ready() ? `<button class="btn" type="button" data-ol="ai">✨ ${outlineOf(owner) ? 'Proponine un’altra' : `Proponi con ${AI.name()}`}</button>` : ''}
         <button class="btn ghost" type="button" data-ol="no">Annulla</button>
         <button class="btn primary" type="button" data-ol="ok">Salva</button>
-      </div>`, { label: 'Scaletta per l’orale', onClose: v => resolve(!!v) });
+      </div>`, { label: 'Scaletta per l’orale', onClose: v => { ctl.abort(); clearInterval(waitT); resolve(!!v); } });
     const op = $('#olOpen', sh.el), pts = $('#olPts', sh.el), msg = $('#olMsg', sh.el);
     let before = null;
+    // v3.96: se l’AI è lenta o sovraccarica si vede cosa sta succedendo, e si può annullare
+    const ctl = new AbortController();
+    let waitT = 0;
+    const onWait = (ms, e) => {
+      clearInterval(waitT);
+      const until = Date.now() + ms;
+      const why = e && e.status === 429 ? 'Limite dell’AI al minuto' : 'L’AI è sovraccarica';
+      const paint = () => { const left = Math.max(0, Math.ceil((until - Date.now()) / 1000)); msg.textContent = `${why}: riprovo tra ${left} s… (puoi anche scriverla tu intanto)`; if (!left) clearInterval(waitT); };
+      paint(); waitT = setInterval(paint, 1000);
+    };
+    const onModel = m => { clearInterval(waitT); msg.textContent = `Il modello di prima non risponde: provo con “${m}”…`; };
     sh.el.addEventListener('click', async e => {
       const b = e.target.closest('[data-ol]');
       if (!b) return;
@@ -3785,14 +3796,16 @@ function outlineSheet(owner) {
         const label = b.textContent;
         b.textContent = 'Preparo la scaletta…';
         try {
-          const o = await outlineAi(owner);
+          msg.textContent = 'Preparo la scaletta dai tuoi appunti…';
+          const o = await outlineAi(owner, { signal: ctl.signal, onWait, onModel });
+          clearInterval(waitT);
           if (!sh.el.isConnected) return;
           // la tua versione resta da parte: un tocco e torna
           if (op.value.trim() || pts.value.trim()) before = { open: op.value, pts: pts.value };
           op.value = o.open;
           pts.value = o.points.join('\n');
           msg.innerHTML = `Proposta dell’AI${o.fromNotes ? ' dai tuoi appunti' : ' <b>senza appunti</b> (non c’è una sezione collegata): controllala bene'}. Correggila come vuoi, poi Salva.${before ? ' <button type="button" class="link-btn" data-ol="undo">Rimetti la mia</button>' : ''}`;
-        } catch (err) { if (sh.el.isConnected) msg.textContent = err.message || 'Non riuscito'; }
+        } catch (err) { clearInterval(waitT); if (err.name !== 'AbortError' && sh.el.isConnected) msg.textContent = `${err.message || 'Non riuscito'} Puoi riprovare tra poco, o scriverla tu.`; }
         if (b.isConnected) { b.disabled = false; b.textContent = label; }
       }
     });
@@ -4770,4 +4783,728 @@ function saveCropToAtlas(kind, canvas, source, origin = null) {
     $('#cpQ', sh.el).addEventListener('input', drawList);
     setTimeout(() => $('#cpTitle', sh.el)?.focus(), 40);
   });
+}
+
+/* =====================================================================
+   v3.95: le tue regole di formattazione e il controllo del formato
+   Le regole (testo libero, una per riga) si aggiungono a ogni richiesta
+   all’AI che scrive appunti: importazione, Riformatta, confronti, risposte.
+   Il controllo guarda da solo, senza AI, le cose che si vedono: paragrafi
+   lunghi, elenchi che starebbero meglio in tabella, troppo grassetto,
+   sezioni lunghe senza titoli.
+   ===================================================================== */
+const styleRec = () => state.links.find(l => l.kind === 'stylerules') || null;
+const styleRulesText = () => String(styleRec()?.rules || '').trim();
+function styleRulesBlock() {
+  const r = styleRulesText();
+  if (!r) return '';
+  const lines = r.split('\n').map(l => l.replace(/^[-•*\s]+/, '').trim()).filter(Boolean);
+  return lines.length ? `\n\nREGOLE DELLA STUDENTESSA (valgono sempre, prima di tutto il resto):\n${lines.map(l => `- ${l}`).join('\n')}` : '';
+}
+async function saveStyleRules(text) {
+  const rec = styleRec() || { id: '_stylerules', kind: 'stylerules', notebookId: '_stylerules', created: Date.now() };
+  rec.rules = String(text || '').trim();
+  await saveLink(rec);
+}
+function fmtIssues(md) {
+  const out = [];
+  const lines = String(md || '').split('\n');
+  const isList = l => /^\s*(?:[-*+]|\d+[.)])\s+/.test(l);
+  const plain = l => l.trim() && !isList(l) && !/^\s*(?:#|\||>|!\[|```|---)/.test(l);
+  const words = t => (aiText(stripCloze(t)).match(/[A-Za-zÀ-ÿ0-9]+/g) || []).length;
+  const longP = lines.filter(l => plain(l) && words(l) > 60).length;
+  if (longP) out.push({ k: 'para', t: longP === 1 ? 'un paragrafo lungo' : `${longP} paragrafi lunghi`, hint: 'più di 60 parole di fila: meglio un elenco' });
+  // elenchi “Voce: a, b, c” uno sotto l’altro: starebbero meglio in tabella
+  let run = 0, runs = 0;
+  const par = l => /^\s*(?:[-*+]|\d+[.)])\s+\**[^:*\n]{2,40}\**\s*:\s*\S.*[,;].*\S/.test(l);
+  lines.concat('').forEach(l => { if (par(l)) run++; else { if (run >= 3) runs++; run = 0; } });
+  if (runs) out.push({ k: 'table', t: runs === 1 ? 'un elenco da tabella' : `${runs} elenchi da tabella`, hint: '3 o più voci “Nome: caratteristiche” una sotto l’altra' });
+  const all = words(md);
+  const bold = (String(md).match(/\*\*[^*\n]+\*\*/g) || []).reduce((a, b) => a + words(b), 0);
+  if (all > 80 && bold / all > 0.25) out.push({ k: 'bold', t: 'troppo grassetto', hint: `${Math.round((bold / all) * 100)}% delle parole: il grassetto non risalta più` });
+  if (all > 300 && !/^#{2,4}\s/m.test(md)) out.push({ k: 'heads', t: 'lunga e senza titoli', hint: `${all} parole senza ## titoli: difficile orientarsi` });
+  return out;
+}
+let fmtScope = '';
+function viewFormat(nbId) {
+  if (nbId && nbById(nbId)) fmtScope = nbId;
+  const nbs = state.notebooks.filter(n => !n.kind && secsOf(n.id).length);
+  if (!nbById(fmtScope) || nbById(fmtScope).kind) fmtScope = nbs[0]?.id || '';
+  const secs = fmtScope ? secsOf(fmtScope) : [];
+  const found = secs.map(s => ({ s, iss: fmtIssues(s.md) })).filter(o => o.iss.length);
+  setView(`
+    <header class="page-head"><div><h1>Formato degli appunti</h1><p class="lede">Le tue regole per l’AI, e un controllo delle sezioni che non sono ancora schematiche.</p></div></header>
+    <section class="fmt-rules">
+      <h2 class="sub">Le tue regole</h2>
+      <p class="hint">Una per riga. Valgono ogni volta che l’AI scrive appunti per te: importazione, Riformatta, tabelle di confronto, risposte di “Chiedi alle tue fonti”. Si sincronizzano tra i dispositivi.</p>
+      <textarea class="input" id="fmtRules" rows="6" placeholder="Tabella quando ci sono 3 o più voci con le stesse caratteristiche&#10;Grassetto solo sui termini chiave, non su frasi intere&#10;Frasi brevi, massimo 15 parole&#10;Sigle sempre sciolte la prima volta: PICA (arteria cerebellare postero-inferiore)">${esc(styleRulesText())}</textarea>
+      <div class="actions"><button class="btn primary" type="button" data-act="fmt-save">Salva le regole</button></div>
+    </section>
+    <section>
+      <h2 class="sub">Controllo</h2>
+      <p class="hint">Guarda da solo, senza AI: paragrafi di più di 60 parole, elenchi “Nome: caratteristiche” che starebbero meglio in tabella, troppo grassetto, sezioni lunghe senza titoli.</p>
+      ${nbs.length ? `<label class="field"><span>Notebook</span><select class="input" id="fmtNb">${nbs.map(n => `<option value="${n.id}" ${n.id === fmtScope ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>` : '<p class="empty">Nessun notebook con sezioni.</p>'}
+      ${fmtScope ? (found.length ? `<p class="fmt-count">${found.length} ${found.length === 1 ? 'sezione' : 'sezioni'} su ${secs.length} da sistemare</p>
+        <ul class="list fmt-list">${found.map(o => `<li class="fmt-row">
+          <span class="row-main"><a class="row-title" href="#/sec/${o.s.id}/read">${esc(o.s.title)}</a>
+            <span class="fmt-iss">${o.iss.map(i => `<span class="chip bad" title="${esc(i.hint)}">${esc(i.t)}</span>`).join(' ')}</span></span>
+          ${AI.ready() ? `<button class="btn sm" type="button" data-fmt-fix="${o.s.id}">✨ Riformatta</button>` : `<a class="btn sm" href="#/sec/${o.s.id}/edit">Modifica</a>`}
+        </li>`).join('')}</ul>` : `<p class="sch-ok">Tutte le ${secs.length} sezioni di questo notebook sono già schematiche.</p>`) : ''}
+    </section>`);
+  on('[data-act="fmt-save"]', 'click', async () => { await saveStyleRules($('#fmtRules').value); toast('Regole salvate: l’AI le userà da ora'); });
+  $('#fmtNb')?.addEventListener('change', e => { fmtScope = e.target.value; viewFormat(); });
+  $('.fmt-list')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-fmt-fix]');
+    if (!b) return;
+    state.autoReformat = b.dataset.fmtFix;
+    go(`#/sec/${b.dataset.fmtFix}/edit`);
+  });
+}
+
+/* =====================================================================
+   v3.95: tabella di confronto tra 2-4 sezioni, solo dai tuoi appunti
+   ===================================================================== */
+const COMPARE_SYS = `Costruisci una tabella di confronto per uno studente di medicina, usando SOLO gli APPUNTI che ti do (uno per argomento). Non aggiungere nozioni che negli appunti non ci sono.
+- Una tabella Markdown: prima colonna "Aspetto", poi una colonna per argomento, con il titolo esatto dell’argomento, nell’ordine dato.
+- Righe: gli ASPETTI richiesti, se ci sono; altrimenti scegli tu da 6 a 12 aspetti, quelli in cui gli argomenti si distinguono di più (per esempio sede, eziologia, clinica, diagnosi, terapia).
+- Celle brevi: parole chiave, al massimo 12 parole. Se negli appunti di un argomento quell’aspetto manca, scrivi "—".
+- Dopo la tabella: "## Differenze chiave", con da 3 a 6 punti elenco: come si riconoscono e distinguono, sempre dagli appunti.
+- Copia senza modifiche le marcature speciali che usi: [[Titolo]], {{lettera|testo}}; non usare ==...==.
+Rispondi SOLO con la tabella e le differenze chiave, in Markdown, senza altro testo.`;
+function compareFlow(nb, pre = []) {
+  return new Promise(resolve => {
+    const secs = secsOf(nb.id).filter(s => aiText(s.md || '').trim().length > 40);
+    const picked = new Set(pre.filter(id => secs.some(s => s.id === id)));
+    let done = false;
+    const ctl = new AbortController();
+    const sh = openSheet(`
+      <h2>Tabella di confronto</h2>
+      <p class="sheet-sub">${esc(nb.name)}: scegli da 2 a 4 sezioni. La tabella si fa solo con i tuoi appunti; dove mancano trovi “—”.</p>
+      <input type="search" class="input" id="cmpQ" placeholder="Cerca una sezione" aria-label="Cerca una sezione">
+      <ul class="cmp-list" id="cmpList"></ul>
+      <label class="field"><span>Aspetti da confrontare <span class="muted-inline">facoltativo, separati da virgole</span></span><input class="input" id="cmpAsp" value="${esc(S().cmpAspects || '')}" placeholder="Es. sede, eziologia, clinica, diagnosi, terapia"></label>
+      <p class="err-line" id="cmpErr" hidden></p>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-cmp="no">Annulla</button><button class="btn primary" type="button" data-cmp="go" disabled>Crea la tabella</button></div>`, { label: 'Tabella di confronto', onClose: () => { if (!done) { done = true; ctl.abort(); resolve(null); } } });
+    const list = $('#cmpList', sh.el), q = $('#cmpQ', sh.el), go2 = $('[data-cmp="go"]', sh.el);
+    const draw = () => {
+      const f = foldAccents(q.value.trim());
+      const vis = secs.filter(s => picked.has(s.id) || !f || foldAccents(s.title).includes(f) || foldAccents(groupPathText(s)).includes(f)).slice(0, 80);
+      list.innerHTML = vis.map(s => `<li><label class="check cmp-opt"><input type="checkbox" value="${s.id}" ${picked.has(s.id) ? 'checked' : ''} ${!picked.has(s.id) && picked.size >= 4 ? 'disabled' : ''}><span>${esc(s.title)}${groupPathText(s) ? ` <small class="muted-inline">${esc(groupPathText(s))}</small>` : ''}</span></label></li>`).join('') || '<li class="hint">Nessuna sezione</li>';
+      go2.disabled = picked.size < 2;
+      go2.textContent = picked.size >= 2 ? `Crea la tabella (${picked.size})` : 'Crea la tabella';
+    };
+    q.addEventListener('input', draw);
+    list.addEventListener('change', e => { const c = e.target.closest('input[type=checkbox]'); if (!c) return; if (c.checked) picked.add(c.value); else picked.delete(c.value); draw(); });
+    $('[data-cmp="no"]', sh.el).onclick = () => sh.close(null);
+    go2.onclick = async () => {
+      const chosen = secs.filter(s => picked.has(s.id));
+      const asp = $('#cmpAsp', sh.el).value.trim();
+      S().cmpAspects = asp; Settings.save();
+      go2.disabled = true; go2.textContent = 'Costruisco la tabella…';
+      $('#cmpErr', sh.el).hidden = true;
+      try {
+        const per = Math.floor(28000 / chosen.length);
+        const text = `ARGOMENTI, in quest’ordine: ${chosen.map(s => `“${s.title}”`).join(', ')}\n${asp ? `ASPETTI: ${asp}\n` : ''}\n${chosen.map((s, i) => `=== APPUNTI ${i + 1}: ${s.title} ===\n${aiText(s.md).slice(0, per)}`).join('\n\n')}`;
+        const r = await AI.generate({ system: COMPARE_SYS + styleRulesBlock(), text, maxTokens: 8000, signal: ctl.signal });
+        const md = String(r.text || '').trim().replace(/^```(?:markdown|md)?[ \t]*\n/i, '').replace(/\n```\s*$/, '').trim();
+        if (!/\|.*\|/.test(md)) throw new Error('L’AI non ha restituito una tabella: riprova.');
+        if (done) return;
+        done = true;
+        sh.close(null);
+        resolve(await comparePreview(nb, chosen, md));
+      } catch (err) {
+        if (err.name === 'AbortError' || !sh.el.isConnected) return;
+        const el = $('#cmpErr', sh.el); el.textContent = err.message || 'Non riuscito'; el.hidden = false;
+        draw();
+      }
+    };
+    draw();
+    setTimeout(() => q.focus(), 40);
+  });
+}
+function comparePreview(nb, chosen, md) {
+  return new Promise(resolve => {
+    const title = `Confronto: ${chosen.map(s => s.title).join(' vs ')}`.slice(0, 140);
+    const full = `# ${title}\n\nDai tuoi appunti: ${chosen.map(s => `[[${s.title}]]`).join(' · ')}\n\n${md}\n`;
+    const sh = openSheet(`
+      <h2>${esc(title)}</h2>
+      <div class="sch-prev notes cmp-prev">${renderMd(full)}</div>
+      <p class="hint">Controlla le celle: vengono dai tuoi appunti, ma l’AI può sbagliare a metterle nella riga giusta.</p>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-cp2="no">Chiudi</button>
+        <button class="btn" type="button" data-cp2="copy">Copia</button>
+        <button class="btn primary" type="button" data-cp2="ok">Crea una sezione</button>
+      </div>`, { label: 'Tabella di confronto', onClose: v => resolve(v || null) });
+    sh.el.addEventListener('click', async e => {
+      const b = e.target.closest('[data-cp2]');
+      if (!b) return;
+      if (b.dataset.cp2 === 'no') sh.close(null);
+      if (b.dataset.cp2 === 'copy') navigator.clipboard?.writeText(full).then(() => toast('Tabella copiata'), () => toast('Non riesco a copiare', 'err'));
+      if (b.dataset.cp2 === 'ok') {
+        const g = chosen.every(s => s.groupId && s.groupId === chosen[0].groupId) ? chosen[0].groupId : null;
+        const s = newSection(nb.id, { title, md: full, groupId: g || undefined, source: 'Tabella di confronto dai tuoi appunti' });
+        await saveSection(s);
+        sh.close(s);
+        toast('Sezione creata');
+        go(`#/sec/${s.id}/read`);
+      }
+    });
+  });
+}
+
+/* =====================================================================
+   v3.95: sessione a fuoco
+   Un obiettivo e un timer, legati a una sezione (o liberi). Mentre lavori
+   il menu sparisce e i promemoria aspettano la pausa; la pausa arriva da
+   sola, la ripresa la scegli tu. Alla fine: “fatto per oggi”.
+   ===================================================================== */
+const Focus = {
+  KEY: 'nb-focus', LOG: 'nb-focus-log',
+  st: null, bar: null, t: 0,
+  load() { try { this.st = JSON.parse(localStorage.getItem(this.KEY) || 'null'); } catch { this.st = null; } },
+  save() { try { if (this.st) localStorage.setItem(this.KEY, JSON.stringify(this.st)); else localStorage.removeItem(this.KEY); } catch { /* niente */ } },
+  on() { return !!this.st; },
+  // durante il lavoro i promemoria delle flashcard aspettano
+  quiet() { return !!this.st && this.st.phase === 'work'; },
+  init() {
+    this.load();
+    const el = document.createElement('div');
+    el.className = 'focus-bar';
+    el.hidden = true;
+    el.setAttribute('role', 'timer');
+    document.body.append(el);
+    this.bar = el;
+    el.addEventListener('click', e => {
+      const b = e.target.closest('[data-fx]');
+      if (!b) return;
+      const k = b.dataset.fx;
+      if (k === 'end') this.finish();
+      else if (k === 'pause') this.togglePause();
+      else if (k === 'go' && this.st?.secId) go(`#/sec/${this.st.secId}/read`);
+    });
+    if (this.st) this.resume();
+  },
+  // la finestra per iniziare
+  start(secId = '') {
+    if (this.st) { toast('C’è già una sessione in corso: la trovi in alto'); return; }
+    const sec = secId ? secById(secId) : null;
+    const presets = [[25, 5], [45, 10], [15, 3]];
+    const last = S().focusPreset || '25-5';
+    const sh = openSheet(`
+      <h2>Sessione a fuoco</h2>
+      <p class="sheet-sub">${sec ? `Su “${esc(sec.title)}”. ` : ''}Una cosa sola: mentre lavori il menu sparisce e i promemoria aspettano la pausa.</p>
+      <label class="field"><span>Obiettivo <span class="muted-inline">concreto, che sai quando è finito</span></span><input class="input" id="fxGoal" maxlength="140" placeholder="${sec ? 'Es. finire la parte sulla vascolarizzazione e ripeterla a voce' : 'Es. ripassare i nervi cranici III, IV e VI'}"></label>
+      <div class="field"><span class="lbl">Durata</span><div class="seg" role="radiogroup" aria-label="Durata">${presets.map(([w, p]) => `<button type="button" role="radio" data-fxp="${w}-${p}" aria-selected="${last === `${w}-${p}`}">${w} min + ${p} di pausa</button>`).join('')}</div></div>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-fxs="no">Annulla</button><button class="btn primary" type="button" data-fxs="ok">Inizia</button></div>`, { label: 'Sessione a fuoco' });
+    let preset = last;
+    sh.el.addEventListener('click', e => {
+      const p = e.target.closest('[data-fxp]');
+      if (p) { preset = p.dataset.fxp; $$('[data-fxp]', sh.el).forEach(x => x.setAttribute('aria-selected', String(x === p))); return; }
+      const b = e.target.closest('[data-fxs]');
+      if (!b) return;
+      if (b.dataset.fxs === 'no') { sh.close(null); return; }
+      const goal = $('#fxGoal', sh.el).value.trim();
+      if (!goal) { toast('Scrivi l’obiettivo: anche solo poche parole'); $('#fxGoal', sh.el).focus(); return; }
+      const [w, pz] = preset.split('-').map(Number);
+      S().focusPreset = preset; Settings.save();
+      const now = Date.now();
+      this.st = { secId: sec ? sec.id : '', title: sec ? sec.title : '', goal, work: w, brk: pz, phase: 'work', until: now + w * 60000, started: now, worked: 0, blocks: 0, paused: 0 };
+      this.save();
+      sh.close(true);
+      this.resume();
+      if (sec && !location.hash.startsWith(`#/sec/${sec.id}`)) go(`#/sec/${sec.id}/read`);
+    });
+    setTimeout(() => $('#fxGoal', sh.el)?.focus(), 40);
+  },
+  resume() {
+    document.body.classList.toggle('focus-on', !!this.st && this.st.phase !== 'done');
+    clearInterval(this.t);
+    this.t = setInterval(() => this.tick(), 1000);
+    this.tick();
+  },
+  left() { const s = this.st; return s.paused ? s.paused : Math.max(0, s.until - Date.now()); },
+  tick() {
+    const s = this.st;
+    if (!s) { this.bar.hidden = true; clearInterval(this.t); document.body.classList.remove('focus-on'); return; }
+    if (!s.paused && Date.now() >= s.until) {
+      if (s.phase === 'work') { s.worked += s.work * 60000; s.blocks++; s.phase = 'break'; s.until = Date.now() + s.brk * 60000; this.save(); this.breakSheet(); try { navigator.vibrate?.([80, 60, 80]); } catch { /* niente */ } }
+      else if (s.phase === 'break') { s.phase = 'ready'; this.save(); this.readySheet(); }
+    }
+    const left = this.left();
+    const mm = Math.floor(left / 60000), ss = Math.floor((left % 60000) / 1000);
+    const time = `${mm}:${String(ss).padStart(2, '0')}`;
+    const label = s.phase === 'work' ? time : s.phase === 'break' ? `pausa ${time}` : 'pausa finita';
+    this.bar.hidden = false;
+    this.bar.className = `focus-bar ph-${s.phase}${s.paused ? ' paused' : ''}`;
+    const html = `<span class="fx-goal">${s.secId ? `<button type="button" class="fx-link" data-fx="go" title="Torna a ${esc(s.title)}">🎯</button>` : '🎯'} ${esc(s.goal)}</span>
+      <span class="fx-time" aria-label="${s.phase === 'work' ? 'tempo rimasto' : label}">${label}</span>
+      ${s.phase === 'work' ? `<button type="button" class="btn sm ghost" data-fx="pause">${s.paused ? 'Riprendi' : 'Pausa'}</button>` : ''}
+      <button type="button" class="btn sm ghost" data-fx="end">Fine</button>`;
+    if (this.bar.dataset.html !== html) { this.bar.innerHTML = html; this.bar.dataset.html = html; }
+    document.title = s.phase === 'work' ? `${time} · ${s.goal}` : 'Notebook';
+    document.body.classList.toggle('focus-on', s.phase === 'work');
+  },
+  togglePause() {
+    const s = this.st;
+    if (!s || s.phase !== 'work') return;
+    if (s.paused) { s.until = Date.now() + s.paused; s.paused = 0; } else s.paused = Math.max(1000, s.until - Date.now());
+    this.save(); this.tick();
+  },
+  breakSheet() {
+    if ($('#modalRoot').children.length) return;
+    const s = this.st;
+    const sh = openSheet(`
+      <h2>Pausa: ${s.brk} minuti</h2>
+      <p class="sheet-sub">${s.blocks === 1 ? 'Primo blocco fatto.' : `${s.blocks} blocchi fatti.`} Alzati, bevi, guarda lontano. Quando finisce te lo dico io.</p>
+      ${CardReminder.learningDue().some(c => c.srs.due <= Date.now()) ? '<p class="hint">Hai flashcard tornate: puoi farle adesso, durante la pausa.</p>' : ''}
+      <div class="modal-actions"><button class="btn ghost" type="button" data-fb="end">Basta per oggi</button><button class="btn primary" type="button" data-fb="ok">Va bene</button></div>`, { label: 'Pausa' });
+    sh.el.addEventListener('click', e => { const b = e.target.closest('[data-fb]'); if (!b) return; sh.close(null); if (b.dataset.fb === 'end') this.finish(); else CardReminder.check(); });
+  },
+  readySheet() {
+    const s = this.st;
+    const show = () => {
+      if (!this.st || this.st.phase !== 'ready') return;
+      if ($('#modalRoot').children.length) { setTimeout(show, 3000); return; }
+      const sh = openSheet(`
+        <h2>Pausa finita</h2>
+        <p class="sheet-sub">Obiettivo: ${esc(s.goal)}</p>
+        <div class="modal-actions"><button class="btn ghost" type="button" data-fr="end">Basta per oggi</button><button class="btn primary" type="button" data-fr="go">Altri ${s.work} minuti</button></div>`, { label: 'Pausa finita' });
+      sh.el.addEventListener('click', e => {
+        const b = e.target.closest('[data-fr]');
+        if (!b) return;
+        sh.close(null);
+        if (b.dataset.fr === 'end') { this.finish(); return; }
+        s.phase = 'work'; s.until = Date.now() + s.work * 60000; this.save(); this.tick();
+        if (s.secId && !location.hash.startsWith(`#/sec/${s.secId}`)) go(`#/sec/${s.secId}/read`);
+      });
+    };
+    show();
+  },
+  finish() {
+    const s = this.st;
+    if (!s) return;
+    const worked = s.worked + (s.phase === 'work' ? (s.work * 60000 - this.left()) : 0);
+    const mins = Math.round(worked / 60000);
+    this.st = null; this.save();
+    clearInterval(this.t);
+    this.bar.hidden = true;
+    document.body.classList.remove('focus-on');
+    document.title = 'Notebook';
+    const sh = openSheet(`
+      <h2>${mins >= 1 ? 'Fatto per oggi' : 'Sessione chiusa'}</h2>
+      <p class="sheet-sub">${mins >= 1 ? `${mins} ${mins === 1 ? 'minuto' : 'minuti'} di studio${s.title ? ` su “${esc(s.title)}”` : ''}.` : 'Meno di un minuto: nessun problema, si riparte quando vuoi.'}</p>
+      ${mins >= 1 ? `<p><b>Obiettivo:</b> ${esc(s.goal)}</p><p class="lbl">L’hai raggiunto?</p>
+      <div class="seg" role="radiogroup" aria-label="Obiettivo raggiunto">${[['si', 'Sì'], ['parte', 'In parte'], ['no', 'No']].map(([k, l]) => `<button type="button" role="radio" data-ff="${k}" aria-selected="false">${l}</button>`).join('')}</div>` : ''}
+      <div class="modal-actions"><button class="btn primary" type="button" data-ff="close">Chiudi</button></div>`, { label: 'Fine della sessione' });
+    sh.el.addEventListener('click', e => {
+      const b = e.target.closest('[data-ff]');
+      if (!b) return;
+      if (b.dataset.ff === 'close') { sh.close(null); return; }
+      try { const log = JSON.parse(localStorage.getItem(this.LOG) || '[]'); log.push({ d: todayStr(), m: mins, goal: s.goal, sec: s.secId, ok: b.dataset.ff }); localStorage.setItem(this.LOG, JSON.stringify(log.slice(-200))); } catch { /* niente */ }
+      sh.close(null);
+      toast(b.dataset.ff === 'si' ? 'Obiettivo raggiunto: fatto per oggi ✓' : b.dataset.ff === 'parte' ? 'Va bene così: la prossima volta riparti da lì' : 'Capita: magari era troppo grande, la prossima volta prova un pezzo più piccolo');
+    });
+  },
+  today() { try { return JSON.parse(localStorage.getItem(this.LOG) || '[]').filter(x => x.d === todayStr()); } catch { return []; } }
+};
+
+/* =====================================================================
+   v3.95: appunti al volo → “Da sistemare”
+   Un pensiero mentre studi altro: lo scrivi, lo detti o lo fotografi in
+   un secondo, e torni a quello che facevi. Poi li sistemi tutti insieme.
+   ===================================================================== */
+const inboxItems = () => state.links.filter(l => l.kind === 'inbox').sort((a, b) => b.created - a.created);
+function captureContext() {
+  const h = location.hash;
+  let m = h.match(/^#\/sec\/([^/]+)/);
+  if (m && secById(m[1])) return { secId: m[1], label: secById(m[1]).title };
+  m = h.match(/^#\/pdf\/([^/]+)(?:\/(\d+))?/);
+  if (m && pdfById(m[1])) { const p = pdfById(m[1]); const pg = +(m[2] || p.lastPage || 1); return { pdfId: p.id, page: pg, secId: p.sectionId || '', label: `${p.name}, p. ${pg}` }; }
+  if (Focus.st?.secId && secById(Focus.st.secId)) return { secId: Focus.st.secId, label: Focus.st.title };
+  return null;
+}
+const Capture = {
+  fab: null,
+  init() {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'cap-fab';
+    b.id = 'capFab';
+    b.title = 'Appunto al volo';
+    b.setAttribute('aria-label', 'Appunto al volo: scrivi, detta o fotografa un pensiero e torna a quello che facevi');
+    b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>';
+    b.addEventListener('click', () => this.open());
+    document.body.append(b);
+    this.fab = b;
+  },
+  open() {
+    if ($('#modalRoot').children.length) return;
+    const ctx = captureContext();
+    let photo = null;
+    let dict = null;
+    const sh = openSheet(`
+      <h2>Appunto al volo</h2>
+      <p class="sheet-sub">${ctx ? `Da: ${esc(ctx.label)}. ` : ''}Lo ritrovi in “Da sistemare”.</p>
+      <textarea class="input" id="capT" rows="4" placeholder="Es. chiedere perché la PICA dà la sindrome di Wallenberg"></textarea>
+      <div class="inline cap-tools">
+        ${SpeechRec ? `<button class="btn sm" type="button" data-cap="mic" aria-pressed="false">${MIC_SVG}<span>Detta</span></button>` : ''}
+        <label class="btn sm file-btn">📷 Foto<input type="file" accept="image/*" capture="environment" hidden id="capPh"></label>
+        <span class="hint" id="capPhL"></span>
+      </div>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-cap="no">Annulla</button><button class="btn primary" type="button" data-cap="ok">Salva</button></div>`, { label: 'Appunto al volo', onClose: () => { if (dict) dict.stop(); } });
+    const ta = $('#capT', sh.el);
+    const mic = $('[data-cap="mic"]', sh.el);
+    if (mic) {
+      dict = createDictation({
+        onText: t => { ta.value = `${ta.value.trim()} ${t}`.trim(); },
+        onState: on2 => { mic.setAttribute('aria-pressed', String(on2)); mic.classList.toggle('on', on2); $('span', mic).textContent = on2 ? 'Sto ascoltando…' : 'Detta'; }
+      });
+      mic.onclick = () => { if (mic.getAttribute('aria-pressed') === 'true') dict.stop(); else dict.start(); };
+    }
+    $('#capPh', sh.el).addEventListener('change', e => { photo = e.target.files[0] || null; $('#capPhL', sh.el).textContent = photo ? `Foto pronta (${fmtSize(photo.size)})` : ''; });
+    const save = async () => {
+      const text = ta.value.trim();
+      if (!text && !photo) { toast('Scrivi qualcosa o aggiungi una foto'); return; }
+      const ok = $('[data-cap="ok"]', sh.el);
+      ok.disabled = true;
+      let imgId = '';
+      if (photo) {
+        try { const im = await saveImage(await compressImage(photo, { max: 1800 }), secById(ctx?.secId)?.notebookId || '_inbox'); imgId = im.id; }
+        catch (err) { toast(err.message, 'err'); ok.disabled = false; return; }
+      }
+      await saveLink({ id: uid(), kind: 'inbox', notebookId: '_inbox', text, imgId, ctx: ctx || null, created: Date.now() });
+      sh.close(true);
+      toast('Salvato in “Da sistemare”', '', { label: 'Apri', fn: () => go('#/inbox') });
+    };
+    $('[data-cap="ok"]', sh.el).onclick = save;
+    $('[data-cap="no"]', sh.el).onclick = () => sh.close(null);
+    ta.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); save(); } });
+    setTimeout(() => ta.focus(), 40);
+  }
+};
+// scegli una sezione (con la ricerca); restituisce l’id o null
+function pickSection({ title = 'Scegli la sezione', pre = '' } = {}) {
+  return new Promise(resolve => {
+    const all = state.sections.filter(s => nbById(s.notebookId) && !nbById(s.notebookId).kind);
+    const sh = openSheet(`
+      <h2>${esc(title)}</h2>
+      <input type="search" class="input" id="psQ" placeholder="Cerca per titolo" aria-label="Cerca una sezione">
+      <ul class="list ps-list" id="psL"></ul>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-ps="no">Annulla</button></div>`, { label: title, onClose: v => resolve(v || null) });
+    const q = $('#psQ', sh.el), list = $('#psL', sh.el);
+    const draw = () => {
+      const f = foldAccents(q.value.trim());
+      const pick = all.filter(s => !f || foldAccents(s.title).includes(f)).sort((a, b) => (b.id === pre) - (a.id === pre) || (b.updated || 0) - (a.updated || 0)).slice(0, 40);
+      list.innerHTML = pick.map(s => `<li><button type="button" class="row" data-ps="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc([nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › '))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione</li>';
+    };
+    q.addEventListener('input', draw);
+    sh.el.addEventListener('click', e => { const b = e.target.closest('[data-ps]'); if (!b) return; sh.close(b.dataset.ps === 'no' ? null : b.dataset.ps); });
+    draw();
+    setTimeout(() => q.focus(), 40);
+  });
+}
+function inboxMd(it) {
+  const lines = [];
+  if (it.text) lines.push(...it.text.split('\n').map((l, i) => (i ? `  ${l}` : `- ${l}`)));
+  if (it.imgId && imageById(it.imgId)) lines.push(`${it.text ? '' : '- '}${it.text ? '\n' : ''}![appunto al volo](img:${it.imgId})`);
+  if (it.ctx?.pdfId && pdfById(it.ctx.pdfId)) lines.push(`  (da [${pdfById(it.ctx.pdfId).name}, p. ${it.ctx.page}](#/pdf/${it.ctx.pdfId}/${it.ctx.page}))`);
+  return lines.join('\n');
+}
+function viewInbox() {
+  const items = inboxItems();
+  setView(`
+    <header class="page-head"><div><h1>Da sistemare</h1><p class="lede">${items.length ? `${items.length} ${items.length === 1 ? 'appunto preso' : 'appunti presi'} al volo. Mettili nella sezione giusta quando hai finito quello che stavi facendo.` : 'Gli appunti presi al volo con ⚡ arrivano qui.'}</p></div>
+      <button class="btn primary" type="button" data-act="cap-new">⚡ Nuovo</button></header>
+    ${items.length ? `<ul class="inbox-list">${items.map(it => {
+      const sec = it.ctx?.secId ? secById(it.ctx.secId) : null;
+      return `<li class="inbox-item" data-id="${it.id}">
+        ${it.imgId && imageById(it.imgId) ? `<img class="inbox-img" src="${imageUrl(it.imgId)}" alt="Foto dell’appunto">` : ''}
+        <div class="inbox-main">
+          ${it.text ? `<p class="inbox-t">${esc(it.text).replace(/\n/g, '<br>')}</p>` : ''}
+          <p class="inbox-meta">${fmtDay(localDateStr(new Date(it.created)))}, ${new Date(it.created).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}${it.ctx ? ` · da ${it.ctx.pdfId ? `<a href="#/pdf/${it.ctx.pdfId}/${it.ctx.page}">${esc(it.ctx.label)}</a>` : sec ? `<a href="#/sec/${sec.id}/read">${esc(sec.title)}</a>` : esc(it.ctx.label)}` : ''}</p>
+          <div class="inline">
+            ${sec ? `<button class="btn sm primary" type="button" data-ib="here">In “${esc(sec.title.length > 28 ? `${sec.title.slice(0, 27)}…` : sec.title)}”</button>` : ''}
+            <button class="btn sm ${sec ? '' : 'primary'}" type="button" data-ib="pick">${sec ? 'Altra sezione…' : 'In una sezione…'}</button>
+            <button class="btn sm ghost" type="button" data-ib="done">Fatto</button>
+          </div>
+        </div>
+      </li>`;
+    }).join('')}</ul>` : '<div class="empty"><p>Niente da sistemare.</p></div>'}`);
+  on('[data-act="cap-new"]', 'click', () => Capture.open());
+  $('.inbox-list')?.addEventListener('click', async e => {
+    const b = e.target.closest('[data-ib]');
+    if (!b) return;
+    const it = state.links.find(l => l.id === b.closest('[data-id]').dataset.id);
+    if (!it) return;
+    let secId = null;
+    if (b.dataset.ib === 'here') secId = it.ctx.secId;
+    else if (b.dataset.ib === 'pick') secId = await pickSection({ title: 'In quale sezione?', pre: it.ctx?.secId || '' });
+    else if (b.dataset.ib === 'done') {
+      await removeRecords([{ store: 'links', rec: it }]);
+      toast('Tolto da “Da sistemare”', '', { label: 'Annulla', fn: async () => { try { await DB.del('deleted', `links:${it.id}`); } catch { /* niente */ } await saveLink(it); route(); } });
+      route();
+      return;
+    }
+    const sec = secId && secById(secId);
+    if (!sec) return;
+    const H = '## Aggiunti al volo';
+    const add = inboxMd(it);
+    sec.md = sec.md.includes(H) ? sec.md.replace(H, `${H}\n\n${add}`) : `${String(sec.md || '').trimEnd()}\n\n${H}\n\n${add}\n`;
+    await saveSection(sec);
+    await removeRecords([{ store: 'links', rec: it }]);
+    toast(`Aggiunto in fondo a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
+    route();
+  });
+}
+
+/* =====================================================================
+   v3.95: chiedi alle tue fonti
+   La risposta viene solo dai tuoi appunti e dai tuoi PDF, con il numero
+   della fonte dopo ogni affermazione: un tocco e apri la sezione o la pagina.
+   ===================================================================== */
+const ASK_SYS = `Rispondi alla domanda di una studentessa di medicina usando SOLO le FONTI numerate che ti do (i suoi appunti e i suoi PDF).
+- Dopo ogni affermazione metti il numero della fonte tra parentesi quadre, per esempio [2] o [1][3].
+- Se le fonti non bastano per rispondere, o rispondono solo in parte, dillo chiaramente (“Nelle tue fonti non trovo…”) e NON completare con conoscenze tue.
+- Formato: breve e schematico. Elenchi puntati; una tabella se confronti più cose; grassetto solo sui termini chiave. Niente introduzioni o saluti.
+Rispondi in italiano, in Markdown.`;
+const ASK_STOP = new Set('della dello delle degli dalla dallo dalle dagli nella nello nelle negli sulla sullo sulle sugli come cosa cose quale quali quanto quando dove perche perché sono essere viene vengono questo questa questi queste quello quella quelli quelle anche molto tutti tutte tutto ogni altro altra altri altre dire fare spiegami spiega parlami differenza differenze tra fra'.split(' ').map(foldAccents));
+const askStems = t => [...new Set((foldAccents(String(t || '')).match(/[a-z0-9]{3,}/g) || []).filter(w => !ASK_STOP.has(w) && (w.length >= 4 || /\d/.test(w) || /^[a-z]{3}$/.test(w))).map(w => w.slice(0, 6)))];
+const askState = { scope: '', hist: [] };
+async function askChunks(scope) {
+  const out = [];
+  const secs = scope ? secsOf(scope) : state.sections.filter(s => nbById(s.notebookId));
+  secs.forEach(s => {
+    const parts = String(s.md || '').split(/\n(?=#{2,3}\s)/);
+    parts.forEach(p => {
+      const head = (p.match(/^#{2,3}\s+(.+)/) || [])[1] || '';
+      const txt = aiText(p).trim();
+      if (txt.length < 30) return;
+      for (let i = 0; i < txt.length; i += 2400) out.push({ type: 'sec', id: s.id, title: s.title, head: stripCloze(head).replace(/[*_]/g, '').trim(), text: txt.slice(i, i + 2600) });
+    });
+  });
+  await loadPdfText();
+  state.pdfs.filter(p => !scope || p.notebookId === scope || secById(p.sectionId)?.notebookId === scope).forEach(p => {
+    (pdfText.get(p.id) || []).forEach((t, i) => { const txt = String(t || '').trim(); if (txt.length > 60) out.push({ type: 'pdf', id: p.id, title: p.name, page: i + 1, text: txt.slice(0, 2600) }); });
+  });
+  return out;
+}
+function askRank(chunks, q) {
+  const terms = askStems(q);
+  if (!terms.length) return [];
+  const docs = chunks.map(c => { const toks = (foldAccents(`${c.title} ${c.head || ''} ${c.text}`).match(/[a-z0-9]{3,}/g) || []).map(w => w.slice(0, 6)); const tf = new Map(); toks.forEach(w => tf.set(w, (tf.get(w) || 0) + 1)); return { c, tf, titleT: new Set(askStems(`${c.title} ${c.head || ''}`)) }; });
+  const N = docs.length;
+  const idf = new Map(terms.map(t => [t, Math.log(1 + N / (1 + docs.filter(d => d.tf.has(t)).length))]));
+  return docs.map(d => {
+    let sc = 0, hits = 0;
+    terms.forEach(t => { const f = d.tf.get(t) || 0; if (f) { hits++; sc += idf.get(t) * (1 + Math.log(f)); } if (d.titleT.has(t)) sc += idf.get(t) * 1.5; });
+    return { c: d.c, sc: sc * (hits / terms.length) };
+  }).filter(x => x.sc > 0).sort((a, b) => b.sc - a.sc);
+}
+const askHref = c => (c.type === 'pdf' ? `#/pdf/${c.id}/${c.page}` : `#/sec/${c.id}/read`);
+const askLabel = c => (c.type === 'pdf' ? `${c.title}, p. ${c.page}` : `${c.title}${c.head ? ` › ${c.head}` : ''}`);
+function askAnswerHtml(h) {
+  const ok = n => n >= 1 && n <= h.src.length;
+  const body = renderMd(h.answer).replace(/\[(\d{1,2})\]/g, (m, n) => (ok(+n) ? `<a class="cite" href="${askHref(h.src[n - 1])}" title="${esc(askLabel(h.src[n - 1]))}">${n}</a>` : ''));
+  const used = h.src.map((c, i) => ({ c, n: i + 1 })).filter(x => new RegExp(`\\[${x.n}\\]`).test(h.answer));
+  return `<article class="ask-a">
+    <p class="ask-q">${esc(h.q)}</p>
+    <div class="notes ask-body">${body}</div>
+    ${used.length ? `<ol class="ask-src">${used.map(x => `<li value="${x.n}"><a href="${askHref(x.c)}">${x.c.type === 'pdf' ? '📄 ' : ''}${esc(askLabel(x.c))}</a></li>`).join('')}</ol>` : ''}
+  </article>`;
+}
+function viewAsk(nbId) {
+  if (nbId !== undefined && nbById(nbId)) askState.scope = nbId;
+  const nbs = state.notebooks.filter(n => !n.kind && secsOf(n.id).length);
+  if (askState.scope && !nbById(askState.scope)) askState.scope = '';
+  setView(`
+    <header class="page-head"><div><h1>Chiedi alle tue fonti</h1><p class="lede">La risposta viene solo dai tuoi appunti e dai tuoi PDF, con il numero della fonte dopo ogni affermazione. Se lì non c’è, te lo dice.</p></div></header>
+    ${AI.ready() ? `<form class="ask-form" id="askF">
+      <label class="field"><span>Dove cercare</span><select class="input" id="askScope"><option value="">Tutti i notebook</option>${nbs.map(n => `<option value="${n.id}" ${n.id === askState.scope ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+      <label class="field"><span>Domanda</span><textarea class="input" id="askQ" rows="2" placeholder="Es. Qual è la differenza tra sindrome di Wallenberg e sindrome di Weber?"></textarea></label>
+      <div class="actions"><button class="btn primary" type="submit" id="askGo">Chiedi</button></div>
+    </form>` : '<div class="empty"><p>Serve la chiave dell’AI: aggiungila in Impostazioni → Intelligenza artificiale.</p><a class="btn primary" href="#/settings">Vai alle impostazioni</a></div>'}
+    <div id="askOut">${askState.hist.map(askAnswerHtml).join('')}</div>`);
+  const f = $('#askF');
+  if (!f) return;
+  $('#askScope').addEventListener('change', e => { askState.scope = e.target.value; });
+  $('#askQ').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); f.requestSubmit(); } });
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    const q = $('#askQ').value.trim();
+    if (!q) return;
+    const btn = $('#askGo');
+    btn.disabled = true; btn.textContent = 'Cerco nelle tue fonti…';
+    try {
+      const ranked = askRank(await askChunks(askState.scope), q);
+      const src = [];
+      let size = 0;
+      for (const r of ranked) { if (src.length >= 10 || size > 22000) break; if (src.some(s => s.type === r.c.type && s.id === r.c.id && s.text === r.c.text)) continue; src.push(r.c); size += r.c.text.length; }
+      let answer;
+      if (!src.length) answer = 'Nelle tue fonti non trovo niente su questo. Prova con altre parole (per esempio il nome della struttura o della malattia), oppure cerca in tutti i notebook.';
+      else {
+        btn.textContent = 'Leggo e rispondo…';
+        const r = await AI.generate({ system: ASK_SYS + styleRulesBlock(), text: `DOMANDA: ${q}\n\nFONTI:\n${src.map((c, i) => `[${i + 1}] ${c.type === 'pdf' ? `PDF “${c.title}”, pagina ${c.page}` : `Appunti “${c.title}”${c.head ? ` › ${c.head}` : ''}`}\n${c.text}`).join('\n\n')}`, maxTokens: 4000 });
+        answer = String(r.text || '').trim();
+      }
+      askState.hist.unshift({ q, answer, src });
+      askState.hist = askState.hist.slice(0, 10);
+      $('#askQ').value = '';
+      $('#askOut').innerHTML = askState.hist.map(askAnswerHtml).join('');
+    } catch (err) { toast(err.message || 'Non riuscito', 'err'); }
+    btn.disabled = false; btn.textContent = 'Chiedi';
+  });
+  setTimeout(() => $('#askQ')?.focus(), 50);
+}
+
+/* =====================================================================
+   v3.95: importare Word, PowerPoint e foto
+   Word e PowerPoint diventano testo (titoli, elenchi, tabelle, note delle
+   diapositive) e passano dall’importazione del testo, con le stesse opzioni.
+   Le foto (lavagna, appunti a mano, pagine di libro) le trascrive l’AI.
+   ===================================================================== */
+const xmlDoc = s => new DOMParser().parseFromString(s, 'application/xml');
+const kids = (el, name) => [...(el?.children || [])].filter(c => c.localName === name);
+const desc = (el, name) => (el ? [...el.getElementsByTagNameNS('*', name)] : []);
+const mdCell = t => String(t || '').replace(/\|/g, '/').replace(/\s*\n\s*/g, ' ').trim() || ' ';
+const mdTable = rows => {
+  const w = Math.max(...rows.map(r => r.length));
+  if (!rows.length || w < 1) return '';
+  const pad = r => [...r, ...Array(w - r.length).fill(' ')];
+  return [`| ${pad(rows[0]).map(mdCell).join(' | ')} |`, `|${Array(w).fill(' --- ').join('|')}|`, ...rows.slice(1).map(r => `| ${pad(r).map(mdCell).join(' | ')} |`)].join('\n');
+};
+async function docxToMd(file) {
+  await ensureJSZip();
+  const zip = await window.JSZip.loadAsync(file);
+  const xml = await zip.file('word/document.xml')?.async('string');
+  if (!xml) throw new Error('Questo file Word non ha testo leggibile.');
+  const d = xmlDoc(xml);
+  const body = desc(d, 'body')[0];
+  const attr = (el, n) => el?.getAttributeNS?.('http://schemas.openxmlformats.org/wordprocessingml/2006/main', n) || el?.getAttribute?.(`w:${n}`) || '';
+  const runText = r => {
+    let t = '';
+    [...r.children].forEach(c => { if (c.localName === 't') t += c.textContent; else if (c.localName === 'tab') t += ' '; else if (c.localName === 'br') t += '\n'; });
+    const b = kids(kids(r, 'rPr')[0], 'b')[0];
+    const bold = b && !['0', 'false'].includes(attr(b, 'val'));
+    return bold && t.trim() ? `**${t.trim()}**${/\s$/.test(t) ? ' ' : ''}` : t;
+  };
+  const paraText = p => [...p.children].map(c => (c.localName === 'r' ? runText(c) : c.localName === 'hyperlink' ? kids(c, 'r').map(runText).join('') : '')).join('').replace(/\*\*\*\*/g, '').trim();
+  const out = [];
+  [...(body?.children || [])].forEach(el => {
+    if (el.localName === 'p') {
+      const t = paraText(el);
+      if (!t) return;
+      const pPr = kids(el, 'pPr')[0];
+      const style = attr(kids(pPr, 'pStyle')[0], 'val');
+      const hm = style.match(/(?:heading|titolo|intestazione)\s*(\d)/i);
+      const num = kids(pPr, 'numPr')[0];
+      if (/^title$|^titolo$/i.test(style)) out.push(`# ${t.replace(/\*\*/g, '')}`);
+      else if (hm) out.push(`${'#'.repeat(Math.min(4, +hm[1] + 1))} ${t.replace(/\*\*/g, '')}`);
+      else if (num || /list/i.test(style)) out.push(`${'  '.repeat(+attr(kids(num, 'ilvl')[0], 'val') || 0)}- ${t}`);
+      else out.push(t);
+    } else if (el.localName === 'tbl') {
+      const rows = kids(el, 'tr').map(tr => kids(tr, 'tc').map(tc => kids(tc, 'p').map(paraText).filter(Boolean).join(' ')));
+      if (rows.length) out.push('', mdTable(rows), '');
+    }
+  });
+  // righe vuote tra i blocchi, ma gli elenchi restano uniti
+  return out.reduce((acc, l, i) => { const prevList = /^\s*- /.test(out[i - 1] || ''); const list = /^\s*- /.test(l); return acc + (i ? (prevList && list ? '\n' : '\n\n') : '') + l; }, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+async function pptxToMd(file) {
+  await ensureJSZip();
+  const zip = await window.JSZip.loadAsync(file);
+  // l’ordine delle diapositive: quello della presentazione
+  let order = [];
+  try {
+    const pres = xmlDoc(await zip.file('ppt/presentation.xml').async('string'));
+    const rels = xmlDoc(await zip.file('ppt/_rels/presentation.xml.rels').async('string'));
+    const map = new Map(desc(rels, 'Relationship').map(r => [r.getAttribute('Id'), r.getAttribute('Target')]));
+    order = desc(pres, 'sldId').map(s => map.get(s.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || s.getAttribute('r:id'))).filter(Boolean).map(t => `ppt/${t.replace(/^\/?ppt\//, '').replace(/^\.\.\//, '')}`);
+  } catch { order = []; }
+  if (!order.length) order = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a, b) => +a.match(/(\d+)\.xml/)[1] - +b.match(/(\d+)\.xml/)[1]);
+  const paraLines = (txBody, base = 0) => desc(txBody, 'p').filter(p => p.parentNode === txBody).map(p => {
+    const t = desc(p, 't').map(x => x.textContent).join('').trim();
+    const lvl = +(kids(p, 'pPr')[0]?.getAttribute('lvl') || 0) + base;
+    return t ? { t, lvl } : null;
+  }).filter(Boolean);
+  const out = [];
+  let n = 0;
+  for (const path of order) {
+    const f = zip.file(path);
+    if (!f) continue;
+    n++;
+    const d = xmlDoc(await f.async('string'));
+    let title = '';
+    const lines = [];
+    desc(d, 'sp').forEach(sp => {
+      const ph = desc(sp, 'ph')[0];
+      const type = ph?.getAttribute('type') || '';
+      const tx = kids(sp, 'txBody')[0];
+      if (!tx) return;
+      const ls = paraLines(tx);
+      if (!ls.length) return;
+      if (/title/i.test(type) && !title) { title = ls.map(l => l.t).join(' '); return; }
+      lines.push(...ls);
+    });
+    const tables = desc(d, 'tbl').map(t => mdTable(kids(t, 'tr').map(tr => kids(tr, 'tc').map(tc => desc(tc, 't').map(x => x.textContent).join(' ').trim()))));
+    // le note del relatore
+    let notes = '';
+    try {
+      const relPath = path.replace(/slides\/(slide\d+\.xml)$/, 'slides/_rels/$1.rels');
+      const rel = zip.file(relPath) && xmlDoc(await zip.file(relPath).async('string'));
+      const target = rel && desc(rel, 'Relationship').find(r => /notesSlide/.test(r.getAttribute('Type') || ''))?.getAttribute('Target');
+      if (target) {
+        const nd = xmlDoc(await zip.file(`ppt/${target.replace(/^\.\.\//, '')}`).async('string'));
+        notes = desc(nd, 'sp').filter(sp => desc(sp, 'ph')[0]?.getAttribute('type') === 'body').map(sp => desc(sp, 't').map(x => x.textContent).join(' ')).join(' ').replace(/\s+/g, ' ').trim();
+      }
+    } catch { notes = ''; }
+    if (!title && !lines.length && !tables.length && !notes) continue;
+    out.push(`## Diapositiva ${n}${title ? `: ${title}` : ''}`);
+    if (lines.length) out.push(lines.map(l => `${'  '.repeat(l.lvl)}- ${l.t}`).join('\n'));
+    tables.forEach(t => out.push(t));
+    if (notes) out.push(`> Note: ${notes}`);
+  }
+  if (!out.length) throw new Error('In questa presentazione non trovo testo (forse le diapositive sono solo immagini: in quel caso falle una foto o esportale in PDF).');
+  return out.join('\n\n');
+}
+const PHOTO_SYS = `Trascrivi fedelmente in Markdown il contenuto di queste foto: diapositive, lavagne, appunti scritti a mano, pagine di libro di medicina.
+- Mantieni titoli, elenchi, tabelle; frecce e schemi diventano elenchi annidati (con → dove c’è una freccia).
+- Non aggiungere nozioni e non correggere: trascrivi. Una parola che non si legge: [illeggibile].
+- Una foto dopo l’altra, nell’ordine; prima di ognuna "## Foto N" (N = numero della foto).
+Rispondi SOLO con la trascrizione.`;
+async function photosToMd(files) {
+  const imgs = [];
+  for (const f of files.slice(0, 10)) {
+    const im = await compressImage(f, { max: 2000, quality: 0.85 });
+    imgs.push({ mime: im.blob.type, data: await blobToBase64(im.blob), im });
+  }
+  const r = await AI.generate({ system: PHOTO_SYS, text: `Ecco ${imgs.length === 1 ? 'la foto' : `${imgs.length} foto, in ordine`}. Trascrivi.`, images: imgs.map(({ mime, data }) => ({ mime, data })), maxTokens: 16000 });
+  return { md: String(r.text || '').trim().replace(/^```(?:markdown|md)?[ \t]*\n/i, '').replace(/\n```\s*$/, '').trim(), imgs };
+}
+// dalla scheda “File” dell’importazione: il testo estratto va nella scheda Testo
+async function importOfficeFiles(files, { keepPhotos = true } = {}) {
+  const word = files.filter(f => /\.docx$/i.test(f.name));
+  const ppt = files.filter(f => /\.pptx$/i.test(f.name));
+  const photos = files.filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif)$/i.test(f.name));
+  const old = files.filter(f => /\.(doc|ppt)$/i.test(f.name));
+  if (old.length) throw new Error('I vecchi formati .doc e .ppt non si leggono: aprili e salvali come .docx o .pptx (o esportali in PDF).');
+  if (!word.length && !ppt.length && !photos.length) throw new Error('Scegli un file Word (.docx), PowerPoint (.pptx) o delle foto.');
+  const parts = [];
+  for (const f of word) parts.push(await docxToMd(f));
+  for (const f of ppt) parts.push(await pptxToMd(f));
+  if (photos.length) {
+    if (!AI.ready()) throw new Error('Per leggere le foto serve l’AI: aggiungi la chiave in Impostazioni.');
+    const { md, imgs } = await photosToMd(photos);
+    let text = md;
+    if (keepPhotos) {
+      for (let i = 0; i < imgs.length; i++) {
+        const saved = await saveImage(imgs[i].im, importDraft.nbId || '_inbox');
+        const tag = `![Foto ${i + 1}](img:${saved.id})`;
+        const re = new RegExp(`(^|\\n)(##\\s*Foto\\s*${i + 1}\\b[^\\n]*)`);
+        text = re.test(text) ? text.replace(re, `$1$2\n\n${tag}`) : `${text}\n\n${tag}`;
+      }
+    }
+    parts.push(text);
+  }
+  const base = files[0].name.replace(/\.[^.]+$/, '');
+  return { text: parts.join('\n\n'), title: files.length === 1 && !photos.length ? base : '' };
 }

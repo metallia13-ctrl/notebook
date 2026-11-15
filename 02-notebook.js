@@ -35,6 +35,8 @@ function nextActions() {
   }
   const r = Resume.target();
   if (r) out.push({ t: `Continua “${r.sec.title}”`, s: 'Da dove eri rimasta', href: '#/resume', go: 'Riprendi' });
+  const ib = inboxItems().length;
+  if (ib) out.push({ t: ib === 1 ? 'Sistema l’appunto preso al volo' : `Sistema i ${ib} appunti presi al volo`, s: `Da sistemare · ${mins(ib)}`, href: '#/inbox', go: 'Apri' });
   if (cc.n) { const n = Math.min(cc.n, 20); out.push({ t: n === 1 ? 'Studia la flashcard nuova' : `Studia ${n} flashcard nuove`, s: `Nuove di oggi · ${mins(n * 0.5)}`, href: '#/study/all', go: 'Inizia' }); }
   return out;
 }
@@ -421,12 +423,18 @@ function viewNotebook(id, folderId = '') {
       { key: 'listen', label: 'Ascolta tutto il notebook' },
       { key: 'print', label: 'Stampa o salva in PDF' },
       { key: 'graph', label: 'Mappa dei collegamenti (sezioni, lezioni, domande d’esame)' },
+      { key: 'compare', label: 'Tabella di confronto tra sezioni' },
+      { key: 'ask', label: 'Chiedi alle fonti di questo notebook' },
+      { key: 'formato', label: 'Controlla il formato degli appunti' },
       { key: 'viva', label: 'Interrogazione con l’AI su tutto il notebook' },
       { key: 'rename', label: 'Rinomina il notebook' },
       { key: 'delete', label: 'Elimina il notebook', danger: true }
     ]);
     if (choice === 'listen') Playlist.start(nbReadingOrder(nb), nb.name);
     if (choice === 'graph') go(`#/graph/${nb.id}`);
+    if (choice === 'compare') compareFlow(nb);
+    if (choice === 'ask') go(`#/ask/${nb.id}`);
+    if (choice === 'formato') go(`#/formato/${nb.id}`);
     if (choice === 'print') go(`#/print/nb/${nb.id}`);
     if (choice === 'viva') go(`#/viva/nb/${nb.id}`);
     if (choice === 'rename') renameNb();
@@ -616,6 +624,7 @@ function viewSection(id, mode) {
         <a class="btn sm" href="#/split" title="Apri di fianco un’altra sezione o un PDF">⇆ Affianca</a>
         ${sec.md.trim() ? `<a class="btn sm" href="#/print/sec/${sec.id}" title="Stampa la sezione o salvala in PDF">Stampa</a>` : ''}
         ${sec.md.trim().length > 150 ? `<a class="btn sm" href="#/viva/sec/${sec.id}" title="Il professore (l’AI) ti interroga su questa sezione">Interrogami</a>` : ''}
+        ${Focus.on() ? '' : '<button class="btn sm" type="button" data-act="focus" title="Un obiettivo e un timer: il menu sparisce finché non hai finito">🎯 Fuoco</button>'}
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
@@ -631,6 +640,7 @@ function viewSection(id, mode) {
       </nav>` : ''}
   `);
   on('[data-act="labels"]', 'click', () => startLabels(sec));
+  on('[data-act="focus"]', 'click', () => Focus.start(sec.id));
   if (mode !== 'edit') { Resume.save(location.hash || `#/sec/${sec.id}/${mode}`, window.scrollY); Resume.refresh(); }
   on('[data-act="inc"]', 'click', async () => { if (await toggleIncomplete(sec, () => saveSection(sec), caseSec ? 'caso' : 'sezione')) route(); });
   on('[data-act="case-meta"]', 'click', async () => { if (await caseSheet(sec)) { toast('Dati del caso salvati'); route(); } });
@@ -1428,7 +1438,7 @@ Regole:
 - La prima riga resta il titolo "# " degli appunti, uguale.
 - Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (non aggiungerne e non toglierne), {{lettera|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", e qualsiasi altra sintassi che non riconosci.
 
-Rispondi SOLO con gli appunti in Markdown, senza nessun altro testo prima o dopo.`;
+Rispondi SOLO con gli appunti in Markdown, senza nessun altro testo prima o dopo.${styleRulesBlock()}`;
 }
 // cosa è cambiato davvero: parole sparite, cloze e immagini
 function reformatCheck(before, after) {
@@ -1749,6 +1759,9 @@ function modeEdit(sec, body, opts = {}) {
     toast('Fatto: controlla e poi Salva la sezione', '', { label: 'Annulla', fn: () => { if (ta.isConnected) { ta.value = prev; refresh(); } } });
   }, body);
 
+  // v3.95: arrivi qui da “Formato degli appunti”: la riformattazione si apre da sola
+  if (state.autoReformat === sec.id) { state.autoReformat = null; setTimeout(() => $('[data-act="ai-format"]', body)?.click(), 60); }
+
   on('[data-act="ai-qs"]', 'click', async e => {
     const btn = e.currentTarget;
     if (!ta.value.trim()) { toast('Scrivi prima gli appunti'); return; }
@@ -1848,6 +1861,17 @@ function viewImport(nbParam, groupParam) {
         <button role="tab" data-src="text" aria-selected="${importDraft.src === 'text'}">Testo</button>
         <button role="tab" data-src="pdf" aria-selected="${importDraft.src === 'pdf'}">PDF</button>
         <button role="tab" data-src="xmind" aria-selected="${importDraft.src === 'xmind'}">XMind</button>
+        <button role="tab" data-src="office" aria-selected="${importDraft.src === 'office'}">Word, PPT, foto</button>
+      </div>
+
+      <div id="srcOffice" ${importDraft.src === 'office' ? '' : 'hidden'}>
+        <label class="file-drop">
+          <input type="file" id="ofFile" multiple accept=".docx,.pptx,.doc,.ppt,image/*,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation">
+          <span id="ofLabel">Scegli un file Word (.docx), una presentazione (.pptx) o delle foto</span>
+        </label>
+        <label class="check"><input type="checkbox" id="ofKeep" ${S().ofKeepPhotos !== false ? 'checked' : ''}><span>Con le foto: aggiungi anche le foto alla sezione, sotto la trascrizione</span></label>
+        <p class="hint">Word e PowerPoint: titoli, elenchi, tabelle e note delle diapositive diventano testo (le immagini delle diapositive no). Foto di lavagne, appunti a mano o pagine di libro: le trascrive l’AI, fino a 10 per volta. Il testo passa nella scheda Testo: lo controlli e poi crei le sezioni, con la formattazione che scegli sotto.</p>
+        <p class="err-line" id="ofErr" hidden></p>
       </div>
 
       <div id="srcText" ${importDraft.src === 'text' ? '' : 'hidden'}>
@@ -1874,7 +1898,7 @@ function viewImport(nbParam, groupParam) {
         <div id="xmInfo"></div>
       </div>
 
-      <fieldset class="opts" id="aiOpts" ${importDraft.src === 'xmind' ? 'hidden' : ''}>
+      <fieldset class="opts" id="aiOpts" ${importDraft.src === 'xmind' || importDraft.src === 'office' ? 'hidden' : ''}>
         <legend>Elaborazione</legend>
         <label class="check"><input type="checkbox" id="optAi" ${aiOk && st.aiFormat ? 'checked' : ''} ${aiOk ? '' : 'disabled'}>
           <span>Formatta con ${AI.name()} in elenchi puntati e tabelle</span></label>
@@ -1916,7 +1940,8 @@ function viewImport(nbParam, groupParam) {
     $('#srcText').hidden = importDraft.src !== 'text';
     $('#srcPdf').hidden = importDraft.src !== 'pdf';
     $('#srcXmind').hidden = importDraft.src !== 'xmind';
-    $('#aiOpts').hidden = importDraft.src === 'xmind';
+    $('#srcOffice').hidden = importDraft.src !== 'office';
+    $('#aiOpts').hidden = importDraft.src === 'xmind' || importDraft.src === 'office';
     syncOpts();
   });
 
@@ -1927,6 +1952,29 @@ function viewImport(nbParam, groupParam) {
     $('#textInfo').textContent = n > 1 ? `Testo lungo: verrà diviso in ${n} sezioni.` : '';
   };
   $('#imText').addEventListener('input', textInfo);
+  // v3.95: Word, PowerPoint e foto → testo
+  $('#ofKeep').addEventListener('change', e => { S().ofKeepPhotos = e.target.checked; Settings.save(); });
+  $('#ofFile').addEventListener('change', async e => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (!files.length) return;
+    const lab = $('#ofLabel'), err = $('#ofErr');
+    err.hidden = true;
+    lab.textContent = files.some(f => /^image\//.test(f.type)) ? `Leggo ${files.length === 1 ? 'la foto' : `${files.length} file`} con ${AI.name()}…` : 'Leggo il file…';
+    try {
+      const r = await importOfficeFiles(files, { keepPhotos: $('#ofKeep').checked });
+      if (!r.text.trim()) throw new Error('Non ho trovato testo in questo file.');
+      importDraft.text = importDraft.text.trim() ? `${importDraft.text.trim()}\n\n${r.text}` : r.text;
+      if (r.title && !importDraft.title) importDraft.title = r.title;
+      importDraft.src = 'text';
+      viewImport();
+      toast('Testo estratto: controllalo qui e poi crea le sezioni');
+    } catch (ex) {
+      if (!lab.isConnected) return;
+      lab.textContent = 'Scegli un file Word (.docx), una presentazione (.pptx) o delle foto';
+      err.textContent = ex.message || 'Non riuscito'; err.hidden = false;
+    }
+  });
   $('#imTitle').addEventListener('input', e => { importDraft.title = e.target.value; });
   textInfo();
 
@@ -6150,6 +6198,284 @@ Ascolta TUTTO l’audio e scrivi gli appunti completi in Markdown:
 - segna con "**Esame:**" le cose che il docente dice di chiedere o di sapere bene;
 - solo quello che viene detto: non aggiungere nozioni tue; se un termine non si capisce scrivi "(non chiaro)";
 - niente introduzioni, saluti o commenti: solo gli appunti. Termini medici corretti.`;
+/* =====================================================================
+   v3.96: le lezioni lunghe si dividono in parti da 20 minuti
+   Una lezione di due ore in una sola richiesta è troppo pesante quando
+   Gemini è carico. Il file si taglia qui, senza decodificarlo (così anche
+   un tablet regge due ore di audio):
+   - M4A/MP4 (AAC, il formato dei registratori dei telefoni): si leggono le
+     tabelle del file e ogni frame AAC diventa un frame ADTS (.aac);
+   - MP3 e AAC (ADTS): si taglia ai confini dei frame;
+   - WAV: si taglia ai campioni, con la sua intestazione.
+   Gli altri formati (OGG, OPUS, WEBM, FLAC) si mandano interi, come prima.
+   ===================================================================== */
+const AudioSplit = {
+  PART: 20 * 60,      // secondi per parte
+  MIN: 25 * 60,       // sotto i 25 minuti non si divide
+  async bytes(file, a, b) { return new Uint8Array(await file.slice(a, b).arrayBuffer()); },
+  async plan(file, knownDur = 0) {
+    const head = await this.bytes(file, 0, 64);
+    const tag = (o, s) => String.fromCharCode(...head.slice(o, o + s.length)) === s;
+    let p = null;
+    try {
+      if (tag(4, 'ftyp')) p = await this.mp4(file);
+      else if (tag(0, 'RIFF') && tag(8, 'WAVE')) p = await this.wav(file);
+      else if (tag(0, 'ID3') || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0)) p = await this.frames(file, knownDur);
+    } catch (e) { p = null; }
+    if (!p || !(p.duration > 0)) return null;
+    const n = p.duration > this.MIN ? Math.ceil(p.duration / this.PART) : 1;
+    const len = p.duration / n;
+    p.parts = Array.from({ length: n }, (_, i) => ({ start: Math.round(i * len), end: i === n - 1 ? p.duration : Math.round((i + 1) * len) }));
+    return p;
+  },
+
+  /* ---- M4A/MP4 con AAC → ADTS ---- */
+  async mp4(file) {
+    // le scatole principali; “moov” (le tabelle) può stare in fondo al file
+    let off = 0, moov = null;
+    while (off + 8 <= file.size) {
+      const h = await this.bytes(file, off, off + 16);
+      const dv = new DataView(h.buffer);
+      let size = dv.getUint32(0);
+      const type = String.fromCharCode(...h.slice(4, 8));
+      let hdr = 8;
+      if (size === 1) { size = dv.getUint32(8) * 2 ** 32 + dv.getUint32(12); hdr = 16; } else if (size === 0) size = file.size - off;
+      if (size < hdr) return null;
+      if (type === 'moov') { moov = await this.bytes(file, off + hdr, off + size); break; }
+      off += size;
+    }
+    if (!moov) return null;
+    const boxes = (buf, from, to) => {
+      const out = [];
+      const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      let o = from;
+      while (o + 8 <= to) {
+        let size = dv.getUint32(o);
+        const type = String.fromCharCode(buf[o + 4], buf[o + 5], buf[o + 6], buf[o + 7]);
+        let hdr = 8;
+        if (size === 1) { size = dv.getUint32(o + 8) * 2 ** 32 + dv.getUint32(o + 12); hdr = 16; } else if (size === 0) size = to - o;
+        if (size < hdr || o + size > to) break;
+        out.push({ type, s: o + hdr, e: o + size });
+        o += size;
+      }
+      return out;
+    };
+    const dv = new DataView(moov.buffer);
+    const find = (list, t) => list.find(b => b.type === t);
+    let au = null;
+    for (const trak of boxes(moov, 0, moov.length).filter(b => b.type === 'trak')) {
+      const mdia = find(boxes(moov, trak.s, trak.e), 'mdia');
+      if (!mdia) continue;
+      const mb = boxes(moov, mdia.s, mdia.e);
+      const hdlr = find(mb, 'hdlr');
+      if (!hdlr || String.fromCharCode(...moov.slice(hdlr.s + 8, hdlr.s + 12)) !== 'soun') continue;
+      const mdhd = find(mb, 'mdhd');
+      const v = moov[mdhd.s];
+      const timescale = v === 1 ? dv.getUint32(mdhd.s + 20) : dv.getUint32(mdhd.s + 12);
+      const minf = find(mb, 'minf');
+      const stbl = minf && find(boxes(moov, minf.s, minf.e), 'stbl');
+      if (!stbl) continue;
+      au = { timescale, st: boxes(moov, stbl.s, stbl.e) };
+      break;
+    }
+    if (!au) return null;
+    const st = t => find(au.st, t);
+    // la configurazione AAC (dentro stsd → mp4a → esds)
+    const stsd = st('stsd');
+    const entry = stsd.s + 8;
+    if (String.fromCharCode(...moov.slice(entry + 4, entry + 8)) !== 'mp4a') return null;
+    let asc = null;
+    // la AudioSpecificConfig sta nella esds: ES_Descriptor (0x03) → DecoderConfig (0x04) → DecoderSpecificInfo (0x05)
+    const esdsAt = (() => { for (let i = entry + 36; i < stsd.e - 8; i++) if (moov[i] === 0x65 && moov[i + 1] === 0x73 && moov[i + 2] === 0x64 && moov[i + 3] === 0x73) return i + 8; return -1; })();
+    if (esdsAt < 0) return null;
+    let q = esdsAt;
+    const descLen = () => { let len = 0; for (let k = 0; k < 4; k++) { const b = moov[q++]; len = (len << 7) | (b & 0x7f); if (!(b & 0x80)) break; } return len; };
+    if (moov[q++] !== 0x03) return null;
+    descLen();
+    q += 2;
+    const fl = moov[q++];
+    if (fl & 0x80) q += 2;
+    if (fl & 0x40) q += 1 + moov[q];
+    if (fl & 0x20) q += 2;
+    if (moov[q++] !== 0x04) return null;
+    descLen();
+    q += 13;
+    if (moov[q++] !== 0x05) return null;
+    const alen = descLen();
+    if (alen >= 2) asc = moov.slice(q, q + alen);
+    if (!asc) return null;
+    const obj = asc[0] >> 3;
+    let sfi = ((asc[0] & 7) << 1) | (asc[1] >> 7);
+    const ch = (asc[1] >> 3) & 0xf;
+    // solo AAC normale (LC e simili): l’HE-AAC si manda intero
+    if (![1, 2, 3, 4].includes(obj) || sfi > 12 || ch < 1 || ch > 7) return null;
+    // tabelle: dimensioni, blocchi, posizioni, tempi
+    const stsz = st('stsz');
+    const fixed = dv.getUint32(stsz.s + 4), count = dv.getUint32(stsz.s + 8);
+    const sizes = new Uint32Array(count);
+    for (let i = 0; i < count; i++) sizes[i] = fixed || dv.getUint32(stsz.s + 12 + i * 4);
+    const stco = st('stco') || st('co64');
+    const nCh = dv.getUint32(stco.s + 4);
+    const chunkOff = new Float64Array(nCh);
+    for (let i = 0; i < nCh; i++) chunkOff[i] = stco.type === 'co64' ? dv.getUint32(stco.s + 8 + i * 8) * 2 ** 32 + dv.getUint32(stco.s + 12 + i * 8) : dv.getUint32(stco.s + 8 + i * 4);
+    const stsc = st('stsc');
+    const runs = Array.from({ length: dv.getUint32(stsc.s + 4) }, (_, i) => ({ first: dv.getUint32(stsc.s + 8 + i * 12), per: dv.getUint32(stsc.s + 12 + i * 12) }));
+    const offsets = new Float64Array(count);
+    let si = 0;
+    for (let c = 0; c < nCh && si < count; c++) {
+      let per = 0;
+      for (const r of runs) if (r.first <= c + 1) per = r.per;
+      let o = chunkOff[c];
+      for (let k = 0; k < per && si < count; k++) { offsets[si] = o; o += sizes[si]; si++; }
+    }
+    const stts = st('stts');
+    const times = new Float64Array(count + 1);
+    let t = 0, idx = 0;
+    for (let i = 0, n = dv.getUint32(stts.s + 4); i < n; i++) {
+      const c = dv.getUint32(stts.s + 8 + i * 8), d = dv.getUint32(stts.s + 12 + i * 8);
+      for (let k = 0; k < c && idx < count; k++) { times[idx++] = t; t += d; }
+    }
+    times[count] = t;
+    const duration = t / au.timescale;
+    const self = this;
+    return {
+      kind: 'm4a', mime: 'audio/aac', ext: 'aac', duration,
+      async make(start, end) {
+        const ts = au.timescale;
+        let a = 0;
+        while (a < count && times[a] / ts < start) a++;
+        let b = a;
+        while (b < count && times[b] / ts < end) b++;
+        if (b <= a) throw new Error('Parte vuota');
+        // un solo pezzo di file, dalla prima all’ultima frame (nei .m4a l’audio è tutto di fila)
+        const from = offsets[a], to = offsets[b - 1] + sizes[b - 1];
+        let total = 0;
+        for (let i = a; i < b; i++) total += sizes[i];
+        const contiguous = to - from <= total * 1.5;
+        const src = contiguous ? await self.bytes(file, from, to) : null;
+        const out = new Uint8Array(total + (b - a) * 7);
+        let o = 0;
+        for (let i = a; i < b; i++) {
+          const len = sizes[i] + 7;
+          out[o] = 0xff; out[o + 1] = 0xf1;
+          out[o + 2] = (((obj - 1) & 3) << 6) | (sfi << 2) | ((ch >> 2) & 1);
+          out[o + 3] = ((ch & 3) << 6) | ((len >> 11) & 3);
+          out[o + 4] = (len >> 3) & 0xff;
+          out[o + 5] = ((len & 7) << 5) | 0x1f;
+          out[o + 6] = 0xfc;
+          const frame = src ? src.subarray(offsets[i] - from, offsets[i] - from + sizes[i]) : await self.bytes(file, offsets[i], offsets[i] + sizes[i]);
+          out.set(frame, o + 7);
+          o += len;
+        }
+        return new Blob([out], { type: 'audio/aac' });
+      }
+    };
+  },
+
+  /* ---- WAV ---- */
+  async wav(file) {
+    const h = await this.bytes(file, 0, Math.min(file.size, 4096));
+    const dv = new DataView(h.buffer);
+    let o = 12, fmt = null, data = null;
+    while (o + 8 <= h.length) {
+      const id = String.fromCharCode(...h.slice(o, o + 4));
+      const size = dv.getUint32(o + 4, true);
+      if (id === 'fmt ') fmt = { o: o + 8, size };
+      if (id === 'data') { data = { o: o + 8, size: Math.min(size, file.size - o - 8) }; break; }
+      o += 8 + size + (size & 1);
+    }
+    if (!fmt || !data) return null;
+    const byteRate = dv.getUint32(fmt.o + 8, true), align = dv.getUint16(fmt.o + 12, true);
+    if (!byteRate || !align) return null;
+    const fmtBytes = h.slice(fmt.o, fmt.o + fmt.size);
+    const self = this;
+    return {
+      kind: 'wav', mime: 'audio/wav', ext: 'wav', duration: data.size / byteRate,
+      async make(start, end) {
+        const a = data.o + Math.floor((start * byteRate) / align) * align;
+        const b = Math.min(data.o + data.size, data.o + Math.floor((end * byteRate) / align) * align);
+        const body = await file.slice(a, b).arrayBuffer();
+        const hd = new Uint8Array(20 + fmtBytes.length + 8);
+        const v = new DataView(hd.buffer);
+        hd.set([82, 73, 70, 70]); v.setUint32(4, hd.length - 8 + body.byteLength, true); hd.set([87, 65, 86, 69, 102, 109, 116, 32], 8);
+        v.setUint32(16, fmtBytes.length, true); hd.set(fmtBytes, 20);
+        hd.set([100, 97, 116, 97], 20 + fmtBytes.length); v.setUint32(24 + fmtBytes.length, body.byteLength, true);
+        return new Blob([hd, body], { type: 'audio/wav' });
+      }
+    };
+  },
+
+  /* ---- MP3 e AAC (ADTS): si taglia all’inizio di un frame ---- */
+  async frames(file, knownDur) {
+    const h = await this.bytes(file, 0, 10);
+    let start = 0;
+    if (h[0] === 0x49 && h[1] === 0x44 && h[2] === 0x33) start = 10 + ((h[6] & 0x7f) << 21 | (h[7] & 0x7f) << 14 | (h[8] & 0x7f) << 7 | (h[9] & 0x7f));
+    const MP3_BR = [[0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320], [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]];
+    const MP3_SR = [[44100, 48000, 32000], [22050, 24000, 16000], [11025, 12000, 8000]];
+    const ADTS_SR = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+    // lunghezza e durata di un frame che comincia in b[i], o null
+    const frameAt = (b, i) => {
+      if (b[i] !== 0xff || (b[i + 1] & 0xe0) !== 0xe0) return null;
+      if ((b[i + 1] & 0xf6) === 0xf0) { // ADTS
+        const sfi = (b[i + 2] >> 2) & 0xf;
+        const len = ((b[i + 3] & 3) << 11) | (b[i + 4] << 3) | (b[i + 5] >> 5);
+        if (sfi > 12 || len < 7) return null;
+        return { len, sec: 1024 / ADTS_SR[sfi], adts: true };
+      }
+      const ver = (b[i + 1] >> 3) & 3, layer = (b[i + 1] >> 1) & 3;
+      if (ver === 1 || layer !== 1) return null; // solo Layer III
+      const bri = b[i + 2] >> 4, sri = (b[i + 2] >> 2) & 3, pad = (b[i + 2] >> 1) & 1;
+      if (bri === 0 || bri === 15 || sri === 3) return null;
+      const v1 = ver === 3;
+      const br = MP3_BR[v1 ? 0 : 1][bri] * 1000, sr = MP3_SR[v1 ? 0 : ver === 2 ? 1 : 2][sri];
+      const spf = v1 ? 1152 : 576;
+      return { len: Math.floor((spf / 8) * br / sr) + pad, sec: spf / sr, br };
+    };
+    // il primo frame vero (due frame validi di fila)
+    const probe = await this.bytes(file, start, Math.min(file.size, start + 65536));
+    let first = -1, f0 = null;
+    for (let i = 0; i < probe.length - 8; i++) {
+      const f = frameAt(probe, i);
+      if (f && i + f.len + 4 < probe.length && frameAt(probe, i + f.len)) { first = start + i; f0 = f; break; }
+    }
+    if (first < 0) return null;
+    // il primo frame di un MP3 spesso è l’intestazione “Xing/Info” con la durata di tutto il file: nelle parti non va
+    if (!f0.adts) {
+      const fr = probe.subarray(first - start, first - start + Math.min(f0.len, 200));
+      const txt = String.fromCharCode(...fr);
+      if (/Xing|Info|VBRI/.test(txt)) first += f0.len;
+    }
+    const audioBytes = file.size - first;
+    // durata: quella nota (dal lettore) o stimata dal bitrate
+    const duration = knownDur > 0 ? knownDur : f0.adts ? null : audioBytes / (f0.br / 8);
+    if (!duration) return null;
+    const self = this;
+    const syncFrom = async pos => {
+      if (pos <= first) return first;
+      if (pos >= file.size) return file.size;
+      const buf = await self.bytes(file, pos, Math.min(file.size, pos + 16384));
+      for (let i = 0; i < buf.length - 8; i++) {
+        const f = frameAt(buf, i);
+        if (f && i + f.len + 4 < buf.length && frameAt(buf, i + f.len)) return pos + i;
+      }
+      return pos;
+    };
+    return {
+      kind: f0.adts ? 'aac' : 'mp3', mime: f0.adts ? 'audio/aac' : 'audio/mp3', ext: f0.adts ? 'aac' : 'mp3', duration,
+      async make(s, e) {
+        const a = await syncFrom(first + Math.floor((s / duration) * audioBytes));
+        const b = e >= duration ? file.size : await syncFrom(first + Math.floor((e / duration) * audioBytes));
+        return new Blob([await file.slice(a, b).arrayBuffer()], { type: f0.adts ? 'audio/aac' : 'audio/mpeg' });
+      }
+    };
+  }
+};
+// sposta di “off” secondi i minuti ⏱ scritti negli appunti di una parte
+const shiftStamps = (md, off) => String(md || '').replace(/⏱\s?((?:\d{1,2}:)?\d{1,2}:\d{2})/g, (m, t) => { const v = parseT(t); return v === null ? m : `⏱ ${fmtT(v + off)}`; });
+const fmtHMS = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+// i risultati delle parti già fatte: “Riprova” riparte dalla prima che manca
+const lessonParts = new Map();
+
 // v3.93: se i modelli scelti in Impostazioni sono sovraccarichi, per una lezione intera provo anche questi
 // (tutti ascoltano l’audio; quelli che non esistono più vengono saltati)
 const LESSON_MODELS = ['gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
@@ -6175,12 +6501,10 @@ function lessonAiRun(owner, a, kind) {
     const sh = openSheet(`
       <h2>${kind === 'marks' ? 'Segnalibri automatici' : 'Bozza di appunti'}</h2>
       <p class="sheet-sub">${esc(a.name)}${a.duration ? ` · ${fmtT(a.duration)}` : ''}</p>
-      <ol class="lai-steps">
+      <ol class="lai-steps" id="laiSteps">
         <li data-st="file">Prendo il file della lezione</li>
-        <li data-st="up">Lo carico su Gemini <span class="lai-p"></span></li>
-        <li data-st="ai">Gemini ascolta la lezione${kind === 'notes' ? ' e scrive gli appunti' : ' e ne fa l’indice'} <span class="lai-p"></span></li>
       </ol>
-      <p class="hint">Per una lezione di due ore servono alcuni minuti: lascia aperta questa finestra. L’audio resta su Gemini 48 ore (poi lo cancella da solo), così la seconda richiesta sulla stessa lezione parte subito.</p>
+      <p class="hint" id="laiHint">Lascia aperta questa finestra. L’audio resta su Gemini 48 ore (poi lo cancella da solo), così la seconda richiesta sulla stessa lezione parte subito.</p>
       <p class="lai-note" id="laiNote" aria-live="polite" hidden></p>
       <p class="err-line" id="laiErr" hidden></p>
       <div class="modal-actions"><button class="btn ghost" type="button" data-lai="stop">Annulla</button><button class="btn primary" type="button" data-lai="again" hidden>Riprova</button></div>`, { label: 'Lezione con l’AI', onClose: () => { if (!done) { ctl.abort(); clearInterval(waitT); resolve(null); } } });
@@ -6213,6 +6537,7 @@ function lessonAiRun(owner, a, kind) {
       $$('.lai-steps li', sh.el).forEach(li => { li.className = ''; const p = $('.lai-p', li); if (p) p.textContent = ''; });
       run();
     };
+    let doneRef = [];
     const run = async () => {
       try {
         step('file', 'on');
@@ -6220,33 +6545,82 @@ function lessonAiRun(owner, a, kind) {
         if (!file && a.drive && DriveAudio.ready()) file = await DriveAudio.download(a);
         if (!file) throw new Error('Il file di questa lezione non è su questo dispositivo.');
         step('file', 'ok');
-        const mime = lessonGemMime(file);
-        let t0 = Date.now(), tick = 0;
-        const ask = async retry => {
-          step('up', 'on');
-          const gf = await GemFiles.ensure(a.id, file, mime, a.name, p => step('up', 'on', `${Math.round(p * 100)}%`), ctl.signal);
-          step('up', 'ok');
-          step('ai', 'on');
-          t0 = Date.now();
+        // v3.96: le lezioni lunghe si dividono in parti da circa 20 minuti
+        let plan = null;
+        try { plan = await AudioSplit.plan(file, a.duration || 0); } catch { plan = null; }
+        const split = !!plan && plan.parts.length > 1;
+        const parts = split ? plan.parts : [{ start: 0, end: a.duration || plan?.duration || 0 }];
+        const n = parts.length;
+        const list = $('#laiSteps', sh.el);
+        $$('[data-pt], [data-st="up"], [data-st="ai"]', list).forEach(li => li.remove());
+        if (split) {
+          list.insertAdjacentHTML('beforeend', parts.map((p, i) => `<li data-pt="${i}">Parte ${i + 1} di ${n} · ${fmtT(p.start)}–${fmtT(p.end)} <span class="lai-p"></span></li>`).join(''));
+          $('#laiHint', sh.el).textContent = `La lezione è lunga: la divido in ${n} parti da circa ${Math.round((parts[0].end - parts[0].start) / 60)} minuti e Gemini le ascolta una alla volta, così regge anche quando è carico. Lascia aperta questa finestra; se una parte non riesce, con Riprova si riparte da quella.`;
+        } else {
+          list.insertAdjacentHTML('beforeend', `<li data-st="up">Lo carico su Gemini <span class="lai-p"></span></li><li data-st="ai">Gemini ascolta la lezione${kind === 'notes' ? ' e scrive gli appunti' : ' e ne fa l’indice'} <span class="lai-p"></span></li>`);
+        }
+        const partStep = (i, state, txt = '') => { const li = $(`[data-pt="${i}"]`, sh.el); if (!li) return; li.className = state; const q = $('.lai-p', li); if (q) q.textContent = txt; };
+        const cacheKey = `${a.id}:${kind}:${n}`;
+        const doneParts = lessonParts.get(cacheKey) || [];
+        lessonParts.set(cacheKey, doneParts);
+        doneRef = doneParts;
+        const secs = nb ? secsOf(nb.id).slice(0, 400) : [];
+        let tick = 0;
+        const askPart = async (i, retry) => {
+          const p = parts[i];
+          const blob = split ? await plan.make(p.start, p.end) : file;
+          const mime = split ? plan.mime : lessonGemMime(file);
+          const gid = split ? `${a.id}:p${i}of${n}` : a.id;
+          const show = (state, txt) => (split ? partStep(i, state, txt) : step(state === 'up' ? 'up' : 'ai', 'on', txt));
+          if (!split) step('up', 'on');
+          const gf = await GemFiles.ensure(gid, blob, mime, split ? `${a.name} (parte ${i + 1})` : a.name, q => show('up', split ? `carico ${Math.round(q * 100)}%` : `${Math.round(q * 100)}%`), ctl.signal);
+          if (!split) { step('up', 'ok'); step('ai', 'on'); }
+          const t0 = Date.now();
           clearInterval(tick);
-          tick = setInterval(() => step('ai', 'on', fmtT((Date.now() - t0) / 1000)), 1000);
-          const secs = nb ? secsOf(nb.id).slice(0, 400) : [];
+          tick = setInterval(() => show('ai', split ? `ascolta ${fmtT((Date.now() - t0) / 1000)}` : fmtT((Date.now() - t0) / 1000)), 1000);
+          const len = p.end - p.start;
+          const where = split ? `\nPARTE ${i + 1} DI ${n} della lezione (da ${fmtHMS(p.start)} a ${fmtHMS(p.end)} della registrazione completa). L’audio che ascolti è SOLO questa parte e dura ${fmtT(len)}: scrivi i minuti contando dall’inizio di QUESTO audio (che parte da 0:00:00).${i > 0 && kind === 'notes' ? ' È il seguito delle parti precedenti: non ripetere introduzioni, continua gli appunti.' : ''}` : (a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : '');
           const text = kind === 'marks'
-            ? `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : ''}\n\nSEZIONI DEGLI APPUNTI (titoli esatti):\n${secs.map(s => `- ${s.title}`).join('\n') || '(nessuna)'}`
-            : `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : ''}`;
+            ? `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${where}\n\nSEZIONI DEGLI APPUNTI (titoli esatti):\n${secs.map(x => `- ${x.title}`).join('\n') || '(nessuna)'}`
+            : `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${where}`;
           try {
             return await AI.generate({
-              provider: 'gemini', file: gf, system: kind === 'marks' ? LESSON_SYS_MARKS : LESSON_SYS_NOTES, text, json: kind === 'marks', maxTokens: kind === 'marks' ? 16000 : 60000, signal: ctl.signal,
+              provider: 'gemini', file: gf, system: kind === 'marks' ? LESSON_SYS_MARKS : LESSON_SYS_NOTES, text, json: kind === 'marks', maxTokens: kind === 'marks' ? 16000 : (split ? 24000 : 60000), signal: ctl.signal,
               onWait, onModel, extraModels: LESSON_MODELS
             });
           } catch (e) {
             // il file su Gemini è scaduto o non si legge più: lo ricarico una volta
-            if (!retry && (e.status === 403 || e.status === 404 || /file/i.test(e.message || '')) && e.name !== 'AbortError' && !e.quota) { GemFiles.forget(a.id); return ask(true); }
+            if (!retry && (e.status === 403 || e.status === 404 || /file/i.test(e.message || '')) && e.name !== 'AbortError' && !e.quota) { GemFiles.forget(gid); return askPart(i, true); }
             throw e;
           } finally { clearInterval(tick); }
         };
-        const r = await ask(false);
-        step('ai', 'ok');
+        for (let i = 0; i < n; i++) {
+          if (doneParts[i]) { if (split) partStep(i, 'ok'); continue; }
+          if (split) partStep(i, 'on');
+          const r = await askPart(i, false);
+          doneParts[i] = { text: r.text, truncated: !!r.truncated };
+          if (split) partStep(i, 'ok'); else step('ai', 'ok');
+          note('');
+        }
+        // le parti insieme, con i minuti riportati a quelli della lezione intera
+        let r;
+        if (!split) r = doneParts[0];
+        else if (kind === 'marks') {
+          const all = [];
+          doneParts.forEach((d, i) => {
+            let j = {};
+            try { j = vivaJson(d.text); } catch { j = {}; }
+            (Array.isArray(j.argomenti) ? j.argomenti : []).forEach(x => {
+              const t = parseT(String(x.t || '').trim());
+              if (t === null || t > parts[i].end - parts[i].start + 30) return;
+              all.push({ ...x, t: fmtHMS(t + parts[i].start) });
+            });
+          });
+          r = { text: JSON.stringify({ argomenti: all }), truncated: doneParts.some(d => d.truncated) };
+        } else {
+          r = { text: doneParts.map((d, i) => shiftStamps(String(d.text || '').replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/, '').trim(), parts[i].start)).join('\n\n'), truncated: doneParts.some(d => d.truncated) };
+        }
+        lessonParts.delete(cacheKey);
         note('');
         done = true;
         sh.close(true);
@@ -6254,7 +6628,8 @@ function lessonAiRun(owner, a, kind) {
       } catch (e) {
         if (e.name === 'AbortError' || !sh.el.isConnected) return;
         const retry = !!e.retryable || !!e.overloaded || e.status === 0;
-        fail(e.overloaded ? `${e.message} Il file della lezione resta su Gemini: con Riprova si riparte subito dall’ascolto.`
+        const partsDone = doneRef.filter(Boolean).length;
+        fail(e.overloaded ? `${e.message} ${partsDone ? `Le parti già fatte (${partsDone}) restano: con Riprova si riparte da quella che manca.` : 'Il file della lezione resta su Gemini: con Riprova si riparte subito dall’ascolto.'}`
           : /token|quota|limit/i.test(e.message || '') && e.status === 429 ? `${e.message} Una lezione lunga usa molte risorse della quota gratuita: riprova tra un minuto, o con un modello diverso in Impostazioni.` : (e.message || 'Non riuscito'), retry);
       }
     };
