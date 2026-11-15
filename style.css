@@ -4416,3 +4416,15 @@ a.cite { display: inline-grid; place-items: center; min-width: 1.35em; height: 1
 .fmt-iss { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .fmt-iss .chip, .ask-a .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8rem; }
 .chip.bad { background: var(--danger-soft); color: var(--danger); }
+
+/* v3.97: lezioni con l’AI in sottofondo */
+.lj-chip { position: fixed; z-index: 21; left: 10px; bottom: calc(160px + env(safe-area-inset-bottom, 0px)); max-width: calc(100vw - 86px); display: flex; flex-direction: column; align-items: flex-start; gap: 0; padding: 7px 14px; border: 1.5px solid var(--accent); border-radius: var(--r-lg); background: var(--surface); color: var(--text); box-shadow: var(--shadow); font: inherit; text-align: left; cursor: pointer; }
+.lj-chip.err { border-color: var(--warn); }
+.lj-chip.done { border-color: var(--good); }
+.lj-t { font-weight: 700; font-size: 0.9rem; line-height: 1.25; }
+.lj-n { color: var(--muted); font-size: 0.8rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lj-chip.run .lj-t::first-letter { color: var(--accent); }
+@media (min-width: 900px) { .lj-chip { left: 248px; bottom: 18px; max-width: 420px; } }
+/* sul telefono sta sopra i messaggi in basso, a sinistra del ⚡ */
+@media (max-width: 899px) { .lj-chip { padding: 6px 12px; } .lj-t { font-size: 0.86rem; } }
+body.focus-on.focus-on .lj-chip, html.pdf-open .lj-chip, body:has(#modalRoot > *) .lj-chip { display: none; }

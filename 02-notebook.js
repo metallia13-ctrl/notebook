@@ -6473,8 +6473,6 @@ const AudioSplit = {
 // sposta di “off” secondi i minuti ⏱ scritti negli appunti di una parte
 const shiftStamps = (md, off) => String(md || '').replace(/⏱\s?((?:\d{1,2}:)?\d{1,2}:\d{2})/g, (m, t) => { const v = parseT(t); return v === null ? m : `⏱ ${fmtT(v + off)}`; });
 const fmtHMS = s => { s = Math.max(0, Math.floor(s)); return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
-// i risultati delle parti già fatte: “Riprova” riparte dalla prima che manca
-const lessonParts = new Map();
 
 // v3.93: se i modelli scelti in Impostazioni sono sovraccarichi, per una lezione intera provo anche questi
 // (tutti ascoltano l’audio; quelli che non esistono più vengono saltati)
@@ -6493,197 +6491,272 @@ async function lessonAiNeedsKey() {
   return true;
 }
 // carica l’audio su Gemini e fa la richiesta, con una finestra che dice a che punto è
-function lessonAiRun(owner, a, kind) {
-  return new Promise(resolve => {
-    const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
-    const ctl = new AbortController();
-    let done = false;
-    const sh = openSheet(`
-      <h2>${kind === 'marks' ? 'Segnalibri automatici' : 'Bozza di appunti'}</h2>
-      <p class="sheet-sub">${esc(a.name)}${a.duration ? ` · ${fmtT(a.duration)}` : ''}</p>
-      <ol class="lai-steps" id="laiSteps">
-        <li data-st="file">Prendo il file della lezione</li>
-      </ol>
-      <p class="hint" id="laiHint">Lascia aperta questa finestra. L’audio resta su Gemini 48 ore (poi lo cancella da solo), così la seconda richiesta sulla stessa lezione parte subito.</p>
-      <p class="lai-note" id="laiNote" aria-live="polite" hidden></p>
-      <p class="err-line" id="laiErr" hidden></p>
-      <div class="modal-actions"><button class="btn ghost" type="button" data-lai="stop">Annulla</button><button class="btn primary" type="button" data-lai="again" hidden>Riprova</button></div>`, { label: 'Lezione con l’AI', onClose: () => { if (!done) { ctl.abort(); clearInterval(waitT); resolve(null); } } });
-    const step = (k, state, txt = '') => { const li = $(`[data-st="${k}"]`, sh.el); if (!li) return; li.className = state; const p = $('.lai-p', li); if (p) p.textContent = txt; };
-    // v3.93: cosa sta succedendo mentre Gemini è sovraccarico (nuovi tentativi, altri modelli)
-    let waitT = 0;
-    const note = txt => { const n = $('#laiNote', sh.el); if (!n) return; n.textContent = txt || ''; n.hidden = !txt; };
-    const onWait = (ms, e) => {
-      clearInterval(waitT);
-      const until = Date.now() + ms;
-      const why = e && e.status === 429 ? 'Limite di Gemini al minuto' : 'Gemini è sovraccarico';
-      const paint = () => { const left = Math.max(0, Math.ceil((until - Date.now()) / 1000)); note(left ? `${why}: riprovo tra ${left} s…` : `${why}: riprovo adesso…`); if (!left) clearInterval(waitT); };
-      paint();
-      waitT = setInterval(paint, 1000);
-    };
-    const onModel = model => { clearInterval(waitT); note(`Il modello di prima è sovraccarico: provo con “${model}”…`); };
-    $('[data-lai="stop"]', sh.el).onclick = () => sh.close(null);
-    const fail = (msg, canRetry) => {
-      clearInterval(waitT);
-      note('');
-      const e = $('#laiErr', sh.el); if (e) { e.textContent = msg; e.hidden = false; }
-      $$('.lai-steps .on', sh.el).forEach(li => { li.className = 'ko'; });
-      const b = $('[data-lai="stop"]', sh.el); if (b) b.textContent = 'Chiudi';
-      const r = $('[data-lai="again"]', sh.el); if (r) r.hidden = !canRetry;
-    };
-    $('[data-lai="again"]', sh.el).onclick = () => {
-      $('#laiErr', sh.el).hidden = true;
-      $('[data-lai="again"]', sh.el).hidden = true;
-      $('[data-lai="stop"]', sh.el).textContent = 'Annulla';
-      $$('.lai-steps li', sh.el).forEach(li => { li.className = ''; const p = $('.lai-p', li); if (p) p.textContent = ''; });
-      run();
-    };
-    let doneRef = [];
-    const run = async () => {
+/* =====================================================================
+   v3.97: le lezioni con l’AI lavorano in sottofondo
+   Avvii “Segnalibri automatici” o “Bozza di appunti” e torni a studiare:
+   l’app va avanti da sola, una parte alla volta. I segnalibri di ogni
+   parte compaiono appena quella parte è pronta. Un riquadro in basso dice a
+   che punto è; toccandolo vedi le parti, puoi riprovare o fermare.
+   Le parti fatte restano salvate: se chiudi l’app, riparte da dove era.
+   ===================================================================== */
+const LessonJobs = {
+  KEY: 'nb-lesson-jobs',
+  jobs: [], running: null, ctl: null, chip: null, sheet: null,
+  load() { try { this.jobs = JSON.parse(localStorage.getItem(this.KEY) || '[]') || []; } catch { this.jobs = []; } },
+  save() { try { localStorage.setItem(this.KEY, JSON.stringify(this.jobs)); } catch { /* troppo grande: restano solo in memoria */ } },
+  label: k => (k === 'marks' ? 'Segnalibri automatici' : 'Bozza di appunti'),
+  owner(j) { return audioOwner(j.ot, j.oid); },
+  audio(j) { const o = this.owner(j); return o ? audiosOf(o).find(x => x.id === j.aid) || null : null; },
+  find(owner, a, kind) { return this.jobs.find(j => j.oid === owner.id && j.aid === a.id && j.kind === kind) || null; },
+  init() {
+    this.load();
+    // lavori di lezioni che non esistono più
+    this.jobs = this.jobs.filter(j => this.audio(j));
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'lj-chip';
+    el.hidden = true;
+    el.addEventListener('click', () => this.open(this.jobs.find(j => j.status === 'err') || this.jobs.find(j => j.status === 'run') || this.jobs[0]));
+    document.body.append(el);
+    this.chip = el;
+    this.paint();
+    // riparte da solo se l’app era stata chiusa a metà
+    if (this.jobs.some(j => j.status === 'run' || j.status === 'wait')) setTimeout(() => this.run(), 1500);
+  },
+  start(owner, a, kind) {
+    let j = this.find(owner, a, kind);
+    if (j && j.status === 'done' && kind === 'notes') { this.openNotes(j); return; }
+    if (!j) {
+      j = { id: uid(), ot: isSecRec(owner) ? 'sec' : 'nb', oid: owner.id, aid: a.id, name: a.name, kind, status: 'wait', parts: null, done: [], added: [], err: '', wait: '', created: Date.now() };
+      this.jobs.push(j);
+    } else if (j.status === 'err') { j.status = 'wait'; j.err = ''; }
+    this.save();
+    this.paint();
+    this.run();
+    this.open(j);
+  },
+  paint() {
+    if (!this.chip) return;
+    const live = this.jobs.filter(j => j.status !== 'done' || j.kind === 'notes');
+    if (!live.length) { this.chip.hidden = true; this.paintSheet(); return; }
+    const j = live.find(x => x.status === 'err') || live.find(x => x.status === 'run') || live.find(x => x.status === 'done') || live[0];
+    const n = j.parts ? j.parts.length : 0;
+    const k = j.done.filter(Boolean).length;
+    const more = live.length > 1 ? ` · +${live.length - 1}` : '';
+    let txt;
+    if (j.status === 'err') txt = `⚠ ${this.label(j.kind)} fermi${n > 1 ? ` alla parte ${k + 1} di ${n}` : ''}: tocca per riprovare`;
+    else if (j.status === 'done') txt = `✨ Bozza di appunti pronta: tocca per aprirla`;
+    else if (j.status === 'wait') txt = `✨ ${this.label(j.kind)} in coda`;
+    else txt = `✨ ${this.label(j.kind)}${n > 1 ? ` · parte ${Math.min(k + 1, n)} di ${n}` : ' · in corso'}${j.wait ? ` · ${j.wait}` : ''}`;
+    this.chip.hidden = false;
+    this.chip.className = `lj-chip ${j.status}`;
+    this.chip.innerHTML = `<span class="lj-t">${esc(txt)}${more}</span><span class="lj-n">${esc(j.name)}</span>`;
+    this.paintSheet();
+  },
+  // la finestra con le parti; si può chiudere e continuare a studiare
+  open(j) {
+    if (!j) return;
+    if (j.kind === 'notes' && j.status === 'done') { this.openNotes(j); return; }
+    const sh = openSheet('<div class="lj-sheet"></div>', { label: this.label(j.kind), onClose: () => { this.sheet = null; } });
+    this.sheet = { el: sh.el, close: sh.close, j };
+    sh.el.addEventListener('click', e => {
+      const b = e.target.closest('[data-lj]');
+      if (!b) return;
+      const k = b.dataset.lj;
+      if (k === 'close') sh.close(null);
+      else if (k === 'again') { j.status = 'wait'; j.err = ''; this.save(); this.paint(); this.run(); }
+      else if (k === 'stop') this.stop(j);
+    });
+    this.paintSheet();
+  },
+  paintSheet() {
+    const s = this.sheet;
+    if (!s || !s.el.isConnected) return;
+    const j = s.j;
+    if (!this.jobs.includes(j)) { s.close(null); return; }
+    const box = $('.lj-sheet', s.el);
+    const n = j.parts ? j.parts.length : 0;
+    const k = j.done.filter(Boolean).length;
+    const items = n ? j.parts.map((p, i) => {
+      const st = j.done[i] ? 'ok' : j.status === 'run' && i === k ? 'on' : j.status === 'err' && i === k ? 'ko' : '';
+      return `<li class="${st}">${n > 1 ? `Parte ${i + 1} di ${n} · ${fmtT(p.start)}–${fmtT(p.end)}` : 'La lezione intera'}${st === 'on' && j.step ? ` <span class="lai-p">${esc(j.step)}</span>` : ''}${j.done[i] && j.kind === 'marks' ? ` <small class="muted-inline">${j.done[i].n || 0} segnalibri</small>` : ''}</li>`;
+    }).join('') : `<li class="on">Prendo il file della lezione</li>`;
+    box.innerHTML = `
+      <h2>${this.label(j.kind)}</h2>
+      <p class="sheet-sub">${esc(j.name)}</p>
+      <ol class="lai-steps">${items}</ol>
+      ${j.wait ? `<p class="lai-note">${esc(j.wait)}</p>` : ''}
+      ${j.err ? `<p class="err-line">${esc(j.err)}</p>` : ''}
+      <p class="hint">${j.kind === 'marks' ? 'I segnalibri di ogni parte compaiono nella lezione appena quella parte è pronta, già collegati alle sezioni.' : 'Quando tutte le parti sono pronte trovi la bozza qui, o dal riquadro in basso.'} Intanto puoi chiudere questa finestra e studiare: il lavoro continua finché l’app resta aperta, e se la chiudi riparte da dove era.</p>
+      <div class="modal-actions">
+        ${j.status === 'done' ? '' : '<button class="btn ghost danger" type="button" data-lj="stop">Ferma</button>'}
+        ${j.status === 'err' ? '<button class="btn" type="button" data-lj="again">Riprova</button>' : ''}
+        <button class="btn primary" type="button" data-lj="close">${j.status === 'done' ? 'Chiudi' : 'Continua a studiare'}</button>
+      </div>`;
+  },
+  stop(j) {
+    if (this.running === j && this.ctl) this.ctl.abort();
+    this.jobs = this.jobs.filter(x => x !== j);
+    this.save();
+    if (this.sheet) this.sheet.close(null);
+    this.paint();
+    toast(j.kind === 'marks' && j.added.length ? `Fermato: i ${j.added.length} segnalibri già aggiunti restano` : 'Fermato');
+  },
+  async run() {
+    if (this.running) return;
+    for (;;) {
+      const j = this.jobs.find(x => x.status === 'run') || this.jobs.find(x => x.status === 'wait');
+      if (!j) break;
+      this.running = j;
+      this.ctl = new AbortController();
+      j.status = 'run'; j.err = ''; j.wait = '';
+      this.save(); this.paint();
       try {
-        step('file', 'on');
-        let file = await AudioDB.get(a.id);
-        if (!file && a.drive && DriveAudio.ready()) file = await DriveAudio.download(a);
-        if (!file) throw new Error('Il file di questa lezione non è su questo dispositivo.');
-        step('file', 'ok');
-        // v3.96: le lezioni lunghe si dividono in parti da circa 20 minuti
-        let plan = null;
-        try { plan = await AudioSplit.plan(file, a.duration || 0); } catch { plan = null; }
-        const split = !!plan && plan.parts.length > 1;
-        const parts = split ? plan.parts : [{ start: 0, end: a.duration || plan?.duration || 0 }];
-        const n = parts.length;
-        const list = $('#laiSteps', sh.el);
-        $$('[data-pt], [data-st="up"], [data-st="ai"]', list).forEach(li => li.remove());
-        if (split) {
-          list.insertAdjacentHTML('beforeend', parts.map((p, i) => `<li data-pt="${i}">Parte ${i + 1} di ${n} · ${fmtT(p.start)}–${fmtT(p.end)} <span class="lai-p"></span></li>`).join(''));
-          $('#laiHint', sh.el).textContent = `La lezione è lunga: la divido in ${n} parti da circa ${Math.round((parts[0].end - parts[0].start) / 60)} minuti e Gemini le ascolta una alla volta, così regge anche quando è carico. Lascia aperta questa finestra; se una parte non riesce, con Riprova si riparte da quella.`;
-        } else {
-          list.insertAdjacentHTML('beforeend', `<li data-st="up">Lo carico su Gemini <span class="lai-p"></span></li><li data-st="ai">Gemini ascolta la lezione${kind === 'notes' ? ' e scrive gli appunti' : ' e ne fa l’indice'} <span class="lai-p"></span></li>`);
-        }
-        const partStep = (i, state, txt = '') => { const li = $(`[data-pt="${i}"]`, sh.el); if (!li) return; li.className = state; const q = $('.lai-p', li); if (q) q.textContent = txt; };
-        const cacheKey = `${a.id}:${kind}:${n}`;
-        const doneParts = lessonParts.get(cacheKey) || [];
-        lessonParts.set(cacheKey, doneParts);
-        doneRef = doneParts;
-        const secs = nb ? secsOf(nb.id).slice(0, 400) : [];
-        let tick = 0;
-        const askPart = async (i, retry) => {
-          const p = parts[i];
-          const blob = split ? await plan.make(p.start, p.end) : file;
-          const mime = split ? plan.mime : lessonGemMime(file);
-          const gid = split ? `${a.id}:p${i}of${n}` : a.id;
-          const show = (state, txt) => (split ? partStep(i, state, txt) : step(state === 'up' ? 'up' : 'ai', 'on', txt));
-          if (!split) step('up', 'on');
-          const gf = await GemFiles.ensure(gid, blob, mime, split ? `${a.name} (parte ${i + 1})` : a.name, q => show('up', split ? `carico ${Math.round(q * 100)}%` : `${Math.round(q * 100)}%`), ctl.signal);
-          if (!split) { step('up', 'ok'); step('ai', 'on'); }
-          const t0 = Date.now();
-          clearInterval(tick);
-          tick = setInterval(() => show('ai', split ? `ascolta ${fmtT((Date.now() - t0) / 1000)}` : fmtT((Date.now() - t0) / 1000)), 1000);
-          const len = p.end - p.start;
-          const where = split ? `\nPARTE ${i + 1} DI ${n} della lezione (da ${fmtHMS(p.start)} a ${fmtHMS(p.end)} della registrazione completa). L’audio che ascolti è SOLO questa parte e dura ${fmtT(len)}: scrivi i minuti contando dall’inizio di QUESTO audio (che parte da 0:00:00).${i > 0 && kind === 'notes' ? ' È il seguito delle parti precedenti: non ripetere introduzioni, continua gli appunti.' : ''}` : (a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : '');
-          const text = kind === 'marks'
-            ? `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${where}\n\nSEZIONI DEGLI APPUNTI (titoli esatti):\n${secs.map(x => `- ${x.title}`).join('\n') || '(nessuna)'}`
-            : `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${where}`;
-          try {
-            return await AI.generate({
-              provider: 'gemini', file: gf, system: kind === 'marks' ? LESSON_SYS_MARKS : LESSON_SYS_NOTES, text, json: kind === 'marks', maxTokens: kind === 'marks' ? 16000 : (split ? 24000 : 60000), signal: ctl.signal,
-              onWait, onModel, extraModels: LESSON_MODELS
-            });
-          } catch (e) {
-            // il file su Gemini è scaduto o non si legge più: lo ricarico una volta
-            if (!retry && (e.status === 403 || e.status === 404 || /file/i.test(e.message || '')) && e.name !== 'AbortError' && !e.quota) { GemFiles.forget(gid); return askPart(i, true); }
-            throw e;
-          } finally { clearInterval(tick); }
-        };
-        for (let i = 0; i < n; i++) {
-          if (doneParts[i]) { if (split) partStep(i, 'ok'); continue; }
-          if (split) partStep(i, 'on');
-          const r = await askPart(i, false);
-          doneParts[i] = { text: r.text, truncated: !!r.truncated };
-          if (split) partStep(i, 'ok'); else step('ai', 'ok');
-          note('');
-        }
-        // le parti insieme, con i minuti riportati a quelli della lezione intera
-        let r;
-        if (!split) r = doneParts[0];
-        else if (kind === 'marks') {
-          const all = [];
-          doneParts.forEach((d, i) => {
-            let j = {};
-            try { j = vivaJson(d.text); } catch { j = {}; }
-            (Array.isArray(j.argomenti) ? j.argomenti : []).forEach(x => {
-              const t = parseT(String(x.t || '').trim());
-              if (t === null || t > parts[i].end - parts[i].start + 30) return;
-              all.push({ ...x, t: fmtHMS(t + parts[i].start) });
-            });
-          });
-          r = { text: JSON.stringify({ argomenti: all }), truncated: doneParts.some(d => d.truncated) };
-        } else {
-          r = { text: doneParts.map((d, i) => shiftStamps(String(d.text || '').replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/, '').trim(), parts[i].start)).join('\n\n'), truncated: doneParts.some(d => d.truncated) };
-        }
-        lessonParts.delete(cacheKey);
-        note('');
-        done = true;
-        sh.close(true);
-        resolve(r);
+        await this.exec(j, this.ctl.signal);
+        j.status = 'done'; j.wait = ''; j.step = '';
+        if (j.kind === 'marks') {
+          this.jobs = this.jobs.filter(x => x !== j);
+          const added = j.added.slice();
+          toast(added.length ? `${j.name}: ${added.length} segnalibri aggiunti` : `${j.name}: nessun segnalibro nuovo`, '', added.length ? { label: 'Annulla', fn: () => this.undoMarks(j, added) } : null);
+        } else toast(`${j.name}: bozza di appunti pronta`, '', { label: 'Apri', fn: () => this.openNotes(j) });
       } catch (e) {
-        if (e.name === 'AbortError' || !sh.el.isConnected) return;
-        const retry = !!e.retryable || !!e.overloaded || e.status === 0;
-        const partsDone = doneRef.filter(Boolean).length;
-        fail(e.overloaded ? `${e.message} ${partsDone ? `Le parti già fatte (${partsDone}) restano: con Riprova si riparte da quella che manca.` : 'Il file della lezione resta su Gemini: con Riprova si riparte subito dall’ascolto.'}`
-          : /token|quota|limit/i.test(e.message || '') && e.status === 429 ? `${e.message} Una lezione lunga usa molte risorse della quota gratuita: riprova tra un minuto, o con un modello diverso in Impostazioni.` : (e.message || 'Non riuscito'), retry);
+        if (!this.jobs.includes(j)) { /* fermato */ }
+        else if (e.name === 'AbortError') { j.status = 'wait'; }
+        else { j.status = 'err'; j.wait = ''; j.step = ''; j.err = e.overloaded ? `${e.message}${j.done.filter(Boolean).length ? ` Le parti già fatte restano: Riprova riparte da quella che manca.` : ''}` : (e.message || 'Non riuscito'); }
       }
+      this.running = null;
+      this.save(); this.paint();
+      if (j.status === 'wait') break; // interrotto: riparte alla prossima apertura
+    }
+  },
+  async exec(j, signal) {
+    const owner = this.owner(j), a = this.audio(j);
+    if (!owner || !a) throw new Error('Questa lezione non c’è più.');
+    const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
+    let file = await AudioDB.get(a.id);
+    if (!file && a.drive && DriveAudio.ready()) { j.step = 'scarico da Drive'; this.paint(); file = await DriveAudio.download(a); }
+    if (!file) throw new Error('Il file di questa lezione non è su questo dispositivo: ricaricalo o scaricalo da Drive.');
+    let plan = null;
+    try { plan = await AudioSplit.plan(file, a.duration || 0); } catch { plan = null; }
+    const split = !!plan && plan.parts.length > 1;
+    const parts = split ? plan.parts : [{ start: 0, end: a.duration || plan?.duration || 0 }];
+    // se il taglio è cambiato (file diverso), le parti vecchie non valgono più
+    if (!j.parts || j.parts.length !== parts.length) { j.parts = parts; j.done = []; }
+    this.save(); this.paint();
+    const n = parts.length;
+    const secs = nb ? secsOf(nb.id).slice(0, 400) : [];
+    const onWait = (ms, e) => {
+      const until = Date.now() + ms;
+      const why = e && e.status === 429 ? 'limite al minuto' : 'Gemini è sovraccarico';
+      const tick = () => { if (this.running !== j) return; const left = Math.max(0, Math.ceil((until - Date.now()) / 1000)); j.wait = left ? `${why}: riprovo tra ${left} s` : ''; this.paint(); if (left) setTimeout(tick, 1000); };
+      tick();
     };
-    run();
-  });
-}
-async function lessonAiMarks(owner, a) {
-  const r = await lessonAiRun(owner, a, 'marks');
-  if (!r) return;
-  const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
-  let items = [];
-  try { const j = vivaJson(r.text); items = Array.isArray(j.argomenti) ? j.argomenti : []; } catch { /* sotto */ }
-  const secs = nb ? secsOf(nb.id) : [];
-  const findSec = name => { const f = foldAccents(String(name || '')).trim(); if (!f) return null; return secs.find(s => foldAccents(s.title).trim() === f) || secs.find(s => { const t = foldAccents(s.title).trim(); return t.length > 5 && (t.includes(f) || f.includes(t)); }) || null; };
-  const dur = a.duration || Infinity;
-  items = items.map(x => ({ t: parseT(String(x.t || '').trim()), title: String(x.titolo || '').trim().slice(0, 120), sec: isSecRec(owner) ? null : findSec(x.sezione), exam: !!x.esame, note: String(x.nota || '').trim().slice(0, 200) }))
-    .filter(x => x.t !== null && x.t >= 0 && x.t <= dur + 5 && x.title).sort((x, y) => x.t - y.t);
-  if (!items.length) { toast('Gemini non ha restituito un indice leggibile: riprova', 'err'); return; }
-  const near = t => (a.marks || []).some(m => Math.abs(m.t - t) <= 15);
-  const sh = openSheet(`
-    <h2>Segnalibri proposti</h2>
-    <p class="sheet-sub">${esc(a.name)}: ${items.length} argomenti${items.some(x => x.exam) ? `, ${items.filter(x => x.exam).length} segnalati per l’esame (★)` : ''}. Togli la spunta a quelli che non vuoi; i minuti sono indicativi, controllali ascoltando.</p>
-    <ul class="lai-list">${items.map((x, i) => `<li><label class="row lai-row ${near(x.t) ? 'done' : ''}">
-      <input type="checkbox" data-lai-i="${i}" ${near(x.t) ? 'disabled' : 'checked'}>
-      <span class="lai-t">${fmtT(x.t)}</span>
-      <span class="row-main"><span class="row-title">${x.exam ? '★ ' : ''}${esc(x.title)}</span><span class="row-sub">${esc([x.sec ? `→ ${x.sec.title}` : '', near(x.t) ? 'c’è già un segnalibro qui' : '', x.note].filter(Boolean).join(' · '))}</span></span></label></li>`).join('')}</ul>
-    ${isSecRec(owner) ? '' : '<label class="check"><input type="checkbox" id="laiLink" checked><span>Collega i segnalibri alle sezioni trovate (→)</span></label>'}
-    <div class="modal-actions"><button class="btn ghost" type="button" data-lai="no">Annulla</button><button class="btn primary" type="button" data-lai="ok">Aggiungi i segnalibri</button></div>`, { label: 'Segnalibri proposti' });
-  $('[data-lai="no"]', sh.el).onclick = () => sh.close(null);
-  $('[data-lai="ok"]', sh.el).onclick = async () => {
-    const link = $('#laiLink', sh.el)?.checked;
-    const pick = $$('[data-lai-i]:checked:not(:disabled)', sh.el).map(c => items[+c.dataset.laiI]);
-    if (!pick.length) { sh.close(null); return; }
-    const cur = audioOwner(isSecRec(owner) ? 'sec' : 'nb', owner.id) || owner;
-    const rec = audiosOf(cur).find(x => x.id === a.id) || a;
-    pick.forEach(x => rec.marks.push({ id: uid(), t: x.t, label: `${x.exam ? '★ ' : ''}${x.title}`, ai: true, ...(isSecRec(cur) ? {} : { secIds: link && x.sec ? [x.sec.id] : [] }) }));
+    const onModel = m => { j.wait = `provo con “${m}”`; this.paint(); };
+    for (let i = 0; i < n; i++) {
+      if (j.done[i]) continue;
+      const p = parts[i];
+      const blob = split ? await plan.make(p.start, p.end) : file;
+      const mime = split ? plan.mime : lessonGemMime(file);
+      const gid = split ? `${a.id}:p${i}of${n}` : a.id;
+      const ask = async retry => {
+        j.step = 'carico'; this.paint();
+        const gf = await GemFiles.ensure(gid, blob, mime, split ? `${a.name} (parte ${i + 1})` : a.name, q => { j.step = `carico ${Math.round(q * 100)}%`; this.paint(); }, signal);
+        const t0 = Date.now();
+        const tk = setInterval(() => { j.step = `ascolta ${fmtT((Date.now() - t0) / 1000)}`; this.paintSheet(); }, 1000);
+        j.step = 'ascolta'; this.paint();
+        const len = p.end - p.start;
+        const where = split ? `\nPARTE ${i + 1} DI ${n} della lezione (da ${fmtHMS(p.start)} a ${fmtHMS(p.end)} della registrazione completa). L’audio che ascolti è SOLO questa parte e dura ${fmtT(len)}: scrivi i minuti contando dall’inizio di QUESTO audio (che parte da 0:00:00).${i > 0 && j.kind === 'notes' ? ' È il seguito delle parti precedenti: non ripetere introduzioni, continua gli appunti.' : ''}` : (a.duration ? `\nDURATA DELL’AUDIO: ${fmtT(a.duration)}` : '');
+        const text = j.kind === 'marks'
+          ? `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${where}\n\nSEZIONI DEGLI APPUNTI (titoli esatti):\n${secs.map(x => `- ${x.title}`).join('\n') || '(nessuna)'}`
+          : `LEZIONE: ${a.name}${nb ? `\nMATERIA: ${nb.name}` : ''}${where}`;
+        try {
+          return await AI.generate({
+            provider: 'gemini', file: gf, system: j.kind === 'marks' ? LESSON_SYS_MARKS : LESSON_SYS_NOTES, text, json: j.kind === 'marks', maxTokens: j.kind === 'marks' ? 16000 : (split ? 24000 : 60000), signal,
+            onWait, onModel, extraModels: LESSON_MODELS
+          });
+        } catch (e) {
+          if (!retry && (e.status === 403 || e.status === 404 || /file/i.test(e.message || '')) && e.name !== 'AbortError' && !e.quota) { GemFiles.forget(gid); return ask(true); }
+          throw e;
+        } finally { clearInterval(tk); }
+      };
+      // la connessione che salta (Wi-Fi, schermo spento) non ferma il lavoro: riprova da solo
+      let r;
+      for (let net = 0; ; net++) {
+        try { r = await ask(false); break; } catch (e) {
+          if (e.name === 'AbortError' || e.status !== 0 || net >= 3) throw e;
+          const ms = [5000, 15000, 30000][net];
+          j.wait = `connessione assente: riprovo tra ${Math.round(ms / 1000)} s`; this.paint();
+          await sleepAbortable(ms, signal);
+          j.wait = ''; this.paint();
+        }
+      }
+      if (!this.jobs.includes(j)) throw Object.assign(new Error('Fermato'), { name: 'AbortError' });
+      const d = { text: r.text, truncated: !!r.truncated };
+      // i segnalibri di questa parte compaiono subito
+      if (j.kind === 'marks') d.n = await this.addMarks(j, owner, a, r.text, p, nb);
+      j.done[i] = d;
+      j.wait = ''; j.step = '';
+      this.save(); this.paint();
+    }
+    if (j.kind === 'notes') {
+      j.result = { text: j.done.map((d, i) => shiftStamps(String(d.text || '').replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/, '').trim(), parts[i].start)).join('\n\n'), truncated: j.done.some(d => d.truncated) };
+      j.done = j.done.map(() => ({ text: '' })); // il testo resta solo nel risultato
+    }
+  },
+  async addMarks(j, owner, a, text, p, nb) {
+    let items = [];
+    try { const js = vivaJson(text); items = Array.isArray(js.argomenti) ? js.argomenti : []; } catch { items = []; }
+    const secs = nb ? secsOf(nb.id) : [];
+    const findSec = name => { const f = foldAccents(String(name || '')).trim(); if (!f) return null; return secs.find(s => foldAccents(s.title).trim() === f) || secs.find(s => { const t = foldAccents(s.title).trim(); return t.length > 5 && (t.includes(f) || f.includes(t)); }) || null; };
+    const len = p.end - p.start;
+    const cur = this.owner(j) || owner;
+    const rec = audiosOf(cur).find(x => x.id === a.id);
+    if (!rec) return 0;
+    rec.marks = rec.marks || [];
+    let added = 0;
+    items.forEach(x => {
+      const rel = parseT(String(x.t || '').trim());
+      const title = String(x.titolo || '').trim().slice(0, 120);
+      if (rel === null || rel < 0 || rel > len + 30 || !title) return;
+      const t = Math.round(rel + p.start);
+      if (rec.marks.some(m => Math.abs(m.t - t) <= 15)) return;
+      const sec = isSecRec(cur) ? null : findSec(x.sezione);
+      const m = { id: uid(), t, label: `${x.esame ? '★ ' : ''}${title}`, ai: true, ...(isSecRec(cur) ? {} : { secIds: sec ? [sec.id] : [] }) };
+      rec.marks.push(m);
+      j.added.push(m.id);
+      added++;
+    });
     rec.marks.sort((x, y) => x.t - y.t);
+    if (added) {
+      await saveOwner(cur);
+      AudioPlayer.paintTicks?.();
+      AudioMode.refresh();
+    }
+    return added;
+  },
+  async undoMarks(j, ids) {
+    const cur = this.owner(j);
+    const rec = cur && audiosOf(cur).find(x => x.id === j.aid);
+    if (!rec) return;
+    const set = new Set(ids);
+    rec.marks = (rec.marks || []).filter(m => !set.has(m.id));
     await saveOwner(cur);
-    sh.close(true);
     AudioPlayer.paintTicks?.();
-    toast(`${pick.length} segnalibri aggiunti${link && pick.some(x => x.sec) ? `, ${pick.filter(x => x.sec).length} collegati alle sezioni` : ''}`);
-    route();
-  };
-}
-async function lessonAiNotes(owner, a) {
-  // la bozza resta da parte finché non chiudi l’app: riaprendola non serve riascoltare
-  const KEY = `nb-lai-notes-${a.id}`;
-  let r = null;
-  try { const old = sessionStorage.getItem(KEY); if (old) r = JSON.parse(old); } catch { r = null; }
-  if (!r) {
-    r = await lessonAiRun(owner, a, 'notes');
-    if (!r) return;
-    try { sessionStorage.setItem(KEY, JSON.stringify({ text: r.text, truncated: !!r.truncated })); } catch { /* troppo grande: pazienza */ }
+    AudioMode.refresh();
+    toast('Segnalibri tolti');
+  },
+  openNotes(j) {
+    const owner = this.owner(j), a = this.audio(j);
+    if (!owner || !a || !j.result) { this.jobs = this.jobs.filter(x => x !== j); this.save(); this.paint(); return; }
+    lessonAiNotes(owner, a, j);
   }
+};
+async function lessonAiMarks(owner, a) { LessonJobs.start(owner, a, 'marks'); }
+// la bozza arriva dal lavoro in sottofondo; resta da parte (anche chiudendo l’app) finché non la usi
+async function lessonAiNotes(owner, a, job = null) {
+  if (!job || !job.result) { LessonJobs.start(owner, a, 'notes'); return; }
+  const r = job.result;
+  const drop = () => { LessonJobs.jobs = LessonJobs.jobs.filter(x => x !== job); LessonJobs.save(); LessonJobs.paint(); };
   const nb = isSecRec(owner) ? nbById(owner.notebookId) : owner;
   // “⏱ 12:34” di una lezione del notebook ha bisogno del suo nome per ritrovarla
   let md = String(r.text || '').replace(/^```(?:markdown|md)?\s*\n?/i, '').replace(/\n?```\s*$/, '').trim();
@@ -6698,19 +6771,20 @@ async function lessonAiNotes(owner, a) {
       <button class="btn" type="button" data-lai="copy">Copia</button>
       <button class="btn primary" type="button" data-lai="ok">${isSecRec(owner) ? 'Aggiungi in fondo alla sezione' : 'Crea una sezione con questi appunti'}</button>
     </div>`, { label: 'Bozza di appunti' });
-  $('[data-lai="no"]', sh.el).onclick = () => { sh.close(null); toast('La bozza resta da parte finché non chiudi l’app: la ritrovi da ⋯ → Bozza di appunti'); };
-  $('[data-lai="redo"]', sh.el).onclick = () => { try { sessionStorage.removeItem(KEY); } catch { /* niente */ } sh.close(null); lessonAiNotes(owner, a); };
+  $('[data-lai="no"]', sh.el).onclick = () => { sh.close(null); toast('La bozza resta da parte: la ritrovi nel riquadro in basso o da ⋯ → Bozza di appunti'); };
+  $('[data-lai="redo"]', sh.el).onclick = () => { drop(); sh.close(null); LessonJobs.start(owner, a, 'notes'); };
   $('[data-lai="copy"]', sh.el).onclick = () => { navigator.clipboard?.writeText(md).then(() => toast('Appunti copiati'), () => toast('Non riesco a copiare', 'err')); };
   $('[data-lai="ok"]', sh.el).onclick = async () => {
     if (isSecRec(owner)) {
       owner.md = `${String(owner.md || '').trimEnd()}\n\n## Dalla registrazione “${a.name}”\n\n${md.replace(/^## /gm, '### ')}\n`;
       await saveSection(owner);
+      drop();
       sh.close(true);
       toast('Appunti aggiunti in fondo alla sezione');
       go(`#/sec/${owner.id}/read`);
       return;
     }
-    try { sessionStorage.removeItem(KEY); } catch { /* niente */ }
+    drop();
     const s = newSection(nb.id, { title: `${a.name} (appunti dalla lezione)`, md, source: `Bozza dell’AI dalla lezione “${a.name}”` });
     await saveSection(s);
     const rec = audiosOf(nb).find(x => x.id === a.id);
@@ -6723,7 +6797,7 @@ async function lessonAiNotes(owner, a) {
 async function lessonAiAct(ch, owner, a) {
   if ((ch === 'ai-marks' || ch === 'ai-notes') && await lessonAiNeedsKey()) return true;
   if (ch === 'ai-marks') { await lessonAiMarks(owner, a); return true; }
-  if (ch === 'ai-notes') { await lessonAiNotes(owner, a); return true; }
+  if (ch === 'ai-notes') { const j = LessonJobs.find(owner, a, 'notes'); if (j) LessonJobs.open(j); else LessonJobs.start(owner, a, 'notes'); return true; }
   return false;
 }
 
