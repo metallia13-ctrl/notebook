@@ -10,7 +10,31 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.00';
+const APP_VERSION = '4.01';
+
+// v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
+// Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
+// dei PDF non si poteva selezionare e l’importazione si fermava con “undefined is not a function”.
+if (typeof ReadableStream !== 'undefined' && typeof Symbol !== 'undefined' && Symbol.asyncIterator && !ReadableStream.prototype[Symbol.asyncIterator]) {
+  const iter = async function* ({ preventCancel = false } = {}) {
+    const reader = this.getReader();
+    let done = false;
+    try {
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) { done = true; return; }
+        yield r.value;
+      }
+    } finally {
+      if (!done && !preventCancel) { try { await reader.cancel(); } catch { /* niente */ } }
+      try { reader.releaseLock(); } catch { /* niente */ }
+    }
+  };
+  try {
+    Object.defineProperty(ReadableStream.prototype, Symbol.asyncIterator, { value: iter, writable: true, configurable: true });
+    if (!ReadableStream.prototype.values) Object.defineProperty(ReadableStream.prototype, 'values', { value: iter, writable: true, configurable: true });
+  } catch { /* niente */ }
+}
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';

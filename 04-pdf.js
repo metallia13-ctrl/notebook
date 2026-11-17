@@ -235,6 +235,9 @@ function viewPdf(id, pageParam) {
   // ---------- geometria delle pagine
   const pageEl = n => pagesEl.querySelector(`.pdf-page[data-p="${n}"]`);
   const sizeOf = n => R.sizes[n] || R.sizes[Math.floor(n)] || R.base;
+  // v4.01: lo spessore scelto vale per quello che vedi sullo schermo: al 200% il tratto sulla pagina
+  // è sottile la metà, come la grafia, che a schermo scrivi sempre della stessa grandezza
+  const inkWNow = (w = R.inkW) => +(w / (R.zoom || 1)).toFixed(2);
   const fitScale = () => {
     const avail = Math.max(200, scroller.clientWidth - (window.innerWidth < 600 ? 12 : 40));
     return Math.min(avail / R.base.width, 2.2);
@@ -352,7 +355,7 @@ function viewPdf(id, pageParam) {
     svg.innerHTML = anns.map(a => {
       if (a.type === 'hl') return `<g class="ann-hl" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="1.5" fill="${pdfCol(a.color)}"/>`).join('')}</g>`;
       if (a.type === 'ul') return `<g class="ann-ul" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] - 1.6).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
-      if (a.type === 'ink') return `<path class="ann-ink ${a.w >= 6 ? 'marker' : ''}" data-id="${a.id}" d="${inkPath(a.pts)}" stroke="${esc(a.color)}" stroke-width="${a.w}"/>`;
+      if (a.type === 'ink') return `<path class="ann-ink ${inkIsMarker(a) ? 'marker' : ''}" data-id="${a.id}" d="${inkPath(a.pts)}" stroke="${esc(a.color)}" stroke-width="${a.w}"/>`;
       if (a.type === 'st') return `<g class="ann-ul" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] * 0.52 - 0.8).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
       if (a.type === 'shape') return shapeSvg(a);
       if (a.type === 'text') return `<g class="ann-text" data-id="${a.id}">${String(a.text).split('\n').map((l, k) => `<text x="${a.x}" y="${(a.y + (k + 1) * a.fs * 1.25).toFixed(2)}" font-size="${a.fs}" fill="${esc(a.color)}">${esc(l)}</text>`).join('')}</g>`;
@@ -1058,7 +1061,7 @@ function viewPdf(id, pageParam) {
       const path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('class', `ann-ink live ${R.inkW >= 6 ? 'marker' : ''}`);
       path.setAttribute('stroke', R.ink);
-      path.setAttribute('stroke-width', R.inkW);
+      path.setAttribute('stroke-width', inkWNow());
       svg.append(path);
       ink = { id: e.pointerId, el, path, pts: [pointInPage(el, e)] };
       path.setAttribute('d', inkPath(ink.pts));
@@ -1070,7 +1073,7 @@ function viewPdf(id, pageParam) {
     if (ink.eraser) { eraseAt(e); return; }
     if (ink.shape) {
       ink.box = [...ink.p0, ...pointInPage(ink.el, e)];
-      ink.shape.innerHTML = shapeSvg({ kind: R.shape, box: ink.box, color: R.ink, w: R.inkW, id: '' }, true);
+      ink.shape.innerHTML = shapeSvg({ kind: R.shape, box: ink.box, color: R.ink, w: inkWNow(Math.min(R.inkW, 4)), id: '' }, true);
       return;
     }
     if (ink.occ) {
@@ -1097,7 +1100,7 @@ function viewPdf(id, pageParam) {
     if (cur.shape) {
       cur.shape.remove();
       const [x1, y1, x2, y2] = cur.box;
-      if (Math.hypot(x2 - x1, y2 - y1) > 6) addAnnots([{ id: uid(), type: 'shape', kind: R.shape, page: +cur.el.dataset.p, box: cur.box.map(v => +v.toFixed(2)), color: R.ink, w: Math.min(R.inkW, 4), created: Date.now() }]);
+      if (Math.hypot(x2 - x1, y2 - y1) > 6) addAnnots([{ id: uid(), type: 'shape', kind: R.shape, page: +cur.el.dataset.p, box: cur.box.map(v => +v.toFixed(2)), color: R.ink, w: inkWNow(Math.min(R.inkW, 4)), created: Date.now() }]);
       return;
     }
     if (cur.crop) {
@@ -1113,7 +1116,7 @@ function viewPdf(id, pageParam) {
       return;
     }
     cur.path.remove();
-    addAnnots([{ id: uid(), type: 'ink', page: +cur.el.dataset.p, color: R.ink, w: R.inkW, pts: cur.pts, created: Date.now() }]);
+    addAnnots([{ id: uid(), type: 'ink', page: +cur.el.dataset.p, color: R.ink, w: inkWNow(), ...(R.inkW >= 6 ? { m: 1 } : {}), pts: cur.pts, created: Date.now() }]);
   };
   pagesEl.addEventListener('pointerup', endInk);
   pagesEl.addEventListener('pointercancel', endInk);
@@ -1819,8 +1822,9 @@ function viewPdf(id, pageParam) {
   const addSheet = (after, bg) => {
     const k = Math.max(0, ...sheetsAfter(after).map(s => s.k)) + 1;
     if (k > 99) { toast('Dopo questa pagina ci sono già tanti fogli'); return; }
+    // v4.01: proporzioni di un A4 (verticale), larghe quanto la pagina del PDF: con un PDF in A4 è un A4 vero
     const sz = sizeOf(after);
-    const s = { id: uid(), after, k, bg, w: +sz.width.toFixed(2), h: +sz.height.toFixed(2), created: Date.now() };
+    const s = { id: uid(), after, k, bg, w: +sz.width.toFixed(2), h: +(sz.width * Math.SQRT2).toFixed(2), created: Date.now() };
     const last = sheetsAfter(after).pop();
     const prev = (last && pageEl(sheetKey(last))) || pageEl(after);
     if (!prev) return;
@@ -2485,6 +2489,8 @@ const mdSafe = t => cleanPdfText(t).replace(/\{\{|\}\}/g, '').replace(/==/g, '='
 // fogli per appunti: hanno come “pagina” un numero con la virgola (3,01 = primo foglio dopo la pagina 3)
 const sheetKey = s => +(s.after + s.k / 100).toFixed(2);
 const isSheetPage = p => !Number.isInteger(+p);
+// v4.01: l’evidenziatore della penna si segna con m (prima si capiva dallo spessore, che ora cambia con lo zoom)
+const inkIsMarker = a => (a.m !== undefined ? !!a.m : a.w >= 6);
 const pgLabel = p => (isSheetPage(p) ? `foglio dopo p. ${Math.floor(p)}` : `${p}`);
 
 // Appunti dalle evidenziazioni: una sezione con le frasi raggruppate per colore (o per pagina)
@@ -2825,7 +2831,7 @@ async function exportAnnotatedPdf(meta, blob, jsDoc, onStep = () => {}) {
       else if (a.type === 'st') a.rects.forEach(r => pg.drawRectangle({ ...box(r[0], r[1] + r[3] * 0.52 - 0.8, r[2], 1.6), color: col(pdfCol(a.color, 2)) }));
       else if (a.type === 'ink' && a.pts?.length) {
         const pts = a.pts.length === 1 ? [a.pts[0], [a.pts[0][0] + 0.01, a.pts[0][1]]] : a.pts;
-        stroke(path(pts), a.color, a.w, a.w >= 6 ? 0.4 : 1);
+        stroke(path(pts), a.color, a.w, inkIsMarker(a) ? 0.4 : 1);
       } else if (a.type === 'shape') {
         const [x1, y1, x2, y2] = a.box;
         if (a.kind === 'ellipse') {

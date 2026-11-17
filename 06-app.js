@@ -1320,6 +1320,12 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.01", title: "fogli A4, spessore della penna che segue lo zoom, correzioni per iPad e mappe", html: `      <ul>
+        <li><strong>Fogli A4</strong>: i fogli del blocco note hanno le proporzioni di un A4; quando arrivi in fondo se ne aggiunge un altro sotto, e una linea tratteggiata (“A4 · 2”) segna dove comincia. Anche i fogli per appunti nel PDF sono A4, larghi quanto la pagina del PDF.</li>
+        <li><strong>Spessore della penna e zoom</strong>: lo spessore che scegli è quello che vedi sullo schermo. Se scrivi al 200% la grafia viene più piccola e il tratto, sulla pagina, sottile la metà: tornando al 100% le due scritte hanno lo stesso spessore in proporzione. Vale per il blocco note e per la penna dei PDF; i tratti già scritti non cambiano.</li>
+        <li><strong>iPad</strong>: il testo dei PDF si seleziona di nuovo (evidenziare, Trascina, flashcard dalla selezione) e l’importazione dei PDF non si ferma più con “undefined is not a function”. Funzionano di nuovo anche la ricerca nel PDF e Ascolta.</li>
+        <li><strong>Mappe</strong>: i nodi creati dagli appunti non si fermano più a 200 caratteri, e il testo mandato alla mappa dal PDF non si ferma più a 300. Le mappe già fatte si sistemano da sole quando le apri, se negli appunti c’è ancora la frase intera.</li>
+      </ul>` },
   { v: "4.00", title: "lettore PDF: appunti dalle evidenziazioni, ascolto, fogli per appunti", html: `      <ul>
         <li><strong>Legenda dei colori</strong>: dai un significato a ogni colore dell’evidenziatore (giallo = definizioni, rosso = da sapere per l’esame…). Lo vedi accanto ai colori quando evidenzi e vale per tutti i PDF.</li>
         <li><strong>Appunti dalle evidenziazioni</strong> (Pannello › Note, oppure Altro ▾): le frasi evidenziate e sottolineate diventano un elenco in una sezione, divise per colore o per pagina, con il numero di pagina che riporta al PDF e le tue note sotto. La volta dopo puoi prendere solo quelle nuove.</li>
@@ -2282,6 +2288,9 @@ const PadDB = {
 const PAD_COLORS = [['ink', 'Inchiostro'], ['#2563eb', 'Blu'], ['#dc2626', 'Rosso'], ['#16a34a', 'Verde'], ['#f59e0b', 'Arancio'], ['#9333ea', 'Viola']];
 const PAD_HL = [['#facc15', 'Giallo'], ['#4ade80', 'Verde'], ['#f472b6', 'Rosa'], ['#38bdf8', 'Azzurro']];
 const PAD_ZOOMS = [0.25, 0.35, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4];
+// v4.01: i fogli del blocco note hanno le proporzioni di un A4 e si allungano di un A4 alla volta
+const PAD_A4 = Math.SQRT2;
+const padA4Up = h => Math.max(1, Math.ceil(h / PAD_A4 - 1e-6)) * PAD_A4;
 const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
 // v3.56: sfondo del foglio (righe, quadretti o bianco) e foglio da esportare su carta bianca
 function padPaper(c, W, H, kind, color, alpha, vis = null, bounds = null) {
@@ -2701,7 +2710,7 @@ const PadX = {
     const arrow = { k: 'shape', sh: 'arrow', id: uid(), c: n.c, w: n.w, a: n.id, b: node.id, p: [[b[2], b[1], 0.5], [x0, y0, 0.5]] };
     pg.strokes.push(node, arrow);
     this.relink();
-    if (!pg.inf && y0 + h > (pg.h || 1.6) - 0.05) { pg.h = y0 + h + 0.4; this.layout(); }
+    if (!pg.inf && y0 + h > (pg.h || 1.6) - 0.05) { pg.h = padA4Up(y0 + h + 0.05); this.layout(); }
     // il nodo nuovo in vista
     const body = $('.pad-body', this.el);
     const sx = (x0 + w) * this.W + this.OX, sy = (y0 + h) * this.W + this.OY;
@@ -2879,7 +2888,7 @@ const Pad = {
       else if (b.dataset.pc) this.pickColor(b.dataset.pc);
       else if (b.dataset.ps) {
         this.size = +b.dataset.ps;
-        if (this.sel && this.sel.length) { this.restyleSel({ w: this.size }); return; }
+        if (this.sel && this.sel.length) { this.restyleSel({ w: this.sizeNow() }); return; }
         if (!['hl', 'shape', 'text'].includes(this.tool)) this.tool = 'pen';
         this.paintTools();
       }
@@ -2908,6 +2917,9 @@ const Pad = {
     if (this.tool === 'hl') this.hlColor = c; else { this.color = c; if (!['shape', 'text'].includes(this.tool)) this.tool = 'pen'; }
     this.paintTools();
   },
+  // v4.01: lo spessore scelto vale per lo schermo: al 200% il tratto sul foglio è sottile la metà,
+  // così la grafia (che scrivi sempre della stessa grandezza) ha lo stesso spessore a ogni zoom
+  sizeNow() { return +(this.size / (this.zoom || 1)).toFixed(5); },
   restyleSel(ch) {
     const pg = this.pg();
     this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });
@@ -3018,7 +3030,7 @@ const Pad = {
     this.title = ctx.title;
     const d = await PadDB.get(this.key);
     if (this.key !== ctx.key) return;
-    this.data = d && Array.isArray(d.pages) && d.pages.length ? d : { pages: [{ strokes: [], h: 1.6 }], t: Date.now() };
+    this.data = d && Array.isArray(d.pages) && d.pages.length ? d : { pages: [{ strokes: [], h: PAD_A4 }], t: Date.now() };
     this.data.pages.forEach(pg => { pg.strokes = pg.strokes.filter(x => x.k !== 'text' || String(x.t || '').trim()); });
     this.page = Math.min(this.data.page || 0, this.data.pages.length - 1);
     this.undo = [];
@@ -3122,6 +3134,20 @@ const Pad = {
     c.setTransform(dpr, 0, 0, dpr, (OX - sl) * dpr, (OY - st) * dpr);
     const vis = [sl - OX, st - OY, sl - OX + this.VW, st - OY + this.VH];
     padPaper(c, this.W, this.H, this.bg(), this.lineCol || (this.lineCol = getComputedStyle(document.body).getPropertyValue('--line').trim() || '#ccc'), 0.45, vis, [-OX, -OY, (this.SW || this.W) - OX, this.H - OY]);
+    // v4.01: dove finisce ogni A4 del foglio (solo a schermo, non nelle immagini esportate)
+    if (!this.pg().inf) {
+      const step = PAD_A4 * this.W;
+      c.save();
+      c.strokeStyle = this.inkColor('ink'); c.globalAlpha = 0.28; c.lineWidth = 1.2; c.setLineDash([8, 6]);
+      c.fillStyle = c.strokeStyle; c.font = '600 11px system-ui, sans-serif'; c.textAlign = 'right';
+      for (let k = 1; k * step < this.H - 4; k++) {
+        const y = Math.round(k * step) + 0.5;
+        if (y < vis[1] - 20 || y > vis[3] + 20) continue;
+        c.beginPath(); c.moveTo(0, y); c.lineTo(this.W, y); c.stroke();
+        c.fillText(`A4 · ${k + 1}`, this.W - 8, y + 14);
+      }
+      c.restore();
+    }
     const W = this.W, m = 4;
     for (const s of this.pg().strokes) {
       const b = this.bbOf(s);
@@ -3312,7 +3338,7 @@ const Pad = {
       if (this.tool === 'text') { this.drawing = { id: e.pointerId, textTap: pt }; return; }
       if (this.tool === 'shape') {
         const q = pt.slice(0, 2).map(v => +v.toFixed(4));
-        const s = { k: 'shape', sh: this.shape, id: uid(), c: this.color, w: this.size, p: [[q[0], q[1], 0.5], [q[0], q[1], 0.5]] };
+        const s = { k: 'shape', sh: this.shape, id: uid(), c: this.color, w: this.sizeNow(), p: [[q[0], q[1], 0.5], [q[0], q[1], 0.5]] };
         if (this.fill && padClosed(s)) s.f = 1;
         this.sel = null; this.selBox = null;
         this.pg().strokes.push(s);
@@ -3323,7 +3349,7 @@ const Pad = {
       this.selBox = null;
       $('[data-pa="dup"]', this.el).hidden = true;
       const hl = this.tool === 'hl';
-      const s = hl ? { c: this.hlColor, w: this.size * 3.2, k: 'hl', p: [pt.map(v => +v.toFixed(4))] } : { c: this.color, w: this.size, p: [pt.map(v => +v.toFixed(4))] };
+      const s = hl ? { c: this.hlColor, w: +(this.sizeNow() * 3.2).toFixed(5), k: 'hl', p: [pt.map(v => +v.toFixed(4))] } : { c: this.color, w: this.sizeNow(), p: [pt.map(v => +v.toFixed(4))] };
       this.drawing = { id: e.pointerId, s, x: e.clientX, y: e.clientY };
       this.pg().strokes.push(s);
       if (hl) this.liveHl(s); else this.drawStroke(s);
@@ -3423,7 +3449,7 @@ const Pad = {
       // scrivendo in fondo il foglio si allunga
       const pg = this.pg();
       const lastY = d.s ? d.s.p[d.s.p.length - 1][1] * this.W : 0;
-      if (d.s && !pg.inf && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.H = Math.round(pg.h * this.W); this.sizeSheet(); }
+      if (d.s && !pg.inf && lastY > this.H - 60) { pg.h = padA4Up(this.H / this.W + 0.01); this.H = Math.round(pg.h * this.W); this.sizeSheet(); this.redraw(); }
     });
     const inPoly = (x, y, poly) => { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi) inside = !inside; } return inside; };
     const end = e => {
@@ -3626,20 +3652,20 @@ const Pad = {
       if (!pg.strokes.length) return;
       this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes });
       pg.strokes = [];
-      pg.h = 1.6;
+      pg.h = PAD_A4;
       this.layout();
       this.saveSoon();
       toast('Pagina svuotata', '', { label: 'Annulla', fn: () => this.act('undo') });
     } else if (a === 'add') {
       const cur = this.pg();
       const ch = await actionSheet('Nuova pagina', [
-        { key: 'page', label: 'Foglio (si allunga verso il basso)' },
+        { key: 'page', label: 'Foglio A4 (quando arrivi in fondo se ne aggiunge un altro sotto)' },
         { key: 'inf', label: 'Tela infinita, per mappe e schemi (si allarga in ogni direzione)' },
         ...(cur.inf ? [] : [{ key: 'conv', label: 'Trasforma questa pagina in tela infinita' }])
       ]);
       if (!ch) return;
       if (ch === 'conv') { cur.inf = true; cur.ext = [-1.5, -1.5, 2.5, Math.max(3, (cur.h || 1.6) + 1.5)]; this.layout(); this.home(); this.saveT = 1; this.saveSoon(); toast('Ora questa pagina è una tela infinita: scorri in ogni direzione, ⤢ per vederla tutta'); return; }
-      this.data.pages.splice(this.page + 1, 0, ch === 'inf' ? { strokes: [], h: 1.6, inf: true, ext: [-1.5, -1.5, 2.5, 3] } : { strokes: [], h: 1.6 });
+      this.data.pages.splice(this.page + 1, 0, ch === 'inf' ? { strokes: [], h: PAD_A4, inf: true, ext: [-1.5, -1.5, 2.5, 3] } : { strokes: [], h: PAD_A4 });
       this.page++;
       this.layout();
       this.home();

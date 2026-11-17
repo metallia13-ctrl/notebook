@@ -4206,8 +4206,9 @@ function mdToMapTree(md, title) {
     .replace(/\s+/g, ' ')
     .trim();
   const root = { t: title || 'Mappa' };
-  const add = (parent, t) => { const n = { t: t.slice(0, 200) }; (parent.c || (parent.c = [])).push(n); return n; };
-  const note = (node, t) => { if (!t) return; node.n = node.n ? `${node.n}\n${t}`.slice(0, 2000) : t.slice(0, 2000); };
+  // v4.01: tutto il testo, senza tagliarlo (prima i nodi si fermavano a 200 caratteri)
+  const add = (parent, t) => { const n = { t }; (parent.c || (parent.c = [])).push(n); return n; };
+  const note = (node, t) => { if (!t) return; node.n = node.n ? `${node.n}\n${t}` : t; };
   const stack = [{ lvl: 0, node: root }];
   const top = () => stack[stack.length - 1].node;
   const addList = (items, parent) => items.forEach(it => {
@@ -4252,6 +4253,23 @@ function mdToMapTree(md, title) {
   }
   return root;
 }
+// v4.01: le mappe create dagli appunti fino alla 4.00 tagliavano ogni nodo a 200 caratteri.
+// Se negli appunti della sezione c’è ancora la frase intera, il nodo la riprende.
+function mapRepairCut(sec) {
+  const cut = [];
+  const walk = n => { if (!n) return; if (typeof n.t === 'string' && n.t.length === 200) cut.push(n); (n.c || []).forEach(walk); };
+  mapsOf(sec).forEach(m => (m.sheets || []).forEach(sh => walk(sh.root)));
+  if (!cut.length || !sec.md) return false;
+  const full = [];
+  const fw = n => { if (n.t && n.t.length > 200) full.push(n.t); (n.c || []).forEach(fw); };
+  try { fw(mdToMapTree(sec.md, sec.title)); } catch { return false; }
+  let fixed = 0;
+  cut.forEach(n => {
+    const f = full.find(t => t.startsWith(n.t));
+    if (f) { n.t = f; delete n.r; fixed++; }
+  });
+  return fixed > 0;
+}
 async function exportXmind(m) {
   await ensureJSZip();
   const topic = n => {
@@ -4287,6 +4305,8 @@ async function exportXmind(m) {
 }
 
 function modeMap(sec, body) {
+  // v4.01: i nodi tagliati a 200 caratteri dalle versioni precedenti si ricompongono dagli appunti
+  if (mapRepairCut(sec)) saveSection(sec);
   let maps = mapsOf(sec);
   const st = S();
   let mi = Math.min(maps.length - 1, Math.max(0, maps.findIndex(m => m.id === st.mapLast)));
@@ -4358,7 +4378,7 @@ function modeMap(sec, body) {
       }
       snap();
       const parent = selNode && inTree(c.sheet.root, selNode) ? selNode : c.sheet.root;
-      const node = { t: String(text).slice(0, 300) };
+      const node = { t: String(text) };
       if (note) node.n = note;
       parent.c = [...(parent.c || []), node];
       collapsed.delete(parent);
