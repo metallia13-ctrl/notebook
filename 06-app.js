@@ -1158,6 +1158,7 @@ async function init() {
   Settings.load();
   applyTheme();
   Live.init();
+  watchScrollRows();
   if (EMBED) initEmbed();
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { if (S().theme === 'auto') applyTheme(); });
   try {
@@ -1320,6 +1321,12 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.02", title: "niente più tasti tagliati, e lo spessore della penna non cambia più con la forma dello schermo", html: `      <ul>
+        <li><strong>Spessore della penna</strong>: resta quello che vedi anche se cambi la divisione dello schermo (da accanto a sopra/sotto), se ruoti il tablet, se allarghi il pannello o se cambi zoom. Prima, passando da verticale a orizzontale, lo stesso tratto veniva il doppio più spesso. Vale per il blocco note e per la penna dei PDF, anche dentro Affianca.</li>
+        <li><strong>Barra del testo selezionato</strong>: quando i tasti non stanno su una riga vanno a capo, così si vedono tutti. Prima la parte in più (Alla mappa, Copia…) restava nascosta fuori dal bordo. Vale anche per la barra della scrittura a mano.</li>
+        <li><strong>File di tasti che continuano</strong> (strumenti del PDF, schede delle modalità, strumenti del blocco note): ora sfumano dal lato dove continuano, così si capisce che si possono far scorrere invece di sembrare tagliate.</li>
+        <li><strong>Menu</strong> del tasto destro e di formattazione: restano sempre dentro lo schermo, anche vicino ai bordi.</li>
+      </ul>` },
   { v: "4.01", title: "fogli A4, spessore della penna che segue lo zoom, correzioni per iPad e mappe", html: `      <ul>
         <li><strong>Fogli A4</strong>: i fogli del blocco note hanno le proporzioni di un A4; quando arrivi in fondo se ne aggiunge un altro sotto, e una linea tratteggiata (“A4 · 2”) segna dove comincia. Anche i fogli per appunti nel PDF sono A4, larghi quanto la pagina del PDF.</li>
         <li><strong>Spessore della penna e zoom</strong>: lo spessore che scegli è quello che vedi sullo schermo. Se scrivi al 200% la grafia viene più piccola e il tratto, sulla pagina, sottile la metà: tornando al 100% le due scritte hanno lo stesso spessore in proporzione. Vale per il blocco note e per la penna dei PDF; i tratti già scritti non cambiano.</li>
@@ -2290,6 +2297,9 @@ const PAD_HL = [['#facc15', 'Giallo'], ['#4ade80', 'Verde'], ['#f472b6', 'Rosa']
 const PAD_ZOOMS = [0.25, 0.35, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4];
 // v4.01: i fogli del blocco note hanno le proporzioni di un A4 e si allungano di un A4 alla volta
 const PAD_A4 = Math.SQRT2;
+// larghezza di riferimento per lo spessore della penna: lo spessore scelto è quello che si vede
+// quando il foglio è largo così, e resta quello a schermo anche se il foglio è più stretto o più largo
+const PAD_REF = 620;
 const padA4Up = h => Math.max(1, Math.ceil(h / PAD_A4 - 1e-6)) * PAD_A4;
 const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
 // v3.56: sfondo del foglio (righe, quadretti o bianco) e foglio da esportare su carta bianca
@@ -2917,9 +2927,11 @@ const Pad = {
     if (this.tool === 'hl') this.hlColor = c; else { this.color = c; if (!['shape', 'text'].includes(this.tool)) this.tool = 'pen'; }
     this.paintTools();
   },
-  // v4.01: lo spessore scelto vale per lo schermo: al 200% il tratto sul foglio è sottile la metà,
-  // così la grafia (che scrivi sempre della stessa grandezza) ha lo stesso spessore a ogni zoom
-  sizeNow() { return +(this.size / (this.zoom || 1)).toFixed(5); },
+  // v4.01: lo spessore scelto vale per lo schermo. Sul foglio viene diviso per l’ingrandimento con
+  // cui lo stai guardando (zoom e larghezza del riquadro insieme): così la grafia, che a schermo
+  // scrivi sempre della stessa grandezza, ha sempre lo stesso spessore, anche cambiando zoom,
+  // allargando il blocco note o spostandolo da accanto a sotto.
+  sizeNow() { return +(this.size * PAD_REF / Math.max(120, this.W || PAD_REF)).toFixed(6); },
   restyleSel(ch) {
     const pg = this.pg();
     this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });

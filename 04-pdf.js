@@ -235,9 +235,11 @@ function viewPdf(id, pageParam) {
   // ---------- geometria delle pagine
   const pageEl = n => pagesEl.querySelector(`.pdf-page[data-p="${n}"]`);
   const sizeOf = n => R.sizes[n] || R.sizes[Math.floor(n)] || R.base;
-  // v4.01: lo spessore scelto vale per quello che vedi sullo schermo: al 200% il tratto sulla pagina
-  // è sottile la metà, come la grafia, che a schermo scrivi sempre della stessa grandezza
-  const inkWNow = (w = R.inkW) => +(w / (R.zoom || 1)).toFixed(2);
+  // v4.01: lo spessore scelto vale per quello che vedi sullo schermo. Sulla pagina viene diviso
+  // per l’ingrandimento con cui la stai guardando (zoom e larghezza della finestra insieme), come
+  // la grafia, che a schermo scrivi sempre della stessa grandezza: così il tratto resta uguale
+  // anche cambiando zoom, ruotando il tablet o aprendo il pannello di fianco.
+  const inkWNow = (w = R.inkW) => +(w / (R.scale || fitScale() * (R.zoom || 1) || 1)).toFixed(3);
   const fitScale = () => {
     const avail = Math.max(200, scroller.clientWidth - (window.innerWidth < 600 ? 12 : 40));
     return Math.min(avail / R.base.width, 2.2);
@@ -530,7 +532,8 @@ function viewPdf(id, pageParam) {
   const barTool = () => R.tool === 'select' || (textTool() && SelGesture.lastType !== 'mouse');
   const pdfStable = stableSelection(bar, () => { if (!barTool()) return false; const s = readSelection(); if (s) lastSel = s; lastSelAt = Date.now(); return !!s; }, {
     // nel PDF le pagine occupano tutto: la barra va in alto, sotto gli strumenti
-    place: () => { const r = scroller.getBoundingClientRect(); bar.classList.add('rt-top'); bar.style.top = `${Math.round(r.top + 8)}px`; bar.style.left = `${Math.round(r.left + r.width / 2)}px`; }
+    // v4.02: la barra resta dentro lo schermo anche se è più larga della parte visibile del PDF
+    place: () => { const r = scroller.getBoundingClientRect(); bar.classList.add('rt-top'); clampFixed(bar, { centerX: r.left + r.width / 2, top: r.top + 8 }); }
   });
   addCleanup(() => pdfStable.done());
   // v3.71: più parti insieme, come nelle sezioni (Ctrl o “＋ Altra parte”); si vedono tratteggiate
@@ -691,8 +694,7 @@ function viewPdf(id, pageParam) {
     menu.hidden = false;
     const w = menu.offsetWidth || 300;
     const h = menu.offsetHeight || 60;
-    menu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - w - 8))}px`;
-    menu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - h - 8))}px`;
+    clampFixed(menu, { left: e.clientX, top: e.clientY });
   };
   const onDocDown = e => { if (!menu.hidden && !menu.contains(e.target)) menu.hidden = true; };
 

@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.01';
+const APP_VERSION = '4.02';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -1235,6 +1235,65 @@ document.addEventListener('keydown', e => {
 function on(sel, ev, fn, root = $('#view')) { $$(sel, root).forEach(el => el.addEventListener(ev, fn)); }
 function addCleanup(fn) { cleanups.push(fn); }
 function go(hash) { if (location.hash === hash) route(); else location.hash = hash; }
+
+/* ---------------------------------------------------------------------
+   v4.02: barre e menu che restano nello schermo
+   Una barra fissa (selezione, menu del tasto destro, formattazione) non deve
+   mai finire mezza fuori: si misura e si sposta dentro i bordi. Se non ci sta
+   in larghezza, scorre al suo interno.
+   --------------------------------------------------------------------- */
+/* v4.02: le file di tasti che scorrono di lato (strumenti, schede) sfumano dal lato dove
+   continuano, così si vede che c’è dell’altro invece di sembrare tagliate. */
+const SCROLL_ROWS = '.tabs, .pdf-tools, .pdf-tabs, .pad-tools, .pad-shapes, .edit-tools, .map-etools, .au-top, .au-ctl, .sh-tools, .split-tools';
+function scrollHint(el) {
+  if (!el || el.dataset.scHint) return;
+  el.dataset.scHint = '1';
+  const upd = () => {
+    const more = el.scrollWidth - el.clientWidth;
+    el.classList.toggle('sc-l', more > 4 && el.scrollLeft > 4);
+    el.classList.toggle('sc-r', more > 4 && el.scrollLeft < more - 4);
+  };
+  el.addEventListener('scroll', upd, { passive: true });
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(upd).observe(el);
+  window.addEventListener('resize', upd);
+  setTimeout(upd, 60);
+  upd();
+}
+function watchScrollRows() {
+  const scan = root => {
+    if (!root || root.nodeType !== 1) return;
+    if (root.matches && root.matches(SCROLL_ROWS)) scrollHint(root);
+    if (root.querySelectorAll) root.querySelectorAll(SCROLL_ROWS).forEach(scrollHint);
+  };
+  scan(document.body);
+  if (typeof MutationObserver === 'undefined') return;
+  let t = 0;
+  const mo = new MutationObserver(ms => {
+    const add = ms.some(m => m.addedNodes.length);
+    if (!add || t) return;
+    t = setTimeout(() => { t = 0; scan(document.body); }, 120);
+  });
+  mo.observe(document.body, { childList: true, subtree: true });
+}
+
+function clampFixed(el, { centerX = null, left = null, top = null, gap = 8, bottomGap = null } = {}) {
+  if (!el || el.hidden) return;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  el.style.maxWidth = `${Math.max(140, vw - gap * 2)}px`;
+  const w = el.offsetWidth || 0;
+  const h = el.offsetHeight || 0;
+  if (centerX !== null && Number.isFinite(centerX)) {
+    const half = w / 2;
+    const lo = gap + half, hi = vw - gap - half;
+    el.style.left = `${Math.round(lo > hi ? vw / 2 : Math.max(lo, Math.min(hi, centerX)))}px`;
+  } else if (left !== null && Number.isFinite(left)) {
+    el.style.left = `${Math.round(Math.max(gap, Math.min(Math.max(gap, vw - gap - w), left)))}px`;
+  }
+  if (top !== null && Number.isFinite(top)) {
+    const max = vh - (bottomGap ?? gap) - h;
+    el.style.top = `${Math.round(Math.max(gap, Math.min(Math.max(gap, max), top)))}px`;
+  }
+}
 
 function toast(msg, kind = '', action = null) {
   const el = document.createElement('div');

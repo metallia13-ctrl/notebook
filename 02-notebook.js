@@ -2833,15 +2833,16 @@ function placeSelBar(bar, container) {
     const h = bar.offsetHeight || 360;
     const y = rect && rect.height ? rect.top - 6 : topMin;
     const bottomMax = window.innerHeight - (window.innerWidth < 900 ? 92 : 8);
-    bar.style.top = `${Math.round(Math.max(topMin, Math.min(bottomMax - h, y)))}px`;
-    bar.style.left = `${Math.round(spaceL >= W ? art.left - W - Math.min(18, (spaceL - W) / 2) : art.right + Math.min(18, (spaceR - W) / 2))}px`;
+    clampFixed(bar, {
+      left: spaceL >= W ? art.left - W - Math.min(18, (spaceL - W) / 2) : art.right + Math.min(18, (spaceR - W) / 2),
+      top: Math.max(topMin, Math.min(bottomMax - h, y))
+    });
   } else if (rect && rect.height && rect.top < topMin + 70) {
     // selezione proprio in alto: la barra resta in basso, lontano dal testo scelto
-    bar.style.left = `${Math.round((art.left + art.right) / 2)}px`;
+    clampFixed(bar, { centerX: (art.left + art.right) / 2 });
   } else {
     bar.classList.add('rt-top');
-    bar.style.top = `${Math.round(topMin)}px`;
-    bar.style.left = `${Math.round((art.left + art.right) / 2)}px`;
+    clampFixed(bar, { centerX: (art.left + art.right) / 2, top: topMin });
   }
 }
 // mostra la barra quando la selezione è ferma e nessun dito o penna sta trascinando
@@ -3059,8 +3060,7 @@ function setupReadingTools(container, sec) {
     menu.hidden = false;
     const w = menu.offsetWidth || 280;
     const h = menu.offsetHeight || 60;
-    menu.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - w - 8))}px`;
-    menu.style.top = `${Math.max(8, Math.min(e.clientY, window.innerHeight - h - 8))}px`;
+    clampFixed(menu, { left: e.clientX, top: e.clientY });
   };
   const onDocDown = e => { if (!menu.hidden && !menu.contains(e.target)) closeMenu(); };
   const onKey = e => { if (e.key === 'Escape') { closeMenu(); if (pending.length) { clearPending(); if (!capture()) bar.hidden = true; } } };
@@ -4099,8 +4099,7 @@ const FormatMenu = {
     const el = this.el;
     el.hidden = false;
     const w = el.offsetWidth, h = el.offsetHeight;
-    el.style.left = `${Math.max(6, Math.min(window.innerWidth - w - 6, x - w / 2))}px`;
-    el.style.top = `${Math.max(6, y - h - 10)}px`;
+    clampFixed(el, { left: x - w / 2, top: y - h - 10, gap: 6 });
   },
   hide() { if (this.el) this.el.hidden = true; this.host = null; },
   init() {

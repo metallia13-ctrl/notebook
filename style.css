@@ -1201,7 +1201,7 @@ u.ul { text-decoration: underline; text-decoration-color: var(--accent); text-de
 }
 .rt-bar[hidden], .rt-menu[hidden] { display: none; }
 .rt-bar { max-width: calc(100vw - 16px); }
-.rt-menu { position: fixed; z-index: 80; flex-wrap: wrap; max-width: calc(100vw - 16px); }
+.rt-menu { position: fixed; z-index: 80; flex-wrap: wrap; width: max-content; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto; }
 .rt-btn {
   min-height: 38px;
   padding: 0 10px;
@@ -1701,9 +1701,28 @@ a.tag:hover, button.tag:hover { color: var(--text); border-color: var(--line); c
 .fcard.is-io + .study-actions { margin-top: 12px; }
 .study-actions + .board { margin-top: 12px; }
 
-/* Barra di selezione più larga: scorre se non ci sta */
-.rt-bar { overflow-x: auto; scrollbar-width: none; }
+/* v4.02: barra della selezione: se i tasti non stanno su una riga vanno a capo, così si vedono
+   tutti senza doverla far scorrere di lato (prima la parte in più restava nascosta fuori) */
+.rt-bar:not(.rt-side) {
+  flex-wrap: wrap;
+  justify-content: center;
+  /* larga quanto serve, ma mai più dello schermo: così va a capo sempre nello stesso punto,
+     anche quando è accostata a un bordo */
+  width: max-content;
+  row-gap: 4px;
+  max-height: calc(100vh - 16px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
 .rt-bar::-webkit-scrollbar { display: none; }
+/* anche la barra della scrittura a mano va a capo invece di nascondere i tasti */
+.ink-bar { flex-wrap: wrap; justify-content: center; row-gap: 4px; width: max-content; overflow-x: hidden; }
+
+/* v4.02: una fila di tasti che continua fuori dal bordo sfuma da quel lato */
+.sc-r { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); }
+.sc-l { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 30px), transparent); }
+.sc-l.sc-r { -webkit-mask-image: linear-gradient(to right, transparent, #000 30px, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(to right, transparent, #000 30px, #000 calc(100% - 30px), transparent); }
 
 /* =====================================================================
    v3.7: lettore PDF
