@@ -3932,16 +3932,26 @@ let mapMeasure = null;
 function mapWrap(text, maxW) {
   if (!mapMeasure) mapMeasure = document.createElement('canvas').getContext('2d');
   mapMeasure.font = MAP_FONT;
-  const words = String(text).split(' ');
+  // v3.99: tutto il testo, senza limite di righe; gli a capo restano; le parole lunghissime si spezzano
   const lines = [];
-  let cur = '';
-  words.forEach(w => {
-    const t = cur ? `${cur} ${w}` : w;
-    if (mapMeasure.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t;
+  String(text).split('\n').forEach(par => {
+    let cur = '';
+    par.split(' ').forEach(w => {
+      while (mapMeasure.measureText(w).width > maxW * 1.4 && w.length > 4) {
+        let k = w.length - 1;
+        while (k > 1 && mapMeasure.measureText(w.slice(0, k)).width > maxW) k--;
+        if (cur) { lines.push(cur); cur = ''; }
+        lines.push(`${w.slice(0, k)}-`);
+        w = w.slice(k);
+      }
+      const t = cur ? `${cur} ${w}` : w;
+      if (mapMeasure.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t;
+    });
+    lines.push(cur);
   });
-  if (cur) lines.push(cur);
+  while (lines.length > 1 && !lines[lines.length - 1].trim()) lines.pop();
   const width = Math.max(...lines.map(l => mapMeasure.measureText(l).width), 20);
-  return { lines: lines.slice(0, 6), width };
+  return { lines, width };
 }
 function chooseXmindFile() {
   return new Promise(resolve => {
@@ -4561,9 +4571,11 @@ function modeMap(sec, body) {
       const d = `M${f(p1[0])} ${f(p1[1])}C${f(c1[0])} ${f(c1[1])} ${f(c2[0])} ${f(c2[1])} ${f(p2[0])} ${f(p2[1])}`;
       const mx = 0.125 * p1[0] + 0.375 * c1[0] + 0.375 * c2[0] + 0.125 * p2[0];
       const my = 0.125 * p1[1] + 0.375 * c1[1] + 0.375 * c2[1] + 0.125 * p2[1];
-      const lt = r.t ? r.t.slice(0, 40) : '';
-      const lw = lt ? Math.ceil(mapWrap(lt, 400).width) + 14 : 0;
-      rels.push(`<g class="mrel" data-mrel="${r.id}"><path class="mrel-line" d="${d}" marker-end="url(#mArw-${instId})"/><path class="mrel-hit" d="${d}"><title>${esc(lt || 'Freccia')}</title></path>${lt ? `<rect class="mrel-lb" x="${f(mx - lw / 2)}" y="${f(my - 11)}" width="${lw}" height="20" rx="6"/><text class="mrel-t" x="${f(mx)}" y="${f(my + 4)}" text-anchor="middle">${esc(lt)}</text>` : ''}</g>`);
+      const lt = r.t || '';
+      const lwr = lt ? mapWrap(lt, 220) : null;
+      const lw = lt ? Math.ceil(lwr.width) + 14 : 0;
+      const lh = lt ? lwr.lines.length * 15 + 6 : 0;
+      rels.push(`<g class="mrel" data-mrel="${r.id}"><path class="mrel-line" d="${d}" marker-end="url(#mArw-${instId})"/><path class="mrel-hit" d="${d}"><title>${esc(lt || 'Freccia')}</title></path>${lt ? `<rect class="mrel-lb" x="${f(mx - lw / 2)}" y="${f(my - lh / 2)}" width="${lw}" height="${lh}" rx="6"/>${lwr.lines.map((l, k) => `<text class="mrel-t" x="${f(mx)}" y="${f(my - lh / 2 + 15 + k * 15)}" text-anchor="middle">${esc(l)}</text>`).join('')}` : ''}</g>`);
     });
     box.innerHTML = `
       <div class="map-zoom"><button class="btn sm ghost" data-mz="-" aria-label="Rimpicciolisci">−</button><button class="btn sm ghost" data-mz="0" title="Torna al 100%">${Math.round(zoom * 100)}%</button><button class="btn sm ghost" data-mz="+" aria-label="Ingrandisci">+</button><button class="btn sm ghost" data-mz="fit" title="Adatta: la mappa intera nello spazio" aria-label="Adatta allo spazio">⤢</button><button class="btn sm ghost" data-mz="full" title="${mapFull ? 'Esci dallo schermo intero (Esc)' : 'Mappa a tutto schermo'}" aria-label="${mapFull ? 'Esci dallo schermo intero' : 'Mappa a tutto schermo'}">${mapFull ? '✕' : '⛶'}</button></div>

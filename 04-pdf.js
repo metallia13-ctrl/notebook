@@ -194,6 +194,7 @@ function viewPdf(id, pageParam) {
           <button type="button" class="btn sm ghost" data-pdf="zoom+" aria-label="Ingrandisci">+</button>
           <button type="button" class="btn sm ghost" data-pdf="fit-page" title="Pagina intera">⤢</button>
         </span>
+        ${EMBED ? '' : '<button type="button" class="btn sm ghost" data-pdf="pad" title="Blocco note a mano accanto al PDF">✎ Blocco note</button>'}
         <button type="button" class="btn sm ghost pdf-night-btn" data-pdf="night" aria-pressed="false" title="Pagine scure per leggere la sera">Notte</button>
         <button type="button" class="btn sm occ-quiz-btn" data-pdf="occ-quiz" aria-pressed="false" hidden>Ripassa le occlusioni</button>
         <button type="button" class="btn sm ghost" data-pdf="undo" title="Annulla l’ultima annotazione (Ctrl+Z)">Annulla</button>
@@ -1885,6 +1886,7 @@ function viewPdf(id, pageParam) {
     else if (act === 'undo') undo();
     else if (act === 'occ-quiz') setOccQuiz(!R.occQuiz);
     else if (act === 'night') setNight(!app.classList.contains('pdf-night'));
+    else if (act === 'pad') Pad.toggle();
   });
   panel.addEventListener('click', e => { const b = e.target.closest('[data-ptab]'); if (b) openPanel(b.dataset.ptab); });
   $('.pdf-pen-size', app).value = String(R.inkW);

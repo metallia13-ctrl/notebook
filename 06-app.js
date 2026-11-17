@@ -1320,6 +1320,18 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "3.99", title: "blocco note accanto o sotto, mappe senza testo tagliato", html: `      <ul>
+        <li><strong>Blocco note in divisione verticale</strong>: il pulsante nella sua intestazione lo mette <strong>accanto</strong> alla pagina (anche sul tablet in verticale) o <strong>sotto</strong>; trascini il bordo per decidere quanto spazio dargli. L’app ricorda la scelta.</li>
+        <li>Nel lettore PDF c’è il pulsante <strong>✎ Blocco note</strong>: appunti a mano accanto al PDF.</li>
+        <li><strong>Mappe mentali</strong>: il testo dei nodi non viene più tagliato dopo sei righe; restano anche gli a capo, e le etichette delle frecce si vedono intere.</li>
+      </ul>` },
+  { v: "3.98", title: "blocco note: forme, mappe, testo e tela infinita", html: `      <ul>
+        <li><strong>Forme e frecce</strong>: il nuovo strumento Forme mette a portata di mano rettangoli, ellissi, rombi, linee e frecce. Un tocco mette un nodo; le frecce si agganciano ai nodi e li seguono quando li sposti.</li>
+        <li><strong>Mappe veloci</strong>: tocca un nodo e usa <strong>＋ Ramo</strong> per aggiungerne uno collegato, <strong>Aa</strong> per scriverci dentro. Spostando un nodo si sposta anche quello che contiene.</li>
+        <li><strong>Forma dal disegno a mano</strong>: disegna un cerchio o un rettangolo e tieni ferma la penna alla fine: diventa una forma pulita (come la linea dritta).</li>
+        <li><strong>Testo con la tastiera</strong> sul foglio.</li>
+        <li><strong>Tela infinita</strong>: da ＋ scegli “Tela infinita”; si allarga in ogni direzione, ⤢ la mostra tutta, zoom fino al 25%.</li>
+      </ul>` },
   { v: "3.97", title: "le lezioni con l’AI lavorano in sottofondo", html: `      <ul>
         <li><strong>Segnalibri automatici</strong> e <strong>Bozza di appunti</strong> ora lavorano in sottofondo: li avvii, chiudi la finestra (“Continua a studiare”) e studi quello che vuoi. Un riquadro in basso a sinistra dice a che punto sono; toccandolo vedi le parti, puoi riprovare o fermare.</li>
         <li>I segnalibri compaiono <strong>parte per parte</strong>, appena ogni parte è pronta, già collegati alle sezioni (★ dove il docente dice che lo chiede). Alla fine un “Annulla” li toglie tutti, se non ti convincono.</li>
@@ -2262,28 +2274,29 @@ const PadDB = {
 };
 const PAD_COLORS = [['ink', 'Inchiostro'], ['#2563eb', 'Blu'], ['#dc2626', 'Rosso'], ['#16a34a', 'Verde'], ['#f59e0b', 'Arancio'], ['#9333ea', 'Viola']];
 const PAD_HL = [['#facc15', 'Giallo'], ['#4ade80', 'Verde'], ['#f472b6', 'Rosa'], ['#38bdf8', 'Azzurro']];
-const PAD_ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4];
+const PAD_ZOOMS = [0.25, 0.35, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4];
 const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
 // v3.56: sfondo del foglio (righe, quadretti o bianco) e foglio da esportare su carta bianca
-function padPaper(c, W, H, kind, color, alpha, vis = null) {
+function padPaper(c, W, H, kind, color, alpha, vis = null, bounds = null) {
   if (kind === 'plain') return;
-  // vis = [x0, y0, x1, y1]: si disegna solo la parte visibile
-  const [vx0, vy0, vx1, vy1] = vis || [0, 0, W, H];
+  // vis = [x0, y0, x1, y1]: si disegna solo la parte visibile; bounds: i bordi del foglio (la tela infinita va anche sotto lo zero)
+  const [bx0, by0, bx1, by1] = bounds || [0, 0, W, H];
+  const [vx0, vy0, vx1, vy1] = vis || [bx0, by0, bx1, by1];
   c.save();
   c.strokeStyle = color;
   c.globalAlpha = alpha;
   c.lineWidth = 1;
   const step = Math.max(26, W * 0.06);
   const sq = kind === 'grid' || kind === 'dots' ? step * 0.6 : step;
-  const from = (a, m) => Math.max(1, Math.floor(a / sq)) * sq;
+  const from = (a, lo) => (lo === 0 ? Math.max(1, Math.floor(a / sq)) : Math.floor(Math.max(a, lo) / sq)) * sq;
   if (kind === 'dots') {
     c.fillStyle = color;
-    for (let y = from(vy0); y < Math.min(H, vy1 + sq); y += sq) for (let x = from(vx0); x < Math.min(W, vx1 + sq); x += sq) { c.beginPath(); c.arc(x, y, Math.max(1, W / 500), 0, Math.PI * 2); c.fill(); }
+    for (let y = from(vy0, by0); y < Math.min(by1, vy1 + sq); y += sq) for (let x = from(vx0, bx0); x < Math.min(bx1, vx1 + sq); x += sq) { c.beginPath(); c.arc(x, y, Math.max(1, W / 500), 0, Math.PI * 2); c.fill(); }
     c.restore();
     return;
   }
-  for (let y = from(vy0); y < Math.min(H, vy1 + sq); y += sq) { c.beginPath(); c.moveTo(Math.max(0, vx0), Math.round(y) + 0.5); c.lineTo(Math.min(W, vx1), Math.round(y) + 0.5); c.stroke(); }
-  if (kind === 'grid') for (let x = from(vx0); x < Math.min(W, vx1 + sq); x += sq) { c.beginPath(); c.moveTo(Math.round(x) + 0.5, Math.max(0, vy0)); c.lineTo(Math.round(x) + 0.5, Math.min(H, vy1)); c.stroke(); }
+  for (let y = from(vy0, by0); y < Math.min(by1, vy1 + sq); y += sq) { c.beginPath(); c.moveTo(Math.max(bx0, vx0), Math.round(y) + 0.5); c.lineTo(Math.min(bx1, vx1), Math.round(y) + 0.5); c.stroke(); }
+  if (kind === 'grid') for (let x = from(vx0, bx0); x < Math.min(bx1, vx1 + sq); x += sq) { c.beginPath(); c.moveTo(Math.round(x) + 0.5, Math.max(by0, vy0)); c.lineTo(Math.round(x) + 0.5, Math.min(by1, vy1)); c.stroke(); }
   c.restore();
 }
 // l’evidenziatore: un solo tracciato trasparente, così le sovrapposizioni non fanno chiazze
@@ -2301,19 +2314,34 @@ function padHlPath(c, s, W) {
   c.restore();
 }
 function padExportCanvas(pg, bg, W = 1240) {
-  const H = Math.max(Math.round(W * 1.414), Math.round((pg.h || 1.6) * W), ...pg.strokes.flatMap(s => s.p.map(q => Math.round(q[1] * W + 40))));
   const cv = document.createElement('canvas');
-  cv.width = W;
-  cv.height = H;
   const c = cv.getContext('2d');
+  let ox = 0, oy = 0, H;
+  if (pg.inf) {
+    // tela infinita: si esporta il riquadro che contiene tutto, con un margine
+    let x0 = 0, y0 = 0, x1 = 1, y1 = 1;
+    if (pg.strokes.length) {
+      x0 = Infinity; y0 = Infinity; x1 = -Infinity; y1 = -Infinity;
+      pg.strokes.forEach(s => s.p.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }));
+      x0 -= 0.05; y0 -= 0.05; x1 += 0.05; y1 += 0.05;
+    }
+    W = Math.max(300, Math.min(1240, 5000 / (x1 - x0), 7000 / (y1 - y0)));
+    cv.width = Math.round((x1 - x0) * W); cv.height = H = Math.round((y1 - y0) * W);
+    ox = x0 * W; oy = y0 * W;
+  } else {
+    H = Math.max(Math.round(W * 1.414), Math.round((pg.h || 1.6) * W), ...pg.strokes.flatMap(s => s.p.map(q => Math.round(q[1] * W + 40))));
+    cv.width = W; cv.height = H;
+  }
   c.fillStyle = '#fff';
-  c.fillRect(0, 0, W, H);
-  padPaper(c, W, H, bg, '#9aa6b8', 0.5);
+  c.fillRect(0, 0, cv.width, cv.height);
+  c.translate(-ox, -oy);
+  padPaper(c, W, H, bg, '#9aa6b8', 0.5, null, [ox, oy, ox + cv.width, oy + cv.height]);
   c.lineCap = 'round';
   c.lineJoin = 'round';
   pg.strokes.forEach(s => {
     c.strokeStyle = c.fillStyle = s.c === 'ink' ? '#111' : s.c;
     const pts = s.p;
+    if (s.k === 'shape' || s.k === 'text') { padDrawItem(c, s, W, s.c === 'ink' ? '#111' : s.c); return; }
     if (s.k === 'hl') { padHlPath(c, s, W); return; }
     if (pts.length === 1) { c.beginPath(); c.arc(pts[0][0] * W, pts[0][1] * W, Math.max(0.8, s.w * W * (pts[0][2] || 0.5)), 0, Math.PI * 2); c.fill(); return; }
     for (let i = 1; i < pts.length; i++) {
@@ -2324,6 +2352,408 @@ function padExportCanvas(pg, bg, W = 1240) {
   });
   return cv;
 }
+/* =====================================================================
+   v3.98: blocco note — forme, frecce che seguono i nodi, testo, tela infinita
+   Le forme e i testi stanno nello stesso elenco dei tratti (k: 'shape' | 'text'),
+   con due punti: i due angoli del riquadro, o i due estremi della linea.
+   Così lazo, sposta, ridimensiona, duplica e annulla funzionano come per i tratti.
+   ===================================================================== */
+const PAD_SHAPES = [
+  ['rect', 'Rettangolo', '<rect x="4" y="7" width="16" height="10"/>'],
+  ['round', 'Rettangolo arrotondato', '<rect x="4" y="7" width="16" height="10" rx="4"/>'],
+  ['ell', 'Ellisse', '<ellipse cx="12" cy="12" rx="8" ry="5.5"/>'],
+  ['dia', 'Rombo', '<path d="M12 5l8 7-8 7-8-7z"/>'],
+  ['line', 'Linea', '<path d="M5 19 19 5"/>'],
+  ['arrow', 'Freccia', '<path d="M5 19 19 5M11 5h8v8"/>'],
+  ['arrow2', 'Freccia doppia', '<path d="M6 18 18 6M12 6h6v6M12 18H6v-6"/>']
+];
+const padClosed = s => !!s && s.k === 'shape' && !['line', 'arrow', 'arrow2'].includes(s.sh);
+const padConn = s => !!s && s.k === 'shape' && ['line', 'arrow', 'arrow2'].includes(s.sh);
+const padBox = s => { const [a, b] = [s.p[0], s.p[s.p.length - 1]]; return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])]; };
+let padFontFam = '';
+const padFont = px => `600 ${px}px ${padFontFam || (padFontFam = getComputedStyle(document.body).fontFamily || 'system-ui, sans-serif')}`;
+function padShapePath(c, s, W) {
+  const [x0, y0, x1, y1] = padBox(s).map(v => v * W);
+  const w = x1 - x0, h = y1 - y0;
+  c.beginPath();
+  if (s.sh === 'ell') c.ellipse(x0 + w / 2, y0 + h / 2, Math.max(0.5, w / 2), Math.max(0.5, h / 2), 0, 0, Math.PI * 2);
+  else if (s.sh === 'dia') { c.moveTo(x0 + w / 2, y0); c.lineTo(x1, y0 + h / 2); c.lineTo(x0 + w / 2, y1); c.lineTo(x0, y0 + h / 2); c.closePath(); }
+  else if (s.sh === 'round' && c.roundRect) c.roundRect(x0, y0, w, h, Math.min(w, h) * 0.28);
+  else c.rect(x0, y0, w, h);
+}
+// disegna una forma o un testo (sul foglio e nei file esportati)
+function padDrawItem(c, s, W, col) {
+  if (s.k === 'text') {
+    const lines = String(s.t || '').split('\n');
+    const px = s.fs * W, lh = px * 1.25;
+    const [x0, y0, x1] = padBox(s).map(v => v * W);
+    c.save();
+    c.fillStyle = col;
+    c.font = padFont(px);
+    c.textBaseline = 'middle';
+    c.textAlign = s.al === 'c' ? 'center' : 'left';
+    lines.forEach((l, i) => c.fillText(l, s.al === 'c' ? (x0 + x1) / 2 : x0, y0 + (i + 0.5) * lh));
+    c.restore();
+    return;
+  }
+  c.save();
+  c.strokeStyle = col;
+  c.lineWidth = Math.max(1.3, s.w * W * 0.95);
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  if (padConn(s)) {
+    const [a, b] = s.p.map(q => [q[0] * W, q[1] * W]);
+    c.beginPath(); c.moveTo(a[0], a[1]); c.lineTo(b[0], b[1]); c.stroke();
+    const head = (p, q) => {
+      const ang = Math.atan2(p[1] - q[1], p[0] - q[0]), L = Math.max(9, c.lineWidth * 4.2);
+      c.fillStyle = col;
+      c.beginPath(); c.moveTo(p[0], p[1]);
+      c.lineTo(p[0] - L * Math.cos(ang - 0.42), p[1] - L * Math.sin(ang - 0.42));
+      c.lineTo(p[0] - L * Math.cos(ang + 0.42), p[1] - L * Math.sin(ang + 0.42));
+      c.closePath(); c.fill();
+    };
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 6) { if (s.sh !== 'line') head(b, a); if (s.sh === 'arrow2') head(a, b); }
+  } else {
+    padShapePath(c, s, W);
+    if (s.f) { c.save(); c.globalAlpha = 0.16; c.fillStyle = col; c.fill(); c.restore(); }
+    c.stroke();
+  }
+  c.restore();
+}
+// i punti con cui gomma e lazo “sentono” una forma o un testo
+function padPts(s) {
+  if (s.k !== 'shape' && s.k !== 'text') return s.p;
+  const [x0, y0, x1, y1] = padBox(s);
+  const out = [];
+  const seg = (ax, ay, bx, by, n = 10) => { for (let i = 0; i <= n; i++) out.push([ax + ((bx - ax) * i) / n, ay + ((by - ay) * i) / n]); };
+  if (padConn(s)) { seg(s.p[0][0], s.p[0][1], s.p[1][0], s.p[1][1], 24); return out; }
+  if (s.sh === 'ell') { for (let i = 0; i < 40; i++) { const t = (i / 40) * Math.PI * 2; out.push([(x0 + x1) / 2 + ((x1 - x0) / 2) * Math.cos(t), (y0 + y1) / 2 + ((y1 - y0) / 2) * Math.sin(t)]); } return out; }
+  if (s.sh === 'dia') { const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2; seg(cx, y0, x1, cy); seg(x1, cy, cx, y1); seg(cx, y1, x0, cy); seg(x0, cy, cx, y0); return out; }
+  seg(x0, y0, x1, y0); seg(x1, y0, x1, y1); seg(x1, y1, x0, y1); seg(x0, y1, x0, y0);
+  if (s.k === 'text') out.push([(x0 + x1) / 2, (y0 + y1) / 2]);
+  return out;
+}
+// il punto del bordo di un nodo nella direzione di “verso”
+function padBorder(n, to) {
+  const [x0, y0, x1, y1] = padBox(n);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, hw = Math.max(1e-6, (x1 - x0) / 2), hh = Math.max(1e-6, (y1 - y0) / 2);
+  const dx = to[0] - cx, dy = to[1] - cy;
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return [cx, cy];
+  const t = n.sh === 'ell' ? 1 / Math.sqrt((dx / hw) ** 2 + (dy / hh) ** 2) : n.sh === 'dia' ? 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh) : Math.min(hw / Math.max(1e-9, Math.abs(dx)), hh / Math.max(1e-9, Math.abs(dy)));
+  const g = 1 + 0.006 / Math.max(1e-6, Math.hypot(dx * t, dy * t));
+  return [cx + dx * t * g, cy + dy * t * g];
+}
+const PadX = {
+  shape: 'round', fill: false,
+  snap() { return this.pg().strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })); },
+  // dove comincia il foglio (in pixel): nella tela infinita può stare a sinistra e sopra lo zero
+  ext() { const pg = this.pg(); return pg.inf ? pg.ext : [0, 0, 1, pg.h || 1.6]; },
+  home() {
+    const pg = this.pg(), body = $('.pad-body', this.el);
+    if (!pg.inf) { body.scrollTop = 0; body.scrollLeft = 0; return; }
+    let x = 0, y = 0;
+    if (pg.strokes.length) { x = Math.min(...pg.strokes.map(s => this.bbOf(s)[0])) - 0.06; y = Math.min(...pg.strokes.map(s => this.bbOf(s)[1])) - 0.06; }
+    body.scrollLeft = Math.max(0, x * this.W + this.OX);
+    body.scrollTop = Math.max(0, y * this.W + this.OY);
+  },
+  // la tela infinita cresce da sola quando ti avvicini a un bordo
+  growInf() {
+    const pg = this.pg();
+    if (!pg || !pg.inf || !this.W || (this.drawing && !this.drawing.pan)) return;
+    const body = $('.pad-body', this.el), e = pg.ext, W = this.W, m = 260, STEP = 0.8, CAP = 60;
+    let dx = 0, dy = 0, ch = false;
+    if (body.scrollLeft < m && e[0] > -CAP) { e[0] -= STEP; dx = STEP * W; ch = true; }
+    if (body.scrollTop < m && e[1] > -CAP) { e[1] -= STEP; dy = STEP * W; ch = true; }
+    if (body.scrollLeft + body.clientWidth > this.SW - m && e[2] < CAP) { e[2] += STEP; ch = true; }
+    if (body.scrollTop + body.clientHeight > this.H - m && e[3] < CAP) { e[3] += STEP; ch = true; }
+    if (!ch) return;
+    this.OX = -e[0] * W; this.OY = -e[1] * W;
+    this.SW = Math.round((e[2] - e[0]) * W); this.H = Math.round((e[3] - e[1]) * W);
+    this.sizeSheet();
+    if (dx || dy) { this.shX = (this.shX || 0) + dx; this.shY = (this.shY || 0) + dy; body.scrollLeft += dx; body.scrollTop += dy; }
+    this.saveSoon();
+  },
+  hitItem(pt) {
+    const W = this.W, r = 12 / W, list = this.pg().strokes;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const s = list[i];
+      if (s.k === 'text' || padClosed(s)) { const b = padBox(s); if (pt[0] >= b[0] - r / 2 && pt[0] <= b[2] + r / 2 && pt[1] >= b[1] - r / 2 && pt[1] <= b[3] + r / 2) return s; continue; }
+      // le frecce si prendono solo toccandole da vicino: dentro un nodo vince il nodo
+      const rr = padConn(s) ? (this.nodeAt(pt) ? 5 / W : 9 / W) : r + (s.w || 0);
+      if (padPts(s).some(q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < rr)) return s;
+    }
+    return null;
+  },
+  nodeAt(pt, not = null) {
+    const list = this.pg().strokes;
+    for (let i = list.length - 1; i >= 0; i--) { const s = list[i]; if (s === not || !padClosed(s)) continue; const b = padBox(s); if (pt[0] >= b[0] && pt[0] <= b[2] && pt[1] >= b[1] && pt[1] <= b[3]) return s; }
+    return null;
+  },
+  // toccare un nodo lo seleziona con quello che c’è dentro (testo e scritte a mano)
+  selectItem(s) {
+    if (!s) { this.sel = null; this.selBox = null; this.redraw(); this.paintTools(); return; }
+    // il testo di un nodo porta al nodo: così ＋ Ramo e Aa sono subito lì
+    if (s.k === 'text' && s.in) { const host = this.pg().strokes.find(o => padClosed(o) && o.id === s.in); if (host) s = host; }
+    let sel = [s];
+    if (padClosed(s)) {
+      const b = padBox(s);
+      this.pg().strokes.forEach(o => {
+        if (o === s || padConn(o)) return;
+        const q = this.bbOf(o), cx = (q[0] + q[2]) / 2, cy = (q[1] + q[3]) / 2;
+        if (cx >= b[0] && cx <= b[2] && cy >= b[1] && cy <= b[3] && q[2] - q[0] <= b[2] - b[0] + 0.02 && q[3] - q[1] <= b[3] - b[1] + 0.02) sel.push(o);
+      });
+    }
+    this.sel = sel;
+    this.redraw();
+    $('[data-pa="dup"]', this.el).hidden = false;
+  },
+  // le frecce attaccate ai nodi li seguono
+  relink() {
+    const list = this.pg().strokes;
+    const byId = new Map(list.filter(padClosed).map(s => [s.id, s]));
+    list.forEach(s => {
+      if (!padConn(s) || (!s.a && !s.b)) return;
+      const A = s.a && byId.get(s.a), B = s.b && byId.get(s.b);
+      const ctr = n => { const b = padBox(n); return [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; };
+      if (A && B) { const p0 = padBorder(A, ctr(B)), p1 = padBorder(B, ctr(A)); s.p = [[+p0[0].toFixed(4), +p0[1].toFixed(4), 0.5], [+p1[0].toFixed(4), +p1[1].toFixed(4), 0.5]]; }
+      else if (A) { const p0 = padBorder(A, s.p[1]); s.p[0] = [+p0[0].toFixed(4), +p0[1].toFixed(4), 0.5]; }
+      else if (B) { const p1 = padBorder(B, s.p[0]); s.p[1] = [+p1[0].toFixed(4), +p1[1].toFixed(4), 0.5]; }
+    });
+    this.bbs = null;
+  },
+  // prima di spostare: le frecce scelte da sole si staccano dai nodi che restano fermi
+  detachSel() {
+    const ids = new Set(this.sel.filter(padClosed).map(s => s.id));
+    this.sel.forEach(s => { if (!padConn(s)) return; if (s.a && !ids.has(s.a)) delete s.a; if (s.b && !ids.has(s.b)) delete s.b; });
+  },
+  endShape(d) {
+    const pg = this.pg(), s = d.shape;
+    const closed = padClosed(s);
+    if (!d.moved) {
+      pg.strokes = pg.strokes.filter(x => x !== s);
+      const hit = this.hitItem(d.pt0);
+      if (hit && (padClosed(hit) || hit.k === 'text' || padConn(hit))) { this.selectItem(hit); return; }
+      if (!closed) { this.redraw(); return; }
+      // un tocco: un nodo di misura normale, centrato dove hai toccato
+      const w = 0.3, h = 0.13;
+      s.p = [[+(d.pt0[0] - w / 2).toFixed(4), +(d.pt0[1] - h / 2).toFixed(4), 0.5], [+(d.pt0[0] + w / 2).toFixed(4), +(d.pt0[1] + h / 2).toFixed(4), 0.5]];
+      pg.strokes.push(s);
+    } else if (closed) {
+      const b = padBox(s);
+      if (b[2] - b[0] < 0.02 || b[3] - b[1] < 0.02) { pg.strokes = pg.strokes.filter(x => x !== s); this.redraw(); return; }
+      s.p = [[b[0], b[1], 0.5], [b[2], b[3], 0.5]];
+    } else {
+      // linee e frecce: gli estremi dentro un nodo si agganciano
+      const A = this.nodeAt(s.p[0]), B = this.nodeAt(s.p[1]);
+      if (A) s.a = A.id;
+      if (B && B !== A) s.b = B.id;
+      if (!s.b && Math.hypot(s.p[1][0] - s.p[0][0], s.p[1][1] - s.p[0][1]) * this.W < 10) { pg.strokes = pg.strokes.filter(x => x !== s); this.redraw(); return; }
+      this.relink();
+    }
+    this.pushUndo({ type: 'add', page: this.page, s });
+    this.saveSoon();
+    if (closed) this.selectItem(s); else this.redraw();
+  },
+  // riconosce la forma chiusa disegnata a mano (tenendo ferma la penna alla fine)
+  shapeFrom(s) {
+    const pts = s.p;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, area = 0;
+    pts.forEach((q, i) => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); const n = pts[(i + 1) % pts.length]; area += q[0] * n[1] - n[0] * q[1]; });
+    const r = Math.abs(area / 2) / Math.max(1e-9, (x1 - x0) * (y1 - y0));
+    s.k = 'shape'; s.sh = r > 0.86 ? 'rect' : r > 0.62 ? 'ell' : 'dia'; s.id = uid();
+    s.p = [[+x0.toFixed(4), +y0.toFixed(4), 0.5], [+x1.toFixed(4), +y1.toFixed(4), 0.5]];
+    if (this.fill) s.f = 1;
+  },
+  /* ---- testo ---- */
+  measure(s) {
+    const c = this.ctx, px = s.fs * this.W;
+    c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.font = padFont(px);
+    const lines = String(s.t || '').split('\n');
+    const w = Math.max(px * 0.6, ...lines.map(l => c.measureText(l).width)) / this.W, h = lines.length * s.fs * 1.25;
+    c.restore();
+    return [w, h];
+  },
+  boxText(s, ax, ay) {
+    const [w, h] = this.measure(s);
+    s.p = s.al === 'c' ? [[+(ax - w / 2).toFixed(4), +(ay - h / 2).toFixed(4), 0.5], [+(ax + w / 2).toFixed(4), +(ay + h / 2).toFixed(4), 0.5]] : [[+ax.toFixed(4), +ay.toFixed(4), 0.5], [+(ax + w).toFixed(4), +(ay + h).toFixed(4), 0.5]];
+    this.bbs = null;
+  },
+  textAt(pt) {
+    const hit = this.hitItem(pt);
+    if (hit && hit.k === 'text') { this.editText(hit); return; }
+    const host = this.nodeAt(pt);
+    if (host) { this.textIn(host); return; }
+    const s = { k: 'text', id: uid(), c: this.color, fs: 0.034, t: '', al: 'l', w: 0, p: [[pt[0], pt[1], 0.5], [pt[0], pt[1], 0.5]] };
+    this.pg().strokes.push(s);
+    this.editText(s, true);
+  },
+  // il testo dentro un nodo: quello che c’è già, oppure uno nuovo al centro
+  textIn(host) {
+    const b = padBox(host);
+    const old = this.pg().strokes.find(o => o.k === 'text' && o.in === host.id);
+    if (old) { this.editText(old); return; }
+    const s = { k: 'text', id: uid(), c: host.c, fs: 0.034, t: '', al: 'c', in: host.id, w: 0, p: [[(b[0] + b[2]) / 2, (b[1] + b[3]) / 2, 0.5], [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2, 0.5]] };
+    this.pg().strokes.push(s);
+    this.editText(s, true);
+  },
+  editText(s, isNew = false) {
+    if (this.ted) this.ted.commit();
+    const view = $('.pad-view', this.el);
+    const before = isNew ? null : this.snap();
+    const b0 = padBox(s);
+    const ax = s.al === 'c' ? (b0[0] + b0[2]) / 2 : b0[0], ay = s.al === 'c' ? (b0[1] + b0[3]) / 2 : b0[1];
+    const ta = document.createElement('textarea');
+    ta.className = 'pad-ted';
+    ta.value = s.t || '';
+    ta.spellcheck = false;
+    ta.setAttribute('aria-label', 'Testo');
+    view.append(ta);
+    this.sel = null; this.selBox = null;
+    const place = () => {
+      const W = this.W, px = s.fs * W;
+      s.t = ta.value;
+      const [w, h] = this.measure(s);
+      const pw = Math.max(w * W, px * 3) + px, ph = h * W + 4;
+      const [sl, st] = this.scroll();
+      ta.style.font = padFont(px);
+      ta.style.lineHeight = `${px * 1.25}px`;
+      ta.style.color = this.inkColor(s.c);
+      ta.style.textAlign = s.al === 'c' ? 'center' : 'left';
+      ta.style.width = `${pw}px`; ta.style.height = `${ph}px`;
+      ta.style.left = `${(s.al === 'c' ? ax * W - pw / 2 : ax * W - 2) + this.OX - sl}px`;
+      ta.style.top = `${(s.al === 'c' ? ay * W - (h * W) / 2 : ay * W) + this.OY - st - 2}px`;
+    };
+    let done = false;
+    const commit = () => {
+      if (done) return;
+      done = true;
+      this.ted = null;
+      s.t = ta.value.replace(/\s+$/, '');
+      // nei nodi le righe lunghe vanno a capo da sole (circa 22 caratteri)
+      if (s.in) s.t = s.t.split('\n').map(l => { const out = []; let cur = ''; l.split(' ').forEach(w => { if (cur && (cur + ' ' + w).length > 22) { out.push(cur); cur = w; } else cur = cur ? `${cur} ${w}` : w; }); out.push(cur); return out.join('\n'); }).join('\n');
+      ta.remove();
+      const pg = this.pg();
+      if (!s.t.trim()) pg.strokes = pg.strokes.filter(x => x !== s);
+      else {
+        this.boxText(s, ax, ay);
+        // il nodo si allarga se il testo non ci sta
+        const host = s.in && pg.strokes.find(o => padClosed(o) && o.id === s.in);
+        if (host) {
+          const hb = padBox(host), [w, h] = [s.p[1][0] - s.p[0][0], s.p[1][1] - s.p[0][1]];
+          const k = host.sh === 'ell' || host.sh === 'dia' ? 1.45 : 1;
+          const nw = Math.max(hb[2] - hb[0], w * k + 0.05), nh = Math.max(hb[3] - hb[1], h * k + 0.04);
+          // si allarga dal lato opposto al nodo da cui arriva la freccia, così non gli finisce sopra
+          const inc = pg.strokes.find(o => padConn(o) && o.b === host.id && o.a);
+          const par = inc && pg.strokes.find(o => padClosed(o) && o.id === inc.a);
+          const pb = par ? padBox(par) : null;
+          let x0 = (hb[0] + hb[2]) / 2 - nw / 2, y0 = (hb[1] + hb[3]) / 2 - nh / 2;
+          if (pb && pb[2] <= hb[0] + 0.001) x0 = hb[0];
+          else if (pb && pb[0] >= hb[2] - 0.001) x0 = hb[2] - nw;
+          if (pb && pb[3] <= hb[1] + 0.001) y0 = hb[1];
+          else if (pb && pb[1] >= hb[3] - 0.001) y0 = hb[3] - nh;
+          host.p = [[+x0.toFixed(4), +y0.toFixed(4), 0.5], [+(x0 + nw).toFixed(4), +(y0 + nh).toFixed(4), 0.5]];
+          this.boxText(s, x0 + nw / 2, y0 + nh / 2);
+          this.relink();
+        }
+      }
+      if (isNew) { if (s.t.trim()) this.pushUndo({ type: 'add', page: this.page, s }); } else this.pushUndo({ type: 'clear', page: this.page, strokes: before });
+      this.bbs = null;
+      this.redraw();
+      this.saveSoon();
+    };
+    this.ted = { commit, ta, s, place };
+    ta.addEventListener('input', place);
+    ta.addEventListener('blur', commit);
+    ta.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); ta.blur(); } });
+    ta.addEventListener('pointerdown', e => e.stopPropagation());
+    place();
+    this.redraw();
+    setTimeout(() => { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 30);
+  },
+  /* ---- un ramo: un nodo nuovo collegato a quello scelto ---- */
+  addBranch(n) {
+    const pg = this.pg();
+    this.pushUndo({ type: 'clear', page: this.page, strokes: this.snap() });
+    const b = padBox(n), w = b[2] - b[0], h = b[3] - b[1], gap = 0.03;
+    const kids = pg.strokes.filter(s => padConn(s) && s.a === n.id && s.b).map(s => pg.strokes.find(o => padClosed(o) && o.id === s.b)).filter(Boolean);
+    // a destra del nodo (uno sotto l’altro); sul foglio a pagine, se a destra non c’è posto, sotto
+    const right = pg.inf || b[2] + 0.14 + w <= 1.0;
+    let x0, y0;
+    if (right) {
+      x0 = b[2] + 0.14;
+      const col = kids.filter(k => padBox(k)[0] >= b[2]);
+      y0 = col.length ? Math.max(...col.map(k => padBox(k)[3])) + gap : b[1];
+    } else {
+      y0 = b[3] + 0.09;
+      const row = kids.filter(k => padBox(k)[1] >= b[3]);
+      x0 = row.length ? Math.max(...row.map(k => padBox(k)[2])) + gap : b[0];
+      if (x0 + w > 1) { x0 = b[0]; y0 = Math.max(...row.map(k => padBox(k)[3])) + gap; }
+    }
+    const node = { k: 'shape', sh: n.sh, id: uid(), c: n.c, w: n.w, p: [[+x0.toFixed(4), +y0.toFixed(4), 0.5], [+(x0 + w).toFixed(4), +(y0 + h).toFixed(4), 0.5]] };
+    if (n.f) node.f = 1;
+    const arrow = { k: 'shape', sh: 'arrow', id: uid(), c: n.c, w: n.w, a: n.id, b: node.id, p: [[b[2], b[1], 0.5], [x0, y0, 0.5]] };
+    pg.strokes.push(node, arrow);
+    this.relink();
+    if (!pg.inf && y0 + h > (pg.h || 1.6) - 0.05) { pg.h = y0 + h + 0.4; this.layout(); }
+    // il nodo nuovo in vista
+    const body = $('.pad-body', this.el);
+    const sx = (x0 + w) * this.W + this.OX, sy = (y0 + h) * this.W + this.OY;
+    if (sx > body.scrollLeft + body.clientWidth - 20) body.scrollLeft = sx - body.clientWidth + 60;
+    if (sy > body.scrollTop + body.clientHeight - 20) body.scrollTop = sy - body.clientHeight + 60;
+    this.growInf();
+    this.saveSoon();
+    this.selectItem(node);
+    this.textIn(node);
+  },
+  hideSelBar() { if (this.selBar) this.selBar.hidden = true; },
+  paintSelBar() {
+    const sel = this.sel;
+    if (!sel || !sel.length || !this.selBox || (this.drawing && (this.drawing.move || this.drawing.resize))) { this.hideSelBar(); return; }
+    if (!this.selBar) {
+      const el = document.createElement('div');
+      el.className = 'pad-selbar';
+      el.setAttribute('role', 'toolbar');
+      el.setAttribute('aria-label', 'Selezione');
+      el.addEventListener('pointerdown', e => e.stopPropagation());
+      el.addEventListener('click', e => {
+        const b = e.target.closest('[data-sb]');
+        if (!b || !this.sel) return;
+        const node = padClosed(this.sel[0]) ? this.sel[0] : null;
+        const k = b.dataset.sb;
+        if (k === 'branch' && node) this.addBranch(node);
+        else if (k === 'text') { if (node) this.textIn(node); else if (this.sel[0].k === 'text') this.editText(this.sel[0]); }
+        else if (k === 'fill') { this.pushUndo({ type: 'clear', page: this.page, strokes: this.snap() }); const on = !this.sel.filter(padClosed).every(s => s.f); this.sel.filter(padClosed).forEach(s => { if (on) s.f = 1; else delete s.f; }); this.redraw(); this.saveSoon(); }
+        else if (k === 'dup') this.act('dup');
+        else if (k === 'del') this.act('clear');
+      });
+      $('.pad-view', this.el).append(el);
+      this.selBar = el;
+    }
+    const node = padClosed(sel[0]) ? sel[0] : null;
+    const html = `${node ? '<button type="button" data-sb="branch" title="Aggiungi un nodo collegato a questo">＋ Ramo</button>' : ''}${node || (sel.length === 1 && sel[0].k === 'text') ? '<button type="button" data-sb="text" title="Scrivi nel nodo">Aa</button>' : ''}${sel.some(padClosed) ? '<button type="button" data-sb="fill" title="Riempi o svuota la forma">◐</button>' : ''}<button type="button" data-sb="dup" title="Duplica">⧉</button><button type="button" data-sb="del" title="Elimina">🗑</button>`;
+    if (this.selBar.dataset.h !== html) { this.selBar.innerHTML = html; this.selBar.dataset.h = html; }
+    this.selBar.hidden = false;
+    const [bx, by, bw, bh] = this.selBox;
+    const [sl, st] = this.scroll();
+    const w = this.selBar.offsetWidth || 180;
+    const x = Math.max(4, Math.min(this.VW - w - 4, bx + this.OX - sl + bw / 2 - w / 2));
+    let y = by + this.OY - st - 42;
+    if (y < 4) y = Math.min(this.VH - 42, by + this.OY - st + bh + 8);
+    this.selBar.style.left = `${x}px`; this.selBar.style.top = `${y}px`;
+  },
+  // vedi tutto: lo zoom che fa stare ogni cosa nel riquadro
+  fitAll() {
+    const pg = this.pg();
+    if (!pg.strokes.length) { this.setZoom(1); this.home(); return; }
+    const bb = pg.strokes.map(s => this.bbOf(s));
+    const x0 = Math.min(...bb.map(b => b[0])), y0 = Math.min(...bb.map(b => b[1])), x1 = Math.max(...bb.map(b => b[2])), y1 = Math.max(...bb.map(b => b[3]));
+    const body = $('.pad-body', this.el);
+    const z = Math.min(body.clientWidth / ((x1 - x0 + 0.1) * body.clientWidth), body.clientHeight / ((y1 - y0 + 0.1) * body.clientWidth));
+    this.setZoom(Math.max(PAD_ZOOMS[0], Math.min(2, z)));
+    body.scrollLeft = Math.max(0, (x0 - 0.05) * this.W + this.OX);
+    body.scrollTop = Math.max(0, (y0 - 0.05) * this.W + this.OY);
+  }
+};
 const Pad = {
   KEY: 'nb-pad-prefs',
   el: null, canvas: null, ctx: null,
@@ -2333,10 +2763,23 @@ const Pad = {
   prefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { p = {}; } return { w: 420, h: 0.45, open: false, ...p }; },
   setPrefs(ch) { const p = { ...this.prefs(), ...ch }; try { localStorage.setItem(this.KEY, JSON.stringify(p)); } catch { /* niente */ } return p; },
   wide: () => matchMedia('(min-width: 900px)').matches,
+  // v3.99: accanto (divisione verticale) o sotto, su qualunque schermo; “auto”: accanto sul computer, sotto sul telefono
+  side() { const p = this.prefs().pos; return p === 'side' ? true : p === 'bottom' ? false : this.wide(); },
+  applyPos() {
+    const side = this.side();
+    document.body.classList.toggle('pad-side', side && this.isOpen());
+    document.body.classList.toggle('pad-bottom', !side && this.isOpen());
+    const b = this.el && $('[data-pa="pos"]', this.el);
+    if (b) {
+      b.innerHTML = side ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 14h18"/></svg>' : '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/></svg>';
+      b.title = side ? 'Metti il blocco note sotto' : 'Metti il blocco note accanto (divisione verticale)';
+      b.setAttribute('aria-label', b.title);
+    }
+  },
   isOpen() { return document.body.classList.contains('pad-open'); },
-  maxW() { return Math.max(300, Math.min(1100, window.innerWidth - (document.body.classList.contains('nav-hidden') ? 0 : 232) - 340)); },
-  maxH() { return Math.max(220, window.innerHeight - 96 - 60); },
-  curW(p = this.prefs()) { return Math.round(Math.min(this.maxW(), Math.max(280, +p.w || 420))); },
+  maxW() { const nav = this.wide() && !document.body.classList.contains('nav-hidden') ? 232 : 0; return Math.max(260, Math.min(1100, window.innerWidth - nav - (this.wide() ? 340 : 200))); },
+  maxH() { return Math.max(220, window.innerHeight - (this.wide() ? 24 : 96) - 60); },
+  curW(p = this.prefs()) { return Math.round(Math.min(this.maxW(), Math.max(260, +p.w || (this.wide() ? 420 : Math.round(window.innerWidth * 0.5))))); },
   curH(p = this.prefs()) { return Math.round(Math.min(this.maxH(), Math.max(160, (+p.h || 0.45) * this.maxH()))); },
   // di chi è il blocco: la sezione aperta, oppure la pagina
   context() {
@@ -2362,11 +2805,14 @@ const Pad = {
           <button type="button" class="pad-b" data-pt="hl" aria-label="Evidenziatore" title="Evidenziatore trasparente"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15l-3 3h6l1-1"/><path d="M9 15l7-11 4 3-7 11z"/><path d="M4 21h16" stroke-width="3" opacity=".45"/></svg></button>
           <button type="button" class="pad-b" data-pt="eraser" aria-label="Gomma" title="Gomma: tocca di nuovo per scegliere tra “per tratto” e “per area”"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 20h12"/><path d="M5.5 15.5 14 7l5 5-7.5 7.5H9z"/></svg></button>
           <button type="button" class="pad-b" data-pt="lasso" aria-label="Lazo" title="Lazo: circonda i tratti per selezionarli, poi trascinali per spostarli (il cestino elimina la selezione)"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="9" rx="8" ry="5.5" stroke-dasharray="3 2.5"/><path d="M7 13.5c-1 2 0 4 2 4.5 1.5.4 1.2 2.4-.5 2.5"/></svg></button>
+          <button type="button" class="pad-b" data-pt="shape" aria-label="Forme e frecce" title="Forme e frecce, per mappe e schemi: tocca per mettere un nodo, trascina per disegnarlo"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="9" height="7" rx="2"/><circle cx="17" cy="16.5" r="4"/><path d="M12 9l3 4"/></svg></button>
+          <button type="button" class="pad-b" data-pt="text" aria-label="Testo" title="Testo con la tastiera: tocca il foglio, o dentro un nodo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M12 6v13M9 19h6"/></svg></button>
           <button type="button" class="pad-b" data-pt="hand" aria-label="Scorri" title="Scorri il foglio con il dito"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4.5a1.5 1.5 0 0 1 3 0V11M14 10.5V6a1.5 1.5 0 0 1 3 0v7.5a6.5 6.5 0 0 1-6.5 6.5h-.6a6 6 0 0 1-4.9-2.6l-2.7-3.9a1.5 1.5 0 0 1 2.4-1.8L8 15"/></svg></button>
           <span class="pad-zoom" role="group" aria-label="Zoom">
             <button type="button" class="pad-b" data-pa="zout" aria-label="Rimpicciolisci" title="Rimpicciolisci (o due dita, o Ctrl+rotellina)">−</button>
             <button type="button" class="pad-b pad-zv" data-pa="z100" title="Torna al 100%">100%</button>
             <button type="button" class="pad-b" data-pa="zin" aria-label="Ingrandisci" title="Ingrandisci (o due dita, o Ctrl+rotellina)">+</button>
+            <button type="button" class="pad-b" data-pa="fit" hidden title="Vedi tutta la tela" aria-label="Vedi tutta la tela">⤢</button>
           </span>
           <span class="pad-sep"></span>
           <span class="pad-pens">${PAD_COLORS.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="${l}" title="${l}" style="--c:${c === 'ink' ? 'var(--text)' : c}"></button>`).join('')}</span>
@@ -2384,11 +2830,18 @@ const Pad = {
           <button type="button" class="pad-b pad-bg" data-pa="bg" title="Sfondo: righe, quadretti o bianco" aria-label="Cambia lo sfondo"></button>
           <button type="button" class="pad-b" data-pa="save" aria-label="Salva come file" title="Salva come immagine o PDF, oppure mettilo nella sezione"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
         </div>
+        <div class="pad-shapes" role="toolbar" aria-label="Forme" hidden>
+          ${PAD_SHAPES.map(([k, l, d]) => `<button type="button" class="pad-b" data-psh="${k}" aria-label="${l}" title="${l}"><svg viewBox="0 0 24 24" aria-hidden="true">${d}</svg></button>`).join('')}
+          <span class="pad-sep"></span>
+          <button type="button" class="pad-b" data-pa="fill" aria-pressed="false" title="Forme piene (colore leggero) o solo il bordo" aria-label="Forme piene">◐</button>
+          <span class="pad-shint">Tocca: un nodo. Tocca un nodo: ＋ Ramo e Aa. Le frecce si agganciano ai nodi.</span>
+        </div>
         <div class="pad-pages">
           <button type="button" class="pad-b" data-pa="prev" aria-label="Pagina precedente">‹</button>
           <span class="pad-pn" aria-live="polite"></span>
           <button type="button" class="pad-b" data-pa="next" aria-label="Pagina successiva">›</button>
           <button type="button" class="pad-b" data-pa="add" aria-label="Nuova pagina" title="Nuova pagina">＋</button>
+          <button type="button" class="sh-ic" data-pa="pos"></button>
           <button type="button" class="sh-ic" data-pa="fs" data-fs-btn></button>
           <button type="button" class="sh-ic" data-pa="size"></button>
           <button type="button" class="sh-ic" data-pa="close" aria-label="Chiudi il blocco note" title="Chiudi">${SH_ICONS.close}</button>
@@ -2415,11 +2868,12 @@ const Pad = {
         this.tool = b.dataset.pt;
         this.paintTools();
       }
+      else if (b.dataset.psh) { this.shape = b.dataset.psh; this.tool = 'shape'; this.sel = null; this.selBox = null; this.redraw(); this.paintTools(); }
       else if (b.dataset.pc) this.pickColor(b.dataset.pc);
       else if (b.dataset.ps) {
         this.size = +b.dataset.ps;
         if (this.sel && this.sel.length) { this.restyleSel({ w: this.size }); return; }
-        if (this.tool !== 'hl') this.tool = 'pen';
+        if (!['hl', 'shape', 'text'].includes(this.tool)) this.tool = 'pen';
         this.paintTools();
       }
       else if (b.dataset.pa) this.act(b.dataset.pa);
@@ -2428,7 +2882,7 @@ const Pad = {
     this.bindDraw();
     $('.pad-body', el).addEventListener('scroll', () => {
       if (this.rafS || !this.data) return;
-      this.rafS = requestAnimationFrame(() => { this.rafS = 0; this.clearLive(); this.redraw(); });
+      this.rafS = requestAnimationFrame(() => { this.rafS = 0; this.clearLive(); this.growInf(); this.redraw(); });
     }, { passive: true });
     new MutationObserver(() => { this.paperBg = ''; this.lineCol = ''; if (this.isOpen() && this.data) this.redraw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
     new ResizeObserver(() => { if (this.isOpen()) this.layout(); }).observe($('.pad-body', el));
@@ -2444,7 +2898,7 @@ const Pad = {
   pickColor(c) {
     // con una selezione del lazo, il colore va ai tratti scelti
     if (this.sel && this.sel.length) { this.restyleSel({ c }); return; }
-    if (this.tool === 'hl') this.hlColor = c; else { this.color = c; this.tool = 'pen'; }
+    if (this.tool === 'hl') this.hlColor = c; else { this.color = c; if (!['shape', 'text'].includes(this.tool)) this.tool = 'pen'; }
     this.paintTools();
   },
   restyleSel(ch) {
@@ -2460,6 +2914,10 @@ const Pad = {
     if (!this.el) return;
     $$('[data-pt]', this.el).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.pt === this.tool)));
     const hl = this.tool === 'hl';
+    const forms = this.tool === 'shape' || this.tool === 'text';
+    $('.pad-shapes', this.el).hidden = !forms;
+    $$('[data-psh]', this.el).forEach(b => b.setAttribute('aria-pressed', String(this.tool === 'shape' && b.dataset.psh === this.shape)));
+    $('[data-pa="fill"]', this.el).setAttribute('aria-pressed', String(!!this.fill));
     $('.pad-pens', this.el).hidden = hl;
     $('.pad-hls', this.el).hidden = !hl;
     const cur = hl ? this.hlColor : this.color;
@@ -2470,9 +2928,9 @@ const Pad = {
     $$('[data-ps]', this.el).forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.ps === this.size)));
     $('[data-pa="penonly"]', this.el).setAttribute('aria-pressed', String(this.penOnly));
     this.canvas.style.touchAction = 'none';
-    this.canvas.style.cursor = this.tool === 'hand' ? 'grab' : this.tool === 'eraser' ? 'cell' : this.tool === 'lasso' ? 'default' : 'crosshair';
-    if (this.tool !== 'lasso' && this.sel) { this.sel = null; this.selBox = null; this.redraw(); }
-    this.setPrefs({ tool: this.tool === 'hand' ? 'pen' : this.tool, color: this.color, hlColor: this.hlColor, size: this.size, penOnly: this.penOnly, eraseMode: this.eraseMode });
+    this.canvas.style.cursor = this.tool === 'hand' ? 'grab' : this.tool === 'eraser' ? 'cell' : this.tool === 'lasso' ? 'default' : this.tool === 'text' ? 'text' : 'crosshair';
+    if (!['lasso', 'shape', 'text'].includes(this.tool) && this.sel) { this.sel = null; this.selBox = null; this.redraw(); }
+    this.setPrefs({ shape: this.shape, fill: !!this.fill, tool: this.tool === 'hand' ? 'pen' : this.tool, color: this.color, hlColor: this.hlColor, size: this.size, penOnly: this.penOnly, eraseMode: this.eraseMode });
   },
   bindGrip(grip) {
     let d = null;
@@ -2485,7 +2943,7 @@ const Pad = {
     });
     grip.addEventListener('pointermove', e => {
       if (!d || e.pointerId !== d.id) return;
-      if (this.wide()) this.apply({ w: d.w - (e.clientX - d.x) }); else this.apply({ hPx: d.h - (e.clientY - d.y) });
+      if (this.side()) this.apply({ w: d.w - (e.clientX - d.x) }); else this.apply({ hPx: d.h - (e.clientY - d.y) });
     });
     const end = e => { if (!d || e.pointerId !== d.id) return; d = null; this.el.classList.remove('resizing'); this.savePos(); };
     grip.addEventListener('pointerup', end);
@@ -2494,25 +2952,25 @@ const Pad = {
       const dir = { ArrowLeft: 1, ArrowRight: -1, ArrowUp: 1, ArrowDown: -1 }[e.key];
       if (!dir) return;
       e.preventDefault();
-      if (this.wide()) this.apply({ w: this.curW() + dir * 32 }); else this.apply({ hPx: this.curH() + dir * 40 });
+      if (this.side()) this.apply({ w: this.curW() + dir * 32 }); else this.apply({ hPx: this.curH() + dir * 40 });
       this.savePos();
     });
   },
   apply({ w, hPx } = {}) {
-    const ww = w === undefined ? this.curW() : Math.round(Math.min(this.maxW(), Math.max(280, w)));
+    const ww = w === undefined ? this.curW() : Math.round(Math.min(this.maxW(), Math.max(260, w)));
     const hh = hPx === undefined ? this.curH() : Math.round(Math.min(this.maxH(), Math.max(160, hPx)));
     document.documentElement.style.setProperty('--pad-w', `${ww}px`);
     document.documentElement.style.setProperty('--pad-h', `${hh}px`);
     this._w = ww; this._h = hh;
     if (this.el) {
-      const big = this.wide() ? ww >= this.maxW() - 4 : hh >= this.maxH() - 4;
+      const big = this.side() ? ww >= this.maxW() - 4 : hh >= this.maxH() - 4;
       const b = $('[data-pa="size"]', this.el);
       b.innerHTML = big ? SH_ICONS.small : SH_ICONS.size;
       b.setAttribute('aria-label', big ? 'Rimpicciolisci il blocco note' : 'Ingrandisci il blocco note');
       b.title = big ? 'Più piccolo' : 'Più grande';
     }
   },
-  savePos() { if (this.wide()) this.setPrefs({ w: this._w }); else this.setPrefs({ h: +(this._h / this.maxH()).toFixed(3) }); },
+  savePos() { if (this.side()) this.setPrefs({ w: this._w }); else this.setPrefs({ h: +(this._h / this.maxH()).toFixed(3) }); },
   async open() {
     this.build();
     if (ShDock.isOpen()) ShDock.close();
@@ -2520,8 +2978,10 @@ const Pad = {
     const p = this.prefs();
     this.tool = p.tool || 'pen'; this.color = p.color || 'ink'; this.size = +p.size || 0.006; this.penOnly = !!p.penOnly;
     this.hlColor = p.hlColor || '#facc15'; this.eraseMode = p.eraseMode || 'stroke'; this.zoom = +p.zoom || 1; this.redoStack = [];
+    this.shape = p.shape || 'round'; this.fill = !!p.fill;
     this.el.hidden = false;
     document.body.classList.add('pad-open');
+    this.applyPos();
     this.apply();
     this.paintTools();
     this.setPrefs({ open: true });
@@ -2532,7 +2992,7 @@ const Pad = {
     if (!this.el) return;
     this.flush();
     this.el.hidden = true;
-    document.body.classList.remove('pad-open');
+    document.body.classList.remove('pad-open', 'pad-side', 'pad-bottom');
     this.setPrefs({ open: false });
     this.refreshBtn();
   },
@@ -2552,6 +3012,7 @@ const Pad = {
     const d = await PadDB.get(this.key);
     if (this.key !== ctx.key) return;
     this.data = d && Array.isArray(d.pages) && d.pages.length ? d : { pages: [{ strokes: [], h: 1.6 }], t: Date.now() };
+    this.data.pages.forEach(pg => { pg.strokes = pg.strokes.filter(x => x.k !== 'text' || String(x.t || '').trim()); });
     this.page = Math.min(this.data.page || 0, this.data.pages.length - 1);
     this.undo = [];
     $('.pad-ctx', this.el).textContent = this.title;
@@ -2559,13 +3020,13 @@ const Pad = {
     this.selBox = null;
     this.paintBg();
     this.layout();
-    $('.pad-body', this.el).scrollTop = 0;
+    this.home();
   },
   flush() {
     if (!this.saveT || !this.key || !this.data) return;
     clearTimeout(this.saveT);
     this.saveT = 0;
-    const empty = this.data.pages.every(pg => !pg.strokes.length);
+    const empty = this.data.pages.every(pg => !pg.strokes.length && !pg.inf);
     if (empty) PadDB.del(this.key); else PadDB.put(this.key, { ...this.data, page: this.page, title: this.title, t: Date.now() });
   },
   saveSoon() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { this.saveT = 1; this.flush(); }, 500); },
@@ -2579,7 +3040,13 @@ const Pad = {
     // v3.63: zoom; i tratti sono salvati in proporzione alla larghezza, quindi si ingrandiscono da soli
     const w = Math.round(w0 * (this.zoom || 1));
     const minH = body.clientHeight;
-    const h = Math.max(minH, Math.round((pg.h || 1.6) * w));
+    // v3.98: tela infinita: il foglio ha i suoi bordi (anche sotto lo zero) e cresce da solo
+    if (pg.inf && !Array.isArray(pg.ext)) pg.ext = [-1.5, -1.5, 2.5, 3];
+    const ex = pg.inf ? pg.ext : null;
+    this.OX = ex ? -ex[0] * w : 0; this.OY = ex ? -ex[1] * w : 0;
+    this.SW = ex ? Math.round((ex[2] - ex[0]) * w) : w;
+    const h = ex ? Math.round((ex[3] - ex[1]) * w) : Math.max(minH, Math.round((pg.h || 1.6) * w));
+    $('[data-pa="fit"]', this.el).hidden = !pg.inf;
     // v3.66: la tela è grande solo quanto la parte visibile (come nelle app di disegno);
     // il foglio intero è uno spazio vuoto che dà la misura dello scorrimento. Così la tela
     // resta piccola anche con fogli lunghi e zoom, e il tablet la disegna con la scheda grafica.
@@ -2594,14 +3061,14 @@ const Pad = {
     this.clearLive();
     $('.pad-zv', this.el).textContent = `${Math.round((this.zoom || 1) * 100)}%`;
     this.redraw();
-    $('.pad-pn', this.el).textContent = `${this.page + 1} / ${this.data.pages.length}`;
+    $('.pad-pn', this.el).textContent = `${this.page + 1} / ${this.data.pages.length}${pg.inf ? ' ∞' : ''}`;
     $('[data-pa="prev"]', this.el).disabled = this.page === 0;
     $('[data-pa="next"]', this.el).disabled = this.page >= this.data.pages.length - 1;
   },
   // lo spazio da scorrere: largo e alto quanto il foglio intero
   sizeSheet() {
     const sh = $('.pad-sheet', this.el);
-    sh.style.width = `${this.W}px`;
+    sh.style.width = `${this.SW || this.W}px`;
     sh.style.height = `${this.H}px`;
     sh.style.marginTop = `${-this.VH}px`;
   },
@@ -2622,12 +3089,12 @@ const Pad = {
     const body = $('.pad-body', this.el);
     z = Math.max(PAD_ZOOMS[0], Math.min(PAD_ZOOMS[PAD_ZOOMS.length - 1], +z.toFixed(2)));
     if (fx === undefined) { fx = body.clientWidth / 2; fy = body.clientHeight / 3; }
-    const cx = (body.scrollLeft + fx) / this.W, cy = (body.scrollTop + fy) / this.W;
+    const cx = (body.scrollLeft + fx - (this.OX || 0)) / this.W, cy = (body.scrollTop + fy - (this.OY || 0)) / this.W;
     this.zoom = z;
     this.setPrefs({ zoom: z });
     this.layout();
-    body.scrollLeft = Math.max(0, cx * this.W - fx);
-    body.scrollTop = Math.max(0, cy * this.W - fy);
+    body.scrollLeft = Math.max(0, cx * this.W + this.OX - fx);
+    body.scrollTop = Math.max(0, cy * this.W + this.OY - fy);
   },
   stepZoom(dir) {
     const z = this.zoom || 1;
@@ -2644,9 +3111,10 @@ const Pad = {
     c.fillStyle = this.paperBg || (this.paperBg = getComputedStyle($('.pad-body', this.el)).backgroundColor || '#fff');
     c.fillRect(0, 0, this.VW, this.VH);
     // da qui in poi si disegna nelle coordinate del foglio, spostate dello scorrimento
-    c.setTransform(dpr, 0, 0, dpr, -sl * dpr, -st * dpr);
-    const vis = [sl, st, sl + this.VW, st + this.VH];
-    padPaper(c, this.W, this.H, this.bg(), this.lineCol || (this.lineCol = getComputedStyle(document.body).getPropertyValue('--line').trim() || '#ccc'), 0.45, vis);
+    const OX = this.OX || 0, OY = this.OY || 0;
+    c.setTransform(dpr, 0, 0, dpr, (OX - sl) * dpr, (OY - st) * dpr);
+    const vis = [sl - OX, st - OY, sl - OX + this.VW, st - OY + this.VH];
+    padPaper(c, this.W, this.H, this.bg(), this.lineCol || (this.lineCol = getComputedStyle(document.body).getPropertyValue('--line').trim() || '#ccc'), 0.45, vis, [-OX, -OY, (this.SW || this.W) - OX, this.H - OY]);
     const W = this.W, m = 4;
     for (const s of this.pg().strokes) {
       const b = this.bbOf(s);
@@ -2654,6 +3122,7 @@ const Pad = {
       this.drawStroke(s);
     }
     this.drawSel();
+    if (this.ted) this.ted.place();
   },
   bg() { return (this.data && this.data.bg) || this.prefs().bg || 'lines'; },
   paintBg() {
@@ -2666,7 +3135,7 @@ const Pad = {
   // selezione del lazo: riquadro tratteggiato attorno ai tratti scelti
   drawSel() {
     const sel = this.sel;
-    if (!sel || !sel.length) return;
+    if (!sel || !sel.length) { this.hideSelBar(); return; }
     const W = this.W;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     sel.forEach(s => s.p.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }));
@@ -2684,9 +3153,11 @@ const Pad = {
     c.fillStyle = c.strokeStyle;
     c.fillRect(bx + bw - 7, by + bh - 7, 14, 14);
     c.restore();
+    this.paintSelBar();
   },
   drawStroke(s, from = 1) {
     const c = this.ctx, W = this.W, pts = s.p;
+    if (s.k === 'shape' || s.k === 'text') { if (!(this.ted && this.ted.s === s)) padDrawItem(c, s, W, this.inkColor(s.c)); return; }
     if (s.k === 'hl') { padHlPath(c, s, W); return; }
     c.strokeStyle = this.inkColor(s.c);
     c.lineCap = 'round';
@@ -2709,7 +3180,7 @@ const Pad = {
     const pos = e => {
       const r = rect || cv.getBoundingClientRect();
       const sl = rect ? rect.sl : this.scroll()[0], st = rect ? rect.st : this.scroll()[1];
-      return [(e.clientX - r.left + sl) / this.W, (e.clientY - r.top + st) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5];
+      return [(e.clientX - r.left + sl - (this.OX || 0)) / this.W, (e.clientY - r.top + st - (this.OY || 0)) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5];
     };
     const erase = pt => {
       const pg = this.pg();
@@ -2721,6 +3192,8 @@ const Pad = {
         const out = [];
         pg.strokes.forEach(s => {
           const hit = q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < rad + s.w / 2;
+          // forme e testi si cancellano interi
+          if (s.k === 'shape' || s.k === 'text') { if (padPts(s).some(hit)) changed = true; else out.push(s); return; }
           if (!s.p.some(hit)) { out.push(s); return; }
           changed = true;
           let run = [];
@@ -2735,7 +3208,7 @@ const Pad = {
         }
         return;
       }
-      const keep = pg.strokes.filter(s => !s.p.some(q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < rad + s.w));
+      const keep = pg.strokes.filter(s => !padPts(s).some(q => Math.hypot(q[0] - pt[0], q[1] - pt[1]) < rad + (s.w || 0)));
       if (keep.length !== before) {
         this.pushUndo({ type: 'erase', page: this.page, strokes: pg.strokes });
         pg.strokes = keep;
@@ -2755,7 +3228,7 @@ const Pad = {
       if (d && d.s) { const pg = this.pg(); pg.strokes = pg.strokes.filter(x => x !== d.s); this.clearLive(); this.redraw(); }
       if (d && d.hold) clearTimeout(d.hold);
       this.drawing = null;
-      pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, fx: (a.x + b.x) / 2 - r.left, fy: (a.y + b.y) / 2 - r.top, k: 1, mx0: (a.x + b.x) / 2, my0: (a.y + b.y) / 2, sl: body().scrollLeft, st: body().scrollTop };
+      pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, fx: (a.x + b.x) / 2 - r.left, fy: (a.y + b.y) / 2 - r.top, k: 1, mx0: (a.x + b.x) / 2, my0: (a.y + b.y) / 2, sl: body().scrollLeft, st: body().scrollTop, shX: this.shX || 0, shY: this.shY || 0 };
       this.pinchMoved = false;
       $('.pad-view', this.el).style.transformOrigin = `${pinch.fx}px ${pinch.fy}px`;
     };
@@ -2765,8 +3238,8 @@ const Pad = {
       pinch.k = Math.max(PAD_ZOOMS[0] / (this.zoom || 1), Math.min(PAD_ZOOMS[PAD_ZOOMS.length - 1] / (this.zoom || 1), Math.hypot(a.x - b.x, a.y - b.y) / pinch.d0));
       if (Math.abs(pinch.k - 1) > 0.04) this.pinchMoved = true;
       // le due dita spostate insieme fanno scorrere il foglio
-      body().scrollLeft = pinch.sl - ((a.x + b.x) / 2 - pinch.mx0);
-      body().scrollTop = pinch.st - ((a.y + b.y) / 2 - pinch.my0);
+      body().scrollLeft = pinch.sl + ((this.shX || 0) - pinch.shX) - ((a.x + b.x) / 2 - pinch.mx0);
+      body().scrollTop = pinch.st + ((this.shY || 0) - pinch.shY) - ((a.y + b.y) / 2 - pinch.my0);
       $('.pad-view', this.el).style.transform = `scale(${pinch.k})`;
     };
     const endPinch = () => {
@@ -2794,12 +3267,15 @@ const Pad = {
       }
       // con la mano, o con le dita quando scrivi con la penna, il foglio scorre
       if (this.tool === 'hand' || ((this.penOnly || this.penSeen) && e.pointerType === 'touch')) {
-        this.drawing = { id: e.pointerId, pan: true, x0: e.clientX, y0: e.clientY, sl: body().scrollLeft, st: body().scrollTop };
+        this.drawing = { id: e.pointerId, pan: true, x0: e.clientX, y0: e.clientY, sl: body().scrollLeft, st: body().scrollTop, shX: this.shX || 0, shY: this.shY || 0 };
         return;
       }
       const pt = pos(e);
       if (this.tool === 'eraser' || penErases(e)) { this.drawing = { id: e.pointerId, erase: true }; erase(pt); return; }
-      if (this.tool === 'lasso') {
+      if (this.ted) { this.ted.commit(); }
+      const pxS = pt[0] * this.W, pyS = pt[1] * this.W, sb = this.selBox;
+      const onSel = !!(this.sel && this.sel.length && sb && ((pxS >= sb[0] && pxS <= sb[0] + sb[2] && pyS >= sb[1] && pyS <= sb[1] + sb[3]) || (Math.abs(pxS - (sb[0] + sb[2])) < 18 && Math.abs(pyS - (sb[1] + sb[3])) < 18)));
+      if (this.tool === 'lasso' || ((this.tool === 'shape' || this.tool === 'text') && onSel)) {
         const px = pt[0] * this.W, py = pt[1] * this.W;
         const b = this.selBox;
         // sulla maniglia: ridimensiono; dentro la selezione: la sposto; fuori: nuovo lazo
@@ -2807,19 +3283,33 @@ const Pad = {
           const pg = this.pg();
           this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });
           const ox = (b[0] + 8) / this.W, oy = (b[1] + 8) / this.W;
-          this.drawing = { id: e.pointerId, resize: true, ox, oy, d0: Math.hypot(pt[0] - ox, pt[1] - oy) || 0.001, orig: this.sel.map(s => ({ s, p: s.p.map(q => q.slice()), w: s.w })) };
+          this.detachSel();
+          this.drawing = { id: e.pointerId, resize: true, ox, oy, d0: Math.hypot(pt[0] - ox, pt[1] - oy) || 0.001, orig: this.sel.map(s => ({ s, p: s.p.map(q => q.slice()), w: s.w, fs: s.fs })) };
+          this.hideSelBar();
           return;
         }
         if (this.sel && this.sel.length && b && px >= b[0] && px <= b[0] + b[2] && py >= b[1] && py <= b[1] + b[3]) {
           const pg = this.pg();
           this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })), keepSel: true });
+          this.detachSel();
           this.drawing = { id: e.pointerId, move: true, last: pt };
+          this.hideSelBar();
         } else {
           this.sel = null;
           this.selBox = null;
           this.drawing = { id: e.pointerId, lasso: [pt] };
           this.redraw();
         }
+        return;
+      }
+      if (this.tool === 'text') { this.drawing = { id: e.pointerId, textTap: pt }; return; }
+      if (this.tool === 'shape') {
+        const q = pt.slice(0, 2).map(v => +v.toFixed(4));
+        const s = { k: 'shape', sh: this.shape, id: uid(), c: this.color, w: this.size, p: [[q[0], q[1], 0.5], [q[0], q[1], 0.5]] };
+        if (this.fill && padClosed(s)) s.f = 1;
+        this.sel = null; this.selBox = null;
+        this.pg().strokes.push(s);
+        this.drawing = { id: e.pointerId, shape: s, x: e.clientX, y: e.clientY, pt0: pt };
         return;
       }
       this.sel = null;
@@ -2836,14 +3326,26 @@ const Pad = {
       const d = this.drawing;
       if (!d || e.pointerId !== d.id) return;
       e.preventDefault();
-      if (d.pan) { body().scrollTop = d.st - (e.clientY - d.y0); body().scrollLeft = d.sl - (e.clientX - d.x0); rect = null; return; }
-      if (d.resize) {
+      if (d.pan) { body().scrollTop = d.st + ((this.shY || 0) - d.shY) - (e.clientY - d.y0); body().scrollLeft = d.sl + ((this.shX || 0) - d.shX) - (e.clientX - d.x0); rect = null; return; }
+      if (d.textTap) return;
+      if (d.shape) {
         const pt = pos(e);
-        const k = Math.max(0.15, Math.hypot(pt[0] - d.ox, pt[1] - d.oy) / d.d0);
-        d.orig.forEach(o => { o.s.p = o.p.map(q => [+(d.ox + (q[0] - d.ox) * k).toFixed(4), +(d.oy + (q[1] - d.oy) * k).toFixed(4), q[2]]); o.s.w = o.w * k; });
+        if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 7) return;
+        d.moved = true;
+        d.shape.p[1] = [+pt[0].toFixed(4), +pt[1].toFixed(4), 0.5];
+        this.bbs = null;
         this.redraw();
         return;
       }
+      if (d.resize) {
+        const pt = pos(e);
+        const k = Math.max(0.15, Math.hypot(pt[0] - d.ox, pt[1] - d.oy) / d.d0);
+        d.orig.forEach(o => { o.s.p = o.p.map(q => [+(d.ox + (q[0] - d.ox) * k).toFixed(4), +(d.oy + (q[1] - d.oy) * k).toFixed(4), q[2]]); o.s.w = o.w * k; if (o.fs) o.s.fs = o.fs * k; });
+        this.relink();
+        this.redraw();
+        return;
+      }
+      if (d.shaped) return;
       if (d.line) {
         // linea dritta: l’estremo segue la penna
         const pt = pos(e);
@@ -2856,7 +3358,7 @@ const Pad = {
         const dx = pt[0] - d.last[0], dy = pt[1] - d.last[1];
         d.last = pt;
         this.sel.forEach(s => s.p.forEach(q => { q[0] = +(q[0] + dx).toFixed(4); q[1] = +(q[1] + dy).toFixed(4); }));
-        this.bbs = null;
+        this.relink();
         this.redraw();
         return;
       }
@@ -2888,9 +3390,21 @@ const Pad = {
           d.x = e.clientX; d.y = e.clientY;
           clearTimeout(d.hold);
           const p0 = d.s.p[0], pn = d.s.p[d.s.p.length - 1];
-          if (Math.hypot(pn[0] - p0[0], pn[1] - p0[1]) * this.W > 30) {
+          const far = Math.hypot(pn[0] - p0[0], pn[1] - p0[1]) * this.W;
+          // un giro chiuso (la fine vicino all’inizio) tenuto fermo diventa una forma pulita
+          const bbs = d.s.p.length > 12 && d.s.k !== 'hl' ? d.s.p.reduce((m, q) => [Math.min(m[0], q[0]), Math.min(m[1], q[1]), Math.max(m[2], q[0]), Math.max(m[3], q[1])], [Infinity, Infinity, -Infinity, -Infinity]) : null;
+          const closedLoop = !!bbs && far < 34 && (bbs[2] - bbs[0]) * this.W > 40 && (bbs[3] - bbs[1]) * this.W > 26;
+          if (far > 30 || closedLoop) {
             d.hold = setTimeout(() => {
               if (this.drawing !== d) return;
+              if (closedLoop) {
+                d.line = true; d.shaped = true;
+                this.shapeFrom(d.s);
+                this.bbs = null;
+                this.redraw();
+                try { navigator.vibrate && navigator.vibrate(12); } catch { /* niente */ }
+                return;
+              }
               d.line = true;
               d.s.p = [d.s.p[0], d.s.p[d.s.p.length - 1]];
               if (d.s.k === 'hl') { this.clearLive(); this.liveHl(d.s); } else this.redraw();
@@ -2902,7 +3416,7 @@ const Pad = {
       // scrivendo in fondo il foglio si allunga
       const pg = this.pg();
       const lastY = d.s ? d.s.p[d.s.p.length - 1][1] * this.W : 0;
-      if (d.s && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.H = Math.round(pg.h * this.W); this.sizeSheet(); }
+      if (d.s && !pg.inf && lastY > this.H - 60) { pg.h = (this.H + this.W * 0.5) / this.W; this.H = Math.round(pg.h * this.W); this.sizeSheet(); }
     });
     const inPoly = (x, y, poly) => { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi) inside = !inside; } return inside; };
     const end = e => {
@@ -2920,11 +3434,17 @@ const Pad = {
         if (d.s.k === 'hl') { this.clearLive(); this.redraw(); }
         this.saveSoon();
       }
-      if (d.move || d.resize) { this.saveSoon(); this.redraw(); }
+      if (d.move || d.resize) { this.relink(); this.saveSoon(); this.redraw(); }
+      if (d.shape) { this.endShape(d); this.growInf(); return; }
+      if (d.textTap) { this.textAt(d.textTap); return; }
+      if (d.s) this.growInf();
       if (d.lasso) {
+        // un tocco (senza giro): seleziona quello che c’è sotto; un nodo porta con sé il suo contenuto
+        const ext = d.lasso.reduce((m, q) => Math.max(m, Math.hypot(q[0] - d.lasso[0][0], q[1] - d.lasso[0][1])), 0) * this.W;
+        if (ext < 8) { this.selectItem(this.hitItem(d.lasso[0])); return; }
         // presi i tratti che stanno per almeno metà dentro il lazo
         const poly = d.lasso;
-        const sel = poly.length > 2 ? this.pg().strokes.filter(s => s.p.filter(q => inPoly(q[0], q[1], poly)).length >= Math.max(1, s.p.length / 2)) : [];
+        const sel = poly.length > 2 ? this.pg().strokes.filter(s => { const pp = padPts(s); return pp.filter(q => inPoly(q[0], q[1], poly)).length >= Math.max(1, pp.length / 2); }) : [];
         this.sel = sel.length ? sel : null;
         this.redraw();
         $('[data-pa="dup"]', this.el).hidden = !sel.length;
@@ -2944,7 +3464,7 @@ const Pad = {
       const [sl, st] = this.scroll();
       lv.style.width = `${this.VW}px`; lv.style.height = `${this.VH}px`;
       lv.width = Math.round(this.VW * dpr); lv.height = Math.round(this.VH * dpr);
-      this.lctx.setTransform(dpr, 0, 0, dpr, -sl * dpr, -st * dpr);
+      this.lctx.setTransform(dpr, 0, 0, dpr, ((this.OX || 0) - sl) * dpr, ((this.OY || 0) - st) * dpr);
       lv.hidden = false;
       from = 0;
     }
@@ -2971,9 +3491,21 @@ const Pad = {
   async act(a) {
     if (!this.data) return;
     if (a === 'fs') { FullScreen.toggle(); return; }
+    if (a === 'pos') {
+      const side = !this.side();
+      this.setPrefs({ pos: side ? 'side' : 'bottom' });
+      this.applyPos();
+      this.apply();
+      requestAnimationFrame(() => this.layout());
+      toast(side ? 'Blocco note accanto: trascina il bordo per allargarlo' : 'Blocco note sotto: trascina il bordo in alto per alzarlo');
+      return;
+    }
     if (a === 'zin') { this.stepZoom(1); return; }
     if (a === 'zout') { this.stepZoom(-1); return; }
     if (a === 'z100') { this.setZoom(1); return; }
+    if (a === 'fit') { this.fitAll(); return; }
+    if (a === 'fill') { this.fill = !this.fill; this.paintTools(); return; }
+    if (this.ted) this.ted.commit();
     if (a === 'redo') {
       const r = (this.redoStack || []).pop();
       if (!r) return;
@@ -2991,6 +3523,10 @@ const Pad = {
       this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.slice() });
       const off = 14 / this.W;
       const copies = this.sel.map(s => ({ ...s, p: s.p.map(q => [+(q[0] + off).toFixed(4), +(q[1] + off).toFixed(4), q[2]]) }));
+      // le copie hanno i loro nomi: le frecce tra nodi copiati restano attaccate alle copie
+      const ids = new Map();
+      copies.forEach(c2 => { if (c2.id) { const n = uid(); ids.set(c2.id, n); c2.id = n; } });
+      copies.forEach(c2 => { ['a', 'b', 'in'].forEach(k => { if (c2[k]) { if (ids.has(c2[k])) c2[k] = ids.get(c2[k]); else delete c2[k]; } }); });
       pg.strokes.push(...copies);
       this.sel = copies;
       this.redraw();
@@ -3000,7 +3536,7 @@ const Pad = {
     }
     if (a === 'close') this.close();
     else if (a === 'size') {
-      if (this.wide()) this.apply({ w: this.curW() >= this.maxW() - 4 ? 380 : this.maxW() });
+      if (this.side()) this.apply({ w: this.curW() >= this.maxW() - 4 ? 380 : this.maxW() });
       else this.apply({ hPx: this.curH() >= this.maxH() - 4 ? this.maxH() * 0.45 : this.maxH() });
       this.savePos();
     } else if (a === 'penonly') {
@@ -3088,13 +3624,22 @@ const Pad = {
       this.saveSoon();
       toast('Pagina svuotata', '', { label: 'Annulla', fn: () => this.act('undo') });
     } else if (a === 'add') {
-      this.data.pages.splice(this.page + 1, 0, { strokes: [], h: 1.6 });
+      const cur = this.pg();
+      const ch = await actionSheet('Nuova pagina', [
+        { key: 'page', label: 'Foglio (si allunga verso il basso)' },
+        { key: 'inf', label: 'Tela infinita, per mappe e schemi (si allarga in ogni direzione)' },
+        ...(cur.inf ? [] : [{ key: 'conv', label: 'Trasforma questa pagina in tela infinita' }])
+      ]);
+      if (!ch) return;
+      if (ch === 'conv') { cur.inf = true; cur.ext = [-1.5, -1.5, 2.5, Math.max(3, (cur.h || 1.6) + 1.5)]; this.layout(); this.home(); this.saveT = 1; this.saveSoon(); toast('Ora questa pagina è una tela infinita: scorri in ogni direzione, ⤢ per vederla tutta'); return; }
+      this.data.pages.splice(this.page + 1, 0, ch === 'inf' ? { strokes: [], h: 1.6, inf: true, ext: [-1.5, -1.5, 2.5, 3] } : { strokes: [], h: 1.6 });
       this.page++;
       this.layout();
-      $('.pad-body', this.el).scrollTop = 0;
+      this.home();
       this.saveSoon();
-    } else if (a === 'prev' && this.page > 0) { this.page--; this.layout(); $('.pad-body', this.el).scrollTop = 0; this.saveSoon(); }
-    else if (a === 'next' && this.page < this.data.pages.length - 1) { this.page++; this.layout(); $('.pad-body', this.el).scrollTop = 0; this.saveSoon(); }
+      if (ch === 'inf') { this.tool = 'shape'; this.paintTools(); toast('Tela infinita: le forme sono già pronte. Tocca per mettere un nodo, poi ＋ Ramo'); }
+    } else if (a === 'prev' && this.page > 0) { this.page--; this.layout(); this.home(); this.saveSoon(); }
+    else if (a === 'next' && this.page < this.data.pages.length - 1) { this.page++; this.layout(); this.home(); this.saveSoon(); }
   },
   init() {
     if (!$('#padFab')) document.body.insertAdjacentHTML('beforeend', '<button type="button" class="pad-fab" id="padFab" aria-label="Apri il blocco note per scrivere a mano" title="Blocco note a mano"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/><path d="M13 20h7"/></svg></button>');
@@ -3105,7 +3650,7 @@ const Pad = {
       e.preventDefault();
       this.toggle();
     });
-    window.addEventListener('resize', () => { if (this.isOpen()) this.apply(); });
+    window.addEventListener('resize', () => { if (this.isOpen()) { this.applyPos(); this.apply(); } });
     window.addEventListener('pagehide', () => this.flush());
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') this.flush(); });
     if (this.prefs().open && this.wide()) this.open();
@@ -3113,6 +3658,7 @@ const Pad = {
   // da route(): cambia foglio se cambia la sezione o la pagina
   onRoute() { if (this.isOpen()) this.load(); }
 };
+Object.assign(Pad, PadX);
 
 /* =====================================================================
    v3.29: tutorial a passi al primo avvio e tasti “?” che spiegano ogni parte
@@ -3222,7 +3768,7 @@ const HELP = {
   diary: { t: 'Diario di tirocinio', b: `Una pagina per ogni giornata: data, reparto, tutor e le <b>procedure</b> (eseguite, assistite, osservate, quante volte). Scrivi casi e cose imparate sotto i titoli pronti. La scheda <b>Procedure</b> fa il totale, con i reparti e l’ultima volta.` },
   examq: { t: 'Domande d’esame', b: `La banca delle domande uscite agli esami. Ogni domanda ha materia, argomenti collegati, risposta o traccia, e le volte in cui è uscita (docente, anno, data, fonte): quando esce di nuovo si somma, così l’elenco “Le più frequenti” ti dice cosa chiedono di più.<br><br><b>Importa da Excel</b>: un foglio .xlsx (anche scaricato da Google Fogli) o un CSV, una domanda per riga. Scegli quali colonne sono domanda, risposta, materia, argomento, docente, anno, data, fonte e tag; “Scarica il modello” ti dà un foglio già pronto. Le domande uguali si sommano e gli argomenti si collegano da soli quando il titolo di una sezione compare nella domanda.<br><br><b>Allenati</b> sulle domande filtrate: le più frequenti, quelle di un docente o di un anno, quelle che sbagli. In ogni sezione, in fondo a Leggi, trovi le domande uscite su quell’argomento.` },
   splitView: { t: 'Affianca', b: `Apre di fianco una <b>sezione</b>, un <b>PDF</b> o una <b>mappa</b>, mentre nella pagina principale resta quello che stai guardando.<br><br>Il PDF ha il lettore completo (evidenziatori, penna, segnalibri, figure). Una sezione ha <b>✎ Scrivi</b> per scriverci gli appunti lì; una mappa si crea e modifica nel pannello, e dal PDF ci mandi il testo con <b>Alla mappa</b>. Da <b>Cambia</b> puoi anche creare una <b>nuova sezione</b>.<br><br>Sulla barretta tra le due finestre: <b>⇆ Scambia</b> le porta dall’altra parte, la <b>maniglia</b> le allarga, l’altro pulsante le mette <b>una sopra l’altra</b> o <b>una accanto all’altra</b>. <b>Apri qui</b> porta il contenuto nella pagina principale.` },
-  pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Quando scrivi con la penna il palmo non lascia segni e con le dita scorri il foglio; <b>✍︎ Solo penna</b> lo attiva da subito.<br><br><b>Gomma della penna</b>: tieni premuto il pulsante laterale (S Pen) o gira la penna dalla parte della gomma (Staedtler Noris digital, Wacom, Surface). <b>Tocco con due dita</b>: annulla l’ultimo tratto (comodo con Apple Pencil, che non ha la gomma).<br><br><b>Zoom</b>: allarga due dita (spostandole scorri il foglio), oppure − / % / + tra gli strumenti, o Ctrl+rotellina. <b>Evidenziatore</b> trasparente; <b>tieni ferma la penna</b> alla fine di un tratto per farlo diventare una linea dritta; <b>Ripeti</b> accanto ad Annulla. Tocca due volte la gomma per passare da “per tratto” a “per area”. Con il <b>lazo</b>: trascina, ridimensiona dal quadratino nell’angolo, tocca un colore o uno spessore per cambiarli, Duplica.` },
+  pad: { t: 'Blocco note', b: `Un foglio per scrivere a mano mentre ripeti, accanto a qualunque pagina: a destra sul computer, in basso sul telefono. Trascina il bordo per allargarlo o stringerlo.<br><br>Ogni sezione ha il suo blocco, con più pagine (＋); le altre pagine dell’app condividono un blocco per tipo. Resta su questo dispositivo.<br><br><b>Penna</b>, <b>gomma</b> (passa sui tratti da togliere), <b>mano</b> per scorrere, colori e spessori. Quando scrivi con la penna il palmo non lascia segni e con le dita scorri il foglio; <b>✍︎ Solo penna</b> lo attiva da subito.<br><br><b>Gomma della penna</b>: tieni premuto il pulsante laterale (S Pen) o gira la penna dalla parte della gomma (Staedtler Noris digital, Wacom, Surface). <b>Tocco con due dita</b>: annulla l’ultimo tratto (comodo con Apple Pencil, che non ha la gomma).<br><br><b>Zoom</b>: allarga due dita (spostandole scorri il foglio), oppure − / % / + tra gli strumenti, o Ctrl+rotellina. <b>Evidenziatore</b> trasparente; <b>tieni ferma la penna</b> alla fine di un tratto per farlo diventare una linea dritta; <b>Ripeti</b> accanto ad Annulla. Tocca due volte la gomma per passare da “per tratto” a “per area”. Con il <b>lazo</b>: trascina, ridimensiona dal quadratino nell’angolo, tocca un colore o uno spessore per cambiarli, Duplica.<br><br><b>Forme e mappe</b>: lo strumento Forme apre una riga con rettangoli, ellissi, rombi, linee e frecce. Un tocco mette un nodo, trascinando lo disegni della misura che vuoi. Una freccia che parte o arriva dentro un nodo si aggancia e lo segue quando lo sposti. Tocca un nodo: <b>＋ Ramo</b> aggiunge un nodo collegato e ci scrivi subito dentro, <b>Aa</b> scrive nel nodo, ◐ lo riempie. Spostando un nodo si sposta anche quello che c’è scritto dentro, a mano o con la tastiera. Disegnando a mano una forma chiusa e tenendo ferma la penna alla fine, diventa una forma pulita.<br><br><b>Testo</b>: tocca il foglio e scrivi con la tastiera.<br><br><b>Tela infinita</b>: da ＋ (nuova pagina) scegli la tela infinita, che si allarga in ogni direzione mentre scorri; ⤢ la mostra tutta. Lo zoom arriva fino al 25%.<br><br><b>Accanto o sotto</b>: il pulsante con il riquadro diviso, in alto, sposta il blocco note accanto alla pagina (divisione verticale) o sotto. Trascini il bordo per allargarlo o alzarlo. Nel lettore PDF lo apri con ✎ Blocco note.` },
   semei: { t: 'Semeiotica', b: `Una scheda per ogni <b>manovra</b>, <b>segno</b> o <b>punto di repere</b>, divise tra semeiotica <b>clinica</b> e <b>chirurgica</b> e per distretto (che scegli tu, per esempio Addome o Torace).<br><br>Ogni scheda è una sezione: descrivi i passaggi, aggiungi foto con <b>＋ Foto</b> (poi puoi farne etichette da rimettere al posto giusto o un’image occlusion) e video nella scheda Video.<br><br><b>Esercitati</b> apre una scheda a caso tra quelle filtrate in modalità Orale: descrivi la manovra a voce e confronta.` },
   labRef: { t: 'Leggi un referto', b: `Scrivi esame e valore (anche la sigla): l’app usa i range delle tue schede e segna in giallo i valori bassi o alti e in rosso quelli critici. Indica il sesso per i range diversi.<br><br>È un esercizio di lettura: in un referto vero vale sempre il range stampato dal laboratorio.` },
   labCalc: { t: 'Calcoli di laboratorio', b: `Gap anionico (anche corretto per l’albumina), calcio corretto, eGFR con la CKD-EPI 2021, LDL di Friedewald, osmolalità calcolata e gap osmolare, sodio corretto per la glicemia. Sotto ogni calcolo c’è la formula.<br><br>Le unità sono quelle convenzionali (mg/dL, mEq/L) dei referti italiani.` },

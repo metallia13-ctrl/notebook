@@ -4428,3 +4428,49 @@ a.cite { display: inline-grid; place-items: center; min-width: 1.35em; height: 1
 /* sul telefono sta sopra i messaggi in basso, a sinistra del ⚡ */
 @media (max-width: 899px) { .lj-chip { padding: 6px 12px; } .lj-t { font-size: 0.86rem; } }
 body.focus-on.focus-on .lj-chip, html.pdf-open .lj-chip, body:has(#modalRoot > *) .lj-chip { display: none; }
+
+/* v3.98: blocco note — forme, testo, tela infinita */
+.pad-shapes { order: 4; flex: 1 0 100%; display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-top: 4px; border-top: 1px dashed var(--line); }
+.pad-shapes[hidden] { display: none; }
+.pad-shapes::-webkit-scrollbar { display: none; }
+.pad-shapes > * { flex: none; }
+.pad-shint { margin-left: 8px; color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
+.pad-selbar { position: absolute; z-index: 3; display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); font-family: var(--ui-font); }
+.pad-selbar[hidden] { display: none; }
+.pad-selbar button { min-width: 34px; height: 34px; padding: 0 9px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-weight: 700; font-size: 0.9rem; cursor: pointer; white-space: nowrap; }
+.pad-selbar button:hover, .pad-selbar button:focus-visible { background: var(--surface-2); }
+.pad-selbar [data-sb="branch"] { color: var(--accent); }
+.pad-ted { position: absolute; z-index: 4; margin: 0; padding: 0 2px; border: 1.5px dashed var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--bg) 82%, transparent); outline: none; resize: none; overflow: hidden; white-space: pre; box-sizing: content-box; }
+
+/* v3.99: blocco note accanto (divisione verticale) o sotto, su qualunque schermo */
+body.pad-side .pad-dock {
+  top: 0; right: 0; left: auto;
+  bottom: calc(80px + env(safe-area-inset-bottom, 0px));
+  width: var(--pad-w, 50vw);
+  height: auto; max-height: none;
+  border-width: 0 0 1px 1px;
+  border-radius: 0 0 0 16px;
+  box-shadow: none;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+body.pad-side .pad-dock .pad-grip { position: absolute; top: 0; bottom: 0; left: 0; width: 14px; height: auto; z-index: 3; cursor: ew-resize; }
+body.pad-side .pad-dock .pad-grip::after { left: 4px; top: 50%; width: 4px; height: 44px; margin: -22px 0 0; opacity: 1; background: var(--line); }
+@media (max-width: 899px) {
+  body.pad-side .view { margin-right: var(--pad-w, 50vw); padding-left: 12px; padding-right: 12px; padding-bottom: calc(112px + env(safe-area-inset-bottom, 0px)); }
+  html.pdf-open body.pad-side .pdf-app { right: var(--pad-w, 50vw); }
+  body.pad-side .toasts { left: calc((100vw - var(--pad-w, 50vw)) / 2); }
+  body.pad-side .cap-fab, body.pad-side .lj-chip { display: none; }
+}
+@media (min-width: 900px) {
+  body.pad-side .pad-dock { bottom: 0; border-radius: 0; border-width: 0 0 0 1px; }
+  /* sotto, sul computer: una striscia in basso, accanto al menu */
+  body.pad-bottom .pad-dock { top: auto; left: 240px; right: 8px; bottom: 8px; width: auto; height: var(--pad-h, 45vh); border-width: 1px; border-radius: 16px; box-shadow: var(--shadow); }
+  body.nav-hidden.pad-bottom .pad-dock { left: 8px; }
+  body.pad-bottom .pad-dock .pad-grip { position: relative; top: auto; bottom: auto; left: auto; width: auto; height: 16px; cursor: ns-resize; }
+  body.pad-bottom .pad-dock .pad-grip::after { left: 50%; top: 6px; width: 44px; height: 4px; margin: 0 0 0 -22px; opacity: 1; background: var(--line); }
+  body.pad-bottom .pad-head { padding-top: 0; }
+  body.pad-open.pad-bottom .view { margin-left: max(252px, calc((100vw - 820px) / 2 + 116px)); max-width: 820px; padding-bottom: calc(var(--pad-h, 45vh) + 40px); }
+  html.pdf-open body.pad-bottom .pdf-app { right: 0; bottom: calc(var(--pad-h, 45vh) + 16px); }
+  body.pad-bottom .toasts, body.pad-bottom .sel-bar { left: calc(50vw + 116px); }
+}
+html.pdf-open body.pad-side .pad-dock { bottom: 0; border-radius: 0; }
