@@ -7455,6 +7455,7 @@ const Playlist = {
     secs = secs.filter(s => s && String(s.md || '').trim());
     if (!secs.length) { toast('Niente da ascoltare qui: le sezioni sono vuote'); return; }
     if (!canSpeak && !Voice.useGemini()) { toast('Questo browser non sa leggere ad alta voce', 'err'); return; }
+    if (typeof PdfReader !== 'undefined' && PdfReader.active()) PdfReader.stop(true);
     this.stop(true);
     this.secs = secs;
     this.si = Math.max(0, Math.min(secs.length - 1, from));

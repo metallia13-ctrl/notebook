@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '3.99';
+const APP_VERSION = '4.00';
 // v3.60: l’app aperta dentro Affianca per mostrare il lettore PDF completo
 const EMBED = /[?&]embed=1\b/.test(location.search);
 const DB_NAME = 'studyhub-notebook';
@@ -3375,7 +3375,7 @@ const markGone = (meta, ids) => { meta.gone = [...new Set([...(meta.gone || []),
 const unGone = (meta, ids) => { if (meta.gone) meta.gone = meta.gone.filter(x => !ids.includes(x)); };
 function mergePdfMeta(local, remote, rUpdated) {
   const ids = a => (a || []).map(x => x && x.id).join(',');
-  const before = [ids(local.annots), ids(local.bookmarks), ids(local.drafts), local.name, local.sectionId, local.uploaded].join('|');
+  const before = [ids(local.annots), ids(local.bookmarks), ids(local.drafts), ids(local.sheets), local.name, local.sectionId, local.uploaded].join('|');
   const gone = new Set([...(local.gone || []), ...(remote.gone || [])]);
   const remoteNewer = (rUpdated || 0) > (local.updated || 0);
   const mergeArr = (a, b) => {
@@ -3386,6 +3386,9 @@ function mergePdfMeta(local, remote, rUpdated) {
   const annots = mergeArr(local.annots, remote.annots);
   const bookmarks = mergeArr(local.bookmarks, remote.bookmarks).sort((x, y) => x.page - y.page);
   const drafts = mergeArr(local.drafts, remote.drafts);
+  // v4.00: fogli per appunti inseriti tra le pagine, e quali evidenziazioni sono già negli appunti
+  const sheets = mergeArr(local.sheets, remote.sheets);
+  if (local.notesMade || remote.notesMade) local.notesMade = [...new Set([...(local.notesMade || []), ...(remote.notesMade || [])])].slice(-5000);
   if (remoteNewer) {
     ['name', 'lastPage', 'zoom', 'pages', 'notebookId', 'sectionId', 'size'].forEach(k => { if (remote[k] !== undefined) local[k] = remote[k]; });
   }
@@ -3393,9 +3396,10 @@ function mergePdfMeta(local, remote, rUpdated) {
   local.annots = annots;
   local.bookmarks = bookmarks;
   local.drafts = drafts;
+  local.sheets = sheets;
   local.gone = [...gone].slice(-3000);
-  const after = [ids(annots), ids(bookmarks), ids(drafts), local.name, local.sectionId, local.uploaded].join('|');
-  const sameAsRemote = after === [ids(remote.annots), ids(remote.bookmarks), ids(remote.drafts), remote.name, remote.sectionId, !!remote.uploaded].join('|');
+  const after = [ids(annots), ids(bookmarks), ids(drafts), ids(sheets), local.name, local.sectionId, local.uploaded].join('|');
+  const sameAsRemote = after === [ids(remote.annots), ids(remote.bookmarks), ids(remote.drafts), ids(remote.sheets), remote.name, remote.sectionId, !!remote.uploaded].join('|');
   if (remoteNewer) { local.updated = sameAsRemote ? rUpdated : Date.now(); return true; }
   if (after === before) return false;
   local.updated = Date.now();
@@ -3502,7 +3506,7 @@ function moreSearchHtml(q) {
       pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${b.page}"><span class="pdf-ic sm bm" aria-hidden="true">${ICON_BM}</span><span class="row-main"><span class="row-title">${foldSnippet(b.title, f)}</span><span class="row-sub">Segnalibro, ${esc(p.name)}, pagina ${b.page}</span></span></a></li>`);
     });
     (p.annots || []).filter(a => foldAccents(`${a.text || ''} ${a.note || ''}`).includes(f)).slice(0, 3).forEach(a => {
-      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${a.page}"><span class="pdf-ic sm note" aria-hidden="true">✎</span><span class="row-main"><span class="row-title">${esc(p.name)}, pagina ${a.page}: ${a.note ? 'nota' : 'evidenziazione'}</span><span class="row-sub">${foldSnippet(`${a.note || ''} ${a.text || ''}`, f)}</span></span></a></li>`);
+      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${a.page}"><span class="pdf-ic sm note" aria-hidden="true">✎</span><span class="row-main"><span class="row-title">${esc(p.name)}, ${Number.isInteger(a.page) ? `pagina ${a.page}` : `foglio dopo pagina ${Math.floor(a.page)}`}: ${a.note ? 'nota' : 'evidenziazione'}</span><span class="row-sub">${foldSnippet(`${a.note || ''} ${a.text || ''}`, f)}</span></span></a></li>`);
     });
     if (pdfRows.length >= 40) break;
   }

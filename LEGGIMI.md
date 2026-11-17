@@ -10,7 +10,7 @@ L’app è una pagina web (GitHub Pages) senza passaggi di compilazione: quello 
 | `01-base.js` | Utilità, database (IndexedDB), impostazioni, stato, testo e Markdown, cloze, AI (Gemini e Claude), interfaccia comune (finestre, messaggi), router, immagini, tag, collegamenti `[[…]]`, ricerca, sincronizzazione con Drive, backup |
 | `02-notebook.js` | Notebook e sezioni: elenchi e gruppi (tre livelli), modalità di studio (Cloze, Leggi, Orale, Pagina bianca, Domande, Mappe, Video, Audio, Modifica sull’anteprima), importazione, segni a semaforo, scrittura a mano, etichette, sposta paragrafo, stampa |
 | `03-flashcard.js` | Flashcard e ripasso: algoritmo di Anki (intervalli modificabili), viste delle flashcard, selezione multipla, calendario, simulazione e modalità esame |
-| `04-pdf.js` | Lettore PDF (evidenziatori, penna, segnalibri, figure) e libreria dei PDF |
+| `04-pdf.js` | Lettore PDF (evidenziatori con legenda dei colori, penna, segnalibri, figure, fogli per appunti, ascolto, PDF annotato) e libreria dei PDF |
 | `05-clinica.js` | Glossario e note cliniche, diagnosi differenziale, sezioni speciali (microbiologia, atlanti, farmacologia con il confronto, diario di tirocinio), score clinici, domande d’esame, semeiotica, laboratorio, casi clinici |
 | `06-app.js` | Impostazioni, collegamento con StudyHub, link, guida, aiuto e tutorial, pagina Altro, Affianca, blocco note, Riprendi, protezione dei dati, novità; alla fine `init()` avvia l’app |
 | `style.css` | Tutto lo stile |

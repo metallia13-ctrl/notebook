@@ -4474,3 +4474,35 @@ body.pad-side .pad-dock .pad-grip::after { left: 4px; top: 50%; width: 4px; heig
   body.pad-bottom .toasts, body.pad-bottom .sel-bar { left: calc(50vw + 116px); }
 }
 html.pdf-open body.pad-side .pad-dock { bottom: 0; border-radius: 0; }
+
+/* v4.00: legenda dei colori, appunti dalle evidenziazioni, fogli per appunti, ascolto del PDF */
+.pdf-hl-meaning {
+  border: 1px dashed var(--line); background: transparent; color: var(--text);
+  font: inherit; font-size: 0.78rem; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+  white-space: nowrap; max-width: 13em; overflow: hidden; text-overflow: ellipsis; align-self: center;
+}
+.pdf-hl-meaning.empty { color: var(--muted); }
+.pdf-listen-btn.on { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.pdf-listen-btn span { margin-left: 4px; }
+.pdf-notes-head { display: grid; gap: 8px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.pdf-legend-mini { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pdf-legend-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.8rem; padding: 2px 9px 2px 3px; border-radius: 999px; background: var(--surface-2); }
+.pdf-legend-chip .rt-dot, .pdf-legend-row .rt-dot, .pdf-hn-colors .rt-dot { width: 16px; height: 16px; border-width: 1px; cursor: default; display: inline-block; flex: none; }
+.pdf-legend-ed { display: grid; gap: 8px; margin: 10px 0 4px; }
+.pdf-legend-row { display: grid; grid-template-columns: 18px 5.6em 1fr; align-items: center; gap: 8px; }
+.pdf-legend-n { font-size: 0.86rem; color: var(--muted); }
+.pdf-hn-colors { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 8px; }
+.pdf-hn-colors label { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 0.86rem; cursor: pointer; }
+.pdf-hn-colors label:has(input:not(:checked)) { opacity: 0.5; }
+.pdf-hn-colors input { accent-color: var(--accent); margin: 0; }
+.pdf-hn-prev { max-height: 32vh; overflow: auto; white-space: pre-wrap; font: 0.76rem/1.45 var(--mono-font); background: var(--surface-2); padding: 10px 12px; border-radius: var(--r-md); margin: 10px 0 0; }
+.pdf-hn-acts { flex-wrap: wrap; }
+.pdf-sheet { background: #fffdf7; }
+.pdf-sheet-bg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; fill: none; stroke: #c6d3e6; stroke-width: 0.6; pointer-events: none; }
+.pdf-sheet-tag {
+  position: absolute; top: 6px; left: 10px; z-index: 5; display: flex; align-items: center; gap: 4px;
+  font-size: 0.72rem; color: #7d8ca3; -webkit-user-select: none; user-select: none;
+}
+.pdf-sheet-x { border: 0; background: transparent; color: inherit; font: inherit; padding: 3px 7px; border-radius: 6px; cursor: pointer; }
+.pdf-sheet-x:hover { background: rgba(0, 0, 0, 0.07); color: #b42318; }
+.pdf-export-toast { white-space: normal; }

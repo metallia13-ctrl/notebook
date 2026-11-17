@@ -183,7 +183,7 @@ function viewPdf(id, pageParam) {
           ${PDF_TOOLS.map(([k, label, icon, tip]) => `<button type="button" class="pdf-tool" data-tool="${k}" role="radio" title="${esc(tip)}">${icon}<span>${label}</span></button>`).join('')}
         </div>
         <span class="pdf-pen-opts" hidden>
-          <span class="pdf-hl-colors">${PDF_COLORS.map(([k, , , n]) => `<button type="button" class="rt-dot pdf-hl-dot" data-hlc="${k}" style="--dot:${pdfCol(k)}" aria-label="${n}" title="${n}"></button>`).join('')}</span>
+          <span class="pdf-hl-colors">${PDF_COLORS.map(([k]) => `<button type="button" class="rt-dot pdf-hl-dot" data-hlc="${k}" style="--dot:${pdfCol(k)}" aria-label="${esc(pdfColLabel(k))}" title="${esc(pdfColLabel(k))}"></button>`).join('')}<button type="button" class="pdf-hl-meaning" data-pdf="legend" title="Legenda dei colori: tocca per dare un significato a ogni colore"></button></span>
           <span class="pdf-ink-colors">${PEN_INKS.map(([c, n]) => `<button type="button" class="rt-dot ink-dot" data-ink="${c}" style="--ink:${c}" aria-label="Colore ${n.toLowerCase()}" title="${n}"></button>`).join('')}</span>
           <span class="pdf-shape-kinds">${[['rect', '▭', 'Rettangolo'], ['ellipse', '◯', 'Ellisse'], ['arrow', '➝', 'Freccia'], ['line', '╱', 'Linea']].map(([k, s, n]) => `<button type="button" class="btn sm ghost" data-shape="${k}" aria-label="${n}" title="${n}">${s}</button>`).join('')}</span>
           <select class="input pdf-pen-size" aria-label="Spessore"><option value="1.2">Fine</option><option value="2">Media</option><option value="3.4">Spessa</option><option value="9">Evidenziatore</option></select>
@@ -196,6 +196,8 @@ function viewPdf(id, pageParam) {
         </span>
         ${EMBED ? '' : '<button type="button" class="btn sm ghost" data-pdf="pad" title="Blocco note a mano accanto al PDF">✎ Blocco note</button>'}
         <button type="button" class="btn sm ghost pdf-night-btn" data-pdf="night" aria-pressed="false" title="Pagine scure per leggere la sera">Notte</button>
+        <button type="button" class="btn sm ghost pdf-listen-btn" data-pdf="listen" aria-pressed="false" title="Ascolta il PDF ad alta voce da questa pagina">🔊<span>Ascolta</span></button>
+        <button type="button" class="btn sm ghost" data-pdf="more" title="Appunti dalle evidenziazioni, legenda dei colori, fogli per appunti, PDF annotato">Altro ▾</button>
         <button type="button" class="btn sm occ-quiz-btn" data-pdf="occ-quiz" aria-pressed="false" hidden>Ripassa le occlusioni</button>
         <button type="button" class="btn sm ghost" data-pdf="undo" title="Annulla l’ultima annotazione (Ctrl+Z)">Annulla</button>
       </div>
@@ -232,7 +234,7 @@ function viewPdf(id, pageParam) {
 
   // ---------- geometria delle pagine
   const pageEl = n => pagesEl.querySelector(`.pdf-page[data-p="${n}"]`);
-  const sizeOf = n => R.sizes[n] || R.base;
+  const sizeOf = n => R.sizes[n] || R.sizes[Math.floor(n)] || R.base;
   const fitScale = () => {
     const avail = Math.max(200, scroller.clientWidth - (window.innerWidth < 600 ? 12 : 40));
     return Math.min(avail / R.base.width, 2.2);
@@ -255,10 +257,11 @@ function viewPdf(id, pageParam) {
       const mid = (lo + hi) >> 1;
       if (pageTop(els[mid]) <= y) { ans = mid; lo = mid + 1; } else hi = mid - 1;
     }
-    return ans + 1;
+    // i fogli per appunti contano come la pagina che li precede
+    return Math.max(1, Math.floor(+(els[ans] && els[ans].dataset.p)) || ans + 1);
   };
   const goTo = (n, { flash = false, y = 0 } = {}) => {
-    n = Math.max(1, Math.min(meta.pages, Math.round(n) || 1));
+    if (!(isSheetPage(n) && pageEl(n))) n = Math.max(1, Math.min(meta.pages, Math.round(n) || 1));
     const el = pageEl(n);
     if (!el) return;
     // y: punto della pagina (da 0 in alto a 1 in fondo), per i segnalibri messi a metà pagina
@@ -710,7 +713,7 @@ function viewPdf(id, pageParam) {
     const isMark = a.type === 'hl' || a.type === 'ul' || a.type === 'st';
     const isOcc = a.type === 'occ';
     const sh = openSheet(`
-      <h2>${({ hl: 'Evidenziazione', ul: 'Sottolineatura', st: 'Barrato', ink: 'Tratto a penna', occ: 'Occlusione', shape: 'Forma', text: 'Testo' })[a.type] || 'Nota'}, pagina ${a.page}</h2>
+      <h2>${({ hl: 'Evidenziazione', ul: 'Sottolineatura', st: 'Barrato', ink: 'Tratto a penna', occ: 'Occlusione', shape: 'Forma', text: 'Testo' })[a.type] || 'Nota'}, ${isSheetPage(a.page) ? pgLabel(a.page) : `pagina ${a.page}`}</h2>
       ${isOcc ? `<p class="sheet-sub">${a.card ? 'Ha già la sua flashcard.' : 'Puoi trasformare le occlusioni di questa pagina in flashcard da ripassare con le altre.'}</p>` : ''}
       ${a.text ? `<blockquote class="pdf-quote">${esc(a.text.slice(0, 500))}</blockquote>` : ''}
       ${isMark ? `
@@ -985,8 +988,9 @@ function viewPdf(id, pageParam) {
   };
   pagesEl.addEventListener('pointerdown', e => {
     const el = e.target.closest('.pdf-page');
-    if (!el || e.target.closest('.pdf-pin')) return;
+    if (!el || e.target.closest('.pdf-pin, .pdf-sheet-tag')) return;
     if (e.pointerType === 'pen') R.penSeen = true;
+    if (el.dataset.sheet && ['crop', 'occ'].includes(R.tool)) { if (e.button === 0) toast('Sui fogli per appunti si scrive e si disegna: Ritaglia e Occludi lavorano sulle pagine del PDF'); return; }
     // v3.56: pagine scansionate (senza testo): Evidenzia, Sottolinea e Barra segnano un riquadro
     if (['hl', 'ul', 'st'].includes(R.tool) && el.dataset.text === '0') {
       if (e.pointerType === 'touch' && R.penSeen) { pan = { id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
@@ -1118,6 +1122,9 @@ function viewPdf(id, pageParam) {
   pagesEl.addEventListener('click', async e => {
     const pin = e.target.closest('.pdf-pin');
     if (pin) { const a = meta.annots.find(x => x.id === pin.dataset.ann); if (a) annotSheet(a); return; }
+    const sx = e.target.closest('[data-sheetx]');
+    if (sx) { removeSheet(sx.closest('.pdf-sheet').dataset.sheet); return; }
+    if (e.target.closest('.pdf-sheet-tag')) return;
     const el = e.target.closest('.pdf-page');
     if (!el) return;
     const n = +el.dataset.p;
@@ -1212,7 +1219,7 @@ function viewPdf(id, pageParam) {
   };
   // la selezione si legge appena tocchi il pulsante, prima che il tocco la faccia sparire
   app.addEventListener('pointerdown', e => {
-    if (e.target.closest('[data-pdf="bookmark"], [data-pm="add"]')) { const s1 = readSelection(); R.bmSel = s1 ? { s: s1, t: Date.now() } : null; }
+    if (e.target.closest('[data-pdf="bookmark"], [data-pm="add"], [data-pdf="listen"]')) { const s1 = readSelection(); R.bmSel = s1 ? { s: s1, t: Date.now() } : null; }
   }, true);
 
   // ---------- pannello laterale
@@ -1328,14 +1335,21 @@ function viewPdf(id, pageParam) {
   function drawNotes() {
     const list = [...meta.annots].filter(a => a.type !== 'ink').sort((a, b) => a.page - b.page || (a.rects?.[0]?.[1] ?? a.y ?? 0) - (b.rects?.[0]?.[1] ?? b.y ?? 0));
     const inks = meta.annots.filter(a => a.type === 'ink').length;
-    panelBody.innerHTML = list.length || inks ? `
+    const used = PDF_COLORS.map(c => c[0]).filter(k => meta.annots.some(a => ['hl', 'ul'].includes(a.type) && (a.color || 'y') === k));
+    const head = `
+      <div class="pdf-notes-head">
+        <button class="btn sm primary block" type="button" data-pn2="make" ${meta.annots.some(a => (['hl', 'ul'].includes(a.type) && (a.text || a.note)) || (a.type === 'note' && a.note)) ? '' : 'disabled'}>Crea appunti dalle evidenziazioni</button>
+        <div class="pdf-legend-mini">${used.length ? used.map(k => `<span class="pdf-legend-chip"><span class="rt-dot pdf-hl-dot" style="--dot:${pdfCol(k)}" aria-hidden="true"></span>${esc(pdfColLabel(k))}</span>`).join('') : ''}
+          <button class="btn sm ghost" type="button" data-pn2="legend">${Object.keys(pdfLegend()).length ? 'Modifica la legenda' : 'Dai un significato ai colori'}</button></div>
+      </div>`;
+    panelBody.innerHTML = list.length || inks ? `${head}
       <ul class="pdf-plist">${list.map(a => `
         <li><button type="button" class="pdf-pitem note-item" data-go="${a.page}" data-annid="${a.id}">
           <span class="pdf-swatch ${a.type}" style="--dot:${a.type === 'note' ? 'var(--accent)' : a.type === 'occ' ? '#f5cf86' : pdfCol(a.color, a.type === 'ul' ? 2 : 1)}"></span>
           <span class="pdf-pitem-t">${a.type === 'occ' ? 'Occlusione' : ''}${a.text ? esc(a.text.slice(0, 160)) : ''}${a.note ? `<em>${esc(a.note.slice(0, 160))}</em>` : ''}${!a.text && !a.note && a.type !== 'occ' ? '<em>Senza testo</em>' : ''}</span>
-          <span class="pdf-pitem-p">p. ${a.page}</span></button></li>`).join('')}</ul>
+          <span class="pdf-pitem-p">${isSheetPage(a.page) ? 'foglio' : `p. ${a.page}`}</span></button></li>`).join('')}</ul>
       ${inks ? `<p class="hint">${inks} ${inks === 1 ? 'tratto' : 'tratti'} a penna.</p>` : ''}`
-      : '<p class="hint">Le evidenziazioni, le sottolineature e le note compaiono qui, in ordine di pagina.</p>';
+      : `${head}<p class="hint">Le evidenziazioni, le sottolineature e le note compaiono qui, in ordine di pagina. Con “Crea appunti dalle evidenziazioni” diventano una sezione, divise per colore.</p>`;
   }
   let searchQ = '';
   let searchRes = [];
@@ -1636,6 +1650,14 @@ function viewPdf(id, pageParam) {
     }
     const pm = e.target.closest('[data-pm]');
     if (pm) { await addBookmark(R.cur, selForBm()); return; }
+    const pn2 = e.target.closest('[data-pn2]');
+    if (pn2) {
+      saveNow();
+      if (pn2.dataset.pn2 === 'make') await pdfHlNotesFlow(meta);
+      else if (await pdfLegendSheet()) paintLegend();
+      refreshPanel('notes');
+      return;
+    }
     const ren = e.target.closest('[data-bmren]');
     if (ren) { const b = meta.bookmarks.find(x => x.id === ren.dataset.bmren); if (b) renameBookmark(b); return; }
     const bl = e.target.closest('[data-bmlink]');
@@ -1769,6 +1791,120 @@ function viewPdf(id, pageParam) {
     setTimeout(done, 60000);
   });
 
+  // ---------- v4.00: legenda, fogli per appunti, ascolto, menu Altro
+  function paintLegend() {
+    $$('[data-hlc]', app).forEach(b => { const l = pdfColLabel(b.dataset.hlc); b.title = l; b.setAttribute('aria-label', l); });
+    const m = $('.pdf-hl-meaning', app);
+    if (m) {
+      const t = pdfColMeaning(R.color);
+      m.textContent = t || 'Legenda…';
+      m.classList.toggle('empty', !t);
+    }
+  }
+  meta.sheets = meta.sheets || [];
+  function sheetsAfter(n) { return meta.sheets.filter(s => s.after === n).sort((a, b) => a.k - b.k); }
+  function sheetHtml(s) {
+    const key = sheetKey(s);
+    R.sizes[key] = { width: s.w, height: s.h };
+    let bg = '';
+    if (s.bg === 'lines') for (let y = 60; y < s.h - 24; y += 24) bg += `<path d="M28 ${y}H${s.w - 28}"/>`;
+    if (s.bg === 'grid') {
+      for (let y = 18; y < s.h; y += 18) bg += `<path d="M0 ${y}H${s.w}"/>`;
+      for (let x = 18; x < s.w; x += 18) bg += `<path d="M${x} 0V${s.h}"/>`;
+    }
+    return `<div class="pdf-page pdf-sheet" data-p="${key}" data-sheet="${s.id}" data-text="0">
+      <svg class="pdf-sheet-bg" viewBox="0 0 ${s.w} ${s.h}" preserveAspectRatio="none" aria-hidden="true">${bg}</svg>
+      <span class="pdf-sheet-tag">Foglio per appunti · dopo p. ${s.after}<button type="button" class="pdf-sheet-x" data-sheetx aria-label="Elimina il foglio" title="Elimina il foglio">✕</button></span></div>`;
+  }
+  const addSheet = (after, bg) => {
+    const k = Math.max(0, ...sheetsAfter(after).map(s => s.k)) + 1;
+    if (k > 99) { toast('Dopo questa pagina ci sono già tanti fogli'); return; }
+    const sz = sizeOf(after);
+    const s = { id: uid(), after, k, bg, w: +sz.width.toFixed(2), h: +sz.height.toFixed(2), created: Date.now() };
+    const last = sheetsAfter(after).pop();
+    const prev = (last && pageEl(sheetKey(last))) || pageEl(after);
+    if (!prev) return;
+    meta.sheets.push(s);
+    saveSoon();
+    prev.insertAdjacentHTML('afterend', sheetHtml(s));
+    applySizes();
+    drawAnnots(sheetKey(s));
+    const el = pageEl(sheetKey(s));
+    scroller.scrollTop = el.offsetTop - 8;
+    onScroll();
+    if (!['pen', 'shape', 'text', 'note'].includes(R.tool)) setTool('pen');
+    toast('Foglio aggiunto: scrivici con la Penna', '', { label: 'Annulla', fn: () => removeSheet(s.id, true) });
+  };
+  const removeSheet = async (sid, quiet = false) => {
+    const s = meta.sheets.find(x => x.id === sid);
+    if (!s) return;
+    const key = sheetKey(s);
+    const anns = meta.annots.filter(a => a.page === key);
+    if (anns.length && !quiet && !(await modal({ title: 'Eliminare il foglio?', text: `Sul foglio ci sono ${anns.length} ${anns.length === 1 ? 'annotazione' : 'annotazioni'}: spariscono anche loro.`, confirm: 'Elimina', danger: true }))) return;
+    meta.sheets = meta.sheets.filter(x => x.id !== sid);
+    if (anns.length) { meta.annots = meta.annots.filter(a => a.page !== key); markGone(meta, anns.map(a => a.id)); }
+    pageEl(key)?.remove();
+    delete R.sizes[key];
+    saveSoon();
+    refreshPanel('notes');
+    onScroll();
+    if (!quiet) toast('Foglio eliminato');
+  };
+  const listenBtn = () => $('[data-pdf="listen"]', app);
+  const toggleListen = () => {
+    if (PdfReader.ctx && PdfReader.ctx.R === R) { PdfReader.stop(); return; }
+    if (!R.doc) return;
+    const s1 = selForBm();
+    const pagesSel = s1 && s1.byPage ? [...s1.byPage.keys()].filter(n => Number.isInteger(n)) : [];
+    const from = pagesSel.length ? Math.min(...pagesSel) : R.cur;
+    PdfReader.start({
+      R, name: meta.name, pages: meta.pages, from, fromText: pagesSel.length ? s1.text || '' : '',
+      text: n => { if (R.destroyed) throw new Error('chiuso'); return pageText(n); },
+      go: n => { if (!R.destroyed && R.cur !== n) goTo(n); },
+      onPage: (n, on) => { const b = listenBtn(); if (b) { b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); } }
+    });
+  };
+  const moreMenu = async () => {
+    const hasHl = meta.annots.some(a => (['hl', 'ul'].includes(a.type) && (a.text || a.note)) || (a.type === 'note' && a.note));
+    const listening = PdfReader.ctx && PdfReader.ctx.R === R;
+    const k = await actionSheet('Altro', [
+      { key: 'notes', label: 'Crea appunti dalle evidenziazioni', disabled: !hasHl },
+      { key: 'legend', label: 'Legenda dei colori' },
+      { key: 'listen', label: listening ? 'Ferma l’ascolto' : `Ascolta ad alta voce da pagina ${R.cur}` },
+      { key: 'sheet-lines', label: `Foglio a righe dopo pagina ${R.cur}` },
+      { key: 'sheet-grid', label: `Foglio a quadretti dopo pagina ${R.cur}` },
+      { key: 'sheet-blank', label: `Foglio bianco dopo pagina ${R.cur}` },
+      { key: 'export', label: 'Scarica il PDF con le annotazioni', disabled: !R.doc }
+    ]);
+    if (!k) return;
+    if (k === 'notes') { saveNow(); await pdfHlNotesFlow(meta); refreshPanel('notes'); }
+    else if (k === 'legend') { if (await pdfLegendSheet()) { paintLegend(); refreshPanel('notes'); } }
+    else if (k === 'listen') toggleListen();
+    else if (k.startsWith('sheet-')) addSheet(R.cur, k.slice(6));
+    else if (k === 'export') exportNow();
+  };
+  let exporting = false;
+  const exportNow = async () => {
+    if (exporting || !R.doc || !R.blob) return;
+    exporting = true;
+    saveNow();
+    const t = document.createElement('div');
+    t.className = 'toast pdf-export-toast';
+    t.setAttribute('role', 'status');
+    t.textContent = 'Preparo il PDF con le annotazioni…';
+    $('#toasts').append(t);
+    try {
+      const bytes = await exportAnnotatedPdf(meta, R.blob, R.doc, msg => { t.textContent = `Preparo il PDF con le annotazioni: ${msg}`; });
+      const name = `${meta.name.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Documento'} (annotato).pdf`;
+      downloadBlob(new Blob([bytes], { type: 'application/pdf' }), name);
+      t.remove();
+      toast('PDF annotato pronto: lo trovi tra i download');
+    } catch (err) {
+      t.remove();
+      toast(`Non riesco a preparare il PDF annotato${err && err.message ? `: ${err.message}` : ''}`, 'err');
+    } finally { exporting = false; }
+  };
+
   // ---------- barra in alto e scorrimento
   let scrollRaf = 0;
   let renderTimer = null;
@@ -1869,7 +2005,7 @@ function viewPdf(id, pageParam) {
     const t = e.target.closest('button[data-tool]');
     if (t) { setTool(t.dataset.tool); return; }
     const hlc = e.target.closest('[data-hlc]');
-    if (hlc) { R.color = hlc.dataset.hlc; S().pdfColor = R.color; Settings.save(); $$('[data-hlc]', app).forEach(b => b.classList.toggle('on', b === hlc)); return; }
+    if (hlc) { R.color = hlc.dataset.hlc; S().pdfColor = R.color; Settings.save(); $$('[data-hlc]', app).forEach(b => b.classList.toggle('on', b === hlc)); paintLegend(); return; }
     const shp = e.target.closest('[data-shape]');
     if (shp) { R.shape = shp.dataset.shape; S().pdfShape = R.shape; Settings.save(); $$('[data-shape]', app).forEach(b => b.classList.toggle('on', b === shp)); return; }
     const inkB = e.target.closest('[data-ink]');
@@ -1887,6 +2023,9 @@ function viewPdf(id, pageParam) {
     else if (act === 'occ-quiz') setOccQuiz(!R.occQuiz);
     else if (act === 'night') setNight(!app.classList.contains('pdf-night'));
     else if (act === 'pad') Pad.toggle();
+    else if (act === 'listen') toggleListen();
+    else if (act === 'legend') { pdfLegendSheet().then(v => { if (v) { paintLegend(); refreshPanel('notes'); } }); }
+    else if (act === 'more') moreMenu();
   });
   panel.addEventListener('click', e => { const b = e.target.closest('[data-ptab]'); if (b) openPanel(b.dataset.ptab); });
   $('.pdf-pen-size', app).value = String(R.inkW);
@@ -1914,6 +2053,7 @@ function viewPdf(id, pageParam) {
   window.addEventListener('resize', onResize);
   addCleanup(() => {
     R.destroyed = true;
+    if (PdfReader.ctx && PdfReader.ctx.R === R) PdfReader.stop(true);
     clearTimeout(hideTimer);
     clearTimeout(renderTimer);
     clearTimeout(resizeTimer);
@@ -1932,6 +2072,7 @@ function viewPdf(id, pageParam) {
     try { R.doc?.destroy(); } catch { /* già chiuso */ }
   });
   setTool('select');
+  paintLegend();
   if (S().pdfNight) setNight(true);
   if (R.tab) openPanel(R.tab);
 
@@ -1956,7 +2097,8 @@ function viewPdf(id, pageParam) {
       const p1 = await doc.getPage(1);
       R.base = p1.getViewport({ scale: 1 });
       R.sizes[1] = { width: R.base.width, height: R.base.height };
-      pagesEl.innerHTML = Array.from({ length: doc.numPages }, (_, i) => `<div class="pdf-page" data-p="${i + 1}"><span class="pdf-pn" aria-hidden="true">${i + 1}</span><span class="pdf-flag" aria-hidden="true">${ICON_BM}</span></div>`).join('');
+      R.blob = blob;
+      pagesEl.innerHTML = Array.from({ length: doc.numPages }, (_, i) => `<div class="pdf-page" data-p="${i + 1}"><span class="pdf-pn" aria-hidden="true">${i + 1}</span><span class="pdf-flag" aria-hidden="true">${ICON_BM}</span></div>${sheetsAfter(i + 1).map(sheetHtml).join('')}`).join('');
       applySizes();
       new Set(meta.annots.map(a => a.page)).forEach(drawAnnots);
       refreshBm();
@@ -2298,4 +2440,463 @@ async function recropImage(imageId) {
   const hadLabels = state.sections.some(s => (labelSets(s)[im.id]?.masks || []).length);
   toast(hadLabels ? 'Immagine ritagliata di nuovo. Controlla le etichette: il riquadro è cambiato' : 'Immagine ritagliata di nuovo');
   return true;
+}
+
+/* =====================================================================
+   v4.00: legenda dei colori, appunti dalle evidenziazioni, fogli per
+   appunti tra le pagine, ascolto ad alta voce, PDF annotato da scaricare.
+   ===================================================================== */
+// Legenda: un significato per ogni colore dell’evidenziatore, uguale in tutti i PDF (si sincronizza)
+const pdfLegendRec = () => state.links.find(l => l.kind === 'pdflegend') || null;
+const pdfLegend = () => (pdfLegendRec() && pdfLegendRec().colors) || {};
+const pdfColMeaning = k => String(pdfLegend()[k] || '').trim();
+const pdfColLabel = k => pdfColMeaning(k) || pdfCol(k, 3);
+async function savePdfLegend(colors) {
+  const rec = pdfLegendRec() || { id: '_pdflegend', kind: 'pdflegend', notebookId: '_pdflegend', created: Date.now() };
+  rec.colors = Object.fromEntries(Object.entries(colors).map(([k, v]) => [k, String(v || '').trim().slice(0, 60)]).filter(([, v]) => v));
+  await saveLink(rec);
+}
+function pdfLegendSheet() {
+  return new Promise(resolve => {
+    const L = pdfLegend();
+    const sh = openSheet(`
+      <h2>Legenda dei colori</h2>
+      <p class="sheet-sub">Dai un significato a ogni colore (per esempio giallo = definizioni, rosso = da sapere per l’esame). Vale per tutti i PDF: lo vedi sui colori dell’evidenziatore e negli appunti creati dalle evidenziazioni.</p>
+      <div class="pdf-legend-ed">${PDF_COLORS.map(([k, , , n]) => `
+        <label class="pdf-legend-row"><span class="rt-dot pdf-hl-dot" style="--dot:${pdfCol(k)}" aria-hidden="true"></span><span class="pdf-legend-n">${n}</span>
+          <input class="input" data-leg="${k}" value="${esc(L[k] || '')}" placeholder="${esc(({ y: 'es. Definizioni', g: 'es. Clinica', b: 'es. Meccanismi', r: 'es. Da sapere per l’esame', p: 'es. Farmaci' })[k] || 'Significato')}" maxlength="60"></label>`).join('')}
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-lg="no">Annulla</button>
+        <button class="btn primary" type="button" data-lg="ok">Salva</button>
+      </div>`, { label: 'Legenda dei colori', onClose: resolve });
+    $('[data-lg="no"]', sh.el).onclick = () => sh.close(null);
+    $('[data-lg="ok"]', sh.el).onclick = async () => {
+      const colors = Object.fromEntries($$('[data-leg]', sh.el).map(i => [i.dataset.leg, i.value]));
+      await savePdfLegend(colors);
+      sh.close(colors);
+    };
+  });
+}
+// testo del PDF pulito: parole spezzate a fine riga ricucite, spazi in fila tolti
+const cleanPdfText = t => String(t || '').replace(/(\p{L})-\s*\n\s*(\p{L})/gu, '$1$2').replace(/\s+/g, ' ').trim();
+// un frammento del PDF dentro una riga di markdown, senza segni che cambiano il significato
+const mdSafe = t => cleanPdfText(t).replace(/\{\{|\}\}/g, '').replace(/==/g, '=').replace(/\|/g, '/').replace(/^([#>\-*+]|\d+[.)])\s/, '$1 ');
+// fogli per appunti: hanno come “pagina” un numero con la virgola (3,01 = primo foglio dopo la pagina 3)
+const sheetKey = s => +(s.after + s.k / 100).toFixed(2);
+const isSheetPage = p => !Number.isInteger(+p);
+const pgLabel = p => (isSheetPage(p) ? `foglio dopo p. ${Math.floor(p)}` : `${p}`);
+
+// Appunti dalle evidenziazioni: una sezione con le frasi raggruppate per colore (o per pagina)
+function pdfHlNotesMd(meta, list, { by = 'color' } = {}) {
+  const link = p => (isSheetPage(p) ? `[foglio dopo p. ${Math.floor(p)}](#/pdf/${meta.id}/${p})` : `[p. ${p}](#/pdf/${meta.id}/${p})`);
+  const ord = (a, b) => a.page - b.page || (a.rects?.[0]?.[1] ?? a.y ?? 0) - (b.rects?.[0]?.[1] ?? b.y ?? 0);
+  const line = (a, withColor) => {
+    const out = [];
+    const t = mdSafe(a.text || '');
+    const tag = withColor && a.color && a.type !== 'note' ? ` · *${pdfColLabel(a.color)}*` : '';
+    if (a.type === 'note') out.push(`- ✎ ${mdSafe(a.note || '')} (${link(a.page)})`);
+    else if (t) out.push(`- ${a.type === 'hl' ? `{{${a.color || 'y'}|${t}}}` : a.type === 'ul' ? `{{u|${t}}}` : t} (${link(a.page)})${tag}`);
+    else out.push(`- *riquadro senza testo* (${link(a.page)})${tag}`);
+    if (a.type !== 'note' && a.note) out.push(`  - ✎ ${mdSafe(a.note)}`);
+    return out.join('\n');
+  };
+  const parts = [];
+  if (by === 'page') {
+    const pages = [...new Set(list.map(a => Math.floor(a.page)))].sort((a, b) => a - b);
+    pages.forEach(p => parts.push(`### Pagina ${p}\n\n${list.filter(a => Math.floor(a.page) === p).sort(ord).map(a => line(a, true)).join('\n')}`));
+  } else {
+    const keys = PDF_COLORS.map(c => c[0]).filter(k => list.some(a => a.type !== 'note' && (a.color || 'y') === k));
+    keys.forEach(k => {
+      const m = pdfColMeaning(k);
+      parts.push(`### ${m ? `${m} {{${k}|${pdfCol(k, 3).toLowerCase()}}}` : `{{${k}|${pdfCol(k, 3)}}}`}\n\n${list.filter(a => a.type !== 'note' && (a.color || 'y') === k).sort(ord).map(a => line(a, false)).join('\n')}`);
+    });
+    const notes = list.filter(a => a.type === 'note').sort(ord);
+    if (notes.length) parts.push(`### Note\n\n${notes.map(a => line(a, false)).join('\n')}`);
+  }
+  return `## Dalle evidenziazioni di “${meta.name}”\n\n${parts.join('\n\n')}\n`;
+}
+function pdfHlNotesFlow(meta) {
+  const usable = a => (['hl', 'ul'].includes(a.type) && (a.text || a.note)) || (a.type === 'note' && a.note);
+  const all = (meta.annots || []).filter(usable);
+  if (!all.length) { toast('Non ci sono ancora evidenziazioni con del testo in questo PDF'); return; }
+  const made = new Set(meta.notesMade || []);
+  const fresh = all.filter(a => !made.has(a.id));
+  const used = PDF_COLORS.map(c => c[0]).filter(k => all.some(a => a.type !== 'note' && (a.color || 'y') === k));
+  const hasNotes = all.some(a => a.type === 'note');
+  const sec = secById(meta.sectionId);
+  return new Promise(resolve => {
+    const sh = openSheet(`
+      <h2>Appunti dalle evidenziazioni</h2>
+      <p class="sheet-sub">Le frasi evidenziate e sottolineate diventano un elenco, con il numero di pagina che riporta al PDF. Le parti barrate restano fuori.</p>
+      <div class="seg sm" role="group" aria-label="Raggruppa">
+        <button type="button" data-hb="color" aria-pressed="true">Per colore</button>
+        <button type="button" data-hb="page" aria-pressed="false">Per pagina</button>
+      </div>
+      <div class="pdf-hn-colors" role="group" aria-label="Colori da includere">
+        ${used.map(k => `<label class="chip-check"><input type="checkbox" data-hc="${k}" checked><span class="rt-dot pdf-hl-dot" style="--dot:${pdfCol(k)}" aria-hidden="true"></span>${esc(pdfColLabel(k))}</label>`).join('')}
+        ${hasNotes ? '<label class="chip-check"><input type="checkbox" data-hc="note" checked>✎ Note</label>' : ''}
+      </div>
+      ${made.size && fresh.length < all.length ? `<label class="check"><input type="checkbox" id="hnFresh" ${fresh.length ? 'checked' : ''}><span>Solo quelle nuove dall’ultima volta (${fresh.length})</span></label>` : ''}
+      <button type="button" class="btn sm ghost" data-hn="legend">Legenda dei colori…</button>
+      <pre class="pdf-hn-prev" id="hnPrev"></pre>
+      <div class="modal-actions pdf-hn-acts">
+        <button class="btn ghost" type="button" data-hn="no">Annulla</button>
+        ${sec ? `<button class="btn ghost" type="button" data-hn="append">In fondo a “${esc(sec.title.slice(0, 40))}”</button>` : ''}
+        <button class="btn ghost" type="button" data-hn="pick">In un’altra sezione…</button>
+        <button class="btn primary" type="button" data-hn="new">Nuova sezione</button>
+      </div>`, { label: 'Appunti dalle evidenziazioni', onClose: resolve });
+    let by = 'color';
+    const pick = () => {
+      const on = new Set($$('[data-hc]', sh.el).filter(i => i.checked).map(i => i.dataset.hc));
+      const onlyNew = $('#hnFresh', sh.el)?.checked;
+      return all.filter(a => (a.type === 'note' ? on.has('note') : on.has(a.color || 'y')) && (!onlyNew || !made.has(a.id)));
+    };
+    const prev = () => {
+      const list = pick();
+      $('#hnPrev', sh.el).textContent = list.length ? pdfHlNotesMd(meta, list, { by }).slice(0, 1400) : 'Niente da mettere negli appunti con queste scelte.';
+      $$('[data-hn="append"], [data-hn="pick"], [data-hn="new"]', sh.el).forEach(b => { b.disabled = !list.length; });
+    };
+    sh.el.addEventListener('change', prev);
+    sh.el.addEventListener('click', async e => {
+      const hb = e.target.closest('[data-hb]');
+      if (hb) { by = hb.dataset.hb; $$('[data-hb]', sh.el).forEach(b => { b.classList.toggle('on', b === hb); b.setAttribute('aria-pressed', b === hb); }); prev(); return; }
+      const b = e.target.closest('[data-hn]');
+      if (!b || b.disabled) return;
+      const act = b.dataset.hn;
+      if (act === 'no') { sh.close(null); return; }
+      if (act === 'legend') { sh.close(null); if (await pdfLegendSheet()) pdfHlNotesFlow(meta); return; }
+      const list = pick();
+      if (!list.length) return;
+      const md = pdfHlNotesMd(meta, list, { by });
+      let target = null;
+      if (act === 'append') target = sec;
+      if (act === 'pick') { sh.close(null); const id = await pickSection({ title: 'In quale sezione?', pre: meta.sectionId || '' }); target = id ? secById(id) : null; if (!target) return; }
+      if (target) {
+        target.md = `${String(target.md || '').replace(/\s+$/, '')}\n\n${md}`;
+        target.updated = Date.now();
+        await saveSection(target);
+      } else {
+        target = newSection(meta.notebookId, { title: `Appunti: ${meta.name}`, md: `# Appunti: ${meta.name}\n\n${md}`, groupId: sec ? sec.groupId : null });
+        await saveSection(target);
+      }
+      meta.notesMade = [...new Set([...(meta.notesMade || []), ...list.map(a => a.id)])];
+      await savePdfMeta(meta);
+      if (sh.el.isConnected) sh.close(target);
+      else resolve(target);
+      const t = target;
+      toast(`${list.length} ${list.length === 1 ? 'voce messa' : 'voci messe'} in “${t.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${t.id}/read`) });
+    });
+    prev();
+  });
+}
+
+// Ascolto del PDF ad alta voce, dalla pagina in cui sei: legge pagina per pagina e la segue
+const PdfReader = {
+  ctx: null, page: 0, parts: [], pi: 0, playing: false, token: 0, loadTok: 0, bar: null, wake: null, empty: 0,
+  active() { return !!this.ctx; },
+  chunks(t) {
+    const sents = cleanPdfText(t).match(/[^.!?;]+(?:[.!?;]+|$)/g) || [];
+    const out = [];
+    let cur = '';
+    for (let s of sents) {
+      s = s.trim();
+      if (!s) continue;
+      if (cur && (cur.length + s.length) > 260) { out.push(cur); cur = s; } else cur = cur ? `${cur} ${s}` : s;
+      while (cur.length > 420) {
+        const sp = cur.lastIndexOf(' ', 320);
+        const cut = sp > 120 ? sp : 320;
+        out.push(cur.slice(0, cut));
+        cur = cur.slice(cut).trim();
+      }
+    }
+    if (cur) out.push(cur);
+    return out.filter(c => /\p{L}{2,}/u.test(c));
+  },
+  async start(ctx) {
+    if (!canSpeak && !Voice.useGemini()) { toast('Questo browser non sa leggere ad alta voce', 'err'); return; }
+    if (Playlist.active()) Playlist.stop(true);
+    this.stop(true);
+    this.ctx = ctx;
+    this.empty = 0;
+    this.buildBar();
+    if (!(await this.load(ctx.from, ctx.fromText))) return;
+    this.setPlay(true);
+  },
+  // carica il testo di una pagina; salta da solo quelle senza testo (scansioni, pagine bianche)
+  async load(n, fromText = '') {
+    const my = ++this.loadTok;
+    const ctx = this.ctx;
+    for (; ctx && n <= ctx.pages; n++) {
+      let t = '';
+      try { t = await ctx.text(n); } catch { t = ''; }
+      if (my !== this.loadTok || this.ctx !== ctx) return false;
+      const parts = this.chunks(t);
+      if (!parts.length) {
+        if (++this.empty >= 6) { this.stop(true); toast(`Da qui in poi le pagine non hanno testo da leggere${n - 5 <= ctx.from ? ': forse è un PDF scansionato' : ''}`); return false; }
+        continue;
+      }
+      this.empty = 0;
+      this.page = n;
+      this.parts = parts;
+      this.pi = 0;
+      if (fromText) {
+        const f = foldAccents(cleanPdfText(fromText)).slice(0, 40);
+        const i = parts.findIndex(p => foldAccents(p).includes(f.slice(0, 24)));
+        if (i > 0) this.pi = i;
+      }
+      ctx.go(n);
+      this.paint();
+      this.media();
+      return true;
+    }
+    if (this.ctx === ctx) { this.stop(true); toast('Fine del PDF'); }
+    return false;
+  },
+  media() {
+    if (!('mediaSession' in navigator) || !this.ctx) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: `Pagina ${this.page}`, artist: this.ctx.name, album: 'PDF ad alta voce' });
+      navigator.mediaSession.setActionHandler('play', () => this.setPlay(true));
+      navigator.mediaSession.setActionHandler('pause', () => this.setPlay(false));
+      navigator.mediaSession.setActionHandler('nexttrack', () => this.jump(1));
+      navigator.mediaSession.setActionHandler('previoustrack', () => this.jump(-1));
+    } catch { /* non tutti i browser */ }
+  },
+  buildBar() {
+    if (this.bar) return;
+    const bar = document.createElement('div');
+    bar.className = 'ink-bar tts-bar pl-bar pdf-tts-bar';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'PDF ad alta voce');
+    bar.innerHTML = `
+      <div class="pl-info"><small class="pl-what"></small><b class="pl-title"></b></div>
+      <div class="pl-ctrl">
+        <button type="button" class="btn sm ghost" data-pr="prev" aria-label="Pagina precedente">⏮</button>
+        <button type="button" class="btn sm primary pl-play" data-pr="play">Pausa</button>
+        <button type="button" class="btn sm ghost" data-pr="next" aria-label="Pagina successiva">⏭</button>
+        <select class="input ink-size" data-pr-rate aria-label="Velocità">${[0.8, 1, 1.2, 1.4, 1.7, 2].map(r => `<option value="${r}">${String(r).replace('.', ',')}×</option>`).join('')}</select>
+        <button type="button" class="btn sm ghost" data-pr="stop" aria-label="Chiudi l’ascolto">✕</button>
+      </div>`;
+    document.body.append(bar);
+    this.bar = bar;
+    $('[data-pr-rate]', bar).value = String(S().ttsRate || 1);
+    bar.addEventListener('click', e => {
+      const b = e.target.closest('[data-pr]');
+      if (!b) return;
+      const a = b.dataset.pr;
+      if (a === 'play') this.setPlay(!this.playing);
+      if (a === 'next') this.jump(1);
+      if (a === 'prev') this.jump(this.pi > 1 ? 0 : -1);
+      if (a === 'stop') this.stop();
+    });
+    $('[data-pr-rate]', bar).addEventListener('change', e => { S().ttsRate = +e.target.value; Settings.save(); if (this.playing) this.speak(); });
+  },
+  paint() {
+    if (!this.bar || !this.ctx) return;
+    $('.pl-title', this.bar).textContent = `Pagina ${this.page} di ${this.ctx.pages}`;
+    $('.pl-what', this.bar).textContent = `${this.ctx.name} · ${Math.min(this.pi + 1, this.parts.length)}/${this.parts.length}`;
+    $('.pl-play', this.bar).textContent = this.playing ? 'Pausa' : 'Riprendi';
+    document.body.classList.add('pl-on');
+    this.ctx.onPage?.(this.page, true);
+  },
+  async keepAwake(on) {
+    try {
+      if (on && !this.wake && navigator.wakeLock) this.wake = await navigator.wakeLock.request('screen');
+      if (!on && this.wake) { await this.wake.release(); this.wake = null; }
+    } catch { this.wake = null; }
+  },
+  setPlay(v) {
+    this.playing = v;
+    this.keepAwake(v);
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.playbackState = v ? 'playing' : 'paused'; } catch { /* niente */ } }
+    if (v) this.speak(); else { this.token++; Voice.stop(); if (canSpeak) speechSynthesis.cancel(); }
+    this.paint();
+  },
+  async jump(d) {
+    if (!this.ctx) return;
+    this.token++;
+    Voice.stop();
+    if (canSpeak) speechSynthesis.cancel();
+    if (d === 0) { this.pi = 0; if (this.playing) this.speak(); else this.paint(); return; }
+    let n = this.page + d;
+    if (n < 1) n = 1;
+    if (d < 0) {
+      // indietro: la prima pagina con del testo prima di questa
+      for (; n >= 1; n--) { let t = ''; try { t = await this.ctx.text(n); } catch { /* niente */ } if (this.chunks(t).length) break; }
+      if (n < 1) n = this.page;
+    }
+    if (await this.load(n) && this.playing) this.speak();
+  },
+  async advance() {
+    this.pi++;
+    if (this.pi < this.parts.length) { this.paint(); this.speak(); return; }
+    if (await this.load(this.page + 1) && this.playing) this.speak();
+  },
+  speak() {
+    const my = ++this.token;
+    Voice.stop();
+    if (canSpeak) speechSynthesis.cancel();
+    const text = this.parts[this.pi];
+    if (text === undefined) { this.advance(); return; }
+    this.paint();
+    const rate = +(S().ttsRate || 1);
+    if (Voice.useGemini()) {
+      Voice.play(text, rate).then(r => { if (my === this.token && this.playing && r !== 'stopped') this.advance(); })
+        .catch(err => { if (my !== this.token) return; toast(`${err.message} Continuo con la voce del telefono.`, 'err'); S().ttsEngine = 'system'; Settings.save(); if (this.playing) this.speak(); });
+      const nx = this.parts[this.pi + 1];
+      if (nx) Voice.fetch(nx).catch(() => {});
+      return;
+    }
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'it-IT';
+    const v = pickItalianVoice();
+    if (v) u.voice = v;
+    u.rate = rate;
+    u.onend = () => { if (my === this.token && this.playing) setTimeout(() => { if (my === this.token && this.playing) this.advance(); }, 60); };
+    u.onerror = e => { if (my === this.token && e.error !== 'interrupted' && e.error !== 'canceled' && this.playing) this.advance(); };
+    speechSynthesis.speak(u);
+  },
+  stop(quiet = false) {
+    const was = this.active();
+    const ctx = this.ctx;
+    this.playing = false;
+    this.token++;
+    this.loadTok++;
+    if (was) { Voice.stop(); if (canSpeak) speechSynthesis.cancel(); }
+    this.keepAwake(false);
+    this.ctx = null;
+    this.parts = [];
+    if (this.bar) { this.bar.remove(); this.bar = null; }
+    if (!Playlist.active()) document.body.classList.remove('pl-on');
+    ctx?.onPage?.(0, false);
+    if ('mediaSession' in navigator) { try { navigator.mediaSession.metadata = null; } catch { /* niente */ } }
+    if (was && !quiet) toast('Ascolto chiuso');
+  }
+};
+
+// PDF annotato da scaricare: evidenziazioni, penna, forme, testi e note dentro il file, più i fogli per appunti
+const PDF_GREEK = { α: 'alfa', β: 'beta', γ: 'gamma', δ: 'delta', ε: 'epsilon', κ: 'kappa', λ: 'lambda', μ: 'mu', π: 'pi', σ: 'sigma', τ: 'tau', ω: 'omega', Δ: 'Delta', '→': '->', '←': '<-', '↑': '^', '↓': 'v', '≥': '>=', '≤': '<=', '≠': '!=', '±': '+/-', '×': 'x' };
+function pdfSafeText(font) {
+  const ok = new Map();
+  return s => [...String(s || '')].map(ch => {
+    if (PDF_GREEK[ch]) return PDF_GREEK[ch];
+    if (!ok.has(ch)) { try { font.encodeText(ch); ok.set(ch, ch >= ' '); } catch { ok.set(ch, false); } }
+    return ok.get(ch) ? ch : (/\p{Extended_Pictographic}/u.test(ch) ? '' : '?');
+  }).join('');
+}
+function pdfWrap(font, size, text, width) {
+  const out = [];
+  for (const para of String(text).split('\n')) {
+    let cur = '';
+    for (const w of para.split(/\s+/)) {
+      const t = cur ? `${cur} ${w}` : w;
+      if (cur && font.widthOfTextAtSize(t, size) > width) { out.push(cur); cur = w; } else cur = t;
+    }
+    out.push(cur);
+  }
+  return out;
+}
+async function exportAnnotatedPdf(meta, blob, jsDoc, onStep = () => {}) {
+  await ensurePdfLib();
+  const { PDFDocument, rgb, StandardFonts, BlendMode, degrees, LineCapStyle } = window.PDFLib;
+  const out = await PDFDocument.load(await blob.arrayBuffer(), { ignoreEncryption: true });
+  const font = await out.embedFont(StandardFonts.Helvetica);
+  const bold = await out.embedFont(StandardFonts.HelveticaBold);
+  const safe = pdfSafeText(font);
+  const col = h => { const m = String(h || '#000000').replace('#', ''); const v = m.length === 3 ? [...m].map(c => c + c).join('') : m.padEnd(6, '0'); return rgb(parseInt(v.slice(0, 2), 16) / 255, parseInt(v.slice(2, 4), 16) / 255, parseInt(v.slice(4, 6), 16) / 255); };
+  const annots = (meta.annots || []).filter(a => a.type !== 'occ');
+  const ord = (a, b) => a.page - b.page || (a.rects?.[0]?.[1] ?? a.y ?? 0) - (b.rects?.[0]?.[1] ?? b.y ?? 0);
+  // le note hanno un numero: in pagina c’è il segno, in fondo al PDF il testo
+  const noted = annots.filter(a => (a.type === 'note' && a.note) || (a.note && a.rects)).sort(ord);
+  const num = new Map(noted.map((a, i) => [a.id, i + 1]));
+  const byPage = new Map();
+  annots.forEach(a => { if (!byPage.has(a.page)) byPage.set(a.page, []); byPage.get(a.page).push(a); });
+  const drawList = (pg, list, P, rot) => {
+    const box = (x, y, w, h) => {
+      const [ax, ay] = P(x, y), [bx, by] = P(x + w, y + h);
+      return { x: Math.min(ax, bx), y: Math.min(ay, by), width: Math.abs(bx - ax), height: Math.abs(by - ay) };
+    };
+    const path = pts => pts.map(([x, y], i) => { const [X, Y] = P(x, y); return `${i ? 'L' : 'M'}${X.toFixed(2)} ${(-Y).toFixed(2)}`; }).join(' ');
+    const stroke = (d, color, w, opacity = 1) => pg.drawSvgPath(d, { x: 0, y: 0, borderColor: col(color), borderWidth: w, borderOpacity: opacity, borderLineCap: LineCapStyle.Round });
+    for (const a of [...list].sort((x, y) => (x.type === 'hl' ? 0 : 1) - (y.type === 'hl' ? 0 : 1))) {
+      if (a.type === 'hl') a.rects.forEach(r => pg.drawRectangle({ ...box(...r), color: col(pdfCol(a.color)), opacity: 0.45, blendMode: BlendMode.Multiply }));
+      else if (a.type === 'ul') a.rects.forEach(r => pg.drawRectangle({ ...box(r[0], r[1] + r[3] - 1.6, r[2], 1.6), color: col(pdfCol(a.color, 2)) }));
+      else if (a.type === 'st') a.rects.forEach(r => pg.drawRectangle({ ...box(r[0], r[1] + r[3] * 0.52 - 0.8, r[2], 1.6), color: col(pdfCol(a.color, 2)) }));
+      else if (a.type === 'ink' && a.pts?.length) {
+        const pts = a.pts.length === 1 ? [a.pts[0], [a.pts[0][0] + 0.01, a.pts[0][1]]] : a.pts;
+        stroke(path(pts), a.color, a.w, a.w >= 6 ? 0.4 : 1);
+      } else if (a.type === 'shape') {
+        const [x1, y1, x2, y2] = a.box;
+        if (a.kind === 'ellipse') {
+          const [cx, cy] = P((x1 + x2) / 2, (y1 + y2) / 2);
+          const swap = rot % 180 !== 0;
+          const rx = Math.abs(x2 - x1) / 2, ry = Math.abs(y2 - y1) / 2;
+          pg.drawEllipse({ x: cx, y: cy, xScale: swap ? ry : rx, yScale: swap ? rx : ry, borderColor: col(a.color), borderWidth: a.w });
+        } else if (a.kind === 'line' || a.kind === 'arrow') {
+          let d = path([[x1, y1], [x2, y2]]);
+          if (a.kind === 'arrow') {
+            const ang = Math.atan2(y2 - y1, x2 - x1), L = 6 + a.w * 2;
+            const h = k => [x2 - L * Math.cos(ang + k), y2 - L * Math.sin(ang + k)];
+            d += ` ${path([h(0.45), [x2, y2], h(-0.45)])}`;
+          }
+          stroke(d, a.color, a.w);
+        } else pg.drawRectangle({ ...box(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1)), borderColor: col(a.color), borderWidth: a.w });
+      } else if (a.type === 'text') {
+        String(a.text || '').split('\n').forEach((l, k) => {
+          const [X, Y] = P(a.x, a.y + (k + 1) * a.fs * 1.25);
+          pg.drawText(safe(l), { x: X, y: Y, size: a.fs, font, color: col(a.color), rotate: degrees(rot) });
+        });
+      }
+      if (num.has(a.id)) {
+        const pos = a.type === 'note' ? [a.x, a.y] : (() => { const r = a.rects[a.rects.length - 1]; return [r[0] + r[2] + 2, r[1]]; })();
+        const [X, Y] = P(...pos);
+        const n = String(num.get(a.id));
+        pg.drawCircle({ x: X, y: Y, size: 6.5, color: rgb(0.13, 0.55, 0.6), borderColor: rgb(1, 1, 1), borderWidth: 1 });
+        const w = bold.widthOfTextAtSize(n, 7);
+        pg.drawText(n, { x: X - w / 2, y: Y - 2.5, size: 7, font: bold, color: rgb(1, 1, 1) });
+      }
+    }
+  };
+  // le pagine del PDF
+  const pages = out.getPages();
+  const nums = [...byPage.keys()].filter(p => Number.isInteger(p) && p >= 1 && p <= pages.length).sort((a, b) => a - b);
+  let i = 0;
+  for (const p of nums) {
+    if (++i % 10 === 0) onStep(`Pagina ${p}…`);
+    const vp = (await jsDoc.getPage(p)).getViewport({ scale: 1 });
+    drawList(pages[p - 1], byPage.get(p), (x, y) => vp.convertToPdfPoint(x, y), vp.rotation || 0);
+  }
+  // i fogli per appunti, dal fondo per non spostare le posizioni
+  const sheets = [...(meta.sheets || [])].sort((a, b) => sheetKey(b) - sheetKey(a));
+  for (const s of sheets) {
+    const pg = out.insertPage(Math.min(s.after, out.getPageCount()), [s.w, s.h]);
+    const line = rgb(0.78, 0.84, 0.92);
+    if (s.bg === 'lines') for (let y = 60; y < s.h - 24; y += 24) pg.drawLine({ start: { x: 28, y: s.h - y }, end: { x: s.w - 28, y: s.h - y }, thickness: 0.6, color: line });
+    if (s.bg === 'grid') {
+      for (let y = 18; y < s.h; y += 18) pg.drawLine({ start: { x: 0, y: s.h - y }, end: { x: s.w, y: s.h - y }, thickness: 0.4, color: line });
+      for (let x = 18; x < s.w; x += 18) pg.drawLine({ start: { x, y: 0 }, end: { x, y: s.h }, thickness: 0.4, color: line });
+    }
+    drawList(pg, byPage.get(sheetKey(s)) || [], (x, y) => [x, s.h - y], 0);
+  }
+  // in fondo: le note, con il numero e la pagina
+  if (noted.length) {
+    const [W, H] = pages[0] ? [pages[0].getWidth(), pages[0].getHeight()] : [595, 842];
+    const pw = Math.max(W, H) === W && W > H ? 595 : W, ph = W > H ? 842 : H;
+    let pg = out.addPage([pw, ph]);
+    let y = ph - 56;
+    pg.drawText(safe(`Note: ${meta.name}`).slice(0, 90), { x: 40, y, size: 15, font: bold, color: rgb(0.1, 0.1, 0.12) });
+    y -= 28;
+    for (const a of noted) {
+      const head = `${num.get(a.id)}.  p. ${pgLabel(a.page)}`;
+      const body = [a.text && a.type !== 'note' ? `«${cleanPdfText(a.text).slice(0, 400)}»` : '', a.note || ''].filter(Boolean).join('\n');
+      const lines = pdfWrap(font, 10, body.split('\n').map(safe).join('\n'), pw - 110);
+      if (y - 16 - lines.length * 13 < 40) { pg = out.addPage([pw, ph]); y = ph - 56; }
+      pg.drawText(safe(head), { x: 40, y, size: 10, font: bold, color: rgb(0.13, 0.45, 0.5) });
+      lines.forEach((l, k) => pg.drawText(l, { x: 96, y: y - k * 13, size: 10, font, color: rgb(0.15, 0.15, 0.18) }));
+      y -= Math.max(1, lines.length) * 13 + 10;
+    }
+  }
+  onStep('Salvo il file…');
+  return out.save();
 }

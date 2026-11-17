@@ -1320,6 +1320,13 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.00", title: "lettore PDF: appunti dalle evidenziazioni, ascolto, fogli per appunti", html: `      <ul>
+        <li><strong>Legenda dei colori</strong>: dai un significato a ogni colore dell’evidenziatore (giallo = definizioni, rosso = da sapere per l’esame…). Lo vedi accanto ai colori quando evidenzi e vale per tutti i PDF.</li>
+        <li><strong>Appunti dalle evidenziazioni</strong> (Pannello › Note, oppure Altro ▾): le frasi evidenziate e sottolineate diventano un elenco in una sezione, divise per colore o per pagina, con il numero di pagina che riporta al PDF e le tue note sotto. La volta dopo puoi prendere solo quelle nuove.</li>
+        <li><strong>🔊 Ascolta</strong>: il PDF letto ad alta voce dalla pagina in cui sei (o dalla frase selezionata); passa da solo alle pagine dopo e il PDF la segue.</li>
+        <li><strong>Fogli per appunti</strong> (Altro ▾): un foglio a righe, a quadretti o bianco tra una pagina e l’altra, per scrivere a mano con la Penna. Si elimina con la ✕ in alto.</li>
+        <li><strong>Scarica il PDF con le annotazioni</strong> (Altro ▾): evidenziazioni, penna, forme, testi e fogli dentro il file, e in fondo le note numerate.</li>
+      </ul>` },
   { v: "3.99", title: "blocco note accanto o sotto, mappe senza testo tagliato", html: `      <ul>
         <li><strong>Blocco note in divisione verticale</strong>: il pulsante nella sua intestazione lo mette <strong>accanto</strong> alla pagina (anche sul tablet in verticale) o <strong>sotto</strong>; trascini il bordo per decidere quanto spazio dargli. L’app ricorda la scelta.</li>
         <li>Nel lettore PDF c’è il pulsante <strong>✎ Blocco note</strong>: appunti a mano accanto al PDF.</li>
@@ -3739,7 +3746,7 @@ const HELP = {
   notebook: { t: 'Il notebook', b: `Il primo livello è fatto di <b>cartelle</b> (i macro-argomenti, per esempio un apparato o un capitolo): tocchi una cartella per entrarci. Dentro ci sono le <b>sezioni</b> (le pagine con gli appunti) e i <b>sottoargomenti</b>, fino a <b>tre livelli</b> (per esempio Cardiologia › Valvulopatie › Stenosi aortica). Con “Sposta dentro un altro argomento” riorganizzi i gruppi che hai già. Il menu “⋯” di un gruppo serve per aggiungere sezioni, crearne di nuove, importare lì o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
   review: { t: 'Ripasso', b: `Le sezioni da ripassare oggi nel Notebook (quelle mandate a StudyHub le pianifica StudyHub).<br><br>Dopo ogni prova valuta con Di nuovo, Difficile, Bene o Facile: l’app decide quando riproportela.` },
   cardsPage: { t: 'Flashcard', b: `Le flashcard da ripassare di tutti i notebook. Gira la carta, poi valuta quanto la sapevi.<br><br>Le crei selezionando il testo in Leggi, con l’AI o a mano.` },
-  pdfs: { t: 'PDF', b: `La tua libreria di PDF, collegati ai notebook o alle singole sezioni. Nel lettore puoi evidenziare, scrivere a mano, mettere segnalibri e trascinare parti negli appunti.` },
+  pdfs: { t: 'PDF', b: `La tua libreria di PDF, collegati ai notebook o alle singole sezioni. Nel lettore puoi evidenziare, scrivere a mano, mettere segnalibri e trascinare parti negli appunti. Da “Altro ▾”: appunti dalle evidenziazioni divisi per colore (con la legenda dei colori), ascolto ad alta voce, fogli per appunti tra le pagine e il PDF annotato da scaricare.` },
   importPage: { t: 'Importa', b: `Da qui crei le sezioni a partire da testo, PDF o mappe XMind. Scegli prima il notebook e, se vuoi, il macro-argomento.` },
   clinic: { t: 'Note cliniche', b: `I quadri clinici di tutte le materie, cercabili per sintomo: tocca più sintomi per restringere.<br><br>Ogni nota ha fonti e può essere segnata come incompleta. Puoi crearla anche selezionando del testo in Leggi.` },
   cases: { t: 'Casi clinici', b: `I casi visti a lezione, in tirocinio o sui libri. Ognuno è una sezione con i dati del caso, foto e PDF allegati e la modalità <b>Risolvi</b>.<br><br>Cerca per sintomi, esami o diagnosi e filtra per specialità, materia o contesto. Niente dati che rendano riconoscibile il paziente.` },
