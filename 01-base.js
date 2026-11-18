@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.02';
+const APP_VERSION = '4.03';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -301,9 +301,10 @@ const sortDue = (a, b) => (a.srs.due < b.srs.due ? -1 : a.srs.due > b.srs.due ? 
 // Macro-argomenti: elenco ordinato dentro il notebook, ogni sezione ne indica uno con groupId
 const groupsOf = nb => (nb && Array.isArray(nb.groups) ? nb.groups : []);
 const groupOf = sec => groupsOf(nbById(sec.notebookId)).find(g => g.id === sec.groupId) || null;
-// un gruppo può stare dentro un macro-argomento (sottoargomento); solo due livelli
-// v3.40: fino a tre livelli — macro-argomento › sottoargomento › sottoargomento
-const GROUP_MAX_DEPTH = 3;
+// un gruppo può stare dentro un altro gruppo
+// v4.03: le cartelle funzionano come quelle del computer, una dentro l’altra senza limite di livelli
+// (il numero serve solo a fermarsi su catene rotte o circolari)
+const GROUP_MAX_DEPTH = 64;
 // antenati di un gruppo, dal più esterno; si ferma su catene rotte o circolari
 function groupAncestors(nb, g) {
   const out = [];
@@ -328,7 +329,7 @@ const subGroups = (nb, g) => (g && groupDepth(nb, g) < GROUP_MAX_DEPTH ? groupsO
 const groupTreeIds = (nb, g) => { const ids = new Set([g.id]); subGroups(nb, g).forEach(x => groupTreeIds(nb, x).forEach(i => ids.add(i))); return ids; };
 // quanti livelli scende un gruppo (1 se non ha sottoargomenti)
 const groupHeight = (nb, g) => 1 + Math.max(0, ...subGroups(nb, g).map(x => groupHeight(nb, x)));
-const groupWord = (nb, g) => (groupDepth(nb, g) === 1 ? 'macro-argomento' : 'sottoargomento');
+const groupWord = () => 'cartella';
 function groupPathOf(sec) {
   const nb = nbById(sec.notebookId);
   const g = groupOf(sec);
@@ -336,8 +337,12 @@ function groupPathOf(sec) {
   return [...groupAncestors(nb, g), g];
 }
 const groupPathText = sec => groupPathOf(sec).map(g => g.name).join(' › ');
+// v4.03: mappe e pagine HTML caricate nella sezione (il file sta nell’archivio delle immagini)
+const htmlsOf = sec => (sec && Array.isArray(sec.htmls) ? sec.htmls : []);
+// una sezione fatta solo di mappe HTML, senza appunti
+const htmlOnly = s => !!htmlsOf(s).length && !String(s.md || '').trim();
 // Niente spoiler: una sezione si apre in Cloze se ha termini nascosti, altrimenti in Leggi
-const openMode = s => (clozeOf(s) || ioMaskCount(s) ? 'cloze' : 'read');
+const openMode = s => (clozeOf(s) || ioMaskCount(s) ? 'cloze' : htmlOnly(s) ? 'html' : 'read');
 
 function newSrs() { return { ef: 2.5, interval: 0, reps: 0, due: null, history: [] }; }
 
@@ -492,7 +497,7 @@ async function deleteSection(id) {
   const sec = secById(id);
   if (!sec) return;
   const cards = cardsOfSection(id);
-  const refs = [...imageRefs(sec.md), ...cards.flatMap(cardImageRefs)];
+  const refs = [...imageRefs(sec.md), ...htmlsOf(sec).map(h => h.id), ...cards.flatMap(cardImageRefs)];
   await removeRecords([{ store: 'sections', rec: sec }, ...cards.map(c => ({ store: 'cards', rec: c }))]);
   for (const p of pdfsOf(id)) await deletePdf(p.id);
   delete drafts[id];
@@ -1403,6 +1408,7 @@ function statusPill(s) {
 
 function defaultMode(s) {
   if (clozeOf(s)) return 'cloze';
+  if (htmlOnly(s)) return 'html';
   if ((s.questions || []).length) return 'quiz';
   return 'blank';
 }
@@ -1417,6 +1423,8 @@ function sectionRow(s, { showNb = false, review = false } = {}) {
   const q = (s.questions || []).length;
   if (cz) bits.push(`${cz} cloze`);
   if (q) bits.push(`${q} ${q === 1 ? 'domanda' : 'domande'}`);
+  const hm = htmlsOf(s).length;
+  if (hm) bits.push(`${hm} ${hm === 1 ? 'mappa HTML' : 'mappe HTML'}`);
   if (s.needsFormat) bits.push('da formattare');
   if (s.incomplete) bits.push('⚠ incompleta');
   const href = review ? `#/sec/${s.id}/${defaultMode(s)}` : `#/sec/${s.id}/${openMode(s)}`;
@@ -2373,7 +2381,7 @@ const imageRefs = text => { const out = []; let m; const re = new RegExp(IMG_REF
 const cardImageRefs = c => [...imageRefs(c.front), ...imageRefs(c.back), ...(c.io ? [c.io.imageId] : [])];
 function referencedImages() {
   const set = new Set();
-  state.sections.forEach(s => imageRefs(s.md).forEach(id => set.add(id)));
+  state.sections.forEach(s => { imageRefs(s.md).forEach(id => set.add(id)); htmlsOf(s).forEach(h => set.add(h.id)); });
   state.cards.forEach(c => cardImageRefs(c).forEach(id => set.add(id)));
   // v3.69: le foto delle note cliniche
   state.links.forEach(l => (l.images || []).forEach(im => set.add(im.id)));

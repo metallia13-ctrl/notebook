@@ -4525,3 +4525,25 @@ html.pdf-open body.pad-side .pad-dock { bottom: 0; border-radius: 0; }
 .pdf-sheet-x { border: 0; background: transparent; color: inherit; font: inherit; padding: 3px 7px; border-radius: 6px; cursor: pointer; }
 .pdf-sheet-x:hover { background: rgba(0, 0, 0, 0.07); color: #b42318; }
 .pdf-export-toast { white-space: normal; }
+
+/* v4.03: percorso delle cartelle (come quello del computer) */
+.folder-path { flex-wrap: wrap; gap: 2px; row-gap: 2px; max-width: 100%; }
+.folder-path a { color: inherit; text-decoration: none; padding: 1px 4px; border-radius: 8px; overflow-wrap: anywhere; }
+.folder-path a:hover { color: var(--text); background: var(--surface-2); }
+.folder-path .fp-sep { opacity: 0.55; padding: 0 1px; }
+
+/* v4.03: Mappe HTML */
+.hm-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.hm-bar .hm-sel { flex: 1 1 200px; min-width: 0; max-width: 520px; }
+.hm-name { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.hm-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.hm-wrap { position: relative; border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: #fff; }
+.hm-wrap .hm-wait { background: var(--surface); margin: 0; }
+.hm-frame { display: block; width: 100%; height: min(78vh, 1000px); min-height: 420px; border: 0; background: #fff; }
+.hm-exit { position: absolute; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); z-index: 2; box-shadow: var(--shadow); }
+.hm-wrap.hm-full { position: fixed; inset: 0; z-index: 72; border: 0; border-radius: 0; }
+.hm-wrap.hm-full .hm-frame { height: 100%; min-height: 0; }
+.hm-wrap:fullscreen { width: 100%; height: 100%; }
+body.hm-full-on { overflow: hidden; }
+body.hm-full-on .pad-fab, body.hm-full-on .au-bar { display: none; }
+.split-body .hm-frame { height: calc(100dvh - 170px); min-height: 320px; }

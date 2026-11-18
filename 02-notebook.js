@@ -104,6 +104,8 @@ function viewNotebooks() {
    --------------------------------------------------------------------- */
 // v3.57: il primo livello (i macro-argomenti) è fatto di cartelle: le apri e dentro trovi
 // le sezioni e i sottoargomenti. “#/nb/<id>/<cartella>” è la pagina di una cartella.
+// v4.03: come le cartelle del computer: ogni cartella può contenere sezioni (i file) e altre
+// cartelle, senza limite di livelli; si entra con un tocco e il percorso in alto riporta indietro.
 const FOLDER_SVG = '<svg class="fc-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h4l2 2.2h7A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>';
 function viewNotebook(id, folderId = '') {
   const nb = nbById(id);
@@ -118,56 +120,23 @@ function viewNotebook(id, folderId = '') {
   const groups = groupsOf(nb);
   const gIds = new Set(groups.map(g => g.id));
   const loose = secs.filter(s => !gIds.has(s.groupId));
-  const folder = folderId ? groups.find(g => g.id === folderId && !groupParent(nb, g)) : null;
+  const folder = folderId ? groups.find(g => g.id === folderId) || null : null;
   if (folderId && !folder) { location.replace(`#/nb/${id}`); return; }
   const foldKey = `nb:${id}`;
   const closed = new Set(foldGet(foldKey));
+  const nWord = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const lede = [
-    `${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}`,
-    topGroups(nb).length ? `${topGroups(nb).length} ${topGroups(nb).length === 1 ? 'cartella' : 'cartelle'}` : '',
+    nWord(secs.length, 'sezione', 'sezioni'),
+    groups.length ? nWord(groups.length, 'cartella', 'cartelle') : '',
     due ? `${due} da ripassare oggi` : '',
     nbCards.length ? `${nbCards.length} flashcard` : ''
   ].filter(Boolean).join(', ');
-  const groupBlock = g => {
-    const gs = secs.filter(s => s.groupId === g.id);
-    const subs = subGroups(nb, g);
-    const tree = groupTreeIds(nb, g);
-    const all = secs.filter(s => tree.has(s.groupId));
-    const gd = all.filter(isDue).length;
-    const depth = groupDepth(nb, g);
-    const isSub = depth > 1;
-    const meta = [
-      subs.length ? `${subs.length} ${subs.length === 1 ? 'sottoargomento' : 'sottoargomenti'}` : '',
-      gs.length ? `${gs.length} ${gs.length === 1 ? 'sezione' : 'sezioni'}` : '',
-      subs.length && all.length > gs.length ? `${all.length} in tutto` : ''
-    ].filter(Boolean).join(', ') || 'Ancora vuoto';
-    return `
-      <section class="grp fold ${isSub ? 'sub-grp' : ''} ${depth === 3 ? 'lvl3' : ''}" data-fold="${g.id}" data-g="${g.id}">
-        <div class="grp-head">
-          <button class="fold-btn" type="button" data-name="${esc(g.name)}">${CHEVRON}</button>
-          <span class="grp-main">
-            <h2 class="grp-title">${esc(g.name)}</h2>
-            <span class="grp-meta">${meta}${gd ? `, <b>${gd} da ripassare</b>` : ''}</span>
-          </span>
-          <button class="btn ghost sm grp-more" type="button" data-gmenu="${g.id}" aria-label="Opzioni per ${esc(g.name)}">Opzioni</button>
-        </div>
-        <div class="fold-body">
-          ${gs.length ? `<ul class="list sec-list">${gs.map(s => sectionRow(s)).join('')}</ul>` : ''}
-          ${subs.map(groupBlock).join('')}
-          ${gs.length || subs.length ? '' : `
-            <div class="grp-empty">
-              <button class="btn sm" type="button" data-gadd="${g.id}">Aggiungi sezioni esistenti</button>
-              <a class="btn sm ghost" href="#/import/${id}/${g.id}">Importa qui</a>
-            </div>`}
-        </div>
-      </section>`;
-  };
   const folderCard = g => {
     const tree = groupTreeIds(nb, g);
     const all = secs.filter(s => tree.has(s.groupId));
     const subs = subGroups(nb, g);
     const gd = all.filter(isDue).length;
-    const meta = [all.length ? `${all.length} ${all.length === 1 ? 'sezione' : 'sezioni'}` : 'Vuota', subs.length ? `${subs.length} ${subs.length === 1 ? 'sottoargomento' : 'sottoargomenti'}` : ''].filter(Boolean).join(' · ');
+    const meta = [all.length ? nWord(all.length, 'sezione', 'sezioni') : (subs.length ? '' : 'Vuota'), subs.length ? nWord(subs.length, 'cartella', 'cartelle') : ''].filter(Boolean).join(' · ');
     return `<div class="folder-card" role="link" tabindex="0" data-open="${g.id}" aria-label="Apri la cartella ${esc(g.name)}">
       ${FOLDER_SVG}
       <span class="fc-main"><span class="fc-name">${esc(g.name)}</span><span class="fc-meta">${meta}</span></span>
@@ -176,34 +145,38 @@ function viewNotebook(id, folderId = '') {
     </div>`;
   };
   if (folder) {
-    // pagina della cartella: le sue sezioni, poi i sottoargomenti come adesso
+    // pagina della cartella: prima le cartelle che contiene, poi le sue sezioni
     const tree = groupTreeIds(nb, folder);
     const fsecs = secs.filter(s => tree.has(s.groupId));
     const own = secs.filter(s => s.groupId === folder.id);
     const subs = subGroups(nb, folder);
     const fdue = fsecs.filter(isDue).length;
+    const anc = groupAncestors(nb, folder);
+    const crumbs = [`<a href="#/nb/${id}">${esc(nb.name)}</a>`, ...anc.map(a => `<a href="#/nb/${id}/${a.id}">${esc(a.name)}</a>`)].join('<span class="fp-sep" aria-hidden="true">›</span>');
     setView(`
-      <a class="back" href="#/nb/${id}">${esc(nb.name)}</a>
+      <nav class="back folder-path" aria-label="Percorso">${crumbs}</nav>
       <header class="page-head">
         <div>
           <h1 class="folder-h1">${FOLDER_SVG}<span>${esc(folder.name)}</span></h1>
-          <p class="lede">${[`${fsecs.length} ${fsecs.length === 1 ? 'sezione' : 'sezioni'}`, subs.length ? `${subs.length} ${subs.length === 1 ? 'sottoargomento' : 'sottoargomenti'}` : '', fdue ? `${fdue} da ripassare oggi` : ''].filter(Boolean).join(', ')}</p>
+          <p class="lede">${[nWord(fsecs.length, 'sezione', 'sezioni'), subs.length ? nWord(subs.length, 'cartella', 'cartelle') : '', fdue ? `${fdue} da ripassare oggi` : ''].filter(Boolean).join(', ')}</p>
         </div>
         <div class="actions">
           <button class="btn primary" data-act="new-sec-here">Scrivi una sezione qui</button>
-          <button class="btn" data-act="new-sub-here">Nuovo sottoargomento</button>
+          <button class="btn" data-act="new-sub-here">Nuova cartella</button>
+          <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
           <a class="btn" href="#/import/${id}/${folder.id}">Importa qui</a>
           ${fsecs.length ? `<a class="btn" href="#/viva/grp/${folder.id}">Interrogami</a>` : ''}
           <button class="btn ghost" type="button" data-gmenu="${folder.id}">Opzioni</button>
         </div>
       </header>
       ${fsecs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca in questa cartella" aria-label="Cerca in questa cartella">' : ''}
+      <div id="nbFound" hidden></div>
       <div id="nbBody">
-        ${own.length ? `<ul class="list sec-list">${own.map(s => sectionRow(s)).join('')}</ul>` : ''}
-        ${subs.map(groupBlock).join('')}
+        ${subs.length ? `<div class="folder-grid">${subs.map(folderCard).join('')}</div>` : ''}
+        ${own.length ? `<section class="grp-loose">${subs.length ? '<h2 class="sub">Sezioni</h2>' : ''}<ul class="list sec-list">${own.map(s => sectionRow(s)).join('')}</ul></section>` : ''}
         ${own.length || subs.length ? '' : `
           <div class="empty">
-            <p>Cartella vuota. Scrivi una sezione, importa qui un testo o un PDF, oppure sposta dentro sezioni che hai già.</p>
+            <p>Cartella vuota. Scrivi una sezione, carica una mappa HTML, importa qui un testo o un PDF, crea un’altra cartella dentro, oppure sposta qui sezioni che hai già.</p>
             <button class="btn" type="button" data-gadd="${folder.id}">Aggiungi sezioni esistenti</button>
           </div>`}
       </div>
@@ -221,6 +194,7 @@ function viewNotebook(id, folderId = '') {
         ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
         <button class="btn" data-act="new-sec">Scrivi una sezione</button>
         <button class="btn" data-act="new-grp">Nuova cartella</button>
+        <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
         <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
         <a class="btn" href="#/lezioni/${nb.id}">Lezioni${(nb.audios || []).length ? ` (${nb.audios.length})` : ''}</a>
         ${secs.length ? `<a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
@@ -234,12 +208,12 @@ function viewNotebook(id, folderId = '') {
       ${topGroups(nb).length ? `<div class="folder-grid">${topGroups(nb).map(folderCard).join('')}</div>` : ''}
       ${loose.length ? `
         <section class="grp-loose">
-          ${groups.length ? '<h2 class="sub">Fuori dalle cartelle</h2>' : ''}
+          ${groups.length ? '<h2 class="sub">Sezioni</h2>' : ''}
           <ul class="list sec-list">${loose.map(s => sectionRow(s)).join('')}</ul>
         </section>` : ''}
       ${!secs.length && !groups.length ? `
         <div class="empty">
-          <p>Notebook vuoto. Importa testo o un PDF, oppure scrivi una sezione a mano. Con le cartelle (i macro-argomenti: per esempio un apparato o un capitolo) raggruppi le sezioni; dentro una cartella puoi creare sottoargomenti.</p>
+          <p>Notebook vuoto. Importa testo o un PDF, carica una mappa HTML, oppure scrivi una sezione a mano. Con le cartelle raggruppi le sezioni come sul computer: dentro una cartella puoi metterne altre, quante vuoi.</p>
           <a class="btn primary" href="#/import/${nb.id}">Importa</a>
           <button class="btn" data-act="new-grp">Nuova cartella</button>
         </div>` : ''}
@@ -255,16 +229,6 @@ function viewNotebook(id, folderId = '') {
     go(`#/nb/${id}/${fc.dataset.open}`);
   });
   box.addEventListener('keydown', e => { const fc = e.target.closest('[data-open]'); if (fc && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); go(`#/nb/${id}/${fc.dataset.open}`); } });
-  $$('.grp', box).forEach(g => setFold(g, closed.has(g.dataset.g)));
-  const saveFolds = () => foldSet(foldKey, $$('.grp.closed', box).map(g => g.dataset.g));
-  box.addEventListener('click', e => {
-    const head = e.target.closest('.grp-head');
-    if (!head || e.target.closest('.grp-more')) return;
-    const grp = head.parentElement;
-    setFold(grp, !grp.classList.contains('closed'));
-    saveFolds();
-  });
-
   const newSecIn = async groupId => {
     const sec = newSection(id, { title: 'Nuova sezione', groupId });
     await saveSection(sec);
@@ -277,8 +241,6 @@ function viewNotebook(id, folderId = '') {
       const s = secById(sid);
       if (s) { s.groupId = g.id; await saveSection(s); }
     }
-    // il macro-argomento si apre per mostrare le sezioni appena aggiunte
-    foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
     toast(`${ids.length} ${ids.length === 1 ? 'sezione spostata' : 'sezioni spostate'} in ${g.name}`);
     route();
     return true;
@@ -286,11 +248,12 @@ function viewNotebook(id, folderId = '') {
 
   on('[data-act="new-sec"]', 'click', () => newSecIn(null));
   on('[data-act="new-sec-here"]', 'click', () => newSecIn(folder.id));
-  on('[data-act="new-sub-here"]', 'click', async () => { const g = await createGroupFlow(nb, folder.id); if (g) { toast('Sottoargomento creato'); route(); } });
+  on('[data-act="html-here"]', 'click', () => addHtmlSections(nb, folder ? folder.id : null));
+  on('[data-act="new-sub-here"]', 'click', async () => { const g = await createGroupFlow(nb, folder.id); if (g) { toast('Cartella creata'); route(); } });
   on('[data-act="new-grp"]', 'click', async () => {
     const g = await createGroupFlow(nb);
     if (!g) return;
-    toast('Macro-argomento creato');
+    toast('Cartella creata');
     const moved = loose.length ? await addSectionsTo(g) : false;
     if (!moved) route();
   });
@@ -299,6 +262,7 @@ function viewNotebook(id, folderId = '') {
     if (g) addSectionsTo(g);
   });
   on('[data-gmenu]', 'click', async e => {
+    e.stopPropagation();
     const gi = groups.findIndex(x => x.id === e.currentTarget.dataset.gmenu);
     const g = groups[gi];
     if (!g) return;
@@ -307,31 +271,33 @@ function viewNotebook(id, folderId = '') {
     const si = sibs.indexOf(g);
     const nIn = secs.filter(s => s.groupId === g.id).length;
     const kids = subGroups(nb, g);
-    const depth = groupDepth(nb, g);
-    const word = groupWord(nb, g);
     const choice = await actionSheet(g.name, [
+      ...(folder && folder.id === g.id ? [] : [{ key: 'open', label: 'Apri' }]),
       { key: 'add', label: 'Aggiungi sezioni esistenti' },
       { key: 'write', label: 'Scrivi una sezione qui' },
-      ...(depth < GROUP_MAX_DEPTH ? [{ key: 'sub', label: depth === 1 ? 'Nuovo sottoargomento' : 'Nuovo sottoargomento (3° livello)' }] : []),
+      { key: 'sub', label: 'Nuova cartella qui dentro' },
+      { key: 'html', label: 'Carica una mappa HTML qui' },
       { key: 'import', label: 'Importa qui' },
-      { key: 'exam', label: 'Simulazione d’esame su questo argomento' },
+      { key: 'exam', label: 'Simulazione d’esame su questa cartella' },
       { key: 'listen', label: 'Ascolta in sequenza' },
       { key: 'rename', label: 'Rinomina' },
-      { key: 'move', label: 'Sposta dentro un altro argomento' },
+      { key: 'move', label: 'Sposta in un’altra cartella' },
       { key: 'up', label: 'Sposta su', disabled: si <= 0 },
       { key: 'down', label: 'Sposta giù', disabled: si === sibs.length - 1 },
-      { key: 'delete', label: depth === 1 ? 'Elimina la cartella' : `Elimina il ${word}`, danger: true }
+      { key: 'delete', label: 'Elimina la cartella', danger: true }
     ]);
+    if (choice === 'open') return go(`#/nb/${id}/${g.id}`);
     if (choice === 'sub') {
       const sg = await createGroupFlow(nb, g.id);
       if (!sg) return;
-      foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
+      toast('Cartella creata');
       const moved = secs.some(s => s.groupId === g.id) ? await addSectionsTo(sg) : false;
       if (!moved) route();
       return;
     }
     if (choice === 'add') return addSectionsTo(g);
     if (choice === 'write') return newSecIn(g.id);
+    if (choice === 'html') return addHtmlSections(nb, g.id);
     if (choice === 'import') return go(`#/import/${id}/${g.id}`);
     if (choice === 'exam') { examRun = null; return go(`#/exam/${id}/${g.id}`); }
     if (choice === 'listen') {
@@ -339,26 +305,25 @@ function viewNotebook(id, folderId = '') {
       return Playlist.start(nbReadingOrder(nb).filter(s => ids.has(s.groupId)), g.name);
     }
     if (choice === 'move') {
-      // può andare dove i suoi livelli ci stanno ancora (al massimo tre in tutto)
-      const h = groupHeight(nb, g);
+      // può andare in qualunque cartella che non sia lei stessa o una di quelle che contiene
       const own = groupTreeIds(nb, g);
       const pathName = x => [...groupAncestors(nb, x), x].map(y => y.name).join(' › ');
-      const cands = groups.filter(x => !own.has(x.id) && x.id !== parent?.id && groupDepth(nb, x) + h <= GROUP_MAX_DEPTH);
+      const cands = groups.filter(x => !own.has(x.id) && x.id !== parent?.id)
+        .sort((a, b) => pathName(a).localeCompare(pathName(b), 'it', { numeric: true }));
       const opts = [
-        ...(parent ? [{ key: '__top', label: 'Al primo livello (diventa una cartella)' }] : []),
-        ...cands.map(x => ({ key: x.id, label: `Dentro ${pathName(x)}` }))
+        ...(parent ? [{ key: '__top', label: `Direttamente nel notebook ${nb.name}` }] : []),
+        ...cands.map(x => ({ key: x.id, label: pathName(x) }))
       ];
-      if (!opts.length) { toast(h >= GROUP_MAX_DEPTH ? 'Ha già tre livelli: può stare solo al primo livello' : 'Non c’è un altro argomento in cui spostarlo'); return; }
-      const to = await actionSheet(`Sposta “${g.name}”`, opts);
+      if (!opts.length) { toast('Non c’è un’altra cartella in cui spostarla'); return; }
+      const to = await actionSheet(`Sposta “${g.name}” in…`, opts);
       if (!to) return;
       if (to === '__top') delete g.parentId; else g.parentId = to;
       await saveNotebook(nb);
-      if (to !== '__top') foldSet(foldKey, foldGet(foldKey).filter(x => x !== to));
-      toast(to === '__top' ? 'Ora è una cartella' : `Spostato dentro ${groups.find(x => x.id === to)?.name}`);
+      toast(to === '__top' ? `Ora è direttamente in ${nb.name}` : `Spostata in ${groups.find(x => x.id === to)?.name}`);
       return route();
     }
     if (choice === 'rename') {
-      const name = await modal({ title: depth === 1 ? 'Rinomina la cartella' : `Rinomina il ${word}`, input: true, value: g.name, confirm: 'Rinomina' });
+      const name = await modal({ title: 'Rinomina la cartella', input: true, value: g.name, confirm: 'Rinomina' });
       if (!name) return;
       g.name = name;
       await saveNotebook(nb);
@@ -374,11 +339,12 @@ function viewNotebook(id, folderId = '') {
       return route();
     }
     if (choice === 'delete') {
+      const where = parent ? `nella cartella ${parent.name}` : 'direttamente nel notebook';
       const ok = await modal({
-        title: depth === 1 ? 'Eliminare la cartella?' : `Eliminare il ${word}?`,
+        title: 'Eliminare la cartella?',
         text: [
-          nIn ? `${nIn === 1 ? 'La sua sezione resta' : `Le sue ${nIn} sezioni restano`} nel notebook${parent ? `, dentro ${parent.name}` : ', fuori dalle cartelle'}.` : 'Non perdi nessuna sezione.',
-          kids.length ? (parent ? `${kids.length === 1 ? 'Il suo sottoargomento sale' : `I suoi ${kids.length} sottoargomenti salgono`} dentro ${parent.name}.` : `${kids.length === 1 ? 'Il suo sottoargomento diventa un macro-argomento' : `I suoi ${kids.length} sottoargomenti diventano macro-argomenti`}.`) : ''
+          nIn ? `${nIn === 1 ? 'La sua sezione passa' : `Le sue ${nIn} sezioni passano`} ${where}.` : 'Non perdi nessuna sezione.',
+          kids.length ? `${kids.length === 1 ? 'La cartella che contiene passa' : `Le ${kids.length} cartelle che contiene passano`} ${where}, con tutto quello che ${kids.length === 1 ? 'ha' : 'hanno'} dentro.` : ''
         ].filter(Boolean).join(' '),
         confirm: 'Elimina', danger: true
       });
@@ -388,7 +354,9 @@ function viewNotebook(id, folderId = '') {
       nb.groups = groups.filter(x => x.id !== g.id);
       await saveNotebook(nb);
       foldSet(foldKey, foldGet(foldKey).filter(x => x !== g.id));
-      toast(depth > 1 ? 'Sottoargomento eliminato' : 'Macro-argomento eliminato');
+      toast('Cartella eliminata');
+      // se eri dentro la cartella eliminata, torni a quella che la conteneva
+      if (folder && folder.id === g.id) return go(parent ? `#/nb/${id}/${parent.id}` : `#/nb/${id}`);
       route();
     }
   });
@@ -441,48 +409,41 @@ function viewNotebook(id, folderId = '') {
     if (choice === 'delete') deleteNb();
   });
   const search = $('#secSearch');
-  if (search && !folder) {
+  if (search) {
+    // si cerca in tutto quello che sta qui dentro, a qualunque livello: cartelle per nome, sezioni per titolo e testo
+    const tree = folder ? groupTreeIds(nb, folder) : null;
+    const pool = tree ? secs.filter(s => tree.has(s.groupId)) : secs;
+    const gPool = tree ? groups.filter(g => tree.has(g.id) && g.id !== folder.id) : groups;
     search.addEventListener('input', () => {
       const q = search.value.trim().toLowerCase();
       const found = $('#nbFound');
       box.hidden = !!q;
       found.hidden = !q;
       if (!q) { $('#noMatch').hidden = true; return; }
-      const hits = secs.filter(s => (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q));
-      found.innerHTML = hits.length ? `<ul class="list sec-list">${hits.slice(0, 200).map(s => sectionRow(s)).join('')}</ul>` : '';
-      $('#noMatch').hidden = hits.length > 0;
+      const fq = foldAccents(q);
+      const gHits = gPool.filter(g => foldAccents(g.name.toLowerCase()).includes(fq));
+      const hits = pool.filter(s => (s.title + '\n' + stripCloze(s.md) + '\n' + htmlsOf(s).map(h => h.name).join('\n')).toLowerCase().includes(q));
+      found.innerHTML = (gHits.length ? `<div class="folder-grid">${gHits.slice(0, 60).map(g => folderCard(g).replace(/<button[\s\S]*?<\/button>/, '')).join('')}</div>` : '')
+        + (hits.length ? `<ul class="list sec-list">${hits.slice(0, 200).map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : '');
+      $('#noMatch').hidden = hits.length + gHits.length > 0;
     });
-  } else if (search) {
-    search.addEventListener('input', () => {
-      const q = search.value.trim().toLowerCase();
-      box.classList.toggle('searching', !!q);
-      let shown = 0;
-      $$('.sec-list li', box).forEach(li => {
-        const s = secById(li.dataset.id);
-        const hit = !q || (s && (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q));
-        li.hidden = !hit;
-        if (hit) shown++;
-      });
-      // durante la ricerca restano visibili solo i gruppi con risultati
-      $$('.grp, .grp-loose', box).forEach(g => {
-        g.hidden = !!q && !$$('.sec-list li', g).some(li => !li.hidden);
-      });
-      $('#noMatch').hidden = shown > 0 || !q;
+    const found = $('#nbFound');
+    found.addEventListener('click', e => {
+      const fc = e.target.closest('[data-open]');
+      if (fc && !e.target.closest('[data-gmenu]')) go(`#/nb/${id}/${fc.dataset.open}`);
     });
   }
 }
 
 async function createGroupFlow(nb, parentId = null) {
   const parent = parentId ? groupsOf(nb).find(x => x.id === parentId) : null;
-  const pDepth = parent ? groupDepth(nb, parent) : 0;
-  if (parent && pDepth >= GROUP_MAX_DEPTH) { toast('Si arriva al massimo a tre livelli'); return null; }
   const name = await modal(parent ? {
-    title: pDepth === 1 ? 'Nuovo sottoargomento' : 'Nuovo sottoargomento (3° livello)',
-    text: `Dentro ${[...groupAncestors(nb, parent), parent].map(x => x.name).join(' › ')}. Raccoglie alcune sezioni${pDepth === 1 ? ' del macro-argomento' : ' del sottoargomento'}.`,
-    input: true, placeholder: pDepth === 1 ? 'Es. Valvulopatie' : 'Es. Stenosi aortica', confirm: 'Crea'
+    title: 'Nuova cartella',
+    text: `Dentro ${[...groupAncestors(nb, parent), parent].map(x => x.name).join(' › ')}. Ci metti sezioni, mappe HTML e altre cartelle, quante vuoi.`,
+    input: true, placeholder: 'Es. Valvulopatie', confirm: 'Crea'
   } : {
     title: 'Nuova cartella',
-    text: 'Un grande tema del notebook, per esempio un apparato o un capitolo. Dentro puoi creare sottoargomenti e metterci le sezioni.',
+    text: 'Per esempio un apparato o un capitolo. Dentro ci metti sezioni, mappe HTML e altre cartelle, quante vuoi, come sul computer.',
     input: true, placeholder: 'Es. Sistema cardiovascolare', confirm: 'Crea'
   });
   if (!name) return null;
@@ -564,7 +525,7 @@ function pickSectionsSheet(nb, g) {
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['video', 'Video'], ['audio', 'Audio'], ['edit', 'Modifica']];
+const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['html', 'Mappe HTML'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['video', 'Video'], ['audio', 'Audio'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
   if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
@@ -595,10 +556,10 @@ function viewSection(id, mode) {
     : caseSec ? '<a class="back" href="#/cases">Casi clinici</a>'
     : semSec ? '<a class="back" href="#/semei">Semeiotica</a>'
     : spCfg ? `<a class="back" href="#/${spCfg.route}">${esc(spCfg.name)}</a>`
-    : `<a class="back" href="#/nb/${sec.notebookId}${groupPathOf(sec)[0] ? `/${groupPathOf(sec)[0].id}` : ''}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
+    : `<a class="back" href="#/nb/${sec.notebookId}${groupOf(sec) ? `/${groupOf(sec).id}` : ''}">${esc(nb ? nb.name : 'Notebook')}${groupPathText(sec) ? ` › ${esc(groupPathText(sec))}` : ''}</a>`;
   // “Torna a…”: la pagina da cui sei arrivato, se non è già quella del percorso
   const from = Nav.from();
-  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : semSec ? '#/semei' : spCfg ? `#/${spCfg.route}` : `#/nb/${sec.notebookId}${groupPathOf(sec)[0] ? `/${groupPathOf(sec)[0].id}` : ''}`;
+  const crumbHref = state.fromReview ? '#/review' : caseSec ? '#/cases' : semSec ? '#/semei' : spCfg ? `#/${spCfg.route}` : `#/nb/${sec.notebookId}${groupOf(sec) ? `/${groupOf(sec).id}` : ''}`;
   const prevLabel = from && Nav.key(from) !== Nav.key(location.hash) && Nav.key(from) !== Nav.key(crumbHref) ? Nav.label(from) : '';
   const back = `<div class="back-row">${prevLabel ? `<a class="back back-prev" href="${esc(from)}" data-nav-back title="Torna alla pagina di prima">${esc(prevLabel)}</a>` : ''}${crumb}</div>`;
   const order = nb ? nbReadingOrder(nb) : [];
@@ -630,7 +591,7 @@ function viewSection(id, mode) {
       </div>
     </header>
     <nav class="tabs" aria-label="Modalità di studio">
-      ${modes.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}</a>`).join('')}
+      ${modes.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}${m === 'html' && htmlsOf(sec).length ? ` (${htmlsOf(sec).length})` : ''}</a>`).join('')}
     </nav>
     <section id="modeBody" class="mode-body"></section>
     ${prevSec || nextSec ? `
@@ -657,7 +618,7 @@ function viewSection(id, mode) {
     tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
   }
   const body = $('#modeBody');
-  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, audio: modeAudio, edit: modeEdit, case: modeCase }[mode])(sec, body);
+  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, audio: modeAudio, html: modeHtml, edit: modeEdit, case: modeCase }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -1386,7 +1347,7 @@ function modeQuiz(sec, body) {
 function groupOptions(nb, selected) {
   const opt = (g, label) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(label)}</option>`;
   const walk = (g, prefix) => opt(g, prefix + g.name) + subGroups(nb, g).map(x => walk(x, `${prefix}${g.name} › `)).join('');
-  return `<option value="">Nessuno</option>${topGroups(nb).map(g => walk(g, '')).join('')}<option value="__new">Nuova cartella…</option>`;
+  return `<option value="">Nessuna (direttamente nel notebook)</option>${topGroups(nb).map(g => walk(g, '')).join('')}<option value="__new">Nuova cartella…</option>`;
 }
 // Il menu dei macro-argomenti: la voce "Nuovo…" chiede il nome e lo crea subito
 function bindGroupSelect(select, getNb, onPick = () => {}) {
@@ -1585,7 +1546,7 @@ function modeEdit(sec, body, opts = {}) {
   body.innerHTML = `
     <div class="grid2 ed-head">
       <label class="field"><span>Titolo del micro-argomento</span><input class="input" id="edTitle" value="${esc(sec.title)}"></label>
-      <label class="field"><span>Cartella o sottoargomento</span>
+      <label class="field"><span>Cartella</span>
         <select class="input" id="edGroup">${groupOptions(nbById(sec.notebookId), groupOf(sec)?.id || '')}</select></label>
     </div>
     ${tagFieldHtml('edTags', tagsOf(sec))}
@@ -1853,7 +1814,7 @@ function viewImport(nbParam, groupParam) {
           <button class="btn sm" data-act="new-nb" type="button">Nuovo</button>
         </div>
       </div>
-      <div class="field" id="imGroupBox"><label class="lbl" for="imGroup">Cartella o sottoargomento</label>
+      <div class="field" id="imGroupBox"><label class="lbl" for="imGroup">Cartella</label>
         <select class="input" id="imGroup"></select>
       </div>
 
@@ -2071,7 +2032,7 @@ function viewImport(nbParam, groupParam) {
         <label class="field"><span>Una sezione per ogni</span>
           <select class="input" id="tpLevel">${o.levels.map(x => `<option value="${x}" ${x === L ? 'selected' : ''}>${names[x]}: ${topicSections(o, x).length} sezioni</option>`).join('')}</select></label>
         ${L > 1 ? `<label class="check"><input type="checkbox" id="tpGroups" ${importDraft.topicGroups ? 'checked' : ''}>
-          <span>Metti le sezioni nei macro-argomenti${L > 2 ? ' e sottoargomenti' : ''} presi dai titoli più grandi</span></label>` : ''}
+          <span>Metti le sezioni in cartelle${L > 2 ? ' e sottocartelle' : ''} prese dai titoli più grandi</span></label>` : ''}
         <div class="inline tp-bulk"><button class="btn sm ghost" type="button" data-tp-all="1">Seleziona tutte</button><button class="btn sm ghost" type="button" data-tp-all="0">Nessuna</button></div>
         <ul class="cand tp-list">${list.map((sct, i) => `
           <li><label class="check"><input type="checkbox" data-tp="${i}" ${importDraft.topicOff.has(i) ? '' : 'checked'}>
@@ -5579,7 +5540,7 @@ function pdfBmLinkSheet(meta, b) {
       <div id="blNew" hidden>
         <label class="field"><span>Titolo</span><input class="input" id="blTitle" value="${esc(b.title)}"></label>
         <label class="field"><span>Notebook</span><select class="input" id="blNb">${state.notebooks.filter(n => !n.kind).map(n => `<option value="${n.id}" ${nb && n.id === nb.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Cartella o sottoargomento</span><select class="input" id="blGroup"></select></label>
+        <label class="field"><span>Cartella</span><select class="input" id="blGroup"></select></label>
       </div>
       <div class="modal-actions">
         <button class="btn ghost" type="button" data-bl="no">Annulla</button>
@@ -5645,7 +5606,7 @@ function pdfBmBulkSheet(meta) {
       <p class="sheet-sub">Ogni segnalibro prende le pagine fino al segnalibro dopo. Ti propongo la sezione con lo stesso nome; “Nuova sezione” la crea con il titolo del segnalibro.</p>
       <div class="grid2">
         <label class="field"><span>Notebook</span><select class="input" id="bbNb">${nbs.map(n => `<option value="${n.id}" ${n.id === nbId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
-        <label class="field"><span>Macro-argomento delle nuove sezioni</span><select class="input" id="bbGroup"></select></label>
+        <label class="field"><span>Cartella delle nuove sezioni</span><select class="input" id="bbGroup"></select></label>
       </div>
       <div class="inline"><button class="btn sm ghost" type="button" data-bb2="allnew">Nuove sezioni per quelli senza</button><button class="btn sm ghost" type="button" data-bb2="none">Nessuna per tutti</button></div>
       <div class="bb-rows" id="bbRows"></div>
@@ -8948,7 +8909,7 @@ async function ensureTopicGroup(job, path) {
   const nb = nbById(job.nbId);
   if (!nb) return job.groupId;
   const base = job.groupId ? groupsOf(nb).find(g => g.id === job.groupId) : null;
-  // si scende al massimo fino al terzo livello: dentro un gruppo profondo uso solo i titoli più vicini
+  // v4.03: le cartelle non hanno più un limite di livelli (resta solo quello di sicurezza)
   const room = GROUP_MAX_DEPTH - (base ? groupDepth(nb, base) : 0);
   if (room <= 0) return base.id;
   const same = (a, b) => foldAccents(a).trim() === foldAccents(b).trim();
@@ -8966,3 +8927,264 @@ async function ensureTopicGroup(job, path) {
   return target.id;
 }
 
+
+/* =====================================================================
+   v4.03: Mappe HTML
+   Mappe e pagine fatte in HTML (per esempio da Claude o da Gemini) si
+   caricano in una sezione e si usano qui come in Chrome. Il file resta
+   com’è, nell’archivio delle immagini (così si sincronizza con Drive ed
+   entra nel backup); la sezione tiene nome e data in `sec.htmls`.
+   Ogni mappa gira in un riquadro isolato: i suoi script funzionano, ma
+   non possono leggere né cambiare i dati dell’app.
+   ===================================================================== */
+const HTML_MAX = 15 * 1024 * 1024;
+const HTML_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms allow-modals allow-downloads';
+function chooseHtmlFiles(multiple = true) {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.html,.htm,text/html';
+    inp.multiple = multiple;
+    inp.style.display = 'none';
+    const done = files => { resolve(files); inp.remove(); };
+    inp.addEventListener('change', () => done([...(inp.files || [])]), { once: true });
+    inp.addEventListener('cancel', () => done([]), { once: true });
+    document.body.appendChild(inp);
+    inp.click();
+  });
+}
+// il titolo della pagina (<title>), se c’è, altrimenti il nome del file
+function htmlTitleOf(text, fileName) {
+  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text.slice(0, 200000));
+  let t = '';
+  if (m) {
+    try { t = new DOMParser().parseFromString(`<p>${m[1]}</p>`, 'text/html').body.textContent || ''; } catch { t = m[1]; }
+  }
+  t = t.replace(/\s+/g, ' ').trim().slice(0, 140);
+  return t || String(fileName || 'Mappa').replace(/\.html?$/i, '').replace(/[_]+/g, ' ').trim() || 'Mappa';
+}
+async function readHtmlFile(file) {
+  if (!file) throw new Error('Nessun file scelto.');
+  if (file.size > HTML_MAX) throw new Error(`“${file.name}” è troppo grande (${fmtMB(file.size)}): il massimo è ${fmtMB(HTML_MAX)}.`);
+  const text = await file.text();
+  if (!/<[a-z!][\s\S]*>/i.test(text.slice(0, 20000))) throw new Error(`“${file.name}” non sembra un file HTML.`);
+  return text;
+}
+// salva il file e restituisce la voce da mettere nella sezione
+async function storeHtmlFile(file, notebookId) {
+  const text = await readHtmlFile(file);
+  const blob = new Blob([text], { type: 'text/html' });
+  const now = Date.now();
+  const im = { id: uid(), notebookId, mime: 'text/html', size: blob.size, blob, created: now, updated: now };
+  await DB.put('images', im);
+  state.images.push(im);
+  scheduleSync();
+  return { id: im.id, name: htmlTitleOf(text, file.name), file: file.name, size: blob.size, added: now };
+}
+// dalla pagina del notebook o di una cartella: ogni file diventa una sezione
+async function addHtmlSections(nb, groupId) {
+  const files = await chooseHtmlFiles(true);
+  if (!files.length) return;
+  const made = [];
+  for (const f of files) {
+    try {
+      const rec = await storeHtmlFile(f, nb.id);
+      const sec = newSection(nb.id, { title: rec.name, groupId: groupId || null, source: rec.file });
+      sec.htmls = [rec];
+      await saveSection(sec);
+      made.push(sec);
+    } catch (err) { toast(err.message || `Non riesco a leggere “${f.name}”`, 'err'); }
+  }
+  if (!made.length) return;
+  if (made.length === 1) { go(`#/sec/${made[0].id}/html`); return; }
+  toast(`${made.length} mappe HTML aggiunte, una per sezione`);
+  route();
+}
+function downloadHtmlOf(h) {
+  const im = imageById(h.id);
+  if (!im || !im.blob) { toast('Il file non è ancora arrivato su questo dispositivo', 'err'); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(im.blob);
+  const base = String(h.file || h.name || 'Mappa').replace(/\.html?$/i, '').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Mappa';
+  a.download = `${base}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+
+function modeHtml(sec, body, { inPanel = false } = {}) {
+  let hi = 0;
+  let full = false;
+  const want = sessionStorage.getItem(`nb-html:${sec.id}`);
+  const startAt = htmlsOf(sec).findIndex(h => h.id === want);
+  if (startAt > 0) hi = startAt;
+  const setFull = on => {
+    full = on;
+    const wrap = $('.hm-wrap', body);
+    if (wrap) wrap.classList.toggle('hm-full', on);
+    document.body.classList.toggle('hm-full-on', on);
+    const b = $('[data-hm="full"]', body);
+    if (b) b.setAttribute('aria-pressed', String(on));
+    const x = $('.hm-exit', body);
+    if (x) x.hidden = !on;
+    if (on) {
+      // schermo intero vero dove il browser lo permette (Android, computer); altrimenti basta il riquadro sopra tutto
+      const req = wrap && (wrap.requestFullscreen || wrap.webkitRequestFullscreen);
+      if (req) { try { const p = req.call(wrap); if (p && p.catch) p.catch(() => {}); } catch { /* resta il riquadro */ } }
+    } else {
+      const fs = document.fullscreenElement || document.webkitFullscreenElement;
+      const ex = document.exitFullscreen || document.webkitExitFullscreen;
+      if (fs && ex) { try { const p = ex.call(document); if (p && p.catch) p.catch(() => {}); } catch { /* niente */ } }
+    }
+  };
+  const onFs = () => { if (full && !(document.fullscreenElement || document.webkitFullscreenElement)) setFull(false); };
+  const onKey = e => { if (e.key === 'Escape' && full && body.isConnected) setFull(false); };
+  document.addEventListener('fullscreenchange', onFs);
+  document.addEventListener('webkitfullscreenchange', onFs);
+  document.addEventListener('keydown', onKey);
+  addCleanup(() => {
+    document.removeEventListener('fullscreenchange', onFs);
+    document.removeEventListener('webkitfullscreenchange', onFs);
+    document.removeEventListener('keydown', onKey);
+    if (full) setFull(false);
+    document.body.classList.remove('hm-full-on');
+  });
+  const add = async () => {
+    const files = await chooseHtmlFiles(true);
+    if (!files.length) return;
+    let n = 0;
+    for (const f of files) {
+      try { const rec = await storeHtmlFile(f, sec.notebookId); sec.htmls = [...htmlsOf(sec), rec]; n++; }
+      catch (err) { toast(err.message || `Non riesco a leggere “${f.name}”`, 'err'); }
+    }
+    if (!n) return;
+    await saveSection(sec);
+    hi = htmlsOf(sec).length - 1;
+    toast(n === 1 ? 'Mappa aggiunta' : `${n} mappe aggiunte`);
+    draw();
+  };
+  const draw = () => {
+    const list = htmlsOf(sec);
+    if (hi >= list.length) hi = Math.max(0, list.length - 1);
+    const h = list[hi];
+    // il numero sulla scheda segue le mappe aggiunte o tolte
+    if (!inPanel) { const t = $(`.tabs a[href="#/sec/${sec.id}/html"]`); if (t) t.textContent = `Mappe HTML${list.length ? ` (${list.length})` : ''}`; }
+    if (!h) {
+      body.innerHTML = `
+        <div class="empty">
+          <p>Qui metti le mappe e le pagine fatte in HTML, per esempio quelle che ti prepara Claude o Gemini: funzionano come in Chrome (zoom, rami che si aprono, pulsanti), ma restano dentro la sezione e si sincronizzano con gli altri dispositivi.</p>
+          <button class="btn primary" type="button" data-hm="add">Carica un file HTML</button>
+        </div>
+        <p class="hint">Puoi sceglierne più di uno alla volta. Dalla pagina del notebook o di una cartella, “＋ Mappa HTML” crea invece una sezione nuova per ogni file.</p>`;
+      return;
+    }
+    sessionStorage.setItem(`nb-html:${sec.id}`, h.id);
+    const im = imageById(h.id);
+    body.innerHTML = `
+      <div class="hm-bar">
+        ${list.length > 1 ? `<select class="input hm-sel" data-hm-sel aria-label="Mappa">${list.map((x, k) => `<option value="${k}" ${k === hi ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>` : (h.name !== sec.title || inPanel ? `<b class="hm-name">${esc(h.name)}</b>` : '')}
+        <span class="hm-acts">
+          <button class="btn sm" type="button" data-hm="full" aria-pressed="false" ${im && im.blob ? '' : 'disabled'}>⛶ Schermo intero</button>
+          <button class="btn sm ghost" type="button" data-hm="add">＋ Aggiungi</button>
+          <button class="btn sm ghost" type="button" data-hm="more">Altro ▾</button>
+        </span>
+      </div>
+      <div class="hm-wrap">
+        ${im && im.blob
+          ? `<iframe class="hm-frame" sandbox="${HTML_SANDBOX}" title="${esc(h.name)}" allow="fullscreen; clipboard-write" referrerpolicy="no-referrer"></iframe>`
+          : `<div class="empty hm-wait"><p>Questa mappa non è ancora arrivata su questo dispositivo: arriva con la prossima sincronizzazione con Drive.</p>${Sync.configured() ? '<button class="btn" type="button" data-hm="sync">Sincronizza adesso</button>' : ''}</div>`}
+        <button class="btn hm-exit" type="button" data-hm="exit" hidden>✕ Esci dallo schermo intero</button>
+      </div>
+      ${inPanel ? '' : '<p class="hint">La mappa funziona come in Chrome ma isolata: non può leggere né cambiare i tuoi appunti. Se usa librerie prese da internet (grafici, Mermaid, D3…), le serve la connessione.</p>'}`;
+    const fr = $('.hm-frame', body);
+    if (fr && im && im.blob) {
+      im.blob.text().then(t => { if (fr.isConnected) fr.srcdoc = t; }).catch(() => toast('Non riesco ad aprire il file', 'err'));
+    }
+    if (full) setFull(true);
+  };
+  body.addEventListener('change', e => {
+    if (!e.target.matches('[data-hm-sel]')) return;
+    hi = +e.target.value || 0;
+    draw();
+  });
+  body.addEventListener('click', async e => {
+    const b = e.target.closest('[data-hm]');
+    if (!b || b.disabled) return;
+    const act = b.dataset.hm;
+    const list = htmlsOf(sec);
+    const h = list[hi];
+    if (act === 'add') return add();
+    if (act === 'full') return setFull(!full);
+    if (act === 'exit') return setFull(false);
+    if (act === 'sync') { if (typeof Sync.run === 'function') await Sync.run(); else scheduleSync(); return draw(); }
+    if (act !== 'more' || !h) return;
+    const choice = await actionSheet(h.name, [
+      { key: 'rename', label: 'Rinomina' },
+      { key: 'replace', label: 'Sostituisci con una versione nuova del file' },
+      { key: 'download', label: 'Scarica il file HTML' },
+      ...(list.length > 1 ? [
+        { key: 'up', label: 'Sposta prima', disabled: hi === 0 },
+        { key: 'down', label: 'Sposta dopo', disabled: hi === list.length - 1 }
+      ] : []),
+      ...(list.length === 1 && sec.title !== h.name ? [{ key: 'title', label: 'Usa il suo nome come titolo della sezione' }] : []),
+      { key: 'delete', label: 'Togli dalla sezione', danger: true }
+    ]);
+    if (!choice) return;
+    if (choice === 'rename') {
+      const name = await modal({ title: 'Rinomina la mappa', input: true, value: h.name, confirm: 'Rinomina' });
+      if (!name) return;
+      h.name = name;
+      sec.htmls = [...list];
+      await saveSection(sec);
+      return draw();
+    }
+    if (choice === 'title') {
+      sec.title = h.name;
+      await saveSection(sec);
+      return route();
+    }
+    if (choice === 'replace') {
+      const [f] = await chooseHtmlFiles(false);
+      if (!f) return;
+      try {
+        const text = await readHtmlFile(f);
+        const im = imageById(h.id);
+        const blob = new Blob([text], { type: 'text/html' });
+        const now = Date.now();
+        // stesso id: le altre copie della sezione (Affianca, altri dispositivi) restano collegate
+        const rec = im || { id: h.id, notebookId: sec.notebookId, created: now };
+        Object.assign(rec, { mime: 'text/html', blob, size: blob.size, updated: now });
+        await DB.put('images', rec);
+        if (!im) state.images.push(rec);
+        forgetImageUrl(h.id);
+        h.file = f.name; h.size = blob.size; h.edited = now;
+        sec.htmls = [...list];
+        await saveSection(sec);
+        scheduleSync();
+        toast('Mappa aggiornata');
+      } catch (err) { toast(err.message || 'Non riesco a leggere il file', 'err'); }
+      return draw();
+    }
+    if (choice === 'download') return downloadHtmlOf(h);
+    if (choice === 'up' || choice === 'down') {
+      const to = hi + (choice === 'up' ? -1 : 1);
+      const arr = [...list];
+      [arr[hi], arr[to]] = [arr[to], arr[hi]];
+      sec.htmls = arr;
+      hi = to;
+      await saveSection(sec);
+      return draw();
+    }
+    if (choice === 'delete') {
+      const ok = await modal({ title: 'Togliere la mappa?', text: `“${h.name}” sparisce da questa sezione e da tutti i dispositivi. Se ti serve ancora, prima scaricala da Altro ▾ › Scarica il file HTML.`, confirm: 'Togli', danger: true });
+      if (!ok) return;
+      sec.htmls = list.filter(x => x.id !== h.id);
+      await saveSection(sec);
+      await removeOrphanImages([h.id]);
+      toast('Mappa tolta');
+      return draw();
+    }
+  });
+  draw();
+}

@@ -242,9 +242,11 @@ function viewSettings() {
   const imgInfo = () => {
     const used = referencedImages();
     const unused = state.images.filter(i => !used.has(i.id));
-    const size = state.images.reduce((a, i) => a + (i.size || 0), 0);
-    $('#imgInfo').textContent = state.images.length
-      ? `${state.images.length} ${state.images.length === 1 ? 'immagine' : 'immagini'}, ${fmtMB(size)}.${unused.length ? ` ${unused.length} non ${unused.length === 1 ? 'è usata' : 'sono usate'} in nessuna sezione o flashcard.` : ''}`
+    // v4.03: le mappe HTML stanno nello stesso archivio, ma non sono immagini
+    const pics = state.images.filter(i => i.mime !== 'text/html');
+    const size = pics.reduce((a, i) => a + (i.size || 0), 0);
+    $('#imgInfo').textContent = pics.length || unused.length
+      ? `${pics.length} ${pics.length === 1 ? 'immagine' : 'immagini'}, ${fmtMB(size)}.${unused.length ? ` ${unused.length} non ${unused.length === 1 ? 'è usata' : 'sono usate'} in nessuna sezione o flashcard.` : ''}`
       : 'Nessuna immagine salvata.';
     $('[data-act="img-clean"]').hidden = !unused.length;
     return unused;
@@ -663,7 +665,7 @@ function viewGuide() {
       <ol>
         <li>Crea un <strong>notebook</strong> per ogni materia (Notebook → Nuovo notebook).</li>
         <li>In <strong>Importa</strong> incolla del testo, carica un PDF o una mappa XMind: l’app crea le sezioni.</li>
-        <li>Se la materia è vasta, dividila in <strong>macro-argomenti</strong> (Nuovo macro-argomento): le sezioni dentro sono i micro-argomenti.</li>
+        <li>Se la materia è vasta, dividila in <strong>cartelle</strong> (Nuova cartella), come sul computer: dentro ci metti le sezioni e, se serve, altre cartelle.</li>
         <li>Apri una sezione: se ha termini cloze parte da <strong>Cloze</strong>, così non vedi le risposte prima di provarci. Poi Leggi, Pagina bianca, Domande o Flashcard.</li>
         <li>Quando hai finito, scegli se far pianificare i ripassi a <strong>StudyHub</strong> o al Notebook.</li>
       </ol>
@@ -871,12 +873,20 @@ function viewGuide() {
         <li><strong>Cloze</strong>: un secondo tocco nasconde di nuovo il termine. Il pallino a destra di ogni titolo colora la riga a sinistra (verde, giallo, arancio, rosso) per ricordare com’è andata.</li>
         <li><strong>PDF</strong> ha la sua voce nel menu; dalla sezione ci arrivi con il pulsante “PDF” sotto il titolo. Le annotazioni fatte su dispositivi diversi ora si sommano invece di sovrascriversi.</li>
       </ul>`)}
-    ${sec('Macro e micro-argomenti', `
+    ${sec('Cartelle', `
       <ul>
-        <li>Nel notebook tocca <strong>Nuovo macro-argomento</strong> e scegli le sezioni da metterci dentro.</li>
-        <li>Da <strong>Opzioni</strong> del macro-argomento aggiungi sezioni, ne scrivi una nuova, importi direttamente lì, lo rinomini, lo sposti su o giù o lo elimini (le sezioni restano nel notebook).</li>
-        <li>In Modifica e in Importa scegli il macro-argomento dal menu.</li>
-        <li>Tocca il nome di un macro-argomento per ridurlo o espanderlo.</li>
+        <li>Funzionano come quelle del computer: nel notebook tocca <strong>Nuova cartella</strong>; dentro una cartella puoi crearne altre (<strong>Nuova cartella</strong>), quante vuoi, una dentro l’altra.</li>
+        <li>Tocchi una cartella per entrarci. In alto c’è il percorso (per esempio Medicina interna › Cardiologia › Valvulopatie): tocchi un nome per tornare lì.</li>
+        <li>Dal menu <strong>⋯</strong> o da <strong>Opzioni</strong> di una cartella aggiungi sezioni che hai già, ne scrivi una nuova, carichi una mappa HTML, importi lì, la rinomini, la sposti in un’altra cartella (con tutto quello che contiene), su o giù, o la elimini: quello che c’era dentro passa nella cartella sopra, non perdi niente.</li>
+        <li>In Modifica e in Importa scegli la cartella dal menu, che mostra tutto il percorso.</li>
+      </ul>`)}
+    ${sec('Mappe HTML', `
+      <ul>
+        <li>Le mappe e le pagine in HTML (per esempio quelle che ti fa Claude o Gemini) si caricano nella scheda <strong>Mappe HTML</strong> di una sezione, una o più per sezione. Funzionano come in Chrome: zoom, rami che si aprono, pulsanti.</li>
+        <li>Dalla pagina del notebook o di una cartella, <strong>＋ Mappa HTML</strong> crea una sezione nuova per ogni file che scegli, con il titolo della pagina.</li>
+        <li><strong>⛶ Schermo intero</strong> per usarle a tutto schermo; da <strong>Altro ▾</strong> le rinomini, le sostituisci con una versione nuova dello stesso file, le scarichi o le togli.</li>
+        <li>Girano isolate dal resto dell’app: non possono leggere né cambiare i tuoi appunti. Se usano librerie prese da internet (grafici, Mermaid, D3…), serve la connessione.</li>
+        <li>Si sincronizzano con Drive ed entrano nel backup. Si aprono anche in <strong>Affianca</strong>, accanto a un PDF.</li>
       </ul>`)}
     ${sec('Leggere ed evidenziare', `
       <ul>
@@ -1321,6 +1331,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.03", title: "mappe HTML nelle sezioni, e cartelle come quelle del computer", html: `      <ul>
+        <li><strong>Mappe HTML</strong>: le mappe e le pagine in HTML (per esempio quelle fatte da Claude o da Gemini) si caricano nella nuova scheda <strong>Mappe HTML</strong> di una sezione e funzionano come in Chrome: zoom, rami che si aprono, pulsanti. Dalla pagina del notebook o di una cartella, <strong>＋ Mappa HTML</strong> crea una sezione per ogni file che scegli. C’è lo schermo intero, e da Altro ▾ le rinomini, le sostituisci con una versione nuova o le riscarichi. Si sincronizzano con Drive, entrano nel backup e si aprono anche in Affianca, accanto a un PDF.</li>
+        <li><strong>Cartelle</strong>: niente più livelli fissi (macro-argomento, sottoargomento…). Ogni cartella può contenere sezioni e altre cartelle, quante vuoi, una dentro l’altra. Le apri con un tocco; in alto c’è il percorso, e tocchi un nome per tornare lì. La ricerca trova sezioni e cartelle a qualunque profondità. Le cartelle che avevi restano come erano.</li>
+        <li>Spostare una cartella (Opzioni › Sposta in un’altra cartella) ora funziona verso qualunque cartella, con tutto quello che contiene. Eliminandola, quello che c’era dentro passa nella cartella sopra.</li>
+      </ul>` },
   { v: "4.02", title: "niente più tasti tagliati, e lo spessore della penna non cambia più con la forma dello schermo", html: `      <ul>
         <li><strong>Spessore della penna</strong>: resta quello che vedi anche se cambi la divisione dello schermo (da accanto a sopra/sotto), se ruoti il tablet, se allarghi il pannello o se cambi zoom. Prima, passando da verticale a orizzontale, lo stesso tratto veniva il doppio più spesso. Vale per il blocco note e per la penna dei PDF, anche dentro Affianca.</li>
         <li><strong>Barra del testo selezionato</strong>: quando i tasti non stanno su una riga vanno a capo, così si vedono tutti. Prima la parte in più (Alla mappa, Copia…) restava nascosta fuori dal bordo. Vale anche per la barra della scrittura a mano.</li>
@@ -1843,6 +1858,16 @@ const Split = {
       this.dropDoc();
       $('.split-kind', this.el).textContent = [nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ') || 'Sezione';
       $('.split-name', this.el).textContent = sec.title;
+      if (htmlOnly(sec)) {
+        // v4.03: una sezione fatta solo di mappe HTML si usa anche qui, accanto al PDF
+        body.innerHTML = '';
+        const box = document.createElement('div');
+        box.className = 'mode-body split-html';
+        body.append(box);
+        modeHtml(sec, box, { inPanel: true });
+        body.scrollTop = 0;
+        return;
+      }
       body.innerHTML = sec.md.trim() ? `<article class="notes split-notes">${renderMd(sec.md)}</article>` : '<p class="hint">Questa sezione è ancora vuota.</p>';
       const art = $('.split-notes', body);
       if (art) setupFolds(art, sec.id);
@@ -3712,7 +3737,7 @@ const TUT_KEY = 'nb-tutorial-done';
 const TUTORIAL = [
   { icon: '👋', title: 'Benvenuta nel Notebook', html: `Qui trasformi appunti, PDF e slide in materiale da <b>ripassare attivamente</b>: cloze, domande, flashcard, ripetizione a voce.<br><br>Ti bastano due minuti per il giro completo.` },
   { icon: '📲', title: 'Mettilo sulla schermata Home', html: `Così si apre come una vera app e i dati restano al sicuro.<br><br><b>Android:</b> Altro → Impostazioni → <b>Installa l’app</b>, oppure in Chrome menu <b>⋮</b> → <b>Installa app</b>.<br><b>iPhone:</b> in <b>Safari</b> tasto <b>Condividi</b> → <b>Aggiungi alla schermata Home</b>.` },
-  { icon: '📒', title: '1. Notebook e argomenti', html: `Crea un <b>notebook</b> per ogni materia.<br><br>Dentro puoi dividerlo in <b>macro-argomenti</b> e <b>sottoargomenti</b>, fino a tre livelli; le <b>sezioni</b> sono i singoli argomenti che studi e ripassi.` },
+  { icon: '📒', title: '1. Notebook e argomenti', html: `Crea un <b>notebook</b> per ogni materia.<br><br>Dentro lo dividi in <b>cartelle</b>, come sul computer, una dentro l’altra quante vuoi; le <b>sezioni</b> sono i singoli argomenti che studi e ripassi. Anche una mappa HTML può diventare una sezione.` },
   { icon: '📥', title: '2. Importa', html: `In <b>Importa</b> incolli un testo, carichi un PDF o una mappa XMind e l’app crea le sezioni.<br><br>Un PDF lo dividi ogni tot pagine, a intervalli scelti o <b>per argomenti</b>, leggendo i titoli. Con una chiave AI (Impostazioni) i testi vengono anche formattati, con cloze e domande.` },
   { icon: '🧠', title: '3. Studia una sezione', html: `In alto trovi le schede:<br><br><b>Cloze</b> nasconde i termini chiave · <b>Leggi</b> · <b>Mappe</b> · <b>Pagina bianca</b> e <b>Orale</b>: ripeti e confronta, segnando col semaforo · <b>Domande</b> · <b>Flashcard</b> · <b>Video</b> · <b>Modifica</b>.<br><br>Seleziona del testo in Leggi per evidenziarlo o farne un cloze o una flashcard.` },
   { icon: '🔁', title: '4. Ripassa', html: `Finita una sezione, scegli in fondo:<br><br><b>Segna come studiata in StudyHub</b>: i ripassi li pianifica StudyHub.<br><b>Ripassa nel Notebook</b>: li trovi nella scheda Ripasso.<br><br>Dopo ogni prova tocca <b>Di nuovo</b>, <b>Difficile</b>, <b>Bene</b> o <b>Facile</b>: l’app decide quando riproportela.` },
@@ -3772,7 +3797,7 @@ const HELP = {
   install: { t: 'App sul telefono', b: `Installata, si apre dall’icona come una vera app, a schermo intero, e il browser difficilmente ne cancella i dati.<br><br><b>Android:</b> tasto Installa qui, oppure in Chrome menu ⋮ → Installa app.<br><b>iPhone:</b> in Safari, Condividi → Aggiungi alla schermata Home.` },
   // Importa
   importSrc: { t: 'Cosa importare', b: `<b>Testo</b>: incolli appunti, capitoli o testo da NotebookLM; se è lungo viene diviso in più sezioni.<br><b>PDF</b>: libri, dispense, slide.<br><b>XMind</b>: ogni foglio della mappa diventa una sezione con elenchi annidati.` },
-  importGroup: { t: 'Macro-argomento', b: `Dove finiscono le sezioni create. Lascia vuoto per metterle nel notebook senza un macro-argomento.<br><br>Con “Per argomenti” l’app può anche creare da sola macro-argomenti e sottoargomenti dai titoli del PDF.` },
+  importGroup: { t: 'Cartella', b: `Dove finiscono le sezioni create. Lascia vuoto per metterle direttamente nel notebook, fuori dalle cartelle.<br><br>Con “Per argomenti” l’app può anche creare da sola cartelle e sottocartelle dai titoli del PDF.` },
   split: { t: 'Come dividere il PDF', b: `<b>Ogni tot pagine</b>: blocchi uguali, per esempio 5 pagine per sezione.<br><b>Intervalli scelti</b>: scrivi una riga per sezione, come “13-30 Il cuore”, oppure usa i capitoli del PDF se ci sono.<br><b>Per argomenti</b>: l’app legge i titoli (più grandi, numerati come 3.1 o in maiuscolo) e crea una sezione per argomento, pulendo il testo. Serve un PDF con il testo selezionabile, anche con l’OCR fatto da te.` },
   pdfMode: { t: 'Testo o lettura dell’AI', b: `<b>Estrai il testo</b>: gratis, veloce, senza limiti. Serve un PDF con il testo selezionabile.<br><br><b>Fai leggere le pagine all’AI</b>: funziona anche con scansioni, schemi e tabelle, ma ogni richiesta è più pesante e con Gemini gratuito i limiti scattano prima.` },
   aiOpts: { t: 'Elaborazione', b: `<b>Formatta con l’AI</b>: riordina il testo in titoli, elenchi puntati e tabelle.<br><b>Cloze</b>: segna i termini chiave da nascondere nella scheda Cloze.<br><b>Domande</b>: prepara le domande per il richiamo nella scheda Domande.<br><br>Senza AI il testo viene salvato con una formattazione di base.` },
@@ -3781,7 +3806,7 @@ const HELP = {
   modes: { t: 'Le schede della sezione', b: `<b>Cloze</b>: i termini chiave sono nascosti, toccali per scoprirli.<br><b>Leggi</b>: gli appunti; selezionando il testo evidenzi o crei cloze e flashcard.<br><b>Mappe</b>: gli appunti come mappa concettuale.<br><b>Pagina bianca</b>: scrivi tutto quello che ricordi, poi confronti.<br><b>Orale</b>: ripeti a voce come all’esame, poi confronti.<br><b>Domande</b>, <b>Flashcard</b>, <b>Video</b>, <b>Modifica</b>.<br><br>Nei casi clinici c’è anche <b>Risolvi</b>: il caso si scopre una parte alla volta.<br><br>Quando confronti, segna col semaforo: tocca il pallino accanto ai titoli o il margine sinistro.` },
   // Pagine
   notebooks: { t: 'I tuoi notebook', b: `<b>Adesso</b>: in cima trovi una sola cosa da fare, con il tempo che serve: prima le flashcard che sono tornate, poi i ripassi in scadenza, poi l’argomento più importante per l’esame più vicino, poi dove eri rimasta. Con “Altro” ti propone la successiva.<br><br>Un notebook per ogni materia. Toccane uno per vedere macro-argomenti e sezioni; da qui ne crei di nuovi.` },
-  notebook: { t: 'Il notebook', b: `Il primo livello è fatto di <b>cartelle</b> (i macro-argomenti, per esempio un apparato o un capitolo): tocchi una cartella per entrarci. Dentro ci sono le <b>sezioni</b> (le pagine con gli appunti) e i <b>sottoargomenti</b>, fino a <b>tre livelli</b> (per esempio Cardiologia › Valvulopatie › Stenosi aortica). Con “Sposta dentro un altro argomento” riorganizzi i gruppi che hai già. Il menu “⋯” di un gruppo serve per aggiungere sezioni, crearne di nuove, importare lì o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
+  notebook: { t: 'Il notebook', b: `Funziona come le cartelle del computer: tocchi una <b>cartella</b> per entrarci, e dentro trovi altre cartelle e le <b>sezioni</b> (le pagine con gli appunti o con una mappa HTML), senza limite di livelli. In alto c’è il percorso per tornare indietro. Il menu “⋯” di una cartella serve per aggiungere sezioni, crearne di nuove, caricare mappe HTML, importare lì, spostarla in un’altra cartella o fare una simulazione d’esame.<br><br>Accanto a ogni sezione vedi a che punto sono i ripassi.` },
   review: { t: 'Ripasso', b: `Le sezioni da ripassare oggi nel Notebook (quelle mandate a StudyHub le pianifica StudyHub).<br><br>Dopo ogni prova valuta con Di nuovo, Difficile, Bene o Facile: l’app decide quando riproportela.` },
   cardsPage: { t: 'Flashcard', b: `Le flashcard da ripassare di tutti i notebook. Gira la carta, poi valuta quanto la sapevi.<br><br>Le crei selezionando il testo in Leggi, con l’AI o a mano.` },
   pdfs: { t: 'PDF', b: `La tua libreria di PDF, collegati ai notebook o alle singole sezioni. Nel lettore puoi evidenziare, scrivere a mano, mettere segnalibri e trascinare parti negli appunti. Da “Altro ▾”: appunti dalle evidenziazioni divisi per colore (con la legenda dei colori), ascolto ad alta voce, fogli per appunti tra le pagine e il PDF annotato da scaricare.` },
@@ -3890,7 +3915,7 @@ const HELP_SPOTS = [
   { sel: '.provider .field > span', text: 'Modello', key: 'model' },
   { sel: '.field > span', text: 'Modelli di riserva', key: 'backupModels' },
   { sel: '.field > span.lbl', text: 'Voce per l’ascolto', key: 'tts' },
-  { sel: '#imGroupBox > label.lbl', text: 'Cartella o sottoargomento', key: 'importGroup' },
+  { sel: '#imGroupBox > label.lbl', text: 'Cartella', key: 'importGroup' },
   { sel: '.opts > legend', text: 'Elaborazione', key: 'aiOpts' },
   { after: '.seg[aria-label="Tipo di fonte"]', key: 'importSrc' },
   { after: '.split-seg', key: 'split' },
