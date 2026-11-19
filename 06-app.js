@@ -1364,6 +1364,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.12", title: "spessore penna regolabile con barra e valore numerico", html: `      <ul>
+        <li><strong>Blocco note</strong>: al posto dei 3 pallini fissi c’è ora una <strong>barra continua con valore numerico</strong> (da <code>1</code> a <code>20</code>, a passi di 0,5), come in Samsung Notes, che scende fino a tratti molto fini.</li>
+      </ul>` },
   { v: "4.11", title: "spessore penna costante nel blocco note", html: `      <ul>
         <li><strong>Blocco note</strong>: lo spessore di penna, evidenziatore e forme ora resta costante sul foglio indipendentemente dallo zoom usato mentre scrivi.</li>
       </ul>` },
@@ -2643,11 +2646,11 @@ const PAD_A4 = Math.SQRT2;
 // quando il foglio è largo così, e resta quello a schermo anche se il foglio è più stretto o più largo
 const PAD_REF = 620;
 const padA4Up = h => Math.max(1, Math.ceil(h / PAD_A4 - 1e-6)) * PAD_A4;
-const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
-// v4.06: curva morbida per la pressione della penna (evita salti improvvisi quando pressure === 0)
+const PAD_SIZE_MIN = 0.001, PAD_SIZE_MAX = 0.02;
+// v4.12: floor più basso per tratti molto fini (es. spessore 1-2)
 function padLineWidth(w, W, p) {
   const pr = typeof p === 'number' && p >= 0 ? Math.min(1, p) : 0.5;
-  return Math.max(0.8, w * W * (0.55 + Math.pow(pr, 0.75) * 0.75));
+  return Math.max(0.4, w * W * (0.55 + Math.pow(pr, 0.75) * 0.75));
 }
 // v4.07: tratti a penna con curve quadratiche sui punti medi (fluidi sia a schermo che in esportazione)
 function padDrawPenStroke(c, s, W, col, from = 1, finish = true) {
@@ -3207,7 +3210,7 @@ const Pad = {
   KEY: 'nb-pad-prefs',
   el: null, canvas: null, ctx: null,
   key: '', title: '', data: null, page: 0,
-  tool: 'pen', color: 'ink', size: 0.006, penOnly: false,
+  tool: 'pen', color: 'ink', size: 0.0025, penOnly: false,
   undo: [], saveT: 0, drawing: null,
   prefs() { let p = {}; try { p = JSON.parse(localStorage.getItem(this.KEY) || '{}') || {}; } catch { p = {}; } return { w: 420, h: 0.45, open: false, ...p }; },
   setPrefs(ch) { const p = { ...this.prefs(), ...ch }; try { localStorage.setItem(this.KEY, JSON.stringify(p)); } catch { /* niente */ } return p; },
@@ -3268,7 +3271,7 @@ const Pad = {
           <span class="pad-hls" hidden>${PAD_HL.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="Evidenziatore ${l.toLowerCase()}" title="${l}" style="--c:${c}"></button>`).join('')}</span>
           <label class="pad-c pad-custom" title="Un colore a scelta"><input type="color" data-pcustom aria-label="Un colore a scelta"><span aria-hidden="true">+</span></label>
           <span class="pad-sep"></span>
-          ${PAD_SIZES.map(([s, l], i) => `<button type="button" class="pad-b pad-s" data-ps="${s}" aria-label="Tratto ${l.toLowerCase()}" title="${l}"><i style="--d:${4 + i * 4}px"></i></button>`).join('')}
+          <span class="pad-size-ctl" title="Spessore del tratto (da 1 a 20)"><input type="range" class="pad-srange" data-ps-range min="1" max="20" step="0.5" value="2.5" aria-label="Spessore del tratto"><span class="pad-sval" data-ps-val>2.5</span></span>
           <span class="pad-sep"></span>
           <button type="button" class="pad-b" data-pa="undo" aria-label="Annulla l’ultimo tratto" title="Annulla (Ctrl+Z; con le dita: tocco con due dita)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
           <button type="button" class="pad-b" data-pa="redo" aria-label="Ripeti" title="Ripeti (Ctrl+Y)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
@@ -3308,6 +3311,14 @@ const Pad = {
     this.live.hidden = true;
     this.lctx = this.live.getContext('2d');
     $('[data-pcustom]', el).addEventListener('input', e => this.pickColor(e.target.value));
+    $('[data-ps-range]', el).addEventListener('input', e => {
+      const v = Math.max(1, Math.min(20, +e.target.value || 2.5));
+      this.size = +(v / 1000).toFixed(5);
+      const sv = $('[data-ps-val]', el); if (sv) sv.textContent = String(v).replace('.', ',');
+      if (this.sel && this.sel.length) { this.restyleSel({ w: this.sizeNow() }); return; }
+      if (!['hl', 'shape', 'text'].includes(this.tool)) this.tool = 'pen';
+      this.paintTools();
+    });
     el.addEventListener('click', e => {
       const b = e.target.closest('button');
       if (!b) return;
@@ -3319,12 +3330,7 @@ const Pad = {
       }
       else if (b.dataset.psh) { this.shape = b.dataset.psh; this.tool = 'shape'; this.sel = null; this.selBox = null; this.redraw(); this.paintTools(); }
       else if (b.dataset.pc) this.pickColor(b.dataset.pc);
-      else if (b.dataset.ps) {
-        this.size = +b.dataset.ps;
-        if (this.sel && this.sel.length) { this.restyleSel({ w: this.sizeNow() }); return; }
-        if (!['hl', 'shape', 'text'].includes(this.tool)) this.tool = 'pen';
-        this.paintTools();
-      }
+
       else if (b.dataset.pa) this.act(b.dataset.pa);
     });
     this.bindGrip($('.pad-grip', el));
@@ -3380,7 +3386,8 @@ const Pad = {
     $('.pad-custom', this.el).style.setProperty('--c', /^#/.test(cur) && !$$('[data-pc]', this.el).some(b => b.dataset.pc === cur) ? cur : 'transparent');
     $('[data-pt="eraser"]', this.el).classList.toggle('area', this.eraseMode === 'area');
     $('[data-pa="dup"]', this.el).hidden = !(this.sel && this.sel.length);
-    $$('[data-ps]', this.el).forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.ps === this.size)));
+    const sr = $('[data-ps-range]', this.el), sv = $('[data-ps-val]', this.el);
+    if (sr && sv) { const v = Math.max(1, Math.min(20, Math.round(this.size * 2000) / 2)); sr.value = String(v); sv.textContent = String(v).replace('.', ','); }
     $('[data-pa="penonly"]', this.el).setAttribute('aria-pressed', String(this.penOnly));
     this.canvas.style.touchAction = 'none';
     this.canvas.style.cursor = this.tool === 'hand' ? 'grab' : this.tool === 'eraser' ? 'cell' : this.tool === 'lasso' ? 'default' : this.tool === 'text' ? 'text' : 'crosshair';
@@ -3431,7 +3438,7 @@ const Pad = {
     if (ShDock.isOpen()) ShDock.close();
     if (typeof Split !== 'undefined' && Split.isOpen()) Split.close();
     const p = this.prefs();
-    this.tool = p.tool || 'pen'; this.color = p.color || 'ink'; this.size = +p.size || 0.006; this.penOnly = !!p.penOnly;
+    this.tool = p.tool || 'pen'; this.color = p.color || 'ink'; this.size = Math.max(PAD_SIZE_MIN, Math.min(PAD_SIZE_MAX, +p.size || 0.0025)); this.penOnly = !!p.penOnly;
     this.hlColor = p.hlColor || '#facc15'; this.eraseMode = p.eraseMode || 'stroke'; this.zoom = +p.zoom || 1; this.redoStack = [];
     this.shape = p.shape || 'round'; this.fill = !!p.fill;
     this.el.hidden = false;
