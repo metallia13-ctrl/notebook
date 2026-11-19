@@ -1364,6 +1364,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.11", title: "spessore penna costante nel blocco note", html: `      <ul>
+        <li><strong>Blocco note</strong>: lo spessore di penna, evidenziatore e forme ora resta costante sul foglio indipendentemente dallo zoom usato mentre scrivi.</li>
+      </ul>` },
   { v: "4.10", title: "quiz di discriminazione con AI (Smistamento, A vs B, Sequenza, Intruso)", html: `      <ul>
         <li><strong>Nuova scheda Quiz</strong> in ogni sezione (e pulsante <strong>Quiz</strong> in ogni cartella per mescolare più sezioni insieme): 4 modalità pensate per non confondere strutture simili: <em>Smistamento</em>, <em>Confronto A vs B</em> (Solo A / Solo B / Entrambi / Nessuno), <em>Sequenza</em> (ordina strati o tappe) e <em>Trova l’intruso</em>.</li>
         <li><strong>Segnala cosa confondi</strong>: il campo <em>“Cosa confondi spesso?”</em> (con pulsanti rapidi salvati nella sezione o cartella) dice a Gemini esattamente su quale distinzione concentrare il quiz.</li>
@@ -3351,7 +3354,8 @@ const Pad = {
   // cui lo stai guardando (zoom e larghezza del riquadro insieme): così la grafia, che a schermo
   // scrivi sempre della stessa grandezza, ha sempre lo stesso spessore, anche cambiando zoom,
   // allargando il blocco note o spostandolo da accanto a sotto.
-  sizeNow() { return +(this.size * PAD_REF / Math.max(120, this.W || PAD_REF)).toFixed(6); },
+  // v4.11: spessore costante sul foglio, indipendente dallo zoom mentre scrivi
+  sizeNow() { return this.size; },
   restyleSel(ch) {
     const pg = this.pg();
     this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });
