@@ -1364,6 +1364,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.13", title: "quiz su più sezioni scegliendo i singoli paragrafi", html: `      <ul>
+        <li><strong>Quiz multi-sezione</strong>: ora il pulsante <strong>Quiz</strong> c’è anche in cima a ogni <strong>notebook</strong> (oltre che nelle cartelle) e apre il selettore <em>Materiale per il quiz</em>.</li>
+        <li><strong>Selezione per paragrafo</strong>: puoi spuntare intere sezioni oppure espanderle (<code>▸</code>) per scegliere solo i singoli paragrafi/titoli da mescolare insieme (es. gli strati di una struttura con quelli di un’altra).</li>
+      </ul>` },
   { v: "4.12", title: "spessore penna regolabile con barra e valore numerico", html: `      <ul>
         <li><strong>Blocco note</strong>: al posto dei 3 pallini fissi c’è ora una <strong>barra continua con valore numerico</strong> (da <code>1</code> a <code>20</code>, a passi di 0,5), come in Samsung Notes, che scende fino a tratti molto fini.</li>
       </ul>` },

@@ -199,7 +199,7 @@ function viewNotebook(id, folderId = '') {
         <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
         <a class="btn" href="#/lezioni/${nb.id}">Lezioni${(nb.audios || []).length ? ` (${nb.audios.length})` : ''}</a>
         ${clipsForNb(nb).length ? `<a class="btn" href="#/raccolta/nb/${nb.id}">📌 Raccolta (${clipsForNb(nb).length})</a>` : ''}
-        ${secs.length ? `<a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
+        ${secs.length ? `<a class="btn" href="#/dquiz/nb/${nb.id}" title="Quiz di discriminazione scegliendo sezioni e paragrafi">Quiz</a><a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
         <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
     </header>
@@ -9296,7 +9296,7 @@ function dqShuffleIdx(n) {
   return a;
 }
 
-function renderDiscQuizHost(body, { title, md, nbId, secId, getSaved, setSaved, getConfusions, setConfusions, onFinishGrade }) {
+function renderDiscQuizHost(body, { title, md, getMd, getTitle, nbId, secId, getSaved, setSaved, getConfusions, setConfusions, onFinishGrade }) {
   let type = 'sort';
   let focus = '';
   let loading = false;
@@ -9366,8 +9366,10 @@ function renderDiscQuizHost(body, { title, md, nbId, secId, getSaved, setSaved, 
       paintShell();
     }));
     on('[data-act="dq-gen"]', 'click', async () => {
-      const txt = aiText(md).trim();
-      if (txt.length < 80) { toast('Servono appunti un po’ più lunghi per generare il quiz', 'err'); return; }
+      const curMd = typeof getMd === 'function' ? getMd() : md;
+      const curTitle = typeof getTitle === 'function' ? getTitle() : title;
+      const txt = aiText(curMd).trim();
+      if (txt.length < 80) { toast('Seleziona almeno una sezione o un paragrafo con abbastanza appunti', 'err'); return; }
       loading = true;
       paintShell();
       try {
@@ -9375,7 +9377,7 @@ function renderDiscQuizHost(body, { title, md, nbId, secId, getSaved, setSaved, 
         if (f && !getConfusions().includes(f)) await setConfusions([f, ...getConfusions()].slice(0, 12));
         const r = await AI.generate({
           system: dqPrompt(type, f),
-          text: `ARGOMENTO: ${title}\n\nAPPUNTI:\n${txt.slice(0, 18000)}`,
+          text: `ARGOMENTO: ${curTitle}\n\nAPPUNTI:\n${txt.slice(0, 18000)}`,
           json: true,
           maxTokens: 4500
         });
@@ -9607,6 +9609,28 @@ function modeDiscQuiz(sec, body) {
   });
 }
 
+// v4.13: divide gli appunti di una sezione nei suoi paragrafi (titoli Markdown)
+function splitMdParts(md) {
+  const lines = String(md || '').split('\n');
+  const parts = [];
+  let cur = { title: 'Introduzione', level: 0, lines: [] };
+  let fence = false;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) fence = !fence;
+    const m = !fence && line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
+    if (m) {
+      if (cur.lines.join('\n').trim()) parts.push({ ...cur, md: cur.lines.join('\n').trim() });
+      cur = { title: m[2].replace(/\*\*|__|==|`|\[\[|\]\]/g, '').trim() || 'Paragrafo', level: m[1].length, lines: [line] };
+    } else {
+      cur.lines.push(line);
+    }
+  }
+  if (cur.lines.join('\n').trim()) parts.push({ ...cur, md: cur.lines.join('\n').trim() });
+  if (!parts.length) return [{ idx: 0, title: 'Tutta la sezione', level: 0, md: String(md || '').trim() }];
+  if (parts.length === 1 && parts[0].level === 0) parts[0].title = 'Tutta la sezione';
+  return parts.map((p, idx) => ({ idx, title: p.title, level: p.level, md: p.md }));
+}
+
 function viewDiscQuiz(kind, id) {
   let nb = null, grp = null, secs = [], title = '', backHref = '#/notebooks', backLabel = 'Notebook';
   if (kind === 'grp') {
@@ -9619,22 +9643,156 @@ function viewDiscQuiz(kind, id) {
     if (nb) { secs = secsOf(nb.id); title = nb.name; backHref = `#/nb/${nb.id}`; backLabel = nb.name; }
   }
   if (!nb) return notFound('Questo argomento');
-  const usable = secs.filter(s => aiText(s.md || '').trim().length > 40);
+  const usable = secs.filter(s => aiText(s.md || '').trim().length > 40).map(s => ({
+    sec: s,
+    path: groupPathText(s),
+    parts: splitMdParts(s.md)
+  }));
   setView(`
     <a class="back" href="${backHref}">${esc(backLabel)}</a>
-    <header class="page-head"><div><h1>Quiz di discriminazione</h1><p class="lede">${esc(title)} · ${usable.length} ${usable.length === 1 ? 'sezione' : 'sezioni'} mescolate insieme</p></div></header>
+    <header class="page-head"><div><h1>Quiz di discriminazione</h1><p class="lede">${esc(title)} · scegli le sezioni e i paragrafi da mescolare</p></div></header>
+    <div id="dqPickerHost"></div>
     <div id="dqBody"></div>`);
   const box = $('#dqBody');
+  const pickHost = $('#dqPickerHost');
   if (!usable.length) { box.innerHTML = '<div class="empty"><p>Qui non ci sono ancora appunti da cui creare un quiz.</p></div>'; return; }
-  const ckey = `${kind}:${id}`;
-  const md = usable.map(s => `## ${s.title}\n${s.md}`).join('\n\n');
+
+  // Stato selezione: Map<secId, Set<partIdx>>. Se sono poche sezioni (<= 4) le preseleziono tutte, altrimenti parte vuoto per scegliere subito quelle volute
+  const sel = new Map();
+  const autoAll = usable.length <= 4;
+  usable.forEach(u => sel.set(u.sec.id, new Set(autoAll ? u.parts.map(p => p.idx) : [])));
+  const expanded = new Set();
+  let filterQ = '';
+
+  const selSummary = () => {
+    let nSec = 0, nPart = 0;
+    usable.forEach(u => {
+      const s = sel.get(u.sec.id);
+      if (s && s.size) { nSec++; nPart += s.size; }
+    });
+    return { nSec, nPart };
+  };
+  const selSig = () => usable.map(u => {
+    const s = sel.get(u.sec.id);
+    return s && s.size ? `${u.sec.id}:${[...s].sort((a, b) => a - b).join(',')}` : '';
+  }).filter(Boolean).join('|') || 'none';
+
+  const buildMd = () => usable.map(u => {
+    const s = sel.get(u.sec.id);
+    if (!s || !s.size) return '';
+    const bodyMd = u.parts.filter(p => s.has(p.idx)).map(p => p.md).join('\n\n');
+    return `## ${u.sec.title}\n${bodyMd}`;
+  }).filter(Boolean).join('\n\n');
+
+  const buildTitle = () => {
+    const names = usable.filter(u => (sel.get(u.sec.id)?.size || 0) > 0).map(u => u.sec.title);
+    return names.length ? (names.length <= 3 ? names.join(' vs ') : `${title} (${names.length} sezioni)`) : title;
+  };
+
+  pickHost.innerHTML = `
+    <details class="dq-picker" id="dqPicker" open>
+      <summary class="dq-picker-sum">
+        <span class="dq-picker-t">Materiale per il quiz</span>
+        <span class="dq-picker-cnt" id="dqPickCnt"></span>
+      </summary>
+      <div class="dq-picker-in">
+        <div class="dq-picker-bar">
+          <input type="search" class="input" id="dqPickQ" placeholder="Cerca sezione o paragrafo…" aria-label="Cerca sezione o paragrafo">
+          <button type="button" class="btn sm ghost" data-dqp="all">Tutto</button>
+          <button type="button" class="btn sm ghost" data-dqp="none">Nessuno</button>
+        </div>
+        <ul class="dq-sec-list" id="dqSecList"></ul>
+      </div>
+    </details>`;
+
+  const renderPicker = () => {
+    const { nSec, nPart } = selSummary();
+    $('#dqPickCnt', pickHost).textContent = nSec
+      ? `${nSec} ${nSec === 1 ? 'sezione' : 'sezioni'} · ${nPart} ${nPart === 1 ? 'paragrafo' : 'paragrafi'}`
+      : 'Nessun paragrafo selezionato';
+    const q = foldAccents(filterQ.trim());
+    const ul = $('#dqSecList', pickHost);
+    const rows = usable.filter(u => {
+      if (!q) return true;
+      if (foldAccents(`${u.sec.title} ${u.path}`).includes(q)) return true;
+      return u.parts.some(p => foldAccents(p.title).includes(q));
+    });
+    if (!rows.length) { ul.innerHTML = '<li class="hint" style="padding:10px">Nessuna sezione o paragrafo trovato.</li>'; return; }
+    ul.innerHTML = rows.map(u => {
+      const s = sel.get(u.sec.id);
+      const count = s ? s.size : 0;
+      const total = u.parts.length;
+      const allOn = count === total && total > 0;
+      const isOpen = expanded.has(u.sec.id) || (!!q && u.parts.some(p => foldAccents(p.title).includes(q)));
+      const partsHtml = isOpen && total > 1 ? `<ul class="dq-part-list">${u.parts.map(p => {
+        const checked = s && s.has(p.idx);
+        const pad = Math.max(0, Math.min(3, (p.level || 1) - 1)) * 12;
+        return `<li><label class="dq-part-row" style="padding-left:${pad}px"><input type="checkbox" data-dp-sec="${u.sec.id}" data-dp-idx="${p.idx}" ${checked ? 'checked' : ''}><span>${esc(p.title)}</span></label></li>`;
+      }).join('')}</ul>` : '';
+      return `<li class="dq-sec-item">
+        <div class="dq-sec-row">
+          <input type="checkbox" class="dq-sec-chk" data-ds-chk="${u.sec.id}" ${allOn ? 'checked' : ''} aria-label="Seleziona ${esc(u.sec.title)}">
+          <button type="button" class="dq-sec-exp" data-ds-exp="${u.sec.id}" ${total <= 1 ? 'disabled' : ''}>
+            <span class="dq-sec-arr">${total > 1 ? (isOpen ? '▾' : '▸') : '·'}</span>
+            <span class="dq-sec-main"><span class="dq-sec-t">${esc(u.sec.title)}</span>${u.path ? `<span class="dq-sec-p">${esc(u.path)}</span>` : ''}</span>
+            <span class="dq-sec-badge${count > 0 ? ' on' : ''}">${count > 0 && count < total ? `${count}/${total}` : `${total} ${total === 1 ? 'parte' : 'parti'}`}</span>
+          </button>
+        </div>
+        ${partsHtml}
+      </li>`;
+    }).join('');
+    rows.forEach(u => {
+      const s = sel.get(u.sec.id);
+      const count = s ? s.size : 0;
+      const chk = $(`[data-ds-chk="${u.sec.id}"]`, ul);
+      if (chk) chk.indeterminate = count > 0 && count < u.parts.length;
+    });
+  };
+
+  pickHost.addEventListener('input', e => {
+    if (e.target.id === 'dqPickQ') { filterQ = e.target.value; renderPicker(); }
+  });
+  pickHost.addEventListener('click', e => {
+    const b = e.target.closest('[data-dqp]');
+    if (b) {
+      const on = b.dataset.dqp === 'all';
+      usable.forEach(u => sel.set(u.sec.id, new Set(on ? u.parts.map(p => p.idx) : [])));
+      renderPicker();
+      return;
+    }
+    const exp = e.target.closest('[data-ds-exp]');
+    if (exp && !exp.disabled) {
+      const sid = exp.dataset.dsExp;
+      if (expanded.has(sid)) expanded.delete(sid); else expanded.add(sid);
+      renderPicker();
+    }
+  });
+  pickHost.addEventListener('change', e => {
+    const sc = e.target.closest('[data-ds-chk]');
+    if (sc) {
+      const u = usable.find(x => x.sec.id === sc.dataset.dsChk);
+      if (u) sel.set(u.sec.id, new Set(sc.checked ? u.parts.map(p => p.idx) : []));
+      renderPicker();
+      return;
+    }
+    const pc = e.target.closest('[data-dp-sec]');
+    if (pc) {
+      const s = sel.get(pc.dataset.dpSec);
+      const idx = +pc.dataset.dpIdx;
+      if (s) { if (pc.checked) s.add(idx); else s.delete(idx); }
+      renderPicker();
+    }
+  });
+
+  renderPicker();
   renderDiscQuizHost(box, {
     title,
-    md,
+    getMd: buildMd,
+    getTitle: buildTitle,
     nbId: nb.id,
     secId: null,
-    getSaved: k => (dquizCache[ckey] && dquizCache[ckey][k]) || null,
-    setSaved: async (k, val) => { dquizCache[ckey] = { ...(dquizCache[ckey] || {}), [k]: val }; },
+    getSaved: k => { const ck = `${kind}:${id}:${selSig()}`; return (dquizCache[ck] && dquizCache[ck][k]) || null; },
+    setSaved: async (k, val) => { const ck = `${kind}:${id}:${selSig()}`; dquizCache[ck] = { ...(dquizCache[ck] || {}), [k]: val }; },
     getConfusions: () => Array.isArray((grp || nb).confusions) ? (grp || nb).confusions : [],
     setConfusions: async list => { (grp || nb).confusions = list; await saveNotebook(nb); }
   });

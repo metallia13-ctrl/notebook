@@ -4916,3 +4916,54 @@ td.tbl-cell-hide.shown * { visibility: visible; }
   min-width: 24px; text-align: right; font-size: 0.8rem; font-weight: 700;
   font-variant-numeric: tabular-nums; color: var(--text);
 }
+
+/* === v4.13: selettore sezioni e paragrafi per i quiz multi-sezione === */
+.dq-picker {
+  margin: 0 0 16px; border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface); overflow: hidden;
+}
+.dq-picker-sum {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 11px 14px; cursor: pointer; list-style: none; user-select: none;
+}
+.dq-picker-sum::-webkit-details-marker { display: none; }
+.dq-picker-t { font-weight: 700; font-size: 0.95rem; }
+.dq-picker-cnt {
+  font-size: 0.82rem; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.dq-picker-in { padding: 0 12px 12px; border-top: 1px solid var(--line); }
+.dq-picker-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 0 8px; }
+.dq-picker-bar .input { flex: 1 1 180px; min-height: 36px; padding: 6px 12px; font-size: 0.9rem; }
+.dq-sec-list {
+  list-style: none; margin: 0; padding: 0; max-height: min(44vh, 340px); overflow-y: auto;
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg);
+}
+.dq-sec-item + .dq-sec-item { border-top: 1px solid var(--line); }
+.dq-sec-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; }
+.dq-sec-chk { width: 17px; height: 17px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+.dq-sec-exp {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+  border: 0; background: none; color: inherit; font: inherit; text-align: left;
+  padding: 2px 0; cursor: pointer;
+}
+.dq-sec-exp:disabled { cursor: default; }
+.dq-sec-arr { width: 14px; text-align: center; color: var(--muted); flex-shrink: 0; }
+.dq-sec-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dq-sec-t { font-weight: 600; font-size: 0.92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dq-sec-p { font-size: 0.78rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dq-sec-badge {
+  flex-shrink: 0; font-size: 0.76rem; padding: 2px 7px; border-radius: 999px;
+  background: var(--surface-2); color: var(--muted);
+}
+.dq-sec-badge.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.dq-part-list {
+  list-style: none; margin: 0; padding: 4px 10px 8px 34px;
+  background: var(--surface); border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.dq-part-row {
+  display: flex; align-items: center; gap: 8px; font-size: 0.86rem; color: var(--text);
+  cursor: pointer; padding: 2px 0;
+}
+.dq-part-row input { width: 15px; height: 15px; accent-color: var(--accent); flex-shrink: 0; }
