@@ -2,7 +2,7 @@
    - file dell'app: prima la rete (così vedi subito gli aggiornamenti), poi la copia salvata se sei offline
    - librerie e font dai CDN: prima la copia salvata (hanno versioni fisse)
    - chiamate all'AI e a Drive: mai toccate */
-const VERSION = 'nb-4.03';
+const VERSION = 'nb-4.10';
 const APP_CACHE = `${VERSION}-app`;
 const CDN_CACHE = 'nb-cdn-1';
 const SHARE_CACHE = 'nb-share';
@@ -55,11 +55,18 @@ async function receiveShare(req) {
   try {
     const form = await req.formData();
     const cache = await caches.open(SHARE_CACHE);
-    const meta = { title: form.get('title') || '', text: form.get('text') || '', url: form.get('url') || '', file: null };
-    const file = form.getAll('files').find(f => f && typeof f === 'object' && f.size > 0);
+    const meta = { title: form.get('title') || '', text: form.get('text') || '', url: form.get('url') || '', file: null, images: [] };
+    const all = form.getAll('files').filter(f => f && typeof f === 'object' && f.size > 0);
+    // v4.05: immagini (screenshot dalla galleria) per la Raccolta; il PDF come prima
+    const imgs = all.filter(f => /^image\//.test(f.type || '')).slice(0, 20);
+    const file = all.find(f => !/^image\//.test(f.type || ''));
     if (file) {
       meta.file = { name: file.name || 'condiviso.pdf', type: file.type || 'application/pdf' };
       await cache.put(scope + '__share/file', new Response(file, { headers: { 'Content-Type': meta.file.type } }));
+    }
+    for (let i = 0; i < imgs.length; i++) {
+      meta.images.push({ name: imgs[i].name || `immagine-${i + 1}`, type: imgs[i].type });
+      await cache.put(`${scope}__share/img${i}`, new Response(imgs[i], { headers: { 'Content-Type': imgs[i].type } }));
     }
     await cache.put(scope + '__share/meta', new Response(JSON.stringify(meta), { headers: { 'Content-Type': 'application/json' } }));
   } catch (err) { /* l’app mostrerà il modulo vuoto */ }

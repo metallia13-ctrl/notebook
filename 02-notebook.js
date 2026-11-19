@@ -165,7 +165,8 @@ function viewNotebook(id, folderId = '') {
           <button class="btn" data-act="new-sub-here">Nuova cartella</button>
           <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
           <a class="btn" href="#/import/${id}/${folder.id}">Importa qui</a>
-          ${fsecs.length ? `<a class="btn" href="#/viva/grp/${folder.id}">Interrogami</a>` : ''}
+          ${fsecs.length ? `<a class="btn" href="#/viva/grp/${folder.id}">Interrogami</a><a class="btn" href="#/dquiz/grp/${folder.id}" title="Quiz di discriminazione su tutte le sezioni della cartella">Quiz</a>` : ''}
+          ${clipsForGroup(folder).length ? `<a class="btn" href="#/raccolta/g/${folder.id}">📌 Raccolta (${clipsForGroup(folder).length})</a>` : ''}
           <button class="btn ghost" type="button" data-gmenu="${folder.id}">Opzioni</button>
         </div>
       </header>
@@ -197,6 +198,7 @@ function viewNotebook(id, folderId = '') {
         <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
         <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
         <a class="btn" href="#/lezioni/${nb.id}">Lezioni${(nb.audios || []).length ? ` (${nb.audios.length})` : ''}</a>
+        ${clipsForNb(nb).length ? `<a class="btn" href="#/raccolta/nb/${nb.id}">📌 Raccolta (${clipsForNb(nb).length})</a>` : ''}
         ${secs.length ? `<a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
         <button class="btn ghost" data-act="nb-more">Altro</button>
       </div>
@@ -525,7 +527,7 @@ function pickSectionsSheet(nb, g) {
 /* ---------------------------------------------------------------------
    Vista: sezione con le modalità di studio
    --------------------------------------------------------------------- */
-const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['html', 'Mappe HTML'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['cards', 'Flashcard'], ['video', 'Video'], ['audio', 'Audio'], ['edit', 'Modifica']];
+const MODES = [['cloze', 'Cloze'], ['read', 'Leggi'], ['map', 'Mappe'], ['html', 'Mappe HTML'], ['papers', 'Articoli'], ['blank', 'Pagina bianca'], ['oral', 'Orale'], ['quiz', 'Domande'], ['dquiz', 'Quiz'], ['cards', 'Flashcard'], ['video', 'Video'], ['audio', 'Audio'], ['edit', 'Modifica']];
 
 function srsLabel(s) {
   if (s.studyhub) return s.studyhub.status === 'received' ? 'Studiata, ripassi pianificati da StudyHub' : 'Studiata, in attesa di StudyHub';
@@ -582,6 +584,7 @@ function viewSection(id, mode) {
         ${semSec ? '<button class="btn sm" type="button" data-act="semei-meta">Dati della scheda</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>' : ''}
         ${spCfg ? `<button class="btn sm" type="button" data-act="sp-meta">${spCfg.kind === 'diary' ? 'Dati della giornata' : 'Dati della scheda'}</button><button class="btn sm" type="button" data-act="case-photo">＋ Foto</button>` : ''}
         <a class="btn sm" href="#/pdfs/${sec.id}">PDF${pdfsOf(sec.id).length + pdfRefsOf(sec).length ? ` (${pdfsOf(sec.id).length + pdfRefsOf(sec).length})` : ''}</a>
+        ${clipsForSec(sec).length ? `<a class="btn sm" href="#/raccolta/sec/${sec.id}" title="Dalla Raccolta: elementi con un tag uguale al titolo o ai tag della sezione">📌 Raccolta (${clipsForSec(sec).length})</a>` : ''}
         <a class="btn sm" href="#/split" title="Apri di fianco un’altra sezione o un PDF">⇆ Affianca</a>
         ${sec.md.trim() ? `<a class="btn sm" href="#/print/sec/${sec.id}" title="Stampa la sezione o salvala in PDF">Stampa</a>` : ''}
         ${sec.md.trim().length > 150 ? `<a class="btn sm" href="#/viva/sec/${sec.id}" title="Il professore (l’AI) ti interroga su questa sezione">Interrogami</a>` : ''}
@@ -591,7 +594,7 @@ function viewSection(id, mode) {
       </div>
     </header>
     <nav class="tabs" aria-label="Modalità di studio">
-      ${modes.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}${m === 'html' && htmlsOf(sec).length ? ` (${htmlsOf(sec).length})` : ''}</a>`).join('')}
+      ${modes.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}${m === 'html' && htmlsOf(sec).length ? ` (${htmlsOf(sec).length})` : ''}${m === 'papers' && papersOfSec(sec).length ? ` (${papersOfSec(sec).length})` : ''}</a>`).join('')}
     </nav>
     <section id="modeBody" class="mode-body"></section>
     ${prevSec || nextSec ? `
@@ -618,7 +621,7 @@ function viewSection(id, mode) {
     tabsEl.scrollLeft += t.left - n.left - (n.width - t.width) / 2;
   }
   const body = $('#modeBody');
-  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, cards: modeCards, video: modeVideo, audio: modeAudio, html: modeHtml, edit: modeEdit, case: modeCase }[mode])(sec, body);
+  ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, dquiz: modeDiscQuiz, cards: modeCards, video: modeVideo, audio: modeAudio, html: modeHtml, papers: modePapers, edit: modeEdit, case: modeCase }[mode])(sec, body);
 }
 
 function gradeBar(sec, slot, { mode, suggested } = {}) {
@@ -883,7 +886,8 @@ function modeRead(sec, body) {
 /* Cloze */
 function modeCloze(sec, body) {
   const n = countCloze(sec.md) + ioMaskCount(sec);
-  if (!n) {
+  const hasTbl = /\n\s*\|[^\n]+\|\s*\n\s*\|[\s:|-]+\|/.test('\n' + (sec.md || ''));
+  if (!n && !hasTbl) {
     body.innerHTML = `
       <div class="empty">
         <p>Nessun termine da nascondere. In Modifica selezioni una parola e tocchi “Cloze”; sugli schemi tocchi l’immagine in Leggi e crei un’image occlusion.</p>
@@ -939,8 +943,50 @@ function modeCloze(sec, body) {
     if (r === marks.length && !slot.innerHTML) gradeBar(sec, slot, { mode: 'cloze' });
   };
   marks.forEach(hide);
-  // suggerimenti: un “?” accanto ai termini che ne hanno uno
+  // v4.09: cloze per colonna nelle tabelle Markdown
   const article = $('.notes', body);
+  $$('table', article).forEach(tbl => {
+    const ths = $$('thead th', tbl);
+    if (!ths.length) return;
+    ths.forEach((th, colIdx) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tbl-col-btn';
+      btn.title = 'Nascondi o mostra questa colonna per esercitarti';
+      btn.setAttribute('aria-pressed', 'false');
+      btn.textContent = '🙈';
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const hideCol = btn.getAttribute('aria-pressed') !== 'true';
+        btn.setAttribute('aria-pressed', String(hideCol));
+        btn.textContent = hideCol ? '👁' : '🙈';
+        $$('tbody tr', tbl).forEach(tr => {
+          const td = tr.children[colIdx];
+          if (!td) return;
+          if (hideCol) {
+            td.classList.add('tbl-cell-hide');
+            td.classList.remove('shown');
+            td.tabIndex = 0;
+            td.setAttribute('role', 'button');
+          } else {
+            td.classList.remove('tbl-cell-hide', 'shown');
+            td.removeAttribute('tabindex');
+            td.removeAttribute('role');
+          }
+        });
+      });
+      th.append(btn);
+    });
+    tbl.addEventListener('click', e => {
+      const td = e.target.closest('td.tbl-cell-hide');
+      if (td) td.classList.toggle('shown');
+    });
+    tbl.addEventListener('keydown', e => {
+      const td = e.target.closest('td.tbl-cell-hide');
+      if (td && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); td.classList.toggle('shown'); }
+    });
+  });
+  // suggerimenti: un “?” accanto ai termini che ne hanno uno
   $$('mark.cz[data-hint]', article).forEach(m => {
     const w = document.createElement('span');
     w.className = 'cz-hint-wrap';
@@ -3054,7 +3100,9 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
   const dpr = () => window.devicePixelRatio || 1;
   const widthAt = (s, p) => {
     const base = s.erase ? s.size * 5 : s.size;
-    return p.t === 'pen' ? base * (0.35 + (p.p || 0.5) * 1.3) : base;
+    if (p.t !== 'pen') return base;
+    const pr = typeof p.p === 'number' && p.p > 0 ? Math.min(1, p.p) : 0.08;
+    return base * (0.55 + Math.pow(pr, 0.75) * 0.75);
   };
   const drawSeg = (s, a, b) => {
     ctx.globalCompositeOperation = s.erase ? 'destination-out' : 'source-over';
@@ -3088,7 +3136,8 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
   };
   const pt = e => {
     const r = canvas.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top, p: e.pressure, t: e.pointerType };
+    const pr = e.pointerType === 'pen' ? (typeof e.pressure === 'number' && e.pressure > 0 ? Math.min(1, e.pressure) : 0.08) : 0.5;
+    return { x: e.clientX - r.left, y: e.clientY - r.top, p: pr, t: e.pointerType };
   };
   canvas.addEventListener('pointerdown', e => {
     if (e.pointerType === 'pen') state2.penSeen = true;
@@ -3108,6 +3157,7 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
       const p = pt(ev);
       const prev = cur.points[cur.points.length - 1];
       if (Math.abs(p.x - prev.x) + Math.abs(p.y - prev.y) < 0.6) continue;
+      if (p.t === 'pen' && prev.t === 'pen') p.p = prev.p * 0.65 + p.p * 0.35;
       cur.points.push(p);
       drawSeg(cur, prev, p);
     }
@@ -3625,7 +3675,7 @@ function setupNotesInk(article, sec, btn) {
     cur = null;
     if (c.eraser) { if (c.restore) article.dataset.inkTool = c.restore; return; }
     const d = data();
-    const k = d.w / article.clientWidth;
+    const k = (d.w && article.clientWidth) ? d.w / article.clientWidth : 1;
     const s = { id: uid(), c: color, s: +(size * k).toFixed(2), b: c.bi, p: c.pts.map(([x, y]) => [+(x * k).toFixed(1), +((y - c.top) * k).toFixed(1)]) };
     d.strokes.push(s);
     undoStack.push({ add: s.id });
@@ -9187,4 +9237,405 @@ function modeHtml(sec, body, { inPanel = false } = {}) {
     }
   });
   draw();
+}
+
+
+/* =====================================================================
+   v4.10: Quiz di discriminazione (Smistamento, A vs B, Sequenza, Intruso)
+   Generati con Gemini/AI dagli appunti della sezione o di una cartella,
+   con campo "Cosa confondi spesso?" per mirare il quiz sulle tue confusioni.
+   ===================================================================== */
+const DQ_TYPES = [
+  ['sort', 'Smistamento', 'A chi appartiene? (es. mesencefalo / ponte / bulbo)'],
+  ['ab', 'Confronto A vs B', 'Solo A, Solo B, Entrambi o Nessuno'],
+  ['order', 'Sequenza', 'Rimetti in ordine strati o stazioni di una via'],
+  ['odd', 'Trova l’intruso', '3 condividono un criterio preciso, 1 no']
+];
+const dquizCache = {};
+
+function dqParseJson(raw) {
+  const s = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const m = s.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('Risposta dell’AI non in formato JSON: riprova.');
+  return JSON.parse(m[0]);
+}
+
+function dqPrompt(type, focus) {
+  const f = (focus || '').trim();
+  const focusNote = f
+    ? `\nPRIORITÀ ASSOLUTA — LO STUDENTE CONFONDE SPESSO QUESTO:\n"${f}"\nConcentra TUTTO il quiz esattamente su questa distinzione/confusione, basandoti sugli appunti.\n`
+    : '\nIndividua negli appunti gli elementi, strati, nuclei, vie o concetti più simili e facili da confondere tra loro, e costruisci il quiz su quelli.\n';
+  const base = 'Sei un tutor universitario di medicina (in particolare neuroanatomia e scienze mediche). Crea un esercizio di discriminazione attiva basato SOLO sugli appunti forniti, in italiano, senza inventare dati non presenti. Rispondi SOLO con JSON valido, senza testo prima o dopo.' + focusNote;
+  if (type === 'sort') return base + `
+Modalità: SMISTAMENTO ("A chi appartiene?").
+Scegli da 2 a 4 categorie facilmente confondibili negli appunti (es. livelli del tronco encefalico, tipi di corteccia, classi di farmaci) e crea da 8 a 12 elementi da assegnare alla categoria corretta.
+JSON richiesto:
+{"titolo":"Titolo breve","categorie":["Cat 1","Cat 2"],"domande":[{"elemento":"Nome o caratteristica breve","cat":0,"spiegazione":"Spiegazione breve (1-2 frasi)"}]}
+("cat" è l'indice 0-based dentro "categorie").`;
+  if (type === 'ab') return base + `
+Modalità: CONFRONTO DIRETTO (A vs B).
+Scegli 2 strutture/concetti molto confondibili dagli appunti (A e B) e crea da 8 a 12 affermazioni brevi. Per ognuna la risposta esatta deve essere "A" (solo A), "B" (solo B), "AB" (entrambi) o "N" (nessuno dei due). Bilancia le 4 risposte.
+JSON richiesto:
+{"a":"Nome di A","b":"Nome di B","domande":[{"testo":"Affermazione breve e precisa","risposta":"A","spiegazione":"Perché (1-2 frasi)"}]}`;
+  if (type === 'order') return base + `
+Modalità: ORDINA LA SEQUENZA.
+Estrai da 2 a 3 sequenze ordinate dagli appunti (es. strati di una corteccia dalla superficie alla profondità, tappe di una via nervosa, nuclei in senso cranio-caudale), ciascuna con 4–6 passaggi chiari e distinti nell'ordine esatto.
+JSON richiesto:
+{"sequenze":[{"titolo":"Cosa ordinare e in che verso (es. dalla pia alla sostanza bianca)","passi":["Primo","Secondo","Terzo","Quarto"],"spiegazione":"Breve sintesi della sequenza"}]}`;
+  return base + `
+Modalità: TROVA L'INTRUSO (Odd one out).
+Crea da 6 a 10 domande. Ogni domanda ha esattamente 4 opzioni brevi: 3 condividono un criterio anatomico/funzionale preciso presente negli appunti e 1 è l'intruso.
+JSON richiesto:
+{"domande":[{"opzioni":["Opt 1","Opt 2","Opt 3","Opt 4"],"intruso":2,"criterio":"Cosa accomuna gli altri 3","spiegazione":"Perché l'intruso è diverso (1-2 frasi)"}]}
+("intruso" è l'indice 0-based dentro "opzioni").`;
+}
+
+function dqShuffleIdx(n) {
+  const a = Array.from({ length: n }, (_, i) => i);
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+function renderDiscQuizHost(body, { title, md, nbId, secId, getSaved, setSaved, getConfusions, setConfusions, onFinishGrade }) {
+  let type = 'sort';
+  let focus = '';
+  let loading = false;
+
+  const makeCardBtn = (front, back) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn sm ghost';
+    b.textContent = '＋ Flashcard';
+    b.title = 'Trasforma questo punto in una flashcard';
+    b.addEventListener('click', async () => {
+      await openCardSheet({ front, back, sectionId: secId || null, notebookId: nbId });
+    });
+    return b;
+  };
+
+  const paintShell = () => {
+    const saved = getSaved(type);
+    const confs = getConfusions();
+    body.innerHTML = `
+      <div class="dq-top">
+        <div class="dq-types" role="tablist" aria-label="Tipo di quiz">
+          ${DQ_TYPES.map(([k, l, d]) => `<button type="button" class="dq-pill${k === type ? ' on' : ''}" role="tab" aria-selected="${k === type}" data-dqt="${k}" title="${esc(d)}">${l}${getSaved(k) ? ' · ✓' : ''}</button>`).join('')}
+        </div>
+        <div class="dq-focus">
+          <label class="field"><span>Cosa confondi spesso? <small class="muted-inline">(facoltativo: lascia vuoto per farlo scegliere all’AI)</small></span>
+            <div class="inline">
+              <input class="input" id="dqFocus" value="${esc(focus)}" placeholder="Es. strati neocorteccia vs archicorteccia, oppure nuclei del ponte vs bulbo">
+              <button type="button" class="btn sm ghost" data-act="dq-save-conf" title="Salva questa confusione tra i pulsanti rapidi">Salva</button>
+            </div>
+          </label>
+          ${confs.length ? `<div class="dq-chips" aria-label="Confusioni salvate">${confs.map((c, i) => `<span class="dq-chip${focus === c ? ' on' : ''}"><button type="button" class="dq-chip-t" data-dqc="${i}">${esc(c)}</button><button type="button" class="dq-chip-x" data-dqcd="${i}" aria-label="Rimuovi">×</button></span>`).join('')}</div>` : ''}
+        </div>
+        <div class="dq-bar">
+          ${AI.ready() ? `<button type="button" class="btn ${saved ? '' : 'primary'}" data-act="dq-gen" ${loading ? 'disabled' : ''}>${loading ? 'Genero il quiz…' : saved ? `↻ Rigenera con ${AI.name()}` : `Genera con ${AI.name()}`}</button>`
+            : '<p class="hint">Per generare questi quiz aggiungi la chiave Gemini o Claude in <a href="#/settings">Impostazioni</a>.</p>'}
+          ${saved ? `<span class="hint dq-meta">${saved.focus ? `Mirato su: “${esc(saved.focus)}”` : 'Generato dagli appunti'}</span>` : ''}
+        </div>
+      </div>
+      <div id="dqStage"></div>
+      <div id="dqGrade"></div>`;
+
+    const inp = $('#dqFocus', body);
+    if (inp) inp.addEventListener('input', () => { focus = inp.value; });
+    $$('[data-dqt]', body).forEach(b => b.addEventListener('click', () => {
+      if (loading) return;
+      type = b.dataset.dqt;
+      paintShell();
+    }));
+    on('[data-act="dq-save-conf"]', 'click', async () => {
+      const v = focus.trim();
+      if (!v) { toast('Scrivi prima cosa confondi'); inp?.focus(); return; }
+      const next = [...new Set([v, ...getConfusions()])].slice(0, 12);
+      await setConfusions(next);
+      toast('Confusione salvata');
+      paintShell();
+    }, body);
+    $$('[data-dqc]', body).forEach(b => b.addEventListener('click', () => {
+      const c = getConfusions()[+b.dataset.dqc];
+      if (!c) return;
+      focus = focus === c ? '' : c;
+      paintShell();
+    }));
+    $$('[data-dqcd]', body).forEach(b => b.addEventListener('click', async () => {
+      const next = getConfusions().filter((_, i) => i !== +b.dataset.dqcd);
+      await setConfusions(next);
+      paintShell();
+    }));
+    on('[data-act="dq-gen"]', 'click', async () => {
+      const txt = aiText(md).trim();
+      if (txt.length < 80) { toast('Servono appunti un po’ più lunghi per generare il quiz', 'err'); return; }
+      loading = true;
+      paintShell();
+      try {
+        const f = focus.trim();
+        if (f && !getConfusions().includes(f)) await setConfusions([f, ...getConfusions()].slice(0, 12));
+        const r = await AI.generate({
+          system: dqPrompt(type, f),
+          text: `ARGOMENTO: ${title}\n\nAPPUNTI:\n${txt.slice(0, 18000)}`,
+          json: true,
+          maxTokens: 4500
+        });
+        const data = dqParseJson(r.text);
+        const ok = (type === 'sort' && Array.isArray(data.categorie) && data.categorie.length >= 2 && Array.isArray(data.domande) && data.domande.length)
+          || (type === 'ab' && data.a && data.b && Array.isArray(data.domande) && data.domande.length)
+          || (type === 'order' && Array.isArray(data.sequenze) && data.sequenze.length)
+          || (type === 'odd' && Array.isArray(data.domande) && data.domande.length);
+        if (!ok) throw new Error('Il quiz generato era incompleto: riprova.');
+        await setSaved(type, { ...data, focus: f, at: Date.now() });
+      } catch (err) {
+        toast(err.message || 'Generazione non riuscita', 'err');
+      } finally {
+        loading = false;
+        paintShell();
+      }
+    }, body);
+
+    const stage = $('#dqStage', body);
+    if (!saved) {
+      const info = DQ_TYPES.find(x => x[0] === type);
+      stage.innerHTML = `<div class="empty"><p><strong>${info[1]}</strong>: ${info[2]}.<br>Scrivi sopra cosa confondi (oppure lascia vuoto) e tocca <em>Genera</em>.</p></div>`;
+      return;
+    }
+    if (type === 'sort') runSort(stage, saved);
+    else if (type === 'ab') runAB(stage, saved);
+    else if (type === 'order') runOrder(stage, saved);
+    else runOdd(stage, saved);
+  };
+
+  const showDone = (stage, right, total, onAgain) => {
+    const pct = total ? right / total : 0;
+    const suggested = pct < 0.5 ? 'again' : pct < 0.7 ? 'hard' : pct < 0.9 ? 'good' : 'easy';
+    stage.innerHTML = `
+      <div class="qcard done">
+        <p class="score">${right} su ${total}</p>
+        <p class="hint">risposte esatte</p>
+        <button class="btn primary" type="button" data-dq="again">Rifai il quiz</button>
+      </div>`;
+    $('[data-dq="again"]', stage).onclick = onAgain;
+    if (onFinishGrade) onFinishGrade($('#dqGrade', body), suggested);
+  };
+
+  const runSort = (stage, data) => {
+    const order = dqShuffleIdx(data.domande.length);
+    let pos = 0, right = 0;
+    const draw = () => {
+      if (pos >= order.length) return showDone(stage, right, order.length, () => runSort(stage, data));
+      const q = data.domande[order[pos]];
+      stage.innerHTML = `
+        <div class="qcard dq-card">
+          <p class="qnum">${esc(data.titolo || 'Smistamento')} · ${pos + 1} di ${order.length}</p>
+          <p class="q">${esc(q.elemento)}</p>
+          <div class="dq-opts">${data.categorie.map((c, i) => `<button type="button" class="btn dq-opt" data-ci="${i}">${esc(c)}</button>`).join('')}</div>
+          <div class="dq-fb" hidden></div>
+        </div>`;
+      let locked = false;
+      $$('[data-ci]', stage).forEach(b => b.addEventListener('click', () => {
+        if (locked) return;
+        locked = true;
+        const pick = +b.dataset.ci;
+        const ok = pick === +q.cat;
+        if (ok) right++;
+        $$('[data-ci]', stage).forEach(x => {
+          const idx = +x.dataset.ci;
+          x.disabled = true;
+          if (idx === +q.cat) x.classList.add('right');
+          else if (idx === pick) x.classList.add('wrong');
+        });
+        const fb = $('.dq-fb', stage);
+        fb.hidden = false;
+        fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Esatto!' : `No: appartiene a ${esc(data.categorie[+q.cat])}.`}</strong> ${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
+        $('.dq-fb-acts', fb).prepend(makeCardBtn(`A quale categoria appartiene: ${q.elemento}?`, `**${data.categorie[+q.cat]}**${q.spiegazione ? `\n\n${q.spiegazione}` : ''}`));
+        $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
+        $('[data-dq="next"]', fb).focus();
+      }));
+    };
+    draw();
+  };
+
+  const runAB = (stage, data) => {
+    const order = dqShuffleIdx(data.domande.length);
+    let pos = 0, right = 0;
+    const labels = { A: `Solo ${data.a}`, B: `Solo ${data.b}`, AB: 'Entrambi', N: 'Nessuno' };
+    const draw = () => {
+      if (pos >= order.length) return showDone(stage, right, order.length, () => runAB(stage, data));
+      const q = data.domande[order[pos]];
+      const ans = String(q.risposta || '').toUpperCase();
+      stage.innerHTML = `
+        <div class="qcard dq-card">
+          <p class="qnum">Confronto · ${pos + 1} di ${order.length}</p>
+          <div class="dq-ab-head"><span class="dq-ab-tag"><b>A</b> ${esc(data.a)}</span><span class="dq-ab-vs">vs</span><span class="dq-ab-tag"><b>B</b> ${esc(data.b)}</span></div>
+          <p class="q">${esc(q.testo)}</p>
+          <div class="dq-opts dq-ab-opts">
+            ${['A', 'B', 'AB', 'N'].map(k => `<button type="button" class="btn dq-opt" data-ab="${k}">${esc(labels[k])}</button>`).join('')}
+          </div>
+          <div class="dq-fb" hidden></div>
+        </div>`;
+      let locked = false;
+      $$('[data-ab]', stage).forEach(b => b.addEventListener('click', () => {
+        if (locked) return;
+        locked = true;
+        const pick = b.dataset.ab;
+        const ok = pick === ans;
+        if (ok) right++;
+        $$('[data-ab]', stage).forEach(x => {
+          x.disabled = true;
+          if (x.dataset.ab === ans) x.classList.add('right');
+          else if (x.dataset.ab === pick) x.classList.add('wrong');
+        });
+        const fb = $('.dq-fb', stage);
+        fb.hidden = false;
+        fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Esatto!' : `Risposta corretta: ${esc(labels[ans] || ans)}.`}</strong> ${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
+        $('.dq-fb-acts', fb).prepend(makeCardBtn(`${data.a} vs ${data.b}: ${q.testo}`, `**${labels[ans] || ans}**${q.spiegazione ? `\n\n${q.spiegazione}` : ''}`));
+        $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
+        $('[data-dq="next"]', fb).focus();
+      }));
+    };
+    draw();
+  };
+
+  const runOrder = (stage, data) => {
+    let pos = 0, right = 0;
+    const draw = () => {
+      if (pos >= data.sequenze.length) return showDone(stage, right, data.sequenze.length, () => runOrder(stage, data));
+      const seq = data.sequenze[pos];
+      const steps = seq.passi || [];
+      let cur = dqShuffleIdx(steps.length);
+      if (steps.length > 1 && cur.every((v, i) => v === i)) [cur[0], cur[1]] = [cur[1], cur[0]];
+      let checked = false;
+      const paintSeq = () => {
+        stage.innerHTML = `
+          <div class="qcard dq-card">
+            <p class="qnum">Sequenza ${pos + 1} di ${data.sequenze.length}</p>
+            <p class="q">${esc(seq.titolo)}</p>
+            <ol class="dq-seq">${cur.map((si, i) => `
+              <li class="dq-seq-item${checked ? (si === i ? ' ok' : ' ko') : ''}">
+                <span class="dq-seq-n">${i + 1}</span>
+                <span class="dq-seq-t">${esc(steps[si])}</span>
+                ${checked ? '' : `<span class="dq-seq-mv"><button type="button" class="btn sm ghost" data-mv="-1" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">↑</button><button type="button" class="btn sm ghost" data-mv="1" data-i="${i}" ${i === cur.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">↓</button></span>`}
+              </li>`).join('')}</ol>
+            <div class="dq-fb"></div>
+          </div>`;
+        if (!checked) {
+          $$('[data-mv]', stage).forEach(b => b.addEventListener('click', () => {
+            const i = +b.dataset.i, j = i + (+b.dataset.mv);
+            if (j < 0 || j >= cur.length) return;
+            [cur[i], cur[j]] = [cur[j], cur[i]];
+            paintSeq();
+          }));
+          $('.dq-fb', stage).innerHTML = '<button type="button" class="btn primary" data-dq="check">Controlla l’ordine</button>';
+          $('[data-dq="check"]', stage).onclick = () => {
+            checked = true;
+            const ok = cur.every((v, i) => v === i);
+            if (ok) right++;
+            paintSeq();
+          };
+        } else {
+          const ok = cur.every((v, i) => v === i);
+          const fb = $('.dq-fb', stage);
+          fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Ordine perfetto!' : 'Qualche passaggio non era al posto giusto.'}</strong> ${esc(seq.spiegazione || '')}</p>
+            ${ok ? '' : `<p class="hint"><strong>Ordine esatto:</strong> ${steps.map((s, i) => `${i + 1}. ${esc(s)}`).join(' → ')}</p>`}
+            <div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= data.sequenze.length ? 'Vedi risultato' : 'Prossima sequenza'}</button></div>`;
+          $('.dq-fb-acts', fb).prepend(makeCardBtn(seq.titolo, steps.map((s, i) => `${i + 1}. ${s}`).join('\n')));
+          $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
+          $('[data-dq="next"]', fb).focus();
+        }
+      };
+      paintSeq();
+    };
+    draw();
+  };
+
+  const runOdd = (stage, data) => {
+    const order = dqShuffleIdx(data.domande.length);
+    let pos = 0, right = 0;
+    const draw = () => {
+      if (pos >= order.length) return showDone(stage, right, order.length, () => runOdd(stage, data));
+      const q = data.domande[order[pos]];
+      stage.innerHTML = `
+        <div class="qcard dq-card">
+          <p class="qnum">Trova l’intruso · ${pos + 1} di ${order.length}</p>
+          <p class="q">Quale di questi 4 non appartiene allo stesso gruppo?</p>
+          <div class="dq-opts">${(q.opzioni || []).map((o, i) => `<button type="button" class="btn dq-opt" data-oi="${i}">${esc(o)}</button>`).join('')}</div>
+          <div class="dq-fb" hidden></div>
+        </div>`;
+      let locked = false;
+      $$('[data-oi]', stage).forEach(b => b.addEventListener('click', () => {
+        if (locked) return;
+        locked = true;
+        const pick = +b.dataset.oi;
+        const ok = pick === +q.intruso;
+        if (ok) right++;
+        $$('[data-oi]', stage).forEach(x => {
+          const idx = +x.dataset.oi;
+          x.disabled = true;
+          if (idx === +q.intruso) x.classList.add('right');
+          else if (idx === pick) x.classList.add('wrong');
+        });
+        const fb = $('.dq-fb', stage);
+        fb.hidden = false;
+        fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Preso!' : `L’intruso era: ${esc((q.opzioni || [])[+q.intruso] || '')}.`}</strong> ${q.criterio ? `<em>Criterio:</em> ${esc(q.criterio)}. ` : ''}${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
+        $('.dq-fb-acts', fb).prepend(makeCardBtn(`Tra ${(q.opzioni || []).join(', ')}, qual è l’intruso e perché?`, `**${(q.opzioni || [])[+q.intruso] || ''}**\n\n${q.criterio ? `Criterio: ${q.criterio}. ` : ''}${q.spiegazione || ''}`));
+        $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
+        $('[data-dq="next"]', fb).focus();
+      }));
+    };
+    draw();
+  };
+
+  paintShell();
+}
+
+function modeDiscQuiz(sec, body) {
+  if (!String(sec.md || '').trim()) {
+    body.innerHTML = `<div class="empty"><p>Questa sezione non ha ancora appunti da cui creare un quiz.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`;
+    return;
+  }
+  renderDiscQuizHost(body, {
+    title: sec.title,
+    md: sec.md,
+    nbId: sec.notebookId,
+    secId: sec.id,
+    getSaved: k => (sec.dquiz && sec.dquiz[k]) || null,
+    setSaved: async (k, val) => { sec.dquiz = { ...(sec.dquiz || {}), [k]: val }; await saveSection(sec); },
+    getConfusions: () => Array.isArray(sec.confusions) ? sec.confusions : [],
+    setConfusions: async list => { sec.confusions = list; await saveSection(sec); },
+    onFinishGrade: (slot, suggested) => gradeBar(sec, slot, { mode: 'dquiz', suggested })
+  });
+}
+
+function viewDiscQuiz(kind, id) {
+  let nb = null, grp = null, secs = [], title = '', backHref = '#/notebooks', backLabel = 'Notebook';
+  if (kind === 'grp') {
+    for (const n of state.notebooks) {
+      const g = groupsOf(n).find(x => x.id === id);
+      if (g) { nb = n; grp = g; const tree = groupTreeIds(n, g); secs = secsOf(n.id).filter(s => tree.has(s.groupId)); title = g.name; backHref = `#/nb/${n.id}/${g.id}`; backLabel = g.name; break; }
+    }
+  } else if (kind === 'nb') {
+    nb = nbById(id);
+    if (nb) { secs = secsOf(nb.id); title = nb.name; backHref = `#/nb/${nb.id}`; backLabel = nb.name; }
+  }
+  if (!nb) return notFound('Questo argomento');
+  const usable = secs.filter(s => aiText(s.md || '').trim().length > 40);
+  setView(`
+    <a class="back" href="${backHref}">${esc(backLabel)}</a>
+    <header class="page-head"><div><h1>Quiz di discriminazione</h1><p class="lede">${esc(title)} · ${usable.length} ${usable.length === 1 ? 'sezione' : 'sezioni'} mescolate insieme</p></div></header>
+    <div id="dqBody"></div>`);
+  const box = $('#dqBody');
+  if (!usable.length) { box.innerHTML = '<div class="empty"><p>Qui non ci sono ancora appunti da cui creare un quiz.</p></div>'; return; }
+  const ckey = `${kind}:${id}`;
+  const md = usable.map(s => `## ${s.title}\n${s.md}`).join('\n\n');
+  renderDiscQuizHost(box, {
+    title,
+    md,
+    nbId: nb.id,
+    secId: null,
+    getSaved: k => (dquizCache[ckey] && dquizCache[ckey][k]) || null,
+    setSaved: async (k, val) => { dquizCache[ckey] = { ...(dquizCache[ckey] || {}), [k]: val }; },
+    getConfusions: () => Array.isArray((grp || nb).confusions) ? (grp || nb).confusions : [],
+    setConfusions: async list => { (grp || nb).confusions = list; await saveNotebook(nb); }
+  });
 }

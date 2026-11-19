@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.03';
+const APP_VERSION = '4.10';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -1253,13 +1253,19 @@ const SCROLL_ROWS = '.tabs, .pdf-tools, .pdf-tabs, .pad-tools, .pad-shapes, .edi
 function scrollHint(el) {
   if (!el || el.dataset.scHint) return;
   el.dataset.scHint = '1';
+  let ro = null;
   const upd = () => {
+    if (!el.isConnected) {
+      window.removeEventListener('resize', upd);
+      if (ro) { ro.disconnect(); ro = null; }
+      return;
+    }
     const more = el.scrollWidth - el.clientWidth;
     el.classList.toggle('sc-l', more > 4 && el.scrollLeft > 4);
     el.classList.toggle('sc-r', more > 4 && el.scrollLeft < more - 4);
   };
   el.addEventListener('scroll', upd, { passive: true });
-  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(upd).observe(el);
+  if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(upd); ro.observe(el); }
   window.addEventListener('resize', upd);
   setTimeout(upd, 60);
   upd();
@@ -1461,7 +1467,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers', 'graph', 'formato', 'ask', 'inbox'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers', 'graph', 'formato', 'ask', 'inbox', 'raccolta'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1518,12 +1524,14 @@ function route() {
     case 'scores': return viewScores();
     case 'print': return viewPrint(p1, p2);
     case 'viva': return viewViva(p1, p2);
+    case 'dquiz': return viewDiscQuiz(p1, p2);
     case 'graph': return viewGraph(p1);
     case 'formato': return viewFormat(p1);
     case 'ask': return viewAsk(p1);
     case 'inbox': return viewInbox();
     case 'focus': location.replace('#/notebooks'); setTimeout(() => Focus.start(Resume.target()?.sec?.id || ''), 0); return;
-    case 'papers': return viewPapers(p1);
+    case 'papers': return viewPapers(p1, p2);
+    case 'raccolta': return viewClips(p1, p2);
     case 'fs': { FullScreen.toggle(); if (history.length > 1) history.back(); else location.replace('#/notebooks'); return; }
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
     case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
@@ -1814,7 +1822,6 @@ const Sync = {
     const m = this.meta();
     const url = S().syncUrl.trim();
     if (m.url !== url) { m.url = url; m.rev = 0; m.lastPush = 0; }
-    const startedAt = Date.now();
     try {
       // 1) prima prendo le modifiche degli altri dispositivi e le unisco alle mie
       setSyncStatus('Sincronizzazione in corso…');
@@ -2955,7 +2962,7 @@ function searchSnippet(text, q) {
   const b = Math.min(t.length, i + q.length + 80);
   return `${a > 0 ? '…' : ''}${esc(t.slice(a, i))}<mark class="hit">${esc(t.slice(i, i + q.length))}</mark>${esc(t.slice(i + q.length, b))}${b < t.length ? '…' : ''}`;
 }
-function searchResultsHtml(q) {
+function searchResultsHtml(q, filter = 'all') {
   if (q.startsWith('#')) {
     const t = normTag(q);
     const tags = allTags().filter(([x]) => !t || x.includes(t));
@@ -2963,9 +2970,9 @@ function searchResultsHtml(q) {
       ? `<h2 class="sub">Tag</h2><div class="tag-cloud big">${tags.map(([x, n]) => `<a class="tag" href="#/tag/${encodeURIComponent(x)}">#${esc(x)} <small>${n}</small></a>`).join('')}</div>`
       : '<p class="hint">Nessun tag trovato.</p>';
   }
-  const secs = state.sections.filter(s => (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q)).slice(0, 60);
-  const cards = state.cards.filter(c => (c.front + '\n' + c.back).toLowerCase().includes(q)).slice(0, 60);
-  if (!secs.length && !cards.length) return '<p class="hint">Nessun risultato.</p>';
+  const secs = (filter === 'all' || filter === 'sec') ? state.sections.filter(s => (s.title + '\n' + stripCloze(s.md)).toLowerCase().includes(q)).slice(0, 60) : [];
+  const cards = (filter === 'all' || filter === 'card') ? state.cards.filter(c => (c.front + '\n' + c.back).toLowerCase().includes(q)).slice(0, 60) : [];
+  if (!secs.length && !cards.length) return '';
   return `
     ${secs.length ? `<h2 class="sub">Sezioni</h2><ul class="list">${secs.map(s => `
       <li><a class="row" href="#/sec/${s.id}/read"><span class="row-main">
@@ -2995,6 +3002,7 @@ const ICONS = {
   atlas: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h4l2-6 3 12 3-9 2 3h6"/></svg>',
   fs: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
   papers: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 12h7M9 15h7M9 18h4"/></svg>',
+  raccolta: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-6-4.5L6 21z"/><path d="M9.5 8h5"/></svg>',
   viva: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H9l-5 4z"/><path d="M9 9h6M9 12h4"/></svg>',
   pharma: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="9" width="18" height="7" rx="3.5" transform="rotate(-35 12 12.5)"/><path d="M9.2 7.4l5.6 8"/></svg>',
   anat: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M8 10h8M12 14l-3 7M12 14l3 7"/></svg>',
@@ -3105,7 +3113,7 @@ const parseTags = s => [...new Set(String(s || '').split(/[,;\n]/).map(normTag).
 const tagsOf = x => (x && Array.isArray(x.tags) ? x.tags : []);
 function allTags() {
   const n = new Map();
-  [...state.sections, ...state.cards].forEach(x => tagsOf(x).forEach(t => n.set(t, (n.get(t) || 0) + 1)));
+  [...state.sections, ...state.cards, ...state.links.filter(l => l.kind === 'clip')].forEach(x => tagsOf(x).forEach(t => n.set(t, (n.get(t) || 0) + 1)));
   return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 function tagChips(tags, { link = true } = {}) {
@@ -3141,16 +3149,18 @@ function viewTag(name) {
   }
   const secs = state.sections.filter(s => tagsOf(s).includes(t)).sort((a, b) => a.title.localeCompare(b.title));
   const cards = state.cards.filter(c => tagsOf(c).includes(t));
+  const clipsT = state.links.filter(l => l.kind === 'clip' && tagsOf(l).includes(t));
   const toStudy = cardCounts(cards.filter(c => !c.suspended));
   setView(`
     <a class="back" href="#/tag">Tutti i tag</a>
     <header class="page-head">
-      <div><h1>#${esc(t)}</h1><p class="lede">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}, ${cards.length} flashcard</p></div>
+      <div><h1>#${esc(t)}</h1><p class="lede">${secs.length} ${secs.length === 1 ? 'sezione' : 'sezioni'}, ${cards.length} flashcard${clipsT.length ? `, ${clipsT.length} nella Raccolta` : ''}</p></div>
       <div class="actions">${studyBtns(`tag-${encodeURIComponent(t)}`, toStudy)}</div>
     </header>
     ${secs.length ? `<h2 class="sub">Sezioni</h2><ul class="list">${secs.map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : ''}
     ${cards.length ? `<h2 class="sub">Flashcard</h2><ul class="list">${cards.slice(0, 300).map(cardRow).join('')}</ul>` : ''}
-    ${!secs.length && !cards.length ? '<div class="empty"><p>Nessun elemento usa più questo tag.</p></div>' : ''}`);
+    ${clipsT.length ? `<h2 class="sub">Dalla Raccolta</h2>${clipGrid(clipsT)}` : ''}
+    ${!secs.length && !cards.length && !clipsT.length ? '<div class="empty"><p>Nessun elemento usa più questo tag.</p></div>' : ''}`);
 }
 
 /* ---------- Collegamenti tra pagine: [[Titolo]] o [[Titolo|testo]] ---------- */
@@ -3577,57 +3587,71 @@ function foldSnippet(text, f, len = 70) {
   const b = Math.min(t.length, i + f.length + len);
   return `${a ? '…' : ''}${esc(t.slice(a, i))}<mark class="hit">${esc(t.slice(i, i + f.length))}</mark>${esc(t.slice(i + f.length, b))}${b < t.length ? '…' : ''}`;
 }
-function moreSearchHtml(q) {
+function moreSearchHtml(q, filter = 'all') {
   const f = foldAccents(q);
   if (f.length < 2) return '';
   const out = [];
   // PDF: nome, testo delle pagine, note ed evidenziazioni
-  const pdfRows = [];
-  for (const p of state.pdfs) {
-    const s = secById(p.sectionId);
-    const where = esc([s ? nbById(s.notebookId)?.name : '', s ? s.title : ''].filter(Boolean).join(' › '));
-    if (foldAccents(p.name).includes(f)) pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}"><span class="pdf-ic sm" aria-hidden="true">PDF</span><span class="row-main"><span class="row-title">${foldSnippet(p.name, f)}</span><span class="row-sub">${where}</span></span></a></li>`);
-    let k = 0;
-    (pdfText.get(p.id) || []).forEach((t, i) => {
-      if (k >= 3 || !foldAccents(t).includes(f)) return;
-      k++;
-      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${i + 1}" data-hitq="${esc(q)}" data-hitpdf="${p.id}" data-hitp="${i + 1}"><span class="pdf-ic sm" aria-hidden="true">${i + 1}</span><span class="row-main"><span class="row-title">${esc(p.name)}, pagina ${i + 1}</span><span class="row-sub">${foldSnippet(t, f)}</span></span></a></li>`);
-    });
-    (p.bookmarks || []).filter(b => foldAccents(b.title || '').includes(f)).slice(0, 5).forEach(b => {
-      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${b.page}"><span class="pdf-ic sm bm" aria-hidden="true">${ICON_BM}</span><span class="row-main"><span class="row-title">${foldSnippet(b.title, f)}</span><span class="row-sub">Segnalibro, ${esc(p.name)}, pagina ${b.page}</span></span></a></li>`);
-    });
-    (p.annots || []).filter(a => foldAccents(`${a.text || ''} ${a.note || ''}`).includes(f)).slice(0, 3).forEach(a => {
-      pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${a.page}"><span class="pdf-ic sm note" aria-hidden="true">✎</span><span class="row-main"><span class="row-title">${esc(p.name)}, ${Number.isInteger(a.page) ? `pagina ${a.page}` : `foglio dopo pagina ${Math.floor(a.page)}`}: ${a.note ? 'nota' : 'evidenziazione'}</span><span class="row-sub">${foldSnippet(`${a.note || ''} ${a.text || ''}`, f)}</span></span></a></li>`);
-    });
-    if (pdfRows.length >= 40) break;
+  if (filter === 'all' || filter === 'pdf') {
+    const pdfRows = [];
+    for (const p of state.pdfs) {
+      const s = secById(p.sectionId);
+      const where = esc([s ? nbById(s.notebookId)?.name : '', s ? s.title : ''].filter(Boolean).join(' › '));
+      if (foldAccents(p.name).includes(f)) pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}"><span class="pdf-ic sm" aria-hidden="true">PDF</span><span class="row-main"><span class="row-title">${foldSnippet(p.name, f)}</span><span class="row-sub">${where}</span></span></a></li>`);
+      let k = 0;
+      (pdfText.get(p.id) || []).forEach((t, i) => {
+        if (k >= 3 || !foldAccents(t).includes(f)) return;
+        k++;
+        pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${i + 1}" data-hitq="${esc(q)}" data-hitpdf="${p.id}" data-hitp="${i + 1}"><span class="pdf-ic sm" aria-hidden="true">${i + 1}</span><span class="row-main"><span class="row-title">${esc(p.name)}, pagina ${i + 1}</span><span class="row-sub">${foldSnippet(t, f)}</span></span></a></li>`);
+      });
+      (p.bookmarks || []).filter(b => foldAccents(b.title || '').includes(f)).slice(0, 5).forEach(b => {
+        pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${b.page}"><span class="pdf-ic sm bm" aria-hidden="true">${ICON_BM}</span><span class="row-main"><span class="row-title">${foldSnippet(b.title, f)}</span><span class="row-sub">Segnalibro, ${esc(p.name)}, pagina ${b.page}</span></span></a></li>`);
+      });
+      (p.annots || []).filter(a => foldAccents(`${a.text || ''} ${a.note || ''}`).includes(f)).slice(0, 3).forEach(a => {
+        pdfRows.push(`<li><a class="row" href="#/pdf/${p.id}/${a.page}"><span class="pdf-ic sm note" aria-hidden="true">✎</span><span class="row-main"><span class="row-title">${esc(p.name)}, ${Number.isInteger(a.page) ? `pagina ${a.page}` : `foglio dopo pagina ${Math.floor(a.page)}`}: ${a.note ? 'nota' : 'evidenziazione'}</span><span class="row-sub">${foldSnippet(`${a.note || ''} ${a.text || ''}`, f)}</span></span></a></li>`);
+      });
+      if (pdfRows.length >= 40) break;
+    }
+    if (pdfRows.length) out.push(`<h2 class="sub">PDF</h2><ul class="list">${pdfRows.join('')}</ul>`);
   }
-  if (pdfRows.length) out.push(`<h2 class="sub">PDF</h2><ul class="list">${pdfRows.join('')}</ul>`);
-  const gl = glossary().filter(g => foldAccents(`${g.term} ${g.def}`).includes(f)).slice(0, 20);
-  if (gl.length) out.push(`<h2 class="sub">Glossario</h2><ul class="list">${gl.map(g => `<li><button type="button" class="row" data-sgl="${g.id}"><span class="row-main"><span class="row-title">${foldSnippet(g.term, f)}</span><span class="row-sub">${foldSnippet(plainText(g.def, 1e9), f, 50)}</span></span></button></li>`).join('')}</ul>`);
-  const cn = clinicalNotes().filter(n => foldAccents(`${n.title} ${(n.symptoms || []).join(' ')} ${n.body || ''}`).includes(f)).slice(0, 20);
-  if (cn.length) out.push(`<h2 class="sub">Note cliniche</h2><ul class="list">${cn.map(n => `<li><button type="button" class="row" data-scn="${n.id}"><span class="row-main"><span class="row-title">${foldSnippet(n.title, f)}</span>${(n.symptoms || []).length ? `<span class="tags">${n.symptoms.map(s => `<span class="tag sym ${foldAccents(s).includes(f) ? 'on' : ''}">${esc(s)}</span>`).join('')}</span>` : ''}</span></button></li>`).join('')}</ul>`);
-  const lx = labExams().filter(x => foldAccents(`${x.name} ${x.abbr || ''} ${x.up || ''} ${x.down || ''} ${(x.uses || []).map(u => u.dx).join(' ')}`).includes(f)).slice(0, 20);
-  if (lx.length) out.push(`<h2 class="sub">Medicina di laboratorio</h2><ul class="list">${lx.map(x => `<li><a class="row" href="#/lab/${x.id}"><span class="row-main"><span class="row-title">${foldSnippet(x.name, f)}${x.abbr ? ` <span class="lab-abbr">${esc(x.abbr)}</span>` : ''}</span><span class="row-sub">${esc(labCatName(x.cat))}</span></span></a></li>`).join('')}</ul>`);
-  const todo = PdfIndex.pending().length;
-  if (todo) out.push(`<p class="hint">Sto leggendo il testo di ${todo} PDF per poterlo cercare…</p>`);
+  if (filter === 'all' || filter === 'clin') {
+    const gl = glossary().filter(g => foldAccents(`${g.term} ${g.def}`).includes(f)).slice(0, 20);
+    if (gl.length) out.push(`<h2 class="sub">Glossario</h2><ul class="list">${gl.map(g => `<li><button type="button" class="row" data-sgl="${g.id}"><span class="row-main"><span class="row-title">${foldSnippet(g.term, f)}</span><span class="row-sub">${foldSnippet(plainText(g.def, 1e9), f, 50)}</span></span></button></li>`).join('')}</ul>`);
+    const cn = clinicalNotes().filter(n => foldAccents(`${n.title} ${(n.symptoms || []).join(' ')} ${n.body || ''}`).includes(f)).slice(0, 20);
+    if (cn.length) out.push(`<h2 class="sub">Note cliniche</h2><ul class="list">${cn.map(n => `<li><button type="button" class="row" data-scn="${n.id}"><span class="row-main"><span class="row-title">${foldSnippet(n.title, f)}</span>${(n.symptoms || []).length ? `<span class="tags">${n.symptoms.map(s => `<span class="tag sym ${foldAccents(s).includes(f) ? 'on' : ''}">${esc(s)}</span>`).join('')}</span>` : ''}</span></button></li>`).join('')}</ul>`);
+    const lx = labExams().filter(x => foldAccents(`${x.name} ${x.abbr || ''} ${x.up || ''} ${x.down || ''} ${(x.uses || []).map(u => u.dx).join(' ')}`).includes(f)).slice(0, 20);
+    if (lx.length) out.push(`<h2 class="sub">Medicina di laboratorio</h2><ul class="list">${lx.map(x => `<li><a class="row" href="#/lab/${x.id}"><span class="row-main"><span class="row-title">${foldSnippet(x.name, f)}${x.abbr ? ` <span class="lab-abbr">${esc(x.abbr)}</span>` : ''}</span><span class="row-sub">${esc(labCatName(x.cat))}</span></span></a></li>`).join('')}</ul>`);
+  }
+  if (filter === 'all' || filter === 'pdf') {
+    const todo = PdfIndex.pending().length;
+    if (todo) out.push(`<p class="hint">Sto leggendo il testo di ${todo} PDF per poterlo cercare…</p>`);
+  }
   return out.join('');
 }
+// v4.08: filtri rapidi nella ricerca globale
+const SEARCH_FILTERS = [['all', 'Tutto'], ['sec', 'Sezioni'], ['card', 'Flashcard'], ['pdf', 'PDF'], ['clin', 'Clinica']];
 // collega un campo di ricerca ai risultati (pagina iniziale e pagina Cerca)
 function bindUnifiedSearch(input, out, toHide) {
   let t;
+  let filter = 'all';
   const run = () => {
     const q = input.value.trim().toLowerCase();
     sessionStorage.setItem('nb-search', input.value);
     if (q.length < 2) { out.hidden = true; if (toHide) toHide.hidden = false; return; }
-    const base = searchResultsHtml(q);
-    const more = q.startsWith('#') ? '' : moreSearchHtml(q);
-    out.innerHTML = more && base.includes('Nessun risultato') ? more : base + more;
+    const isTag = q.startsWith('#');
+    const bar = isTag ? '' : `<div class="search-filters" role="tablist" aria-label="Filtra risultati">${SEARCH_FILTERS.map(([k, l]) => `<button type="button" class="sf-chip${filter === k ? ' on' : ''}" role="tab" aria-selected="${filter === k}" data-sf="${k}">${l}</button>`).join('')}</div>`;
+    const base = searchResultsHtml(q, filter);
+    const more = isTag ? '' : moreSearchHtml(q, filter);
+    const body = (base + more).trim() || '<p class="hint">Nessun risultato.</p>';
+    out.innerHTML = bar + body;
     out.hidden = false;
     if (toHide) toHide.hidden = true;
-    if (!q.startsWith('#') && PdfIndex.pending().length) PdfIndex.run(() => { if (input.isConnected && input.value.trim().toLowerCase() === q) run(); });
+    if (!isTag && PdfIndex.pending().length) PdfIndex.run(() => { if (input.isConnected && input.value.trim().toLowerCase() === q) run(); });
   };
   input.addEventListener('input', () => { clearTimeout(t); t = setTimeout(run, 180); });
   out.addEventListener('click', e => {
+    const sf = e.target.closest('[data-sf]');
+    if (sf) { filter = sf.dataset.sf; run(); return; }
     const g = e.target.closest('[data-sgl]');
     if (g) { showGlossaryEntry(g.dataset.sgl); return; }
     const c = e.target.closest('[data-scn]');
@@ -3678,13 +3702,17 @@ async function buildBackup(withPdf) {
   }
   let folds = {};
   try { folds = JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'); } catch { /* niente */ }
+  // v4.07: includi i fogli del blocco note nel backup
+  let pads = {};
+  if (typeof Pad !== 'undefined') Pad.flush();
+  if (typeof PadDB !== 'undefined') { try { pads = await PadDB.all(); } catch { pads = {}; } }
   const st = S();
   const prefs = {};
   ['theme', 'readFont', 'readSize', 'readSpacing', 'pagesPerSection', 'newPerDay', 'aiCloze', 'aiQuestions', 'showImages', 'keepPdfImages', 'anki'].forEach(k => { if (st[k] !== undefined) prefs[k] = st[k]; });
   const header = {
     app: 'studyhub-notebook', version: 5, exported: new Date().toISOString(), appVersion: APP_VERSION,
     notebooks: state.notebooks, sections: state.sections, cards: state.cards, links: state.links,
-    pdfs: state.pdfs, images, stats: Stats.load(), folds, prefs, files
+    pdfs: state.pdfs, images, pads, stats: Stats.load(), folds, prefs, files
   };
   const hb = new TextEncoder().encode(JSON.stringify(header));
   const blob = new Blob([BK_MAGIC, String(hb.length).padStart(12, '0') + '\n', hb, ...parts], { type: 'application/octet-stream' });
@@ -3746,6 +3774,12 @@ async function restoreBackup(bk) {
     const seen = new Set((st.exams || []).map(x => `${x.d}|${x.key}|${x.score}|${x.n}`));
     st.exams = [...(st.exams || []), ...(d.stats.exams || []).filter(x => !seen.has(`${x.d}|${x.key}|${x.score}|${x.n}`))].slice(-60);
     Stats.save();
+  }
+  if (d.pads && typeof d.pads === 'object' && typeof PadDB !== 'undefined') {
+    for (const [k, v] of Object.entries(d.pads)) {
+      if (k && v && Array.isArray(v.pages)) await PadDB.put(k, v);
+    }
+    if (typeof Pad !== 'undefined' && Pad.isOpen()) { Pad.key = ''; Pad.data = null; Pad.load(); }
   }
   if (d.folds && typeof d.folds === 'object') {
     try { localStorage.setItem(FOLD_KEY, JSON.stringify({ ...JSON.parse(localStorage.getItem(FOLD_KEY) || '{}'), ...d.folds })); } catch { /* niente */ }
@@ -3853,7 +3887,12 @@ const Voice = {
     })();
     this.cache.set(key, p);
     p.catch(() => this.cache.delete(key));
-    if (this.cache.size > 40) this.cache.delete(this.cache.keys().next().value);
+    if (this.cache.size > 40) {
+      const oldKey = this.cache.keys().next().value;
+      const oldP = this.cache.get(oldKey);
+      this.cache.delete(oldKey);
+      if (oldP) oldP.then(u => { if (u) URL.revokeObjectURL(u); }).catch(() => {});
+    }
     return p;
   },
   async play(text, rate = 1) {
@@ -3938,7 +3977,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); const g = n && p[2] ? groupsOf(n).find(x => x.id === p[2]) : null; return g ? `Torna a ${g.name}` : n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { scores: 'Score clinici', viva: 'Interrogazione', papers: 'Articoli', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { scores: 'Score clinici', viva: 'Interrogazione', papers: 'Articoli', raccolta: 'Raccolta', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {

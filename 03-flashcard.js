@@ -1698,7 +1698,8 @@ function bindCardSelect(listEl, getCards, btnHost) {
     <button type="button" class="btn sm danger-solid" data-cs="del">Elimina</button>
     <button type="button" class="btn sm ghost" data-cs="end">Fine</button>`;
   document.body.append(bar);
-  addCleanup(() => { bar.remove(); document.body.classList.remove('cs-on'); });
+  let listMo = null;
+  addCleanup(() => { if (listMo) listMo.disconnect(); bar.remove(); document.body.classList.remove('cs-on'); });
   const rows = () => $$('li[data-id]', listEl);
   const paint = () => {
     rows().forEach(li => {
@@ -1719,7 +1720,8 @@ function bindCardSelect(listEl, getCards, btnHost) {
   const set = v => { on = v; if (!on) { picked = new Set(); lastIdx = -1; } paint(); };
   btn.addEventListener('click', () => set(!on));
   // l’elenco si ridisegna con la ricerca: ripasso i segni
-  new MutationObserver(() => { if (on) paint(); }).observe(listEl, { childList: true });
+  listMo = new MutationObserver(() => { if (on) paint(); });
+  listMo.observe(listEl, { childList: true });
   listEl.addEventListener('click', e => {
     if (!on) return;
     const li = e.target.closest('li[data-id]');

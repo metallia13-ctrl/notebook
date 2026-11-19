@@ -166,7 +166,7 @@ function viewSettings() {
 
     <section class="block">
       <h2>Backup</h2>
-      <p class="hint">Un file unico con notebook, sezioni, flashcard, immagini, PDF con annotazioni e segnalibri, glossario, note cliniche, prompt, statistiche e preferenze di lettura. Le chiavi dell’AI e la frase segreta di Drive restano fuori. Tienilo da parte prima di cambiare telefono.</p>
+      <p class="hint">Un file unico con notebook, sezioni, flashcard, immagini, fogli del blocco note, PDF con annotazioni e segnalibri, glossario, note cliniche, prompt, statistiche e preferenze di lettura. Le chiavi dell’AI e la frase segreta di Drive restano fuori. Tienilo da parte prima di cambiare telefono.</p>
       <div class="inline">
         <button class="btn primary" data-act="export-full">Backup completo</button>
         <button class="btn" data-act="export-light">Backup senza i file PDF</button>
@@ -975,6 +975,19 @@ function setupFileLaunch() {
     } catch (err) { toast('Non riesco ad aprire il PDF: ' + (err.message || err), 'err'); }
   });
 }
+// v4.05: quello che arriva da Instagram o dalla galleria diventa un elemento della Raccolta
+let sharedClipLink = '';
+async function sharedToClip(link, files) {
+  try {
+    const { clip, existed } = await addClip({ url: link, files });
+    history.replaceState(null, '', `${location.pathname}#/raccolta/${clip.id}`);
+    return existed ? 'clip-old' : 'clip';
+  } catch (err) {
+    toast(err.message || 'Non riesco a salvarlo nella Raccolta', 'err');
+    history.replaceState(null, '', `${location.pathname}#/raccolta`);
+    return 'clip-err';
+  }
+}
 async function takeSharedFile() {
   const q = new URLSearchParams(location.search);
   if (!q.has('shared') || !('caches' in window)) return false;
@@ -988,6 +1001,15 @@ async function takeSharedFile() {
     const fileRes = meta.file ? await cache.match(scope + '__share/file') : null;
     await cache.delete(scope + '__share/meta');
     await cache.delete(scope + '__share/file');
+    // v4.05: screenshot e link dei social vanno nella Raccolta
+    const imgs = [];
+    for (let i = 0; i < (meta.images || []).length; i++) {
+      const r = await cache.match(`${scope}__share/img${i}`);
+      await cache.delete(`${scope}__share/img${i}`);
+      if (r) imgs.push(new File([await r.blob()], meta.images[i].name, { type: meta.images[i].type }));
+    }
+    const words = [meta.url, meta.text].filter(Boolean).join(' ');
+    if (!fileRes && (imgs.length || isSocialLink(words))) return await sharedToClip(isSocialLink(words) ? words : '', imgs);
     importJob = importJob && importJob.running ? importJob : null;
     if (fileRes) {
       const blob = await fileRes.blob();
@@ -1045,6 +1067,7 @@ function takeSharedText() {
   const body = [text, url && !text.includes(url) ? url : ''].filter(Boolean).join('\n\n');
   history.replaceState(null, '', location.pathname + '#/import');
   if (!body) return false;
+  if (isSocialLink(body)) { sharedClipLink = body; return 'clip-link'; }
   importJob = importJob && importJob.running ? importJob : null;
   importDraft.src = 'text';
   importDraft.text = importDraft.text ? `${importDraft.text}\n\n${body}` : body;
@@ -1068,6 +1091,7 @@ const MORE_ITEMS = [
   ['examq', 'Domande d’esame', 'Le domande uscite agli esami, anche da Excel: frequenza, docenti, allenamento'],
   ['cases', 'Casi clinici', 'I casi visti a lezione e in tirocinio, con foto, PDF e modalità Risolvi'],
   ['papers', 'Articoli', 'La tua bibliografia: dal DOI o dal PDF, con tag, stato di lettura e sintesi'],
+  ['raccolta', 'Raccolta', 'Schemi, reel e post salvati da Instagram e i tuoi screenshot, collegati con i tag'],
   ['viva', 'Interrogazione', 'Il professore (l’AI) ti fa domande dai tuoi appunti e valuta le risposte a voce'],
   ['ask', 'Chiedi alle tue fonti', 'Una domanda: la risposta viene solo dai tuoi appunti e PDF, con il rimando alla fonte'],
   ['inbox', 'Da sistemare', 'Gli appunti presi al volo con ⚡, da mettere nella sezione giusta'],
@@ -1235,6 +1259,8 @@ async function init() {
   Nav.init();
   SelGesture.init();
   NavHide.init();
+  NavPins.init();
+  CmdPalette.init();
   FullScreen.init();
   setupFileLaunch();
   Resume.init();
@@ -1266,9 +1292,16 @@ async function init() {
   watchKeyboard();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && statsPushTimer) pushStatsNow(); });
   const sharedFile = await takeSharedFile();
-  const shared = sharedFile || takeSharedText();
+  let shared = sharedFile || takeSharedText();
+  // il link di un post condiviso dall’app (senza file): lo salvo nella Raccolta
+  if (shared === 'clip-link') {
+    shared = await sharedToClip(sharedClipLink, []);
+  }
   route();
   if (shared === 'pdf') toast('PDF ricevuto: scegli il notebook e le pagine');
+  else if (shared === 'clip') toast('Salvato nella Raccolta: aggiungi un tag con la materia o l’argomento');
+  else if (shared === 'clip-old') toast('L’avevi già salvato: eccolo');
+  else if (shared === 'clip-err') { /* il messaggio c’è già */ }
   else if (shared) toast('Testo ricevuto: scegli il notebook e crea le sezioni');
   if (Sync.configured()) Sync.run({ silent: true });
 }
@@ -1331,6 +1364,43 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.10", title: "quiz di discriminazione con AI (Smistamento, A vs B, Sequenza, Intruso)", html: `      <ul>
+        <li><strong>Nuova scheda Quiz</strong> in ogni sezione (e pulsante <strong>Quiz</strong> in ogni cartella per mescolare più sezioni insieme): 4 modalità pensate per non confondere strutture simili: <em>Smistamento</em>, <em>Confronto A vs B</em> (Solo A / Solo B / Entrambi / Nessuno), <em>Sequenza</em> (ordina strati o tappe) e <em>Trova l’intruso</em>.</li>
+        <li><strong>Segnala cosa confondi</strong>: il campo <em>“Cosa confondi spesso?”</em> (con pulsanti rapidi salvati nella sezione o cartella) dice a Gemini esattamente su quale distinzione concentrare il quiz.</li>
+        <li><strong>＋ Flashcard</strong> su ogni risposta per salvare subito gli errori come flashcard.</li>
+      </ul>` },
+  { v: "4.09", title: "studio attivo: cloze per colonna nelle tabelle e riascolto nell’Interrogazione", html: `      <ul>
+        <li><strong>Cloze per colonna nelle tabelle</strong>: nella scheda <em>Cloze</em>, ogni intestazione di colonna delle tabelle Markdown ha un pulsante <strong>🙈 / 👁</strong> per nascondere l’intera colonna e scoprire le singole celle con un tocco (funziona anche nelle sezioni che hanno solo tabelle, senza termini <code>==...==</code>).</li>
+        <li><strong>Riascolto nell’Interrogazione</strong>: quando registri la risposta a voce con Gemini, compare un player audio per riascoltarti sia prima di inviare la risposta sia dopo la valutazione del professore.</li>
+      </ul>` },
+  { v: "4.08", title: "navigazione rapida: Command Palette (Ctrl+K), filtri di ricerca e preferiti", html: `      <ul>
+        <li><strong>Command Palette (<code>Ctrl+K</code>)</strong>: salta subito a qualsiasi sezione, PDF, nota clinica, esame di laboratorio o strumento con due tasti (anche dal pulsante <strong>Vai a…</strong> in cima alla barra laterale).</li>
+        <li><strong>Filtri rapidi nella ricerca globale</strong>: filtra i risultati tra <em>Tutto</em>, <em>Sezioni</em>, <em>Flashcard</em>, <em>PDF</em> e <em>Clinica</em> con un tocco.</li>
+        <li><strong>Voci preferite nella barra laterale</strong>: passa su qualsiasi voce della barra laterale e tocca la stellina <strong>☆</strong> per fissarla in cima nella sezione <em>Preferiti</em>.</li>
+      </ul>` },
+  { v: "4.07", title: "blocco note: curve fluide, backup completo e flashcard dal lazo", html: `      <ul>
+        <li><strong>Curve morbide nel blocco note</strong>: i tratti a penna usano curve quadratiche sui punti medi (sia a schermo che in esportazione PNG/PDF), eliminando gli spigoli quando scrivi veloce.</li>
+        <li><strong>Blocco note nel backup</strong>: i fogli scritti a mano vengono inclusi nel file <code>.nbbackup</code> e ripristinati automaticamente.</li>
+        <li><strong>Da lazo a flashcard</strong>: seleziona uno schema o una formula con il lazo e tocca <strong>🃏 Flashcard</strong> per trasformarlo subito in immagine dentro una nuova flashcard.</li>
+      </ul>` },
+  { v: "4.06", title: "tratto della pennina uniforme, debug generale e restyling", html: `      <ul>
+        <li><strong>Scrittura con la pennina</strong> (Blocco note e Scrivi a mano): corretta la curva di pressione e il bug dei punti iniziali troppo spessi, con smussamento del tratto per una grafia più fluida e costante.</li>
+        <li><strong>Debug generale</strong>: eliminata la doppia evidenziazione con la penna sui PDF, chiusi i listener e gli observer non rilasciati al cambio pagina e liberata la memoria audio nella cache vocale.</li>
+        <li><strong>Restyling</strong>: barra laterale divisa per categorie (Strumenti, Clinica, Altro), pulsanti senza micro-spostamenti al tocco e toolbar del blocco note e dei PDF più ordinate.</li>
+      </ul>` },
+  { v: "4.05", title: "Raccolta: i post di Instagram e i tuoi screenshot in un posto solo", html: `      <ul>
+        <li><strong>Raccolta</strong> (barra laterale o Altro): ci salvi schemi, reel e post trovati su Instagram, TikTok, Facebook o YouTube, e i tuoi screenshot. Incolli il link e tocchi Salva, oppure da Instagram <strong>Condividi › Notebook</strong> (su Android); dalla galleria condividi gli screenshot nello stesso modo, anche più di uno insieme.</li>
+        <li>Il post si vede dentro l’app com’è su Instagram. Instagram non lascia scaricare foto e video, quindi per gli schemi importanti aggiungi uno screenshot: resta tuo anche se il post sparisce.</li>
+        <li><strong>Tag</strong>: scrivi la materia o l’argomento (per esempio nefrologia). L’elemento compare da solo, in “Dalla Raccolta” o con il pulsante 📌 Raccolta, nelle note cliniche, sezioni, notebook e cartelle con lo stesso nome (per le note cliniche vale anche la specialità), e nella pagina del tag. Quando l’anno prossimo crei il notebook di Nefrologia, ritrovi lì quello che hai salvato oggi.</li>
+        <li><strong>✨ Leggi lo schema con l’AI</strong>: trascrive lo screenshot come testo (che la ricerca poi trova), propone titolo e tag e segnala le parti illeggibili o da verificare.</li>
+        <li>Da ogni elemento: <strong>Metti in una sezione</strong> (screenshot, nota, testo e link) o <strong>Aggiungi a una nota clinica</strong> (gli screenshot vanno tra le sue immagini).</li>
+      </ul>` },
+  { v: "4.04", title: "articoli nelle sezioni, in cartelle, con abstract e testo", html: `      <ul>
+        <li><strong>Scheda Articoli nelle sezioni</strong>: ogni sezione ha gli articoli scientifici del suo argomento, con sintesi, abstract e punti chiave che si aprono lì, il PDF da aprire accanto e il link. Ne colleghi uno che hai già cercandolo per titolo, autore o tag, oppure ne aggiungi uno nuovo.</li>
+        <li><strong>Cartelle degli articoli</strong>: in Articoli crei cartelle, una dentro l’altra, come quelle dei notebook. Ogni articolo va in una cartella (dalla scheda, o con “Sposta in una cartella”). Cercando, la ricerca entra in tutte le cartelle.</li>
+        <li><strong>Solo link e abstract</strong>: per gli articoli che la tua università non ha basta il DOI, il PMID o il link (anche di PubMed o della rivista): i dati e l’<strong>abstract</strong> si compilano da soli, da Crossref, Europe PMC e PubMed. Ogni articolo dice cosa hai: PDF, testo completo, solo abstract o solo link.</li>
+        <li><strong>Estrai il testo</strong>: dal PDF; senza PDF, se l’articolo è open access, il testo completo da PubMed Central; altrimenti almeno l’abstract. C’è anche “Incolla il testo”. Il testo si mette in una sezione per studiarlo, e la ✨ sintesi con l’AI ora funziona anche senza PDF.</li>
+      </ul>` },
   { v: "4.03", title: "mappe HTML nelle sezioni, e cartelle come quelle del computer", html: `      <ul>
         <li><strong>Mappe HTML</strong>: le mappe e le pagine in HTML (per esempio quelle fatte da Claude o da Gemini) si caricano nella nuova scheda <strong>Mappe HTML</strong> di una sezione e funzionano come in Chrome: zoom, rami che si aprono, pulsanti. Dalla pagina del notebook o di una cartella, <strong>＋ Mappa HTML</strong> crea una sezione per ogni file che scegli. C’è lo schermo intero, e da Altro ▾ le rinomini, le sostituisci con una versione nuova o le riscarichi. Si sincronizzano con Drive, entrano nel backup e si aprono anche in Affianca, accanto a un PDF.</li>
         <li><strong>Cartelle</strong>: niente più livelli fissi (macro-argomento, sottoargomento…). Ogni cartella può contenere sezioni e altre cartelle, quante vuoi, una dentro l’altra. Le apri con un tocco; in alto c’è il percorso, e tocchi un nome per tornare lì. La ricerca trova sezioni e cartelle a qualunque profondità. Le cartelle che avevi restano come erano.</li>
@@ -2149,6 +2219,241 @@ const Split = {
    funzione, “Riprendi” l’ultimo argomento studiato
    ===================================================================== */
 
+
+/* =====================================================================
+   v4.08: Command Palette (Ctrl+K) e voci preferite nella barra laterale
+   ===================================================================== */
+const CmdPalette = {
+  el: null,
+  idx: 0,
+  items: [],
+  open() {
+    if (this.el) { $('.cmd-in', this.el)?.focus(); return; }
+    const ov = document.createElement('div');
+    ov.className = 'overlay cmd-overlay';
+    ov.innerHTML = `
+      <div class="cmd-box" role="dialog" aria-modal="true" aria-label="Vai rapidamente a…">
+        <div class="cmd-top">
+          <svg class="cmd-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" class="cmd-in" placeholder="Vai a una sezione, PDF, nota clinica, esame o strumento…" autocomplete="off" spellcheck="false">
+          <kbd class="cmd-kbd">Esc</kbd>
+        </div>
+        <ul class="cmd-list" role="listbox"></ul>
+      </div>`;
+    document.body.append(ov);
+    this.el = ov;
+    const inp = $('.cmd-in', ov);
+    const list = $('.cmd-list', ov);
+    ov.addEventListener('click', e => {
+      if (e.target === ov) { this.close(); return; }
+      const b = e.target.closest('[data-ci]');
+      if (b) this.pick(+b.dataset.ci);
+    });
+    inp.addEventListener('input', () => this.render(inp.value));
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.close(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); this.move(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); this.move(-1); }
+      else if (e.key === 'Enter' && this.items.length) { e.preventDefault(); this.pick(this.idx); }
+    });
+    this.render('');
+    setTimeout(() => inp.focus(), 10);
+  },
+  close() {
+    if (!this.el) return;
+    this.el.remove();
+    this.el = null;
+    this.items = [];
+  },
+  move(d) {
+    if (!this.items.length || !this.el) return;
+    this.idx = (this.idx + d + this.items.length) % this.items.length;
+    $$('.cmd-item', this.el).forEach((el, i) => {
+      const on = i === this.idx;
+      el.classList.toggle('on', on);
+      el.setAttribute('aria-selected', String(on));
+      if (on) el.scrollIntoView({ block: 'nearest' });
+    });
+  },
+  pick(i) {
+    const it = this.items[i];
+    this.close();
+    if (!it) return;
+    if (it.fn) it.fn();
+    else if (it.href) go(it.href);
+  },
+  search(raw) {
+    const q = foldAccents(raw.trim());
+    const out = [];
+    const navTools = [
+      ['notebooks', 'Notebook', 'I tuoi notebook', '#/notebooks'],
+      ['cards', 'Flashcard', 'Ripassa le flashcard', '#/cards'],
+      ['review', 'Ripasso', 'Sezioni in scadenza oggi', '#/review'],
+      ['pdfs', 'PDF', 'Libreria PDF', '#/pdfs'],
+      ['import', 'Importa', 'Testo, PDF, XMind, Word, foto', '#/import'],
+      ...MORE_ITEMS.map(([k, l, s]) => [k, l, s, `#/${k}`])
+    ];
+    if (!q) {
+      const r = Resume.target();
+      if (r) out.push({ kind: 'Riprendi', title: r.sec.title, sub: nbById(r.sec.notebookId)?.name || '', fn: () => Resume.go() });
+      [...state.sections].sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 6).forEach(s => {
+        out.push({ kind: 'Recente', title: s.title, sub: [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › '), href: `#/sec/${s.id}/${openMode(s)}` });
+      });
+      ['pad', 'split', 'examq', 'clinic', 'lab', 'viva'].forEach(k => {
+        const t = navTools.find(x => x[0] === k);
+        if (t) out.push({ kind: 'Strumento', title: t[1], sub: t[2], href: t[3] });
+      });
+      return out;
+    }
+    // Strumenti e pagine
+    for (const [k, l, s, href] of navTools) {
+      if (foldAccents(`${l} ${s} ${k}`).includes(q)) out.push({ kind: 'Strumento', title: l, sub: s, href });
+      if (out.length >= 8) break;
+    }
+    // Notebook
+    for (const n of state.notebooks) {
+      if (foldAccents(n.name).includes(q)) out.push({ kind: 'Notebook', title: n.name, sub: `${secsOf(n.id).length} sezioni`, href: `#/nb/${n.id}` });
+      if (out.length >= 14) break;
+    }
+    // Sezioni
+    let sc = 0;
+    for (const s of state.sections) {
+      const where = [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › ');
+      if (foldAccents(`${s.title} ${where}`).includes(q)) {
+        out.push({ kind: 'Sezione', title: s.title, sub: where, href: `#/sec/${s.id}/${openMode(s)}` });
+        if (++sc >= 12) break;
+      }
+    }
+    // PDF
+    let pc = 0;
+    for (const p of state.pdfs) {
+      if (foldAccents(p.name).includes(q)) {
+        out.push({ kind: 'PDF', title: p.name, sub: p.pages ? `${p.pages} pagine` : 'PDF', href: `#/pdf/${p.id}` });
+        if (++pc >= 6) break;
+      }
+    }
+    // Note cliniche
+    let cc = 0;
+    for (const n of clinicalNotes()) {
+      if (foldAccents(`${n.title} ${(n.symptoms || []).join(' ')}`).includes(q)) {
+        out.push({ kind: 'Clinica', title: n.title, sub: (n.symptoms || []).slice(0, 4).join(', '), fn: () => showClinicNote(n.id) });
+        if (++cc >= 6) break;
+      }
+    }
+    // Laboratorio
+    let lc = 0;
+    for (const x of labExams()) {
+      if (foldAccents(`${x.name} ${x.abbr || ''}`).includes(q)) {
+        out.push({ kind: 'Lab', title: x.abbr ? `${x.name} (${x.abbr})` : x.name, sub: labCatName(x.cat), href: `#/lab/${x.id}` });
+        if (++lc >= 6) break;
+      }
+    }
+    return out.slice(0, 24);
+  },
+  render(q) {
+    if (!this.el) return;
+    this.items = this.search(q);
+    this.idx = 0;
+    const list = $('.cmd-list', this.el);
+    if (!this.items.length) {
+      list.innerHTML = '<li class="cmd-empty">Nessun risultato.</li>';
+      return;
+    }
+    list.innerHTML = this.items.map((it, i) => `
+      <li><button type="button" class="cmd-item${i === 0 ? ' on' : ''}" role="option" aria-selected="${i === 0}" data-ci="${i}">
+        <span class="cmd-tag">${esc(it.kind)}</span>
+        <span class="cmd-main"><span class="cmd-t">${esc(it.title)}</span>${it.sub ? `<span class="cmd-s">${esc(it.sub)}</span>` : ''}</span>
+      </button></li>`).join('');
+  },
+  init() {
+    const brand = $('.nav .brand');
+    if (brand && !$('#cmdOpenBtn')) {
+      brand.insertAdjacentHTML('afterend', '<button type="button" class="nav-cmd" id="cmdOpenBtn" title="Salto rapido (Ctrl+K)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Vai a…</span><kbd>Ctrl+K</kbd></button>');
+      $('#cmdOpenBtn').addEventListener('click', () => this.open());
+    }
+    document.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        if (this.el) this.close(); else this.open();
+      }
+    });
+  }
+};
+
+const NavPins = {
+  KEY: 'nb-nav-pins',
+  load() {
+    try { const a = JSON.parse(localStorage.getItem(this.KEY) || '[]'); return Array.isArray(a) ? a : []; }
+    catch { return []; }
+  },
+  save(list) { try { localStorage.setItem(this.KEY, JSON.stringify(list)); } catch { /* niente */ } },
+  toggle(key) {
+    const cur = this.load();
+    const i = cur.indexOf(key);
+    if (i >= 0) { cur.splice(i, 1); toast('Rimosso dai preferiti'); }
+    else { cur.push(key); toast('Aggiunto ai preferiti in cima alla barra'); }
+    this.save(cur);
+    this.render();
+  },
+  render() {
+    const nav = $('.nav');
+    if (!nav) return;
+    const pins = this.load();
+    let box = $('#navPinsBox', nav);
+    if (!box) {
+      const anchor = $('.nav-cat', nav);
+      if (!anchor) return;
+      box = document.createElement('div');
+      box.id = 'navPinsBox';
+      box.className = 'nav-pins';
+      anchor.before(box);
+    }
+    // aggiorna lo stato delle stelline sulle voci originali
+    $$('.nav a.nav-extra[data-nav]', nav).forEach(a => {
+      const k = a.dataset.nav;
+      const b = $('.nav-pin-btn', a);
+      const on = pins.includes(k);
+      if (b) { b.textContent = on ? '★' : '☆'; b.classList.toggle('on', on); b.title = on ? 'Togli dai preferiti' : 'Fissa in cima tra i preferiti'; }
+    });
+    if (!pins.length) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    box.innerHTML = '<span class="nav-cat" aria-hidden="true">Preferiti</span>';
+    pins.forEach(k => {
+      const orig = $(`.nav > a.nav-extra[data-nav="${k}"]`);
+      if (!orig) return;
+      const clone = orig.cloneNode(true);
+      clone.classList.add('nav-pinned');
+      // evita id duplicati (es. #shBadge, #incBadge)
+      $$('[id]', clone).forEach(x => x.removeAttribute('id'));
+      const pb = $('.nav-pin-btn', clone);
+      if (pb) { pb.textContent = '★'; pb.classList.add('on'); pb.title = 'Togli dai preferiti'; }
+      box.append(clone);
+    });
+  },
+  init() {
+    const nav = $('.nav');
+    if (!nav) return;
+    $$('.nav > a.nav-extra[data-nav]', nav).forEach(a => {
+      if ($('.nav-pin-btn', a)) return;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'nav-pin-btn';
+      b.dataset.pinKey = a.dataset.nav;
+      b.setAttribute('aria-label', 'Fissa nei preferiti');
+      b.textContent = '☆';
+      a.append(b);
+    });
+    nav.addEventListener('click', e => {
+      const b = e.target.closest('.nav-pin-btn');
+      if (!b) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.toggle(b.dataset.pinKey);
+    });
+    this.render();
+  }
+};
+
 /* ---------- Barra laterale a scomparsa (computer) ---------- */
 const NavHide = {
   KEY: 'nb-nav-hidden',
@@ -2315,7 +2620,16 @@ const PadDB = {
   },
   async get(k) { const db = await this.open(); return new Promise(res => { const q = db.transaction('pads').objectStore('pads').get(k); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); },
   async put(k, v) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('pads', 'readwrite'); tx.objectStore('pads').put(v, k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); },
-  async del(k) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('pads', 'readwrite'); tx.objectStore('pads').delete(k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); }
+  async del(k) { const db = await this.open(); return new Promise(res => { const tx = db.transaction('pads', 'readwrite'); tx.objectStore('pads').delete(k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); }); },
+  async all() {
+    const db = await this.open();
+    return new Promise(res => {
+      const out = {};
+      const req = db.transaction('pads').objectStore('pads').openCursor();
+      req.onsuccess = e => { const c = e.target.result; if (c) { out[c.key] = c.value; c.continue(); } else res(out); };
+      req.onerror = () => res(out);
+    });
+  }
 };
 const PAD_COLORS = [['ink', 'Inchiostro'], ['#2563eb', 'Blu'], ['#dc2626', 'Rosso'], ['#16a34a', 'Verde'], ['#f59e0b', 'Arancio'], ['#9333ea', 'Viola']];
 const PAD_HL = [['#facc15', 'Giallo'], ['#4ade80', 'Verde'], ['#f472b6', 'Rosa'], ['#38bdf8', 'Azzurro']];
@@ -2327,6 +2641,76 @@ const PAD_A4 = Math.SQRT2;
 const PAD_REF = 620;
 const padA4Up = h => Math.max(1, Math.ceil(h / PAD_A4 - 1e-6)) * PAD_A4;
 const PAD_SIZES = [[0.0035, 'Sottile'], [0.006, 'Media'], [0.011, 'Spessa']];
+// v4.06: curva morbida per la pressione della penna (evita salti improvvisi quando pressure === 0)
+function padLineWidth(w, W, p) {
+  const pr = typeof p === 'number' && p >= 0 ? Math.min(1, p) : 0.5;
+  return Math.max(0.8, w * W * (0.55 + Math.pow(pr, 0.75) * 0.75));
+}
+// v4.07: tratti a penna con curve quadratiche sui punti medi (fluidi sia a schermo che in esportazione)
+function padDrawPenStroke(c, s, W, col, from = 1, finish = true) {
+  const pts = s.p;
+  if (!pts.length) return;
+  c.strokeStyle = c.fillStyle = col;
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  if (pts.length === 1) {
+    c.beginPath(); c.arc(pts[0][0] * W, pts[0][1] * W, padLineWidth(s.w, W, pts[0][2]) / 2, 0, Math.PI * 2); c.fill();
+    return;
+  }
+  const n = pts.length;
+  const start = Math.max(1, from);
+  for (let i = start; i < n; i++) {
+    const a = pts[i - 1], b = pts[i];
+    const mx = ((a[0] + b[0]) / 2) * W, my = ((a[1] + b[1]) / 2) * W;
+    c.beginPath();
+    if (i === 1) {
+      c.lineWidth = padLineWidth(s.w, W, (a[2] + b[2]) / 2);
+      c.moveTo(a[0] * W, a[1] * W);
+      c.lineTo(mx, my);
+    } else {
+      const p0 = pts[i - 2];
+      c.lineWidth = padLineWidth(s.w, W, a[2]);
+      c.moveTo(((p0[0] + a[0]) / 2) * W, ((p0[1] + a[1]) / 2) * W);
+      c.quadraticCurveTo(a[0] * W, a[1] * W, mx, my);
+    }
+    c.stroke();
+  }
+  if (finish) {
+    const a = pts[n - 2], b = pts[n - 1];
+    c.lineWidth = padLineWidth(s.w, W, b[2]);
+    c.beginPath();
+    c.moveTo(((a[0] + b[0]) / 2) * W, ((a[1] + b[1]) / 2) * W);
+    c.lineTo(b[0] * W, b[1] * W);
+    c.stroke();
+  }
+}
+// v4.07: esporta solo i tratti selezionati dal lazo, ritagliati su fondo bianco
+function padExportSelection(sel) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, maxW = 0.01;
+  sel.forEach(s => {
+    if (s.w) maxW = Math.max(maxW, s.w);
+    s.p.forEach(q => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); });
+  });
+  if (!isFinite(x0)) return null;
+  const pad = Math.max(0.025, maxW * 2.5);
+  x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+  const bw = Math.max(0.05, x1 - x0), bh = Math.max(0.05, y1 - y0);
+  const W = Math.max(480, Math.min(1400, Math.round(1100 / Math.max(bw, bh))));
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(60, Math.min(1600, Math.round(bw * W)));
+  cv.height = Math.max(60, Math.min(1600, Math.round(bh * W)));
+  const c = cv.getContext('2d');
+  c.fillStyle = '#fff';
+  c.fillRect(0, 0, cv.width, cv.height);
+  c.translate(-x0 * W, -y0 * W);
+  sel.forEach(s => {
+    const col = s.c === 'ink' ? '#111' : s.c;
+    if (s.k === 'shape' || s.k === 'text') padDrawItem(c, s, W, col);
+    else if (s.k === 'hl') padHlPath(c, s, W);
+    else padDrawPenStroke(c, s, W, col, 1, true);
+  });
+  return cv;
+}
 // v3.56: sfondo del foglio (righe, quadretti o bianco) e foglio da esportare su carta bianca
 function padPaper(c, W, H, kind, color, alpha, vis = null, bounds = null) {
   if (kind === 'plain') return;
@@ -2390,16 +2774,10 @@ function padExportCanvas(pg, bg, W = 1240) {
   c.lineCap = 'round';
   c.lineJoin = 'round';
   pg.strokes.forEach(s => {
-    c.strokeStyle = c.fillStyle = s.c === 'ink' ? '#111' : s.c;
-    const pts = s.p;
-    if (s.k === 'shape' || s.k === 'text') { padDrawItem(c, s, W, s.c === 'ink' ? '#111' : s.c); return; }
+    const col = s.c === 'ink' ? '#111' : s.c;
+    if (s.k === 'shape' || s.k === 'text') { padDrawItem(c, s, W, col); return; }
     if (s.k === 'hl') { padHlPath(c, s, W); return; }
-    if (pts.length === 1) { c.beginPath(); c.arc(pts[0][0] * W, pts[0][1] * W, Math.max(0.8, s.w * W * (pts[0][2] || 0.5)), 0, Math.PI * 2); c.fill(); return; }
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1], b = pts[i];
-      c.lineWidth = Math.max(0.8, s.w * W * (0.45 + ((a[2] + b[2]) / 2 || 0.5)));
-      c.beginPath(); c.moveTo(a[0] * W, a[1] * W); c.lineTo(b[0] * W, b[1] * W); c.stroke();
-    }
+    padDrawPenStroke(c, s, W, col, 1, true);
   });
   return cv;
 }
@@ -2774,6 +3152,7 @@ const PadX = {
         if (k === 'branch' && node) this.addBranch(node);
         else if (k === 'text') { if (node) this.textIn(node); else if (this.sel[0].k === 'text') this.editText(this.sel[0]); }
         else if (k === 'fill') { this.pushUndo({ type: 'clear', page: this.page, strokes: this.snap() }); const on = !this.sel.filter(padClosed).every(s => s.f); this.sel.filter(padClosed).forEach(s => { if (on) s.f = 1; else delete s.f; }); this.redraw(); this.saveSoon(); }
+        else if (k === 'card') this.selToCard();
         else if (k === 'dup') this.act('dup');
         else if (k === 'del') this.act('clear');
       });
@@ -2781,7 +3160,7 @@ const PadX = {
       this.selBar = el;
     }
     const node = padClosed(sel[0]) ? sel[0] : null;
-    const html = `${node ? '<button type="button" data-sb="branch" title="Aggiungi un nodo collegato a questo">＋ Ramo</button>' : ''}${node || (sel.length === 1 && sel[0].k === 'text') ? '<button type="button" data-sb="text" title="Scrivi nel nodo">Aa</button>' : ''}${sel.some(padClosed) ? '<button type="button" data-sb="fill" title="Riempi o svuota la forma">◐</button>' : ''}<button type="button" data-sb="dup" title="Duplica">⧉</button><button type="button" data-sb="del" title="Elimina">🗑</button>`;
+    const html = `${node ? '<button type="button" data-sb="branch" title="Aggiungi un nodo collegato a questo">＋ Ramo</button>' : ''}${node || (sel.length === 1 && sel[0].k === 'text') ? '<button type="button" data-sb="text" title="Scrivi nel nodo">Aa</button>' : ''}${sel.some(padClosed) ? '<button type="button" data-sb="fill" title="Riempi o svuota la forma">◐</button>' : ''}<button type="button" data-sb="card" title="Crea una flashcard da questa selezione">🃏 Flashcard</button><button type="button" data-sb="dup" title="Duplica">⧉</button><button type="button" data-sb="del" title="Elimina">🗑</button>`;
     if (this.selBar.dataset.h !== html) { this.selBar.innerHTML = html; this.selBar.dataset.h = html; }
     this.selBar.hidden = false;
     const [bx, by, bw, bh] = this.selBox;
@@ -2791,6 +3170,22 @@ const PadX = {
     let y = by + this.OY - st - 42;
     if (y < 4) y = Math.min(this.VH - 42, by + this.OY - st + bh + 8);
     this.selBar.style.left = `${x}px`; this.selBar.style.top = `${y}px`;
+  },
+  // v4.07: trasforma i tratti selezionati dal lazo in una nuova flashcard
+  async selToCard() {
+    if (!this.sel || !this.sel.length) return;
+    const secM = location.hash.match(/^#\/sec\/([^/]+)/);
+    const nbM = location.hash.match(/^#\/(?:nb|deck)\/([^/]+)/);
+    const sec = secM ? secById(secM[1]) : null;
+    const nbId = sec ? sec.notebookId : (nbM && nbById(nbM[1]) ? nbM[1] : (state.notebooks.find(n => !n.kind)?.id || state.notebooks[0]?.id));
+    if (!nbId) { toast('Crea prima un notebook per salvare la flashcard', 'err'); return; }
+    const cv = padExportSelection(this.sel);
+    if (!cv) return;
+    try {
+      const im = await saveImage(await canvasToImage(cv, 0.9), nbId);
+      const card = await openCardSheet({ back: imageMd(im.id, 'Appunti a mano'), sectionId: sec ? sec.id : null, notebookId: nbId, heading: 'Flashcard dal blocco note' });
+      if (!card) await removeOrphanImages([im.id]);
+    } catch (err) { toast(err.message || 'Non riesco a creare l’immagine', 'err'); }
   },
   // vedi tutto: lo zoom che fa stare ogni cosa nel riquadro
   fitAll() {
@@ -3225,23 +3620,11 @@ const Pad = {
     c.restore();
     this.paintSelBar();
   },
-  drawStroke(s, from = 1) {
-    const c = this.ctx, W = this.W, pts = s.p;
+  drawStroke(s, from = 1, finish = true) {
+    const c = this.ctx, W = this.W;
     if (s.k === 'shape' || s.k === 'text') { if (!(this.ted && this.ted.s === s)) padDrawItem(c, s, W, this.inkColor(s.c)); return; }
     if (s.k === 'hl') { padHlPath(c, s, W); return; }
-    c.strokeStyle = this.inkColor(s.c);
-    c.lineCap = 'round';
-    c.lineJoin = 'round';
-    if (pts.length === 1) {
-      c.fillStyle = c.strokeStyle;
-      c.beginPath(); c.arc(pts[0][0] * W, pts[0][1] * W, Math.max(0.8, s.w * W * (pts[0][2] || 0.5)), 0, Math.PI * 2); c.fill();
-      return;
-    }
-    for (let i = Math.max(1, from); i < pts.length; i++) {
-      const a = pts[i - 1], b = pts[i];
-      c.lineWidth = Math.max(0.8, s.w * W * (0.45 + ((a[2] + b[2]) / 2 || 0.5)));
-      c.beginPath(); c.moveTo(a[0] * W, a[1] * W); c.lineTo(b[0] * W, b[1] * W); c.stroke();
-    }
+    padDrawPenStroke(c, s, W, this.inkColor(s.c), from, finish);
   },
   bindDraw() {
     const cv = this.canvas;
@@ -3250,7 +3633,8 @@ const Pad = {
     const pos = e => {
       const r = rect || cv.getBoundingClientRect();
       const sl = rect ? rect.sl : this.scroll()[0], st = rect ? rect.st : this.scroll()[1];
-      return [(e.clientX - r.left + sl - (this.OX || 0)) / this.W, (e.clientY - r.top + st - (this.OY || 0)) / this.W, e.pointerType === 'pen' ? (e.pressure || 0.5) : 0.5];
+      const pr = e.pointerType === 'pen' ? (typeof e.pressure === 'number' && e.pressure > 0 ? Math.min(1, e.pressure) : 0.08) : 0.5;
+      return [(e.clientX - r.left + sl - (this.OX || 0)) / this.W, (e.clientY - r.top + st - (this.OY || 0)) / this.W, pr];
     };
     const erase = pt => {
       const pg = this.pg();
@@ -3451,8 +3835,9 @@ const Pad = {
         if (d.erase) { erase(pt); continue; }
         const last = d.s.p[d.s.p.length - 1];
         if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) * this.W < 1.2) continue;
+        if (e.pointerType === 'pen') pt[2] = last[2] * 0.65 + pt[2] * 0.35;
         d.s.p.push(pt.map(v => +v.toFixed(4)));
-        if (d.s.k === 'hl') this.liveHl(d.s, d.s.p.length - 1); else this.drawStroke(d.s, d.s.p.length - 1);
+        if (d.s.k === 'hl') this.liveHl(d.s, d.s.p.length - 1); else this.drawStroke(d.s, d.s.p.length - 1, false);
       }
       // tieni ferma la penna alla fine del tratto: diventa una linea dritta (come in Samsung Notes)
       if (d.s && !d.line) {
@@ -3502,6 +3887,7 @@ const Pad = {
       if (d.s) {
         this.pushUndo({ type: 'add', page: this.page, s: d.s });
         if (d.s.k === 'hl') { this.clearLive(); this.redraw(); }
+        else if (d.s.p.length >= 2) this.drawStroke(d.s, d.s.p.length, true);
         this.saveSoon();
       }
       if (d.move || d.resize) { this.relink(); this.saveSoon(); this.redraw(); }
@@ -3828,7 +4214,8 @@ const HELP = {
   eqSim: { t: 'Simulazione dalle domande d’esame', b: `Le domande sono estratte dalla banca delle domande d’esame seguendo la <b>struttura dell’esame</b> che hai impostato per la materia: una o più domande per ogni parte, prese dalle macro-categorie di quella parte. Con “più probabili quelle uscite più spesso”, un argomento uscito 20 volte esce molto più spesso di uno uscito una volta; con “ultimo anno”, gli appelli più recenti contano il doppio.<br><br>Rispondi a voce o per iscritto, poi apri <b>Traccia e dettagli</b> (come l’hanno chiesta, la risposta, le sezioni) e segna se la sapevi: finisce nelle statistiche della domanda.<br><br><b>Un appello vero</b> ripropone le domande fatte davvero a uno studente in un giorno, come le ha raccontate.` },
   exam: { t: 'Simulazione d’esame', b: `Domande, cloze e flashcard pescati a caso dagli argomenti scelti, come in un esame. Alla fine vedi il risultato e cosa ripassare.` },
   lab: { t: 'Medicina di laboratorio', b: `Una scheda per ogni esame: campione e preparazione, range (anche diversi per uomini e donne), valori critici, cause di aumento e diminuzione, interferenze, andamento nel tempo, uso diagnostico con sensibilità e specificità (LR+ e LR− li calcola l’app), note, collegamenti alle note cliniche e fonti.<br><br>L’<b>elenco di base</b> crea le schede di oltre 110 esami già compilate da Claude, con range indicativi, cause e note: la fonte è Claude, quindi confrontale con il tuo libro e il tuo laboratorio. Ogni campo si può cambiare, e puoi creare categorie nuove.<br><br>Con una chiave AI, “Compila con l’AI” riempie i campi vuoti e segna l’esame come incompleto, da verificare.` },
-  papers: { t: 'Articoli', b: `La tua bibliografia. <b>Nuovo articolo</b>: incolla il DOI (o il link doi.org) e i dati si compilano da soli dal registro Crossref; oppure carica il PDF: se contiene il DOI, li trova da sé. Il PDF finisce nella libreria (notebook “Articoli”) e si apre con il lettore completo, anche in Affianca.<br><br>Per ogni articolo: <b>tipo</b> (linee guida, review, trial…), <b>stato</b> (da leggere, in lettura, letto), <b>★ importante</b>, <b>tag</b> (per esempio la malattia), <b>sintesi</b> e <b>punti chiave</b>. Lo colleghi alle note cliniche, che poi lo mostrano.<br><br><b>Copia la citazione</b> dà la citazione in stile Vancouver; <b>Esporta (RIS)</b> salva gli articoli che vedi (con i filtri) per Zotero, Mendeley o EndNote.` },
+  papers: { t: 'Articoli', b: `La tua bibliografia, divisa in <b>cartelle</b> come sul computer (una dentro l’altra, quante vuoi). <b>Nuovo articolo</b>: incolla il DOI, il PMID o il link (anche di PubMed o della rivista) e titolo, autori, rivista, anno e <b>abstract</b> si compilano da soli; oppure carica il PDF. Se la tua università non ha l’articolo, ti restano il link e l’abstract.<br><br><b>Estrai il testo</b> lo prende dal PDF; senza PDF, se l’articolo è open access prende il testo completo da PubMed Central, altrimenti almeno l’abstract. <b>Incolla il testo</b> per quello che copi dalla pagina della rivista. Il testo si mette in una sezione, per studiarlo con Cloze e flashcard.<br><br>Per ogni articolo: tipo, stato di lettura, ★ importante, tag, sintesi e punti chiave (anche con ✨ l’AI, dal PDF, dal testo o dall’abstract). Lo colleghi alle <b>sezioni</b> (nella loro scheda Articoli) e alle note cliniche.<br><br><b>Copia la citazione</b> dà la citazione in stile Vancouver; <b>Esporta (RIS)</b> salva gli articoli che vedi per Zotero, Mendeley o EndNote.` },
+  raccolta: { t: 'Raccolta', b: `Il posto per schemi, reel e post che trovi su Instagram (o TikTok, Facebook, YouTube) e per i tuoi screenshot, così non restano sparsi tra i salvati e la galleria.<br><br><b>Come salvare</b>: incolla il link del post e tocca Salva, oppure <b>＋ Screenshot</b>. Su Android è più veloce da Instagram: <b>Condividi › Notebook</b>; dalla galleria condividi gli screenshot nello stesso modo.<br><br><b>Tag</b>: scrivi la materia e l’argomento (per esempio nefrologia, sindrome nefrosica). Un elemento compare da solo nelle note cliniche, nelle sezioni, nei notebook e nelle cartelle che hanno lo stesso nome di uno dei suoi tag (o, per le note cliniche, la stessa specialità), e nella pagina del tag.<br><br>Il post di Instagram si vede incorporato com’è, ma Instagram non lascia scaricare foto e video: se l’autore lo cancella sparisce. Per gli schemi importanti aggiungi uno screenshot. <b>✨ Leggi lo schema con l’AI</b> trascrive lo screenshot come testo (così la ricerca lo trova), propone titolo e tag e segnala le parti da verificare.` },
   clinicQuiz: { t: 'Diagnosi differenziale', b: `<b>Dai sintomi alla diagnosi</b>: vedi alcuni sintomi presi da una tua nota clinica e scegli tra quattro diagnosi, scelte tra quelle con più sintomi in comune (o collegate in diagnosi differenziale), così non è troppo facile. Dopo la risposta, per ogni opzione vedi quali sintomi spiega e quali no.<br><br><b>Cosa entra in diagnosi differenziale</b>: per un quadro, scegli le malattie che entrano in DDx; vale per le note in cui le hai collegate (Modifica → Diagnosi differenziale).<br><br>Più note scrivi, con più sintomi, più l’esercizio somiglia al reparto.` },
   scores: { t: 'Score clinici', b: `Spunta i criteri o scegli i valori: il punteggio e la sua lettura si aggiornano subito. Sotto ogni score c’è la fonte (sono io, Claude, sulle linee guida citate). Servono per studiare e per capire come ragionano in reparto: le decisioni vere si prendono con il medico.` },
   micro: { t: 'Microbiologia', b: `Una scheda per microrganismo, con tipo (batterio, virus, fungo, parassita, prione) e un gruppo scelto da te. I titoli sono già pronti; le malattie infettive restano nelle note cliniche. Ogni scheda ha tutte le modalità di studio, foto con etichette e video. <b>Esercitati</b> ne apre una a caso in Orale.` },
@@ -3891,6 +4278,7 @@ const HELP_SPOTS = [
   { sel: '.page-head h1', text: 'Score clinici', key: 'scores' },
   { sel: '.page-head h1', text: 'Diagnosi differenziale', key: 'clinicQuiz' },
   { sel: '.page-head h1', text: 'Articoli', key: 'papers' },
+  { sel: '.page-head h1', text: 'Raccolta', key: 'raccolta' },
   { sel: '.page-head h1', text: 'Microbiologia', key: 'micro' },
   { sel: '.page-head h1', text: 'Atlante diagnostico', key: 'atlas' },
   { sel: '.page-head h1', text: 'Atlante di anatomia', key: 'anat' },

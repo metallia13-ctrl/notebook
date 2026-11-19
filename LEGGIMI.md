@@ -11,7 +11,7 @@ L’app è una pagina web (GitHub Pages) senza passaggi di compilazione: quello 
 | `02-notebook.js` | Notebook e sezioni: elenchi e cartelle (una dentro l’altra, senza limite di livelli), mappe HTML, modalità di studio (Cloze, Leggi, Orale, Pagina bianca, Domande, Mappe, Video, Audio, Modifica sull’anteprima), importazione, segni a semaforo, scrittura a mano, etichette, sposta paragrafo, stampa |
 | `03-flashcard.js` | Flashcard e ripasso: algoritmo di Anki (intervalli modificabili), viste delle flashcard, selezione multipla, calendario, simulazione e modalità esame |
 | `04-pdf.js` | Lettore PDF (evidenziatori con legenda dei colori, penna, segnalibri, figure, fogli per appunti, ascolto, PDF annotato) e libreria dei PDF |
-| `05-clinica.js` | Glossario e note cliniche, diagnosi differenziale, sezioni speciali (microbiologia, atlanti, farmacologia con il confronto, diario di tirocinio), score clinici, domande d’esame, semeiotica, laboratorio, casi clinici |
+| `05-clinica.js` | Glossario e note cliniche, articoli (cartelle, abstract, testo, scheda Articoli delle sezioni), Raccolta (post dei social e screenshot, collegati con i tag), diagnosi differenziale, sezioni speciali (microbiologia, atlanti, farmacologia con il confronto, diario di tirocinio), score clinici, domande d’esame, semeiotica, laboratorio, casi clinici |
 | `06-app.js` | Impostazioni, collegamento con StudyHub, link, guida, aiuto e tutorial, pagina Altro, Affianca, blocco note, Riprendi, protezione dei dati, novità; alla fine `init()` avvia l’app |
 | `style.css` | Tutto lo stile |
 | `sw.js` | Service worker: funziona anche offline; `VERSION` va aumentata a ogni aggiornamento |

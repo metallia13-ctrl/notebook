@@ -968,16 +968,6 @@ function viewPdf(id, pageParam) {
     const layer = layerAt(e.clientX, e.clientY, null);
     if (layer) selectWordAt(layer, e.clientX, e.clientY);
   });
-  let penFrom = null;
-  pagesEl.addEventListener('pointerdown', e => { penFrom = e.pointerType === 'pen' ? [e.clientX, e.clientY] : null; }, true);
-  pagesEl.addEventListener('pointerup', e => {
-    if (e.pointerType !== 'pen' || !penFrom) return;
-    const dragged = Math.hypot(e.clientX - penFrom[0], e.clientY - penFrom[1]) > 12;
-    penFrom = null;
-    if (!dragged) return;
-    // timer a parte: il selectionchange che arriva subito dopo non deve annullarlo
-    setTimeout(applyTextTool, 60);
-  });
   const onSelTool = () => {
     if (!['hl', 'ul', 'st'].includes(R.tool)) return;
     clearTimeout(textToolTimer);

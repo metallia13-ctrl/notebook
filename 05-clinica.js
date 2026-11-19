@@ -467,6 +467,7 @@ function showClinicNote(id) {
       ${row('Terapia', md('therapy'))}
       ${(n.algos || []).map(a => `<div class="cn-row"><h3>${esc(a.t || 'Algoritmo')}</h3>${algoSvg(a.md, a.t)}</div>`).join('')}
       ${(n.papers || []).map(paperById).filter(Boolean).length ? `<div class="cn-row"><h3>Articoli</h3><ul class="cn-papers">${(n.papers || []).map(paperById).filter(Boolean).map(p => `<li><a href="#/papers/${p.id}" data-g="pp">${p.star ? '★ ' : ''}${esc(p.title)}</a><small> · ${esc([authorsShort(p, 1), p.journal, p.year].filter(Boolean).join(' · '))}${p.status === 'read' ? '' : ` · ${esc(PAPER_STATUS.find(s => s[0] === (p.status || 'todo'))[1].toLowerCase())}`}</small></li>`).join('')}</ul></div>` : ''}
+      ${clipsForNote(n).length ? `<div class="cn-row"><h3>Dalla Raccolta</h3>${clipStrip(clipsForNote(n), `#/raccolta/cn/${n.id}`)}</div>` : ''}
       ${(n.images || []).length ? `<div class="cn-row"><h3>Immagini</h3><div class="cn-gal">${n.images.map(x => `<figure class="cn-fig"><img class="nb-img" data-img="${esc(x.id)}" alt="${esc(x.cap || '')}" title="Tocca per ingrandire">${x.cap || x.src ? `<figcaption>${esc(x.cap || '')}${x.src ? `<span class="cn-src">Fonte: ${/^https?:\/\//.test(x.src) ? `<a href="${esc(x.src)}" target="_blank" rel="noopener">${esc(x.src.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60))}</a>` : esc(x.src)}</span>` : '<span class="cn-src muted-inline">fonte da aggiungere</span>'}</figcaption>` : ''}</figure>`).join('')}</div></div>` : ''}
       ${row('Note', md('body'))}
     </div>
@@ -482,7 +483,7 @@ function showClinicNote(id) {
   $('[data-g="close"]', sh.el).onclick = () => sh.close();
   const go2 = $('[data-g="go"]', sh.el);
   if (go2) go2.onclick = () => sh.close();
-  $$('[data-g="lab"], [data-g="pp"]', sh.el).forEach(a => { a.onclick = () => sh.close(); });
+  $$('[data-g="lab"], [data-g="pp"], .clip-strip a', sh.el).forEach(a => { a.onclick = () => sh.close(); });
   $$('[data-cnopen]', sh.el).forEach(b => { b.onclick = () => { sh.close(); setTimeout(() => showClinicNote(b.dataset.cnopen), 0); }; });
   // un tocco su un’immagine la ingrandisce dentro la nota, un altro la rimpicciolisce
   $$('.cn-fig img', sh.el).forEach(img => img.addEventListener('click', () => img.closest('.cn-fig').classList.toggle('big')));
@@ -4066,7 +4067,8 @@ function vivaRender() {
         <div class="viva-meter" aria-live="polite"><span class="vm-t">0:00</span><span class="vm-first"></span><span class="vm-p"></span></div>
         ${gem ? `<button class="btn primary big mic-big" type="button" data-act="vv-rec" aria-pressed="false">${MIC_SVG}<span>${c.audio ? 'Registra di nuovo' : 'Registra la risposta'}</span></button>
           <div class="vv-level" aria-hidden="true"><i></i></div>
-          <p class="hint">${c.audio ? `Registrazione pronta (${fmtT(c.audio.seconds)}): tocca “Ho finito”.` : 'Parla come all’esame; quando hai finito tocca di nuovo il pulsante o direttamente “Ho finito”. Gemini trascrive la risposta riconoscendo i termini dei tuoi appunti.'}</p>`
+          ${c.audioUrl ? `<audio class="viva-audio" controls src="${c.audioUrl}" aria-label="Riascolta la tua risposta"></audio>` : ''}
+          <p class="hint">${c.audio ? `Registrazione pronta (${fmtT(c.audio.seconds)}): puoi riascoltarla qui sopra o toccare “Ho finito”.` : 'Parla come all’esame; quando hai finito tocca di nuovo il pulsante o direttamente “Ho finito”. Gemini trascrive la risposta riconoscendo i termini dei tuoi appunti.'}</p>`
           : SpeechRec ? `<button class="btn primary big mic-big" type="button" data-act="vv-mic" aria-pressed="false">${MIC_SVG}<span>Rispondi a voce</span></button>` : ''}
         <label class="field"><span>${gem ? 'Oppure scrivi la risposta' : SpeechRec ? 'La tua risposta (si scrive da sola mentre parli; puoi correggerla)' : 'La tua risposta'}</span><textarea class="input" id="vvAns" rows="${gem ? 3 : 6}">${esc(c.text)}</textarea></label>
         <p class="viva-interim hint"></p>
@@ -4114,7 +4116,11 @@ function vivaRender() {
       const a = await VoiceCapture.stop(cap);
       if (cap.first) { c.tFirst = cap.first; c.pauses = cap.pauses; }
       c.tSpeechEnd = cap.lastVoice || Date.now();
-      if (a.seconds >= 1) c.audio = { mime: 'audio/wav', data: a.data, seconds: a.seconds };
+      if (a.seconds >= 1) {
+        if (c.audioUrl) { try { URL.revokeObjectURL(c.audioUrl); } catch { /* niente */ } }
+        c.audio = { mime: 'audio/wav', data: a.data, seconds: a.seconds };
+        c.audioUrl = URL.createObjectURL(base64ToBlob(a.data, 'audio/wav'));
+      }
     };
     if (recBtn) {
       recBtn.addEventListener('click', async () => {
@@ -4123,6 +4129,7 @@ function vivaRender() {
         try {
           const lv = $('.vv-level i');
           vivaState.cap = await VoiceCapture.start((x, voice) => { if (lv) { lv.style.width = `${Math.round(x * 100)}%`; lv.classList.toggle('on', voice); } });
+          if (c.audioUrl) { try { URL.revokeObjectURL(c.audioUrl); } catch { /* niente */ } c.audioUrl = null; }
           c.audio = null;
           c.pauses = 0;
           recBtn.setAttribute('aria-pressed', 'true');
@@ -4189,6 +4196,7 @@ function vivaRender() {
         <p class="viva-q sm">${esc(c.q)}</p>
         <div class="viva-score ${e.voto >= 27 ? 'top' : e.voto >= 18 ? 'ok' : 'ko'}"><b>${e.voto}</b><span>/30 indicativo</span></div>
         <p class="viva-judge">“${esc(e.giudizio || '')}”</p>
+        ${c.audioUrl ? `<div class="viva-replay"><span class="hint">La tua registrazione:</span><audio class="viva-audio" controls src="${c.audioUrl}" aria-label="Riascolta la tua risposta"></audio></div>` : ''}
         ${c.text ? `<details class="viva-said"><summary>Cosa ha capito il professore della tua risposta</summary><p>${esc(c.text)}</p></details>` : ''}
         ${list('Detto bene', e.bene, 'ok')}${list('Mancava', e.mancava, 'miss')}${list('Da correggere', e.errori, 'err')}
         <div class="viva-l flu"><h3>Come l’hai detto</h3><ul>${fl.map(x => `<li>${x}</li>`).join('')}</ul></div>
@@ -4322,9 +4330,359 @@ async function crossrefLookup(doi) {
     year: year ? String(year) : '',
     volume: String(m.volume || ''), issue: String(m.issue || ''), pages: String(m.page || ''),
     url: String(m.URL || ''),
+    abstract: m.abstract ? markupToText(m.abstract) : '',
     guessType: /book/.test(tp) ? 'other' : ''
   };
 }
+/* ---------- v4.04: DOI, PMID, PMCID o un link qualsiasi; abstract e testo completo ----------
+   Europe PMC (gratuito, senza chiave) dà abstract, PMID, PMCID e, per gli articoli open access,
+   il testo completo; PubMed è la riserva per l’abstract. Gli articoli che la tua università non
+   ha restano utili con l’abstract e il link. */
+const EPMC = 'https://www.ebi.ac.uk/europepmc/webservices/rest';
+const PAPER_TEXT_MAX = 250000;
+function paperIds(raw) {
+  const s = String(raw || '').trim();
+  const url = /^https?:\/\//i.test(s) ? s : '';
+  // nei link il DOI finisce prima di ? e #
+  const doi = cleanDoi(url ? s.replace(/[?#].*$/, '') : s);
+  const pmcid = ((/\bPMC\d{4,9}\b/i.exec(s) || [''])[0]).toUpperCase();
+  const m = /pubmed\.ncbi\.nlm\.nih\.gov\/(\d{4,9})/i.exec(s) || /^(?:pmid:?\s*)?(\d{4,9})$/i.exec(s);
+  return { doi, pmid: m ? m[1] : '', pmcid, url };
+}
+// testo semplice da HTML o JATS (abstract di Crossref e di Europe PMC); i titoletti restano in grassetto
+function markupToText(h) {
+  let s = String(h || '');
+  if (!s.trim()) return '';
+  s = s.replace(/<(jats:)?(title|h[1-6])[^>]*>([\s\S]*?)<\/(jats:)?(title|h[1-6])>/gi, (m, a, b, t) => `\n\n§§${t.replace(/<[^>]+>/g, '').trim()}§§ `)
+    .replace(/<\/?(jats:)?(p|sec|div|br)[^>]*>/gi, '\n\n')
+    .replace(/<(b|strong|jats:bold)>([\s\S]*?)<\/(b|strong|jats:bold)>/gi, (m, a, t) => `§b${t.replace(/<[^>]+>/g, '')}§b`);
+  let t = s;
+  try { t = new DOMParser().parseFromString(`<div>${s}</div>`, 'text/html').body.textContent || ''; } catch { t = s.replace(/<[^>]+>/g, ''); }
+  return t.split('\n').map(l => l.replace(/\s+/g, ' ').trim()).join('\n')
+    .replace(/§§(.+?)§§\s*/g, (m, x) => `**${x.replace(/[:.]$/, '')}:** `).replace(/§b\s*(.+?)\s*§b/g, '**$1**')
+    .replace(/\n{3,}/g, '\n\n').replace(/^\s*(?:\*\*(?:abstract|summary):\*\*\s*|(?:abstract|summary)\s*\n+)/i, '').trim();
+}
+const pubTypeGuess = t => (/meta-analysis|systematic review/i.test(t) ? 'sr' : /randomi[sz]ed controlled trial|clinical trial, phase/i.test(t) ? 'rct' : /guideline/i.test(t) ? 'guide' : /case reports?/i.test(t) ? 'case' : /review/i.test(t) ? 'review' : /observational|cohort|case-control/i.test(t) ? 'obs' : '');
+async function epmcLookup({ doi, pmid, pmcid }) {
+  const q = doi ? `DOI:"${doi}"` : pmid ? `EXT_ID:${pmid} AND SRC:MED` : pmcid ? `PMCID:${pmcid}` : '';
+  if (!q) return null;
+  const r = await fetch(`${EPMC}/search?query=${encodeURIComponent(q)}&resultType=core&format=json&pageSize=1`);
+  if (!r.ok) throw new Error('Europe PMC non risponde: riprova più tardi');
+  const it = (((await r.json()).resultList || {}).result || [])[0];
+  if (!it) return null;
+  const ji = it.journalInfo || {};
+  return {
+    title: markupToText(it.title || '').replace(/\s+/g, ' ').replace(/\.$/, '').trim(),
+    authors: ((it.authorList || {}).author || []).map(a => (a.lastName ? [a.lastName, a.firstName || a.initials].filter(Boolean).join(' ') : (a.collectiveName || a.fullName || ''))).filter(Boolean).join('; '),
+    journal: String((ji.journal || {}).title || (ji.journal || {}).isoabbreviation || ''),
+    year: String(it.pubYear || ji.yearOfPublication || ''),
+    volume: String(ji.volume || ''), issue: String(ji.issue || ''), pages: String(it.pageInfo || ''),
+    doi: String(it.doi || ''), pmid: String(it.pmid || ''), pmcid: String(it.pmcid || ''),
+    abstract: markupToText(it.abstractText || ''),
+    oa: it.isOpenAccess === 'Y',
+    guessType: pubTypeGuess(((it.pubTypeList || {}).pubType || []).join(' '))
+  };
+}
+// testo completo (solo articoli open access in PubMed Central), in Markdown
+async function epmcFullText(pmcid) {
+  if (!pmcid) return '';
+  const r = await fetch(`${EPMC}/${encodeURIComponent(pmcid)}/fullTextXML`);
+  if (!r.ok) return '';
+  const xml = new DOMParser().parseFromString(await r.text(), 'application/xml');
+  const body = xml.getElementsByTagName('body')[0];
+  if (!body) return '';
+  const clean = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const out = [];
+  const kids = (el, name) => [...el.children].filter(k => k.localName === name);
+  const walk = (el, depth) => {
+    for (const k of el.children) {
+      const n = k.localName;
+      if (n === 'sec') {
+        const t = kids(k, 'title')[0];
+        if (t && clean(t.textContent)) out.push(`${'#'.repeat(Math.min(4, depth + 1))} ${clean(t.textContent)}`);
+        walk(k, depth + 1);
+      } else if (n === 'p') out.push(clean(k.textContent));
+      else if (n === 'list') out.push(kids(k, 'list-item').map(li => `- ${clean(li.textContent)}`).join('\n'));
+      else if (n === 'fig' || n === 'table-wrap') {
+        const cap = [kids(k, 'label')[0], kids(k, 'caption')[0]].filter(Boolean).map(x => clean(x.textContent)).join(' ');
+        if (cap) out.push(`*${cap}*`);
+      } else if (n === 'disp-quote' || n === 'boxed-text') walk(k, depth);
+    }
+  };
+  walk(body, 1);
+  return out.filter(Boolean).join('\n\n').slice(0, PAPER_TEXT_MAX);
+}
+async function pubmedAbstract({ doi, pmid }) {
+  const E = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
+  if (!pmid && doi) {
+    const r = await fetch(`${E}/esearch.fcgi?db=pubmed&retmode=json&term=${encodeURIComponent(`${doi}[doi]`)}`);
+    if (r.ok) pmid = (((await r.json()).esearchresult || {}).idlist || [])[0] || '';
+  }
+  if (!pmid) return null;
+  const r = await fetch(`${E}/efetch.fcgi?db=pubmed&retmode=xml&id=${encodeURIComponent(pmid)}`);
+  if (!r.ok) return null;
+  const x = new DOMParser().parseFromString(await r.text(), 'application/xml');
+  const parts = [...x.getElementsByTagName('AbstractText')].map(a => `${a.getAttribute('Label') ? `**${a.getAttribute('Label').replace(/[:.]$/, '')}:** ` : ''}${a.textContent.replace(/\s+/g, ' ').trim()}`);
+  return { pmid, abstract: parts.join('\n\n') };
+}
+// i dati di un articolo da DOI, PMID, PMCID o da un link che li contiene
+async function lookupPaper(raw) {
+  if (navigator.onLine === false) throw new Error('Sei offline: i dati dell’articolo arrivano con internet');
+  const ids = paperIds(raw);
+  if (!ids.doi && !ids.pmid && !ids.pmcid) return { ids, data: null };
+  const [cr, ep] = await Promise.allSettled([ids.doi ? crossrefLookup(ids.doi) : Promise.resolve(null), epmcLookup(ids)]);
+  const c = cr.status === 'fulfilled' ? cr.value : null;
+  const e = ep.status === 'fulfilled' ? ep.value : null;
+  // Crossref per i dati bibliografici, Europe PMC per il resto
+  const d = { ...(e || {}) };
+  Object.entries(c || {}).forEach(([k, v]) => { if (v) d[k] = v; });
+  d.doi = d.doi || ids.doi;
+  d.pmid = (e && e.pmid) || ids.pmid || '';
+  d.pmcid = (e && e.pmcid) || ids.pmcid || '';
+  d.abstract = (e && e.abstract) || (c && c.abstract) || '';
+  d.guessType = (e && e.guessType) || (c && c.guessType) || '';
+  if (!d.abstract) {
+    try { const pm = await pubmedAbstract({ doi: d.doi, pmid: d.pmid }); if (pm) { d.abstract = pm.abstract; d.pmid = d.pmid || pm.pmid; } } catch { /* resta senza abstract */ }
+  }
+  if (!c && !e && !d.abstract) throw new Error(cr.status === 'rejected' ? cr.reason.message : 'Non trovo questo articolo');
+  return { ids, data: d };
+}
+// testo del PDF caricato con l’articolo
+async function paperPdfText(p) {
+  const meta = p.pdfId ? pdfById(p.pdfId) : null;
+  if (!meta) return '';
+  const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
+  if (!rec || !rec.blob) throw new Error('Il PDF non è su questo dispositivo: aprilo una volta dalla libreria');
+  await ensurePdfJs();
+  const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await rec.blob.arrayBuffer()) }).promise;
+  const pages = [];
+  let len = 0;
+  for (let n = 1; n <= doc.numPages && len < PAPER_TEXT_MAX; n++) {
+    const t = await pageText(doc, n);
+    pages.push(t);
+    len += t.length;
+  }
+  doc.destroy();
+  return basicFormat(pages.join('\n\n')).slice(0, PAPER_TEXT_MAX);
+}
+// Estrai il testo: dal PDF, altrimenti il testo completo open access, altrimenti almeno l’abstract
+async function extractPaperText(p) {
+  if (p.pdfId && pdfById(p.pdfId)) {
+    const t = await paperPdfText(p);
+    if (t.trim()) return { text: t, from: 'pdf' };
+  }
+  if (navigator.onLine === false) throw new Error('Sei offline: per cercare il testo serve internet');
+  if (p.doi || p.pmid || p.pmcid) {
+    let e = null;
+    try { e = await epmcLookup({ doi: p.doi, pmid: p.pmid, pmcid: p.pmcid }); } catch { /* provo lo stesso */ }
+    if (e) {
+      p.pmid = p.pmid || e.pmid; p.pmcid = p.pmcid || e.pmcid; p.oa = e.oa;
+      if (!p.abstract && e.abstract) p.abstract = e.abstract;
+    }
+    if (p.pmcid) {
+      const t = await epmcFullText(p.pmcid).catch(() => '');
+      if (t.trim()) return { text: t, from: 'pmc' };
+    }
+    if (!p.abstract) {
+      const pm = await pubmedAbstract({ doi: p.doi, pmid: p.pmid }).catch(() => null);
+      if (pm && pm.abstract) { p.abstract = pm.abstract; p.pmid = p.pmid || pm.pmid; }
+    }
+  }
+  return { text: '', from: p.abstract ? 'abstract' : '' };
+}
+// cosa hai di un articolo
+function paperAccess(p) {
+  if (p.pdfId && pdfById(p.pdfId)) return ['pdf', 'PDF'];
+  if (String(p.text || '').trim()) return ['text', 'Testo completo'];
+  if (String(p.abstract || '').trim()) return ['abs', 'Solo abstract'];
+  return ['link', 'Solo link'];
+}
+
+/* ---------- v4.04: cartelle degli articoli ----------
+   Come quelle dei notebook (una dentro l’altra, senza limite): stanno nel notebook
+   “Articoli” (nb.groups); ogni articolo indica la sua con folderId. */
+const paperNbSync = () => state.notebooks.find(n => n.kind === 'papers') || null;
+const paperFolders = () => groupsOf(paperNbSync());
+const paperFolderOf = p => paperFolders().find(g => g.id === p.folderId) || null;
+const paperFolderPath = p => { const g = paperFolderOf(p); return g ? [...groupAncestors(paperNbSync(), g), g] : []; };
+const paperFolderText = p => paperFolderPath(p).map(g => g.name).join(' › ');
+function paperFolderOptions(selected) {
+  const nb = paperNbSync();
+  const opt = (g, label) => `<option value="${g.id}" ${g.id === selected ? 'selected' : ''}>${esc(label)}</option>`;
+  const walk = (g, prefix) => opt(g, prefix + g.name) + subGroups(nb, g).map(x => walk(x, `${prefix}${g.name} › `)).join('');
+  return `<option value="">Nessuna</option>${nb ? topGroups(nb).map(g => walk(g, '')).join('') : ''}<option value="__new">Nuova cartella…</option>`;
+}
+async function newPaperFolder(parentId = null) {
+  const nb = await papersNb();
+  const parent = parentId ? groupsOf(nb).find(g => g.id === parentId) : null;
+  const name = await modal({
+    title: 'Nuova cartella',
+    text: parent ? `Dentro ${[...groupAncestors(nb, parent), parent].map(x => x.name).join(' › ')}.` : 'Per esempio una malattia, un corso o una tesina. Dentro ci metti articoli e altre cartelle, quante vuoi.',
+    input: true, placeholder: 'Es. Artrite reumatoide', confirm: 'Crea'
+  });
+  if (!name) return null;
+  const g = { id: uid(), name };
+  if (parent) g.parentId = parent.id;
+  nb.groups = [...groupsOf(nb), g];
+  await saveNotebook(nb);
+  return g;
+}
+// il menu “Cartella” di una scheda: “Nuova cartella…” la crea subito
+function bindPaperFolderSelect(sel) {
+  let prev = sel.value;
+  sel.addEventListener('change', async () => {
+    if (sel.value !== '__new') { prev = sel.value; return; }
+    const g = await newPaperFolder(null);
+    const pick = g ? g.id : prev;
+    sel.innerHTML = paperFolderOptions(pick);
+    sel.value = pick;
+    prev = pick;
+  });
+}
+async function movePaperSheet(p) {
+  const nb = paperNbSync();
+  const all = groupsOf(nb);
+  const pathName = x => [...groupAncestors(nb, x), x].map(y => y.name).join(' › ');
+  const opts = [
+    ...(p.folderId ? [{ key: '__top', label: 'Fuori dalle cartelle' }] : []),
+    ...all.filter(g => g.id !== p.folderId).sort((a, b) => pathName(a).localeCompare(pathName(b), 'it', { numeric: true })).map(g => ({ key: g.id, label: pathName(g) })),
+    { key: '__new', label: '＋ Nuova cartella' }
+  ];
+  const to = await actionSheet(`Sposta “${p.title.length > 60 ? `${p.title.slice(0, 59)}…` : p.title}” in…`, opts);
+  if (!to) return false;
+  let dest = to;
+  if (to === '__new') { const g = await newPaperFolder(null); if (!g) return false; dest = g.id; }
+  if (dest === '__top') delete p.folderId; else p.folderId = dest;
+  await saveLink(p);
+  toast(dest === '__top' ? 'Ora è fuori dalle cartelle' : `Spostato in ${paperFolders().find(g => g.id === dest)?.name || 'cartella'}`);
+  return true;
+}
+async function paperFolderMenu(g, here) {
+  const nb = paperNbSync();
+  if (!nb) return;
+  const groups = groupsOf(nb);
+  const gi = groups.indexOf(g);
+  const parent = groupParent(nb, g);
+  const sibs = groups.filter(x => (groupParent(nb, x)?.id || null) === (parent ? parent.id : null));
+  const si = sibs.indexOf(g);
+  const choice = await actionSheet(g.name, [
+    ...(here ? [] : [{ key: 'open', label: 'Apri' }]),
+    { key: 'paper', label: 'Nuovo articolo qui' },
+    { key: 'sub', label: 'Nuova cartella qui dentro' },
+    { key: 'rename', label: 'Rinomina' },
+    { key: 'move', label: 'Sposta in un’altra cartella' },
+    { key: 'up', label: 'Sposta su', disabled: si <= 0 },
+    { key: 'down', label: 'Sposta giù', disabled: si === sibs.length - 1 },
+    { key: 'delete', label: 'Elimina la cartella', danger: true }
+  ]);
+  if (choice === 'open') return go(`#/papers/f/${g.id}`);
+  if (choice === 'paper') { const p = await paperSheet(null, { folderId: g.id }); if (p) go(`#/papers/${p.id}`); return; }
+  if (choice === 'sub') { if (await newPaperFolder(g.id)) { toast('Cartella creata'); route(); } return; }
+  if (choice === 'rename') {
+    const name = await modal({ title: 'Rinomina la cartella', input: true, value: g.name, confirm: 'Rinomina' });
+    if (!name) return;
+    g.name = name;
+    await saveNotebook(nb);
+    return route();
+  }
+  if (choice === 'move') {
+    const own = groupTreeIds(nb, g);
+    const pathName = x => [...groupAncestors(nb, x), x].map(y => y.name).join(' › ');
+    const opts = [
+      ...(parent ? [{ key: '__top', label: 'Direttamente in Articoli' }] : []),
+      ...groups.filter(x => !own.has(x.id) && x.id !== parent?.id).sort((a, b) => pathName(a).localeCompare(pathName(b), 'it', { numeric: true })).map(x => ({ key: x.id, label: pathName(x) }))
+    ];
+    if (!opts.length) { toast('Non c’è un’altra cartella in cui spostarla'); return; }
+    const to = await actionSheet(`Sposta “${g.name}” in…`, opts);
+    if (!to) return;
+    if (to === '__top') delete g.parentId; else g.parentId = to;
+    await saveNotebook(nb);
+    toast('Cartella spostata');
+    return route();
+  }
+  if (choice === 'up' || choice === 'down') {
+    const to = groups.indexOf(sibs[si + (choice === 'up' ? -1 : 1)]);
+    const arr = [...groups];
+    [arr[gi], arr[to]] = [arr[to], arr[gi]];
+    nb.groups = arr;
+    await saveNotebook(nb);
+    return route();
+  }
+  if (choice === 'delete') {
+    const inside = papers().filter(p => p.folderId === g.id);
+    const kids = subGroups(nb, g);
+    const where = parent ? `nella cartella ${parent.name}` : 'fuori dalle cartelle';
+    const whereF = parent ? `nella cartella ${parent.name}` : 'direttamente in Articoli';
+    const ok = await modal({
+      title: 'Eliminare la cartella?',
+      text: [inside.length ? `${inside.length === 1 ? 'Il suo articolo passa' : `I suoi ${inside.length} articoli passano`} ${where}.` : 'Non perdi nessun articolo.',
+        kids.length ? `${kids.length === 1 ? 'La cartella che contiene passa' : `Le ${kids.length} cartelle che contiene passano`} ${whereF}, con quello che ${kids.length === 1 ? 'ha' : 'hanno'} dentro.` : ''].filter(Boolean).join(' '),
+      confirm: 'Elimina', danger: true
+    });
+    if (!ok) return;
+    for (const p of inside) { if (parent) p.folderId = parent.id; else delete p.folderId; await saveLink(p); }
+    kids.forEach(k => { if (parent) k.parentId = parent.id; else delete k.parentId; });
+    nb.groups = groups.filter(x => x.id !== g.id);
+    await saveNotebook(nb);
+    toast('Cartella eliminata');
+    if (here) return go(parent ? `#/papers/f/${parent.id}` : '#/papers');
+    route();
+  }
+}
+// collega o scollega un articolo e una sezione (l’elenco sta nell’articolo: secIds)
+async function linkPaperSec(p, secId, on = true) {
+  const ids = new Set(p.secIds || []);
+  if (on) ids.add(secId); else ids.delete(secId);
+  p.secIds = [...ids];
+  await saveLink(p);
+}
+const papersOfSec = sec => papers().filter(p => (p.secIds || []).includes(sec.id));
+// il testo (o l’abstract) dell’articolo in una sezione, nuova o che hai già
+async function paperToSection(p) {
+  const body = String(p.text || '').trim() ? p.text : String(p.abstract || '').trim() ? `### Abstract\n\n${p.abstract}` : '';
+  if (!body) { toast('Prima estrai il testo, o scrivi l’abstract'); return null; }
+  const s = await pickSectionSheet('In quale sezione metto il testo?', (p.secIds || []).find(id => secById(id)) || '');
+  if (!s) return null;
+  const head = `## ${p.title}\n\n*${citation(p)}*\n\n`;
+  s.md = String(s.md || '').trim() ? `${s.md.trimEnd()}\n\n${head}${body}\n` : `*${citation(p)}*\n\n${body}\n`;
+  if (!String(s.title || '').trim() || s.title === 'Senza titolo') s.title = p.title.slice(0, 140);
+  s.sources = [...new Set([...sourcesOf(s), citation(p)])];
+  await saveSection(s);
+  await linkPaperSec(p, s.id, true);
+  toast(`Testo messo in “${s.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${s.id}/read`) });
+  return s;
+}
+// incolla a mano il testo o l’abstract (per esempio dalla pagina della rivista)
+async function pastePaperText(p) {
+  return new Promise(resolve => {
+    const sh = openSheet(`
+      <h2>Incolla il testo</h2>
+      <p class="hint">Copia dalla pagina dell’articolo l’abstract o il testo intero e incollalo qui.</p>
+      <div class="seg" role="radiogroup" aria-label="Cosa incolli">
+        <button type="button" role="radio" data-pt="abs" aria-checked="${!p.abstract}">Abstract</button>
+        <button type="button" role="radio" data-pt="text" aria-checked="${!!p.abstract}">Testo intero</button>
+      </div>
+      <textarea class="input" id="ptBox" rows="12" placeholder="Incolla qui"></textarea>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-pt="no">Annulla</button><button class="btn primary" type="button" data-pt="ok">Salva</button></div>`, { label: 'Incolla il testo', onClose: v => resolve(!!v) });
+    let kind = p.abstract ? 'text' : 'abs';
+    sh.el.addEventListener('click', async e => {
+      const b = e.target.closest('[data-pt]');
+      if (!b) return;
+      const k = b.dataset.pt;
+      if (k === 'abs' || k === 'text') { kind = k; $$('[role="radio"]', sh.el).forEach(x => x.setAttribute('aria-checked', String(x === b))); return; }
+      if (k === 'no') return sh.close(false);
+      const t = $('#ptBox', sh.el).value.trim();
+      if (!t) { toast('Incolla prima il testo'); return; }
+      if (kind === 'abs') p.abstract = t.replace(/^\s*abstract\s*\n+/i, '').slice(0, 20000);
+      else { p.text = basicFormat(t).slice(0, PAPER_TEXT_MAX); p.textFrom = 'paste'; p.textOn = todayStr(); }
+      await saveLink(p);
+      toast(kind === 'abs' ? 'Abstract salvato' : 'Testo salvato');
+      sh.close(true);
+    });
+    setTimeout(() => $('#ptBox', sh.el)?.focus(), 40);
+  });
+}
+
 // il DOI scritto nelle prime pagine del PDF (e il titolo nei metadati, se c’è)
 async function doiFromPdf(file) {
   try {
@@ -4378,13 +4736,14 @@ function paperSheet(p = null, prefill = {}) {
     let pdfFile = null;
     const usedTags = [...new Set(papers().flatMap(x => tagsOf(x)))].sort((a, b) => a.localeCompare(b, 'it'));
     const inp = (id, label, val, ph = '', extra = '') => `<label class="field"><span>${label}</span><input class="input" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph)}" ${extra}></label>`;
+    const idVal = e.doi || (e.pmid ? `PMID ${e.pmid}` : '') || e.url || '';
     const sh = openSheet(`
       <h2>${p ? 'Modifica l’articolo' : 'Nuovo articolo'}</h2>
       <div class="pp-doi">
-        ${inp('ppDoi', 'DOI o link dell’articolo', e.doi || '', 'Es. 10.1016/S0140-6736(16)30173-8', 'autocomplete="off" autocapitalize="off"')}
-        <button class="btn" type="button" data-pp="look">Compila dal DOI</button>
+        ${inp('ppDoi', 'DOI, PMID o link dell’articolo', idVal, 'Es. 10.1016/S0140-6736(16)30173-8 o il link di PubMed', 'autocomplete="off" autocapitalize="off"')}
+        <button class="btn" type="button" data-pp="look">Compila</button>
       </div>
-      <div class="pp-pdf"><button class="btn ghost" type="button" data-pp="pdf">${p && p.pdfId ? 'Sostituisci il PDF' : '＋ Carica il PDF'}</button><span class="hint" id="ppPdfInfo">${p && p.pdfId ? 'PDF già caricato.' : 'Se il PDF contiene il DOI, i dati si compilano da soli.'}</span></div>
+      <div class="pp-pdf"><button class="btn ghost" type="button" data-pp="pdf">${p && p.pdfId ? 'Sostituisci il PDF' : '＋ Carica il PDF'}</button><span class="hint" id="ppPdfInfo">${p && p.pdfId ? 'PDF già caricato.' : 'Non è obbligatorio: se la tua università non ha l’articolo, bastano il link e l’abstract.'}</span></div>
       <p class="hint" id="ppMsg" aria-live="polite"></p>
       ${inp('ppTitle', 'Titolo', e.title)}
       ${inp('ppAuthors', 'Autori, separati da punto e virgola', e.authors, 'Es. Smolen JS; Aletaha D')}
@@ -4394,29 +4753,43 @@ function paperSheet(p = null, prefill = {}) {
         <label class="field"><span>Tipo</span><select class="input" id="ppType"><option value="">—</option>${PAPER_TYPES.map(([k, l]) => `<option value="${k}" ${e.ptype === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label class="field"><span>Stato</span><select class="input" id="ppStatus">${PAPER_STATUS.map(([k, l]) => `<option value="${k}" ${e.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       </div>
+      <label class="field"><span>Cartella</span><select class="input" id="ppFolder">${paperFolderOptions(e.folderId || '')}</select></label>
       <label class="check"><input type="checkbox" id="ppStar" ${e.star ? 'checked' : ''}><span>★ Importante</span></label>
       <label class="field"><span>Tag, separati da virgole (es. la malattia)</span><input class="input" id="ppTags" value="${esc(tagsOf(e).join(', '))}" list="ppTagList" placeholder="Es. artrite reumatoide, terapia"><datalist id="ppTagList">${usedTags.map(t => `<option value="${esc(t)}">`).join('')}</datalist></label>
+      <label class="field"><span>Abstract</span><textarea class="input" id="ppAbs" rows="5" placeholder="Si compila da solo dal DOI o dal PMID; altrimenti incollalo dalla pagina dell’articolo">${esc(e.abstract || '')}</textarea></label>
       <label class="field"><span>Sintesi: cosa dice, in due o tre righe</span><textarea class="input" id="ppSum" rows="3">${esc(e.summary || '')}</textarea></label>
       <label class="field"><span>Punti chiave, uno per riga</span><textarea class="input" id="ppKey" rows="4" placeholder="Es. - target: remissione o bassa attività">${esc(e.keys || '')}</textarea></label>
       <div class="modal-actions">
         <button class="btn ghost" type="button" data-pp="no">Annulla</button>
         <button class="btn primary" type="button" data-pp="ok">Salva</button>
       </div>`, { label: 'Articolo', onClose: v => resolve(v || null) });
+    bindPaperFolderSelect($('#ppFolder', sh.el));
     const msg = t => { $('#ppMsg', sh.el).textContent = t; };
     const fill = (d, force = false) => {
-      const map = { ppTitle: d.title, ppAuthors: d.authors, ppJournal: d.journal, ppYear: d.year, ppVol: d.volume, ppIssue: d.issue, ppPages: d.pages };
+      const map = { ppTitle: d.title, ppAuthors: d.authors, ppJournal: d.journal, ppYear: d.year, ppVol: d.volume, ppIssue: d.issue, ppPages: d.pages, ppAbs: d.abstract };
       Object.entries(map).forEach(([id, v]) => { const el = $(`#${id}`, sh.el); if (v && (force || !el.value.trim())) el.value = v; });
-      if (d.url) e.url = d.url;
+      if (d.guessType && !$('#ppType', sh.el).value) $('#ppType', sh.el).value = d.guessType;
+      // gli identificativi trovati restano con l’articolo
+      ['doi', 'pmid', 'pmcid'].forEach(k => { if (d[k]) e[k] = d[k]; });
+      if (d.oa !== undefined) e.oa = d.oa;
+      if (d.url && !e.url) e.url = d.url;
     };
-    const look = async (doi, quiet = false) => {
-      if (!doi) { if (!quiet) msg('Scrivi un DOI valido (inizia con 10.)'); return false; }
-      $('#ppDoi', sh.el).value = doi;
+    const look = async (raw, quiet = false) => {
+      const ids = paperIds(raw);
+      if (!ids.doi && !ids.pmid && !ids.pmcid) {
+        if (!quiet) msg(ids.url ? 'In questo link non c’è un DOI o un PMID: il link resta salvato, scrivi i dati a mano (l’abstract puoi incollarlo).' : 'Scrivi un DOI (inizia con 10.), un PMID o il link dell’articolo.');
+        return false;
+      }
       msg('Cerco i dati dell’articolo…');
-      try { fill(await crossrefLookup(doi), !p); msg('Dati compilati dal DOI: controllali.'); return true; }
-      catch (err) { msg(`${err.message}. Puoi scrivere i dati a mano.`); return false; }
+      try {
+        const { data } = await lookupPaper(raw);
+        fill(data, !p);
+        msg(`Dati compilati${data.abstract ? ', con l’abstract' : ' (l’abstract non c’è: puoi incollarlo)'}${data.oa ? '. È open access: dalla pagina dell’articolo puoi estrarre il testo completo' : ''}. Controllali.`);
+        return true;
+      } catch (err) { msg(`${err.message}. Puoi scrivere i dati a mano.`); return false; }
     };
-    $('[data-pp="look"]', sh.el).onclick = () => look(cleanDoi($('#ppDoi', sh.el).value));
-    $('#ppDoi', sh.el).addEventListener('paste', () => setTimeout(() => { const d = cleanDoi($('#ppDoi', sh.el).value); if (d && !$('#ppTitle', sh.el).value.trim()) look(d, true); }, 30));
+    $('[data-pp="look"]', sh.el).onclick = () => look($('#ppDoi', sh.el).value);
+    $('#ppDoi', sh.el).addEventListener('paste', () => setTimeout(() => { if (!$('#ppTitle', sh.el).value.trim()) look($('#ppDoi', sh.el).value, true); }, 30));
     $('[data-pp="pdf"]', sh.el).onclick = () => {
       const fi = document.createElement('input');
       fi.type = 'file';
@@ -4428,7 +4801,7 @@ function paperSheet(p = null, prefill = {}) {
         $('#ppPdfInfo', sh.el).textContent = `${f.name} (${fmtSize(f.size)}) sarà salvato con l’articolo.`;
         const got = await doiFromPdf(f);
         if (got.title && !$('#ppTitle', sh.el).value.trim()) $('#ppTitle', sh.el).value = got.title;
-        if (got.doi && !$('#ppDoi', sh.el).value.trim()) await look(got.doi, true);
+        if (got.doi && !$('#ppDoi', sh.el).value.trim()) { $('#ppDoi', sh.el).value = got.doi; await look(got.doi, true); }
         else if (!got.doi) msg('Nel PDF non ho trovato il DOI: incollalo sopra, oppure scrivi i dati a mano.');
       };
       fi.click();
@@ -4439,13 +4812,23 @@ function paperSheet(p = null, prefill = {}) {
       const title = v('ppTitle');
       if (!title) { toast('Scrivi il titolo, o compila i dati dal DOI'); return; }
       const rec = p || { id: uid(), kind: 'paper', notebookId: '_papers', created: Date.now() };
-      const doi = cleanDoi(v('ppDoi'));
+      const ids = paperIds(v('ppDoi'));
+      // il DOI, il PMID e il PMCID trovati valgono se il campo indica ancora lo stesso articolo
+      const same = (ids.doi && ids.doi === e.doi) || (ids.pmid && ids.pmid === e.pmid) || (ids.pmcid && ids.pmcid === e.pmcid);
+      const doi = ids.doi || (same ? e.doi || '' : '');
+      const pmid = ids.pmid || (same ? e.pmid || '' : '');
+      const pmcid = ids.pmcid || (same ? e.pmcid || '' : '');
+      const fv = $('#ppFolder', sh.el).value;
       Object.assign(rec, {
         title, authors: v('ppAuthors'), journal: v('ppJournal'), year: v('ppYear'), volume: v('ppVol'), issue: v('ppIssue'), pages: v('ppPages'),
-        doi, url: doi ? `https://doi.org/${doi}` : (/^https?:\/\//.test(v('ppDoi')) ? v('ppDoi') : (e.url || rec.url || '')),
+        doi, pmid, pmcid,
+        url: ids.url || (doi ? `https://doi.org/${doi}` : '') || (pmid ? `https://pubmed.ncbi.nlm.nih.gov/${pmid}/` : '') || (same || !v('ppDoi') ? rec.url || e.url || '' : ''),
         ptype: $('#ppType', sh.el).value, status: $('#ppStatus', sh.el).value, star: $('#ppStar', sh.el).checked,
-        tags: parseTags(v('ppTags')), summary: $('#ppSum', sh.el).value.trim(), keys: $('#ppKey', sh.el).value.trim(), updated: Date.now()
+        tags: parseTags(v('ppTags')), abstract: $('#ppAbs', sh.el).value.trim(), summary: $('#ppSum', sh.el).value.trim(), keys: $('#ppKey', sh.el).value.trim(), updated: Date.now()
       });
+      if (e.oa !== undefined && same) rec.oa = e.oa;
+      if (fv && fv !== '__new') rec.folderId = fv; else delete rec.folderId;
+      if (!p && (e.secIds || []).length) rec.secIds = [...e.secIds];
       if (pdfFile) {
         msg('Salvo il PDF…');
         try {
@@ -4465,46 +4848,101 @@ function paperSheet(p = null, prefill = {}) {
   });
 }
 const paperState = { q: '', status: '', type: '', tag: '', star: false, sort: 'new' };
-function viewPapers(id) {
+function viewPapers(id, sub) {
+  if (id === 'f') return viewPaperList(sub || '');
   if (id) return viewPaper(id);
+  return viewPaperList('');
+}
+function viewPaperList(folderId) {
+  const nb = paperNbSync();
+  const folder = folderId && nb ? groupsOf(nb).find(g => g.id === folderId) || null : null;
+  if (folderId && !folder) { location.replace('#/papers'); return; }
   const all = papers();
   const st = paperState;
-  const tags = [...new Set(all.flatMap(p => tagsOf(p)))].sort((a, b) => a.localeCompare(b, 'it'));
-  const cnt = k => all.filter(p => (p.status || 'todo') === k).length;
+  const known = new Set(paperFolders().map(g => g.id));
+  const tree = folder ? groupTreeIds(nb, folder) : null;
+  // “scope”: tutto quello che sta qui dentro, a qualunque livello; “here”: solo quello di questa cartella
+  const scope = tree ? all.filter(p => tree.has(p.folderId)) : all;
+  const here = folder ? all.filter(p => p.folderId === folder.id) : all.filter(p => !known.has(p.folderId));
+  const subs = nb ? (folder ? subGroups(nb, folder) : topGroups(nb)) : [];
+  const tags = [...new Set(scope.flatMap(p => tagsOf(p)))].sort((a, b) => a.localeCompare(b, 'it'));
+  const cnt = k => scope.filter(p => (p.status || 'todo') === k).length;
+  const nW = (n, a, b) => `${n} ${n === 1 ? a : b}`;
+  const folderCard = g => {
+    const t = groupTreeIds(nb, g);
+    const n = all.filter(p => t.has(p.folderId)).length;
+    const k = subGroups(nb, g).length;
+    return `<div class="folder-card" role="link" tabindex="0" data-ppopen="${g.id}" aria-label="Apri la cartella ${esc(g.name)}">
+      ${FOLDER_SVG}
+      <span class="fc-main"><span class="fc-name">${esc(g.name)}</span><span class="fc-meta">${[n ? nW(n, 'articolo', 'articoli') : (k ? '' : 'Vuota'), k ? nW(k, 'cartella', 'cartelle') : ''].filter(Boolean).join(' · ')}</span></span>
+      <button class="btn ghost sm grp-more" type="button" data-ppfmenu="${g.id}" aria-label="Opzioni per ${esc(g.name)}">⋯</button>
+    </div>`;
+  };
+  const crumbs = folder ? [`<a href="#/papers">Articoli</a>`, ...groupAncestors(nb, folder).map(a => `<a href="#/papers/f/${a.id}">${esc(a.name)}</a>`)].join('<span class="fp-sep" aria-hidden="true">›</span>') : '';
+  const any = all.length || paperFolders().length;
   setView(`
+    ${folder ? `<nav class="back folder-path" aria-label="Percorso">${crumbs}</nav>` : ''}
     <header class="page-head">
-      <div><h1>Articoli</h1><p class="lede">${all.length ? `${all.length} ${all.length === 1 ? 'articolo' : 'articoli'} · ${cnt('todo')} da leggere · ${cnt('read')} letti` : 'La tua bibliografia: articoli, linee guida e review, con sintesi, tag e collegamenti alle note cliniche.'}</p></div>
-      <div class="actions"><button class="btn primary" type="button" data-act="pp-new">Nuovo articolo</button>${all.length ? '<button class="btn ghost" type="button" data-act="pp-ris" title="Per Zotero, Mendeley, EndNote">Esporta (RIS)</button>' : ''}</div>
+      <div><h1 class="${folder ? 'folder-h1' : ''}">${folder ? `${FOLDER_SVG}<span>${esc(folder.name)}</span>` : 'Articoli'}</h1><p class="lede">${scope.length ? `${nW(scope.length, 'articolo', 'articoli')} · ${cnt('todo')} da leggere · ${cnt('read')} letti` : folder ? 'Cartella vuota.' : 'La tua bibliografia: articoli, linee guida e review, con abstract, sintesi, tag e collegamenti alle sezioni e alle note cliniche.'}</p></div>
+      <div class="actions">
+        <button class="btn primary" type="button" data-act="pp-new">Nuovo articolo</button>
+        <button class="btn" type="button" data-act="pp-folder">Nuova cartella</button>
+        ${scope.length ? '<button class="btn ghost" type="button" data-act="pp-ris" title="Per Zotero, Mendeley, EndNote">Esporta (RIS)</button>' : ''}
+        ${folder ? `<button class="btn ghost" type="button" data-ppfmenu="${folder.id}">Opzioni</button>` : ''}
+      </div>
     </header>
-    ${all.length ? `
-      <input type="search" class="input search" id="ppQ" placeholder="Cerca per titolo, autore, rivista, tag, sintesi" aria-label="Cerca negli articoli" value="${esc(st.q)}">
+    ${any ? `
+      ${scope.length ? `<input type="search" class="input search" id="ppQ" placeholder="${folder ? 'Cerca in questa cartella' : 'Cerca per titolo, autore, rivista, tag, abstract'}" aria-label="Cerca negli articoli" value="${esc(st.q)}">
       <div class="tag-cloud">
         ${PAPER_STATUS.map(([k, l]) => `<button type="button" class="tag ${st.status === k ? 'on' : ''}" data-pps="${k}" aria-pressed="${st.status === k}">${l} <small>${cnt(k)}</small></button>`).join('')}
         <button type="button" class="tag ${st.star ? 'on' : ''}" data-ppstar aria-pressed="${st.star}">★ Importanti</button>
       </div>
-      <div class="tag-cloud">${PAPER_TYPES.filter(([k]) => all.some(p => p.ptype === k)).map(([k, l]) => `<button type="button" class="tag ${st.type === k ? 'on' : ''}" data-ppt="${k}" aria-pressed="${st.type === k}">${l}</button>`).join('')}</div>
+      <div class="tag-cloud">${PAPER_TYPES.filter(([k]) => scope.some(p => p.ptype === k)).map(([k, l]) => `<button type="button" class="tag ${st.type === k ? 'on' : ''}" data-ppt="${k}" aria-pressed="${st.type === k}">${l}</button>`).join('')}</div>
       ${tags.length ? `<div class="tag-cloud">${tags.map(t => `<button type="button" class="tag ${st.tag === t ? 'on' : ''}" data-pptag="${esc(t)}" aria-pressed="${st.tag === t}">#${esc(t)}</button>`).join('')}</div>` : ''}
-      <label class="field pp-sort"><span>Ordina</span><select class="input" id="ppSort">${[['new', 'Aggiunti di recente'], ['year', 'Anno, i più recenti'], ['title', 'Titolo']].map(([k, l]) => `<option value="${k}" ${st.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="field pp-sort"><span>Ordina</span><select class="input" id="ppSort">${[['new', 'Aggiunti di recente'], ['year', 'Anno, i più recenti'], ['title', 'Titolo']].map(([k, l]) => `<option value="${k}" ${st.sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}
+      <div id="ppFolders"></div>
       <ul class="list" id="ppList"></ul>` : `
-      <div class="empty"><p>Incolla il DOI di un articolo, o carica il suo PDF: titolo, autori, rivista e anno si compilano da soli. Poi aggiungi tag (per esempio la malattia), stato di lettura e la tua sintesi.</p><button class="btn primary" type="button" data-act="pp-new">Nuovo articolo</button></div>`}`);
+      <div class="empty"><p>Incolla il DOI, il PMID o il link di un articolo, oppure carica il suo PDF: titolo, autori, rivista, anno e abstract si compilano da soli. Se la tua università non ha l’articolo, ti restano il link e l’abstract. Con le cartelle li dividi come sul computer.</p><button class="btn primary" type="button" data-act="pp-new">Nuovo articolo</button></div>`}`);
+  const filtering = () => !!(st.q.trim() || st.status || st.type || st.tag || st.star);
   const filtered = () => {
     const f = foldAccents(st.q);
-    let list = all.filter(p => (!st.status || (p.status || 'todo') === st.status) && (!st.type || p.ptype === st.type) && (!st.tag || tagsOf(p).includes(st.tag)) && (!st.star || p.star)
-      && (!f || foldAccents(`${p.title} ${p.authors} ${p.journal} ${p.year} ${tagsOf(p).join(' ')} ${p.summary} ${p.keys}`).includes(f)));
+    let list = (filtering() ? scope : here).filter(p => (!st.status || (p.status || 'todo') === st.status) && (!st.type || p.ptype === st.type) && (!st.tag || tagsOf(p).includes(st.tag)) && (!st.star || p.star)
+      && (!f || foldAccents(`${p.title} ${p.authors} ${p.journal} ${p.year} ${tagsOf(p).join(' ')} ${p.summary} ${p.keys} ${p.abstract || ''} ${String(p.text || '').slice(0, 30000)}`).includes(f)));
     list = list.sort(st.sort === 'year' ? (a, b) => (+b.year || 0) - (+a.year || 0) : st.sort === 'title' ? (a, b) => a.title.localeCompare(b.title, 'it') : (a, b) => (b.created || 0) - (a.created || 0));
     return list;
   };
   const draw = () => {
     const box = $('#ppList');
     if (!box) return;
+    const fBox = $('#ppFolders');
+    // le cartelle si vedono quando non stai cercando; cercando, la ricerca entra in tutte quelle qui dentro
+    fBox.innerHTML = !filtering() && subs.length ? `<div class="folder-grid">${subs.map(folderCard).join('')}</div>${here.length ? '<h2 class="sub">Articoli</h2>' : ''}` : '';
     const list = filtered();
-    box.innerHTML = list.map(p => `<li><a class="row pp-row" href="#/papers/${p.id}"><span class="row-main">
+    box.innerHTML = list.map(p => {
+      const [ak, al] = paperAccess(p);
+      const where = filtering() && paperFolderText(p) && p.folderId !== (folder && folder.id) ? paperFolderText(p) : '';
+      return `<li><a class="row pp-row" href="#/papers/${p.id}"><span class="row-main">
       <span class="row-title">${p.star ? '<span class="pp-star">★</span> ' : ''}${esc(p.title)}</span>
-      <span class="row-sub">${esc([authorsShort(p), p.journal, p.year].filter(Boolean).join(' · '))}</span>
-      <span class="tags">${p.ptype ? `<span class="tag">${esc(PAPER_TYPES.find(t => t[0] === p.ptype)?.[1] || '')}</span>` : ''}${tagsOf(p).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}${p.pdfId ? '<span class="tag">PDF</span>' : ''}</span>
-    </span><span class="pill ${p.status === 'read' ? 'soft' : p.status === 'reading' ? 'due' : ''}">${esc(PAPER_STATUS.find(s => s[0] === (p.status || 'todo'))[1])}</span></a></li>`).join('') || '<li class="hint">Nessun articolo corrisponde.</li>';
+      <span class="row-sub">${esc([authorsShort(p), p.journal, p.year].filter(Boolean).join(' · '))}${where ? ` · 📁 ${esc(where)}` : ''}</span>
+      <span class="tags">${p.ptype ? `<span class="tag">${esc(PAPER_TYPES.find(t => t[0] === p.ptype)?.[1] || '')}</span>` : ''}${tagsOf(p).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}<span class="tag pp-acc pp-acc-${ak}">${al}</span></span>
+    </span><span class="pill ${p.status === 'read' ? 'soft' : p.status === 'reading' ? 'due' : ''}">${esc(PAPER_STATUS.find(s => s[0] === (p.status || 'todo'))[1])}</span></a></li>`;
+    }).join('') || (filtering() ? '<li class="hint">Nessun articolo corrisponde.</li>' : subs.length ? '' : '<li class="hint">Nessun articolo qui: aggiungine uno o spostane qui uno che hai già (dalla sua pagina, Sposta in una cartella).</li>');
   };
   draw();
+  const openF = el => go(`#/papers/f/${el.dataset.ppopen}`);
+  const fMenu = id => { const g = paperFolders().find(x => x.id === id); if (g) paperFolderMenu(g, !!folder && folder.id === g.id); };
+  on('.page-head [data-ppfmenu]', 'click', e => fMenu(e.currentTarget.dataset.ppfmenu));
+  // le cartelle si ridisegnano con la ricerca: l’ascoltatore sta sul loro contenitore
+  const fBox = $('#ppFolders');
+  if (fBox) {
+    fBox.addEventListener('click', e => {
+      const m = e.target.closest('[data-ppfmenu]');
+      if (m) { e.stopPropagation(); fMenu(m.dataset.ppfmenu); return; }
+      const c = e.target.closest('[data-ppopen]');
+      if (c) openF(c);
+    });
+    fBox.addEventListener('keydown', e => { const c = e.target.closest('[data-ppopen]'); if (c && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openF(c); } });
+  }
   $('#ppQ')?.addEventListener('input', e => { st.q = e.target.value; draw(); });
   $('#ppSort')?.addEventListener('change', e => { st.sort = e.target.value; draw(); });
   const chip = (sel, key, get) => on(sel, 'click', e => { const v = get(e.currentTarget); st[key] = st[key] === v ? (typeof v === 'boolean' ? false : '') : v; route(); });
@@ -4512,9 +4950,10 @@ function viewPapers(id) {
   chip('[data-ppt]', 'type', b => b.dataset.ppt);
   chip('[data-pptag]', 'tag', b => b.dataset.pptag);
   on('[data-ppstar]', 'click', () => { st.star = !st.star; route(); });
-  on('[data-act="pp-new"]', 'click', async () => { const p = await paperSheet(); if (p) go(`#/papers/${p.id}`); });
+  on('[data-act="pp-new"]', 'click', async () => { const p = await paperSheet(null, folder ? { folderId: folder.id } : {}); if (p) go(`#/papers/${p.id}`); });
+  on('[data-act="pp-folder"]', 'click', async () => { if (await newPaperFolder(folder ? folder.id : null)) { toast('Cartella creata'); route(); } });
   on('[data-act="pp-ris"]', 'click', () => {
-    const list = filtered();
+    const list = filtering() ? filtered() : scope;
     downloadBlob(new Blob([risOf(list)], { type: 'application/x-research-info-systems' }), `articoli-${todayStr()}.ris`);
     toast(`${list.length} articoli esportati: aprili con Zotero, Mendeley o EndNote`);
   });
@@ -4523,24 +4962,33 @@ function viewPaper(id) {
   const p = paperById(id);
   if (!p) return notFound('Questo articolo');
   const notes = clinicalNotes().filter(n => (n.papers || []).includes(p.id));
+  const secs = (p.secIds || []).map(secById).filter(Boolean);
   const pdf = p.pdfId ? pdfById(p.pdfId) : null;
   const tl = PAPER_TYPES.find(t => t[0] === p.ptype)?.[1];
+  const fpath = paperFolderPath(p);
+  const [ak, al] = paperAccess(p);
+  const hasText = !!String(p.text || '').trim();
+  const words = hasText ? p.text.split(/\s+/).length : 0;
+  const fromName = { pdf: 'dal PDF', pmc: 'da PubMed Central (open access)', paste: 'incollato da te' }[p.textFrom] || '';
   setView(`<div id="ppDetail">
-    <a class="back" href="#/papers">Articoli</a>
+    <nav class="back folder-path" aria-label="Percorso"><a href="#/papers">Articoli</a>${fpath.map(g => `<span class="fp-sep" aria-hidden="true">›</span><a href="#/papers/f/${g.id}">${esc(g.name)}</a>`).join('')}</nav>
     <header class="page-head pp-head">
       <div>
         <h1>${p.star ? '<span class="pp-star">★</span> ' : ''}${esc(p.title)}</h1>
         <p class="lede">${esc(String(p.authors || '').split(/\s*;\s*/).filter(Boolean).join(', '))}</p>
-        <p class="meta">${esc([p.journal, [p.year, p.volume && `vol. ${p.volume}`, p.issue && `n. ${p.issue}`, p.pages && `pp. ${p.pages}`].filter(Boolean).join(', '), tl].filter(Boolean).join(' · '))}</p>
+        <p class="meta">${esc([p.journal, [p.year, p.volume && `vol. ${p.volume}`, p.issue && `n. ${p.issue}`, p.pages && `pp. ${p.pages}`].filter(Boolean).join(', '), tl].filter(Boolean).join(' · '))} <span class="tag pp-acc pp-acc-${ak}">${al}</span>${p.oa ? ' <span class="tag">Open access</span>' : ''}</p>
       </div>
     </header>
     <div class="row-actions">
-      ${pdf ? `<a class="btn primary" href="#/pdf/${pdf.id}">Apri il PDF</a><button class="btn" type="button" data-act="pp-split">⇆ Affianca</button>` : '<button class="btn primary" type="button" data-act="pp-edit">＋ Carica il PDF</button>'}
+      ${pdf ? `<a class="btn primary" href="#/pdf/${pdf.id}">Apri il PDF</a><button class="btn" type="button" data-act="pp-split">⇆ Affianca</button>` : '<button class="btn" type="button" data-act="pp-edit">＋ Carica il PDF</button>'}
       ${p.url ? `<a class="btn" href="${esc(p.url)}" target="_blank" rel="noopener">Apri online</a>` : ''}
-      <a class="btn ghost" href="https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(p.doi || p.title)}" target="_blank" rel="noopener">PubMed</a>
+      <a class="btn ghost" href="${p.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${encodeURIComponent(p.pmid)}/` : `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(p.doi || p.title)}`}" target="_blank" rel="noopener">PubMed</a>
+      <button class="btn ${pdf || hasText ? 'ghost' : 'primary'}" type="button" data-act="pp-extract" title="Dal PDF, oppure il testo completo se l’articolo è open access, oppure almeno l’abstract">${hasText ? 'Estrai di nuovo il testo' : 'Estrai il testo'}</button>
+      <button class="btn ghost" type="button" data-act="pp-paste">Incolla il testo</button>
       <button class="btn ghost" type="button" data-act="pp-cite">Copia la citazione</button>
+      <button class="btn ghost" type="button" data-act="pp-move">Sposta in una cartella</button>
       <button class="btn ghost" type="button" data-act="pp-edit">Modifica</button>
-      ${pdf ? '<button class="btn ghost" type="button" data-act="pp-ai">✨ Sintesi con l’AI</button>' : ''}
+      ${pdf || hasText || p.abstract ? '<button class="btn ghost" type="button" data-act="pp-ai">✨ Sintesi con l’AI</button>' : ''}
     </div>
     <div class="pp-status inline">
       <div class="seg" role="radiogroup" aria-label="Stato">${PAPER_STATUS.map(([k, l]) => `<button type="button" role="radio" data-ppset="${k}" aria-checked="${(p.status || 'todo') === k}">${l}</button>`).join('')}</div>
@@ -4548,8 +4996,19 @@ function viewPaper(id) {
     </div>
     ${tagsOf(p).length ? `<div class="tags">${tagsOf(p).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}</div>` : ''}
     <div class="notes pp-body">
-      ${p.summary ? `<h2>Sintesi</h2>${renderMd(p.summary)}` : '<p class="hint">Nessuna sintesi: in Modifica scrivi in due o tre righe cosa dice.</p>'}
+      ${p.abstract ? `<h2>Abstract</h2>${renderMd(p.abstract)}` : '<p class="hint">Nessun abstract: “Estrai il testo” prova a prenderlo da PubMed, oppure “Incolla il testo”.</p>'}
+      ${p.summary ? `<h2>Sintesi</h2>${renderMd(p.summary)}` : '<p class="hint">Nessuna sintesi: in Modifica scrivi in due o tre righe cosa dice, oppure usa ✨ Sintesi con l’AI.</p>'}
       ${p.keys ? `<h2>Punti chiave</h2>${renderMd(p.keys.split('\n').map(l => (l.trim() && !/^\s*[-*\d]/.test(l) ? `- ${l.trim()}` : l)).join('\n'))}` : ''}
+    </div>
+    ${hasText || p.abstract ? `<details class="pp-text" ${hasText ? '' : 'hidden'}>
+      <summary>Testo dell’articolo · ${words.toLocaleString('it')} parole${fromName ? `, ${fromName}` : ''}</summary>
+      <div class="notes pp-text-body"></div>
+    </details>
+    <div class="row-actions"><button class="btn sm" type="button" data-act="pp-tosec">${hasText ? 'Metti il testo in una sezione' : 'Metti l’abstract in una sezione'}</button>${hasText ? '<button class="btn sm ghost" type="button" data-act="pp-untext">Togli il testo</button>' : ''}</div>` : ''}
+    <div class="fonti">
+      <h3>Sezioni collegate</h3>
+      <div class="tags">${secs.map(s => `<a class="tag" href="#/sec/${s.id}/papers">${esc(s.title)} <span class="tag-x" data-ppsunl="${s.id}" role="button" aria-label="Scollega">×</span></a>`).join('') || '<span class="hint">Nessuna. Le sezioni collegate mostrano l’articolo nella loro scheda Articoli.</span>'}</div>
+      <button class="btn sm ghost" type="button" data-act="pp-linksec">＋ Collega a una sezione</button>
     </div>
     <div class="fonti">
       <h3>Note cliniche collegate</h3>
@@ -4560,22 +5019,61 @@ function viewPaper(id) {
     <p class="hint pp-cite">${esc(citation(p))}</p>
     <div class="row-actions"><button class="btn ghost danger" type="button" data-act="pp-del">Elimina l’articolo</button></div>
     </div>`);
+  // il testo lungo si disegna solo quando lo apri
+  const det = $('.pp-text');
+  if (det) det.addEventListener('toggle', () => { const b = $('.pp-text-body', det); if (det.open && !b.childElementCount) { b.innerHTML = renderMd(p.text); setupFolds(b, `paper:${p.id}`); } });
   on('[data-act="pp-edit"]', 'click', async () => { if (await paperSheet(p)) route(); });
   on('[data-act="pp-split"]', 'click', () => Split.show({ kind: 'pdf', id: pdf.id, page: pdf.lastPage || 1 }));
   on('[data-act="pp-ai"]', 'click', async () => { if (await paperAiSummary(p)) route(); });
+  on('[data-act="pp-move"]', 'click', async () => { if (await movePaperSheet(p)) route(); });
+  on('[data-act="pp-paste"]', 'click', async () => { if (await pastePaperText(p)) route(); });
+  on('[data-act="pp-tosec"]', 'click', async () => { if (await paperToSection(p)) route(); });
+  on('[data-act="pp-untext"]', 'click', async () => {
+    const ok = await modal({ title: 'Togliere il testo?', text: 'Restano l’abstract, la sintesi, i punti chiave e il PDF. Le sezioni in cui l’hai già messo non cambiano.', confirm: 'Togli', danger: true });
+    if (!ok) return;
+    delete p.text; delete p.textFrom; delete p.textOn;
+    await saveLink(p);
+    route();
+  });
+  on('[data-act="pp-extract"]', 'click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    const wait = toast('Cerco il testo dell’articolo…');
+    const hadAbs = !!p.abstract;
+    try {
+      const r = await extractPaperText(p);
+      if (r.text) {
+        p.text = r.text; p.textFrom = r.from; p.textOn = todayStr();
+        toast(r.from === 'pdf' ? `Testo estratto dal PDF: ${r.text.split(/\s+/).length.toLocaleString('it')} parole` : 'Testo completo preso da PubMed Central (l’articolo è open access)');
+      } else if (r.from === 'abstract') toast(hadAbs ? 'Il testo completo non è disponibile gratis: hai già l’abstract. Se lo leggi altrove, usa “Incolla il testo”.' : 'Il testo completo non è disponibile gratis: ho salvato l’abstract');
+      else toast(p.doi || p.pmid || p.pmcid ? 'Non trovo né il testo né l’abstract: usa “Incolla il testo”' : 'Senza DOI o PMID non posso cercarlo: carica il PDF o usa “Incolla il testo”', 'err');
+      await saveLink(p);
+    } catch (err) { toast(err.message || 'Non riesco a estrarre il testo', 'err'); }
+    finally { if (wait && wait.remove) wait.remove(); }
+    route();
+  });
+  on('[data-act="pp-linksec"]', 'click', async () => {
+    const s = await pickSectionSheet('Collega l’articolo a una sezione');
+    if (!s) return;
+    await linkPaperSec(p, s.id, true);
+    toast(`Collegato a “${s.title}”`);
+    route();
+  });
   on('[data-act="pp-cite"]', 'click', async () => { try { await navigator.clipboard.writeText(citation(p)); toast('Citazione copiata'); } catch { toast('Non riesco a copiare: selezionala qui sotto', 'err'); } });
   on('[data-act="pp-star"]', 'click', async () => { p.star = !p.star; await saveLink(p); route(); });
   on('[data-ppset]', 'click', async e => { p.status = e.currentTarget.dataset.ppset; if (p.status === 'read' && !p.readOn) p.readOn = todayStr(); await saveLink(p); route(); });
   on('[data-act="pp-del"]', 'click', async () => {
-    const ok = await modal({ title: 'Eliminare l’articolo?', text: pdf ? 'Sparisce dalla bibliografia e dalle note cliniche collegate. Il PDF resta nella libreria: se non ti serve, eliminalo da lì.' : 'Sparisce dalla bibliografia e dalle note cliniche collegate.', confirm: 'Elimina', danger: true });
+    const ok = await modal({ title: 'Eliminare l’articolo?', text: pdf ? 'Sparisce dalla bibliografia, dalle sezioni e dalle note cliniche collegate. Il PDF resta nella libreria: se non ti serve, eliminalo da lì.' : 'Sparisce dalla bibliografia, dalle sezioni e dalle note cliniche collegate.', confirm: 'Elimina', danger: true });
     if (!ok) return;
     for (const n of notes) { n.papers = n.papers.filter(x => x !== p.id); await saveLink(n); }
     await removeRecords([{ store: 'links', rec: p }]);
     toast('Articolo eliminato');
-    go('#/papers');
+    go(p.folderId && paperFolderOf(p) ? `#/papers/f/${p.folderId}` : '#/papers');
   });
   // l’ascoltatore sta sulla pagina dell’articolo, che sparisce quando cambi pagina
   $('#ppDetail').addEventListener('click', async e => {
+    const su = e.target.closest('[data-ppsunl]');
+    if (su) { e.preventDefault(); e.stopPropagation(); await linkPaperSec(p, su.dataset.ppsunl, false); route(); return; }
     const un = e.target.closest('[data-ppunl]');
     if (un) { e.stopPropagation(); const n = clinicalNotes().find(x => x.id === un.dataset.ppunl); if (n) { n.papers = (n.papers || []).filter(x => x !== p.id); await saveLink(n); route(); } return; }
     const o = e.target.closest('[data-cnopen]');
@@ -4587,6 +5085,68 @@ function viewPaper(id) {
     const f = foldAccents(e.target.value.trim());
     const hits = f ? clinicalNotes().filter(n => !(n.papers || []).includes(p.id) && foldAccents(n.title).includes(f)).slice(0, 8) : [];
     $('#ppCnRes').innerHTML = hits.map(n => `<li><button type="button" class="row" data-pplink="${n.id}"><span class="row-main"><span class="row-title">${esc(n.title)}</span></span></button></li>`).join('') || (f ? '<li class="hint">Nessuna nota clinica con questo nome.</li>' : '');
+  });
+}
+
+/* ---------- v4.04: la scheda Articoli dentro una sezione ----------
+   Gli articoli collegati alla sezione, con abstract e sintesi a portata di mano. */
+function modePapers(sec, body) {
+  const draw = () => {
+    const list = papersOfSec(sec);
+    const tab = $(`.tabs a[href="#/sec/${sec.id}/papers"]`);
+    if (tab) tab.textContent = `Articoli${list.length ? ` (${list.length})` : ''}`;
+    body.innerHTML = `
+      <div class="spp-add">
+        <input type="search" class="input" id="sppQ" placeholder="＋ Collega un articolo che hai già: titolo, autore, tag, DOI" autocomplete="off" aria-label="Cerca un articolo da collegare">
+        <button class="btn primary" type="button" data-spp="new">Nuovo articolo</button>
+      </div>
+      <ul class="list pick-list sp-link-res" id="sppRes"></ul>
+      ${list.length ? `<ul class="spp-list">${list.map(p => {
+        const [ak, al] = paperAccess(p);
+        const pdf = p.pdfId ? pdfById(p.pdfId) : null;
+        return `<li class="spp-card" data-pid="${p.id}">
+          <div class="spp-top"><a class="spp-title" href="#/papers/${p.id}">${p.star ? '<span class="pp-star">★</span> ' : ''}${esc(p.title)}</a>
+            <span class="pill ${p.status === 'read' ? 'soft' : p.status === 'reading' ? 'due' : ''}">${esc(PAPER_STATUS.find(s => s[0] === (p.status || 'todo'))[1])}</span></div>
+          <p class="meta">${esc([authorsShort(p), p.journal, p.year, PAPER_TYPES.find(t => t[0] === p.ptype)?.[1]].filter(Boolean).join(' · '))} <span class="tag pp-acc pp-acc-${ak}">${al}</span></p>
+          ${p.summary ? `<div class="notes spp-sum">${renderMd(p.summary)}</div>` : ''}
+          ${p.abstract ? `<details class="spp-abs"><summary>Abstract</summary><div class="notes">${renderMd(p.abstract)}</div></details>` : ''}
+          ${p.keys ? `<details class="spp-abs"><summary>Punti chiave</summary><div class="notes">${renderMd(p.keys.split('\n').map(l => (l.trim() && !/^\s*[-*\d]/.test(l) ? `- ${l.trim()}` : l)).join('\n'))}</div></details>` : ''}
+          <div class="row-actions">
+            <a class="btn sm" href="#/papers/${p.id}">Scheda</a>
+            ${pdf ? `<button class="btn sm" type="button" data-spp="split" data-pdf="${pdf.id}">⇆ PDF accanto</button>` : ''}
+            ${p.url ? `<a class="btn sm ghost" href="${esc(p.url)}" target="_blank" rel="noopener">Apri online</a>` : ''}
+            <button class="btn sm ghost" type="button" data-spp="unlink">Scollega</button>
+          </div>
+        </li>`;
+      }).join('')}</ul>` : `
+        <div class="empty"><p>Gli articoli scientifici di questo argomento: con DOI, PMID o link si compilano da soli, con l’abstract anche quando la tua università non ha il testo completo. Restano anche nella pagina Articoli, nelle loro cartelle.</p></div>`}`;
+  };
+  draw();
+  body.addEventListener('input', e => {
+    if (e.target.id !== 'sppQ') return;
+    const f = foldAccents(e.target.value.trim());
+    const linked = new Set(papersOfSec(sec).map(p => p.id));
+    const hits = f ? papers().filter(p => !linked.has(p.id) && foldAccents(`${p.title} ${p.authors} ${p.journal} ${p.year} ${p.doi || ''} ${p.pmid || ''} ${tagsOf(p).join(' ')}`).includes(f)).slice(0, 8) : [];
+    $('#sppRes', body).innerHTML = hits.map(p => `<li><button type="button" class="row" data-spplink="${p.id}"><span class="row-main"><span class="row-title">${esc(p.title)}</span><span class="row-sub">${esc([authorsShort(p), p.journal, p.year, paperFolderText(p)].filter(Boolean).join(' · '))}</span></span></button></li>`).join('')
+      || (f ? '<li class="hint">Nessun articolo con questo testo: tocca “Nuovo articolo” e incolla DOI, PMID o link.</li>' : '');
+  });
+  body.addEventListener('click', async e => {
+    const l = e.target.closest('[data-spplink]');
+    if (l) { const p = paperById(l.dataset.spplink); if (p) { await linkPaperSec(p, sec.id, true); toast('Articolo collegato'); draw(); } return; }
+    const b = e.target.closest('[data-spp]');
+    if (!b) return;
+    const k = b.dataset.spp;
+    if (k === 'new') {
+      // la cartella proposta è quella dell’ultimo articolo collegato a questa sezione
+      const last = papersOfSec(sec).slice(-1)[0];
+      const p = await paperSheet(null, { secIds: [sec.id], folderId: last && paperFolderOf(last) ? last.folderId : '' });
+      if (p) draw();
+      return;
+    }
+    const p = paperById(b.closest('[data-pid]')?.dataset.pid);
+    if (!p) return;
+    if (k === 'split') { Split.show({ kind: 'pdf', id: b.dataset.pdf, page: pdfById(b.dataset.pdf)?.lastPage || 1 }); return; }
+    if (k === 'unlink') { await linkPaperSec(p, sec.id, false); toast('Articolo scollegato dalla sezione (resta in Articoli)'); draw(); }
   });
 }
 
@@ -4640,14 +5200,17 @@ const blobToB64 = blob => new Promise(res => { const fr = new FileReader(); fr.o
 async function paperAiSummary(p) {
   if (!AI.ready()) { toast('Serve la chiave di Gemini o di Claude in Impostazioni'); return false; }
   const meta = p.pdfId ? pdfById(p.pdfId) : null;
-  if (!meta) { toast('Carica prima il PDF dell’articolo (Modifica → Carica il PDF)'); return false; }
-  const rec = await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id));
-  if (!rec || !rec.blob) { toast('Il PDF non è su questo dispositivo: aprilo una volta dalla libreria', 'err'); return false; }
+  // v4.04: senza PDF basta il testo estratto o incollato, oppure l’abstract
+  const plain = String(p.text || '').trim() ? p.text : String(p.abstract || '').trim() ? `ABSTRACT (il testo completo non è disponibile):\n${p.abstract}` : '';
+  if (!meta && !plain) { toast('Carica il PDF, estrai il testo o scrivi l’abstract'); return false; }
+  const rec = meta ? await DB.run('pdfblobs', 'readonly', tx => tx.objectStore('pdfblobs').get(meta.id)) : null;
+  if (meta && (!rec || !rec.blob) && !plain) { toast('Il PDF non è su questo dispositivo: aprilo una volta dalla libreria', 'err'); return false; }
   const wait = toast('L’AI sta leggendo l’articolo… (può volerci un minuto)');
   let j;
   try {
     let opts;
-    if (rec.blob.size < 15 * 1048576) opts = { pdfBase64: await blobToB64(rec.blob), text: `Titolo: ${p.title}` };
+    if (!rec || !rec.blob) opts = { text: `Titolo: ${p.title}\n\nARTICOLO:\n${plain.slice(0, 60000)}` };
+    else if (rec.blob.size < 15 * 1048576) opts = { pdfBase64: await blobToB64(rec.blob), text: `Titolo: ${p.title}` };
     else {
       // PDF molto grande: le prime pagine come testo
       await ensurePdfJs();
@@ -5507,4 +6070,423 @@ async function importOfficeFiles(files, { keepPhotos = true } = {}) {
   }
   const base = files[0].name.replace(/\.[^.]+$/, '');
   return { text: parts.join('\n\n'), title: files.length === 1 && !photos.length ? base : '' };
+}
+
+/* =====================================================================
+   v4.05: Raccolta — schemi, reel e post salvati dai social
+   Ogni elemento (record “clip” nei link) tiene il link del post, gli
+   screenshot (nell’archivio delle immagini), una nota e i tag. Il post di
+   Instagram si vede incorporato com’è (Instagram non lascia scaricare foto e
+   video); gli screenshot restano tuoi anche se il post sparisce. Con i tag
+   gli elementi compaiono nelle note cliniche, nelle sezioni, nei notebook e
+   nelle cartelle dello stesso argomento, e nella pagina del tag.
+   ===================================================================== */
+const SOCIAL_NAMES = { instagram: 'Instagram', tiktok: 'TikTok', facebook: 'Facebook', threads: 'Threads', youtube: 'YouTube', web: 'Sito', img: 'Screenshot' };
+const clips = () => state.links.filter(l => l.kind === 'clip');
+const clipById = id => state.links.find(l => l.id === id && l.kind === 'clip');
+const clipImgs = c => (Array.isArray(c.images) ? c.images : []).filter(x => x && x.id);
+// che cosa è un link: il sito e, se si può, l’indirizzo da incorporare
+function socialOf(raw) {
+  const m0 = /https?:\/\/[^\s<>"']+/i.exec(String(raw || ''));
+  if (!m0) return null;
+  let u;
+  try { u = new URL(m0[0]); } catch { return null; }
+  const h = u.hostname.replace(/^(www|m|l)\./, '');
+  if (h === 'instagram.com' || h.endsWith('.instagram.com') || h === 'instagr.am') {
+    const m = /\/(p|reels?|tv)\/([A-Za-z0-9_-]{5,})/.exec(u.pathname);
+    if (m) {
+      const kind = m[1] === 'p' ? 'p' : m[1] === 'tv' ? 'tv' : 'reel';
+      return { site: 'instagram', kind, key: `ig:${m[2]}`, url: `https://www.instagram.com/${kind}/${m[2]}/`, embed: `https://www.instagram.com/p/${m[2]}/embed/captioned/` };
+    }
+    return { site: 'instagram', kind: 'other', key: `url:${u.origin}${u.pathname}`, url: `${u.origin}${u.pathname}`, embed: '' };
+  }
+  if (h.endsWith('tiktok.com')) {
+    const m = /\/video\/(\d{6,})/.exec(u.pathname);
+    return { site: 'tiktok', kind: m ? 'video' : 'other', key: m ? `tt:${m[1]}` : `url:${u.href}`, url: m ? `${u.origin}${u.pathname}` : u.href, embed: m ? `https://www.tiktok.com/embed/v2/${m[1]}` : '' };
+  }
+  if (h.endsWith('youtube.com') || h === 'youtu.be') {
+    const info = typeof videoInfo === 'function' ? videoInfo(u.href) : null;
+    return { site: 'youtube', kind: 'video', key: info && info.id ? `yt:${info.id}` : `url:${u.href}`, url: u.href, embed: info && info.id ? videoEmbedSrc({ url: u.href }) : '' };
+  }
+  if (h.endsWith('facebook.com') || h === 'fb.watch') return { site: 'facebook', kind: 'other', key: `url:${u.href}`, url: u.href, embed: '' };
+  if (h.endsWith('threads.net') || h.endsWith('threads.com')) return { site: 'threads', kind: 'other', key: `url:${u.origin}${u.pathname}`, url: `${u.origin}${u.pathname}`, embed: '' };
+  return { site: 'web', kind: 'other', key: `url:${u.href}`, url: u.href, embed: '' };
+}
+// i link che vanno nella Raccolta quando li condividi all’app (gli altri vanno in Importa)
+const isSocialLink = raw => { const s = socialOf(raw); return !!s && ['instagram', 'tiktok', 'facebook', 'threads'].includes(s.site); };
+function clipDefaultTitle(s) {
+  const d = new Date().toLocaleDateString('it', { day: 'numeric', month: 'short' });
+  if (!s) return `Screenshot del ${d}`;
+  const what = s.site === 'instagram' ? (s.kind === 'reel' ? 'Reel' : 'Post') : s.site === 'tiktok' ? 'Video' : 'Link';
+  return `${what} ${SOCIAL_NAMES[s.site] || ''} del ${d}`.replace(/\s+/g, ' ');
+}
+// salva un elemento nuovo (o ritrova quello con lo stesso post)
+async function addClip({ url = '', files = [], title = '', note = '', tags = [] } = {}) {
+  const s = url ? socialOf(url) : null;
+  if (url && !s) throw new Error('Questo non sembra un link');
+  if (s) {
+    const old = clips().find(c => c.key === s.key);
+    if (old) {
+      if (files.length) { await addClipImages(old, files); }
+      return { clip: old, existed: true };
+    }
+  }
+  const now = Date.now();
+  const c = { id: uid(), kind: 'clip', notebookId: '_clips', created: now, title: title || clipDefaultTitle(s), note, tags, images: [] };
+  if (s) Object.assign(c, { url: s.url, site: s.site, key: s.key });
+  else c.site = 'img';
+  await saveLink(c);
+  if (files.length) await addClipImages(c, files);
+  return { clip: c, existed: false };
+}
+// screenshot e foto: più grandi del solito, così il testo degli schemi resta leggibile
+async function addClipImages(c, files) {
+  let n = 0;
+  for (const f of files) {
+    if (!f || !/^image\//.test(f.type || '')) continue;
+    try {
+      const res = await compressImage(f, { max: 2400, quality: 0.86 });
+      const im = await saveImage(res, '_clips');
+      c.images = [...clipImgs(c), { id: im.id }];
+      n++;
+    } catch (err) { toast(err.message || `Non riesco a leggere ${f.name || 'l’immagine'}`, 'err'); }
+  }
+  if (n) await saveLink(c);
+  return n;
+}
+function chooseImageFiles() {
+  return new Promise(resolve => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.multiple = true;
+    inp.style.display = 'none';
+    const done = v => { resolve(v); inp.remove(); };
+    inp.addEventListener('change', () => done([...(inp.files || [])]), { once: true });
+    inp.addEventListener('cancel', () => done([]), { once: true });
+    document.body.appendChild(inp);
+    inp.click();
+  });
+}
+// le parole con cui un tag “aggancia” una pagina: titolo, specialità, notebook, cartella, tag
+const clipWord = t => foldAccents(String(t || '')).replace(/[-_#]+/g, ' ').replace(/\s+/g, ' ').trim();
+function clipsMatching(words) {
+  const w = new Set(words.filter(Boolean).map(clipWord).filter(x => x.length > 1));
+  if (!w.size) return [];
+  return clips().filter(c => tagsOf(c).some(t => w.has(clipWord(t)))).sort((a, b) => (b.star ? 1 : 0) - (a.star ? 1 : 0) || (b.created || 0) - (a.created || 0));
+}
+const clipsForSec = s => clipsMatching([s.title, ...tagsOf(s)]);
+const clipsForNb = nb => clipsMatching([nb.name]);
+const clipsForGroup = g => clipsMatching([g.name]);
+const clipsForNote = n => clipsMatching([n.title, n.specialty, ...tagsOf(n), ...(n.aka || [])]);
+// dove compare un elemento, con i suoi tag
+function clipPlaces(c) {
+  const t = new Set(tagsOf(c).map(clipWord));
+  if (!t.size) return [];
+  const out = [];
+  clinicalNotes().forEach(n => { if ([n.title, n.specialty, ...tagsOf(n)].some(x => t.has(clipWord(x)))) out.push({ k: 'Nota clinica', name: n.title, cn: n.id }); });
+  state.notebooks.filter(n => !n.kind).forEach(nb => {
+    if (t.has(clipWord(nb.name))) out.push({ k: 'Notebook', name: nb.name, href: `#/nb/${nb.id}` });
+    groupsOf(nb).forEach(g => { if (t.has(clipWord(g.name))) out.push({ k: 'Cartella', name: `${nb.name} › ${[...groupAncestors(nb, g), g].map(x => x.name).join(' › ')}`, href: `#/nb/${nb.id}/${g.id}` }); });
+  });
+  state.sections.forEach(s => { if ([s.title, ...tagsOf(s)].some(x => t.has(clipWord(x)))) out.push({ k: 'Sezione', name: s.title, href: `#/sec/${s.id}` }); });
+  return out.slice(0, 40);
+}
+// i tag che conviene usare: quelli già usati, i notebook, le cartelle, le specialità delle note cliniche
+function clipTagHints() {
+  const out = new Map();
+  const add = t => { const k = normTag(t); if (k && k.length > 1 && !out.has(clipWord(k))) out.set(clipWord(k), k); };
+  clips().forEach(c => tagsOf(c).forEach(add));
+  state.notebooks.filter(n => !n.kind).forEach(nb => { add(nb.name); groupsOf(nb).forEach(g => add(g.name)); });
+  clinicalNotes().forEach(n => { add(n.specialty); });
+  allTags().forEach(([t]) => add(t));
+  return [...out.values()].slice(0, 500);
+}
+function clipCard(c) {
+  const im = clipImgs(c)[0];
+  return `<a class="clip-card" href="#/raccolta/${c.id}">
+    <span class="clip-thumb ${im ? '' : `clip-ph clip-${c.site || 'web'}`}">${im ? `<img class="nb-img" data-img="${esc(im.id)}" alt="">` : `<span>${esc(SOCIAL_NAMES[c.site] || 'Link')}</span>`}${clipImgs(c).length > 1 ? `<b class="clip-n">${clipImgs(c).length}</b>` : ''}${c.url && im ? `<i class="clip-site">${esc(SOCIAL_NAMES[c.site] || '')}</i>` : ''}</span>
+    <span class="clip-meta"><span class="clip-title">${c.star ? '<span class="pp-star">★</span> ' : ''}${esc(c.title || 'Senza titolo')}</span>
+    ${tagsOf(c).length ? `<span class="clip-tags">${tagsOf(c).slice(0, 4).map(t => `#${esc(t)}`).join(' ')}</span>` : '<span class="clip-tags clip-notag">senza tag</span>'}</span>
+  </a>`;
+}
+const clipGrid = list => `<div class="clip-grid">${list.map(clipCard).join('')}</div>`;
+const clipState = { q: '', tag: '', star: false, notag: false };
+function viewClips(a, b) {
+  if (a && !['sec', 'nb', 'g', 'cn'].includes(a)) return viewClip(a);
+  // elenco filtrato per una pagina dell’app: gli elementi con i tag che la agganciano
+  let ctx = null;
+  if (a === 'sec') { const s = secById(b); if (s) ctx = { title: s.title, back: `#/sec/${s.id}`, list: clipsForSec(s), tags: [s.title, ...tagsOf(s)] }; }
+  if (a === 'nb') { const nb = nbById(b); if (nb) ctx = { title: nb.name, back: `#/nb/${nb.id}`, list: clipsForNb(nb), tags: [nb.name] }; }
+  if (a === 'g') { for (const nb of state.notebooks) { const g = groupsOf(nb).find(x => x.id === b); if (g) ctx = { title: g.name, back: `#/nb/${nb.id}/${g.id}`, list: clipsForGroup(g), tags: [g.name] }; } }
+  if (a === 'cn') { const n = clinicalNotes().find(x => x.id === b); if (n) ctx = { title: n.title, back: '#/clinic', list: clipsForNote(n), tags: [n.title, n.specialty] }; }
+  if (a && !ctx) { location.replace('#/raccolta'); return; }
+  if (ctx) {
+    setView(`
+      <a class="back" href="${ctx.back}">${esc(ctx.title)}</a>
+      <header class="page-head"><div><h1>Raccolta · ${esc(ctx.title)}</h1><p class="lede">${ctx.list.length ? `${ctx.list.length} ${ctx.list.length === 1 ? 'elemento' : 'elementi'} con un tag che corrisponde: ${ctx.tags.filter(Boolean).map(t => `#${esc(normTag(t))}`).join(', ')}` : 'Nessun elemento con questi tag.'}</p></div>
+      <div class="actions"><a class="btn" href="#/raccolta">Tutta la Raccolta</a></div></header>
+      ${ctx.list.length ? clipGrid(ctx.list) : ''}`);
+    return;
+  }
+  const all = clips().sort((x, y) => (y.created || 0) - (x.created || 0));
+  const st = clipState;
+  const tagCount = new Map();
+  all.forEach(c => tagsOf(c).forEach(t => tagCount.set(t, (tagCount.get(t) || 0) + 1)));
+  const tags = [...tagCount.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0], 'it'));
+  const untagged = all.filter(c => !tagsOf(c).length).length;
+  setView(`
+    <header class="page-head">
+      <div><h1>Raccolta</h1><p class="lede">${all.length ? `${all.length} ${all.length === 1 ? 'elemento' : 'elementi'}${untagged ? ` · ${untagged} senza tag` : ''}` : 'Schemi, reel e post che trovi su Instagram (o altrove), con i tuoi screenshot, in un posto solo.'}</p></div>
+    </header>
+    <form class="clip-add" id="clipAdd">
+      <input class="input" type="url" id="clipUrl" placeholder="Incolla il link del post (Instagram, TikTok…)" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Link del post">
+      <button class="btn primary" type="submit">Salva</button>
+      <button class="btn" type="button" data-act="clip-img">＋ Screenshot</button>
+    </form>
+    <p class="hint">Su Android, da Instagram tocca <b>Condividi</b> › <b>Notebook</b>; dalla galleria condividi gli screenshot nello stesso modo. Sul computer puoi anche incollare un’immagine qui (Ctrl+V).</p>
+    ${all.length ? `
+      <input type="search" class="input search" id="clipQ" placeholder="Cerca nei titoli, nelle note, nei tag e nel testo letto dall’AI" aria-label="Cerca nella Raccolta" value="${esc(st.q)}">
+      <div class="tag-cloud">
+        <button type="button" class="tag ${st.star ? 'on' : ''}" data-clipstar aria-pressed="${st.star}">★ Utili</button>
+        ${untagged ? `<button type="button" class="tag ${st.notag ? 'on' : ''}" data-clipnotag aria-pressed="${st.notag}">Senza tag <small>${untagged}</small></button>` : ''}
+        ${tags.map(([t, n]) => `<button type="button" class="tag ${st.tag === t ? 'on' : ''}" data-cliptag="${esc(t)}" aria-pressed="${st.tag === t}">#${esc(t)} <small>${n}</small></button>`).join('')}
+      </div>
+      <div id="clipList"></div>` : `
+      <div class="empty"><p>Salva qui il link di un post o i tuoi screenshot, e aggiungi un tag con la materia o l’argomento (per esempio <b>nefrologia</b>, <b>sindrome nefrosica</b>). Quando creerai la nota clinica, la sezione o il notebook con quel nome, li ritroverai lì.</p></div>`}`);
+  const draw = () => {
+    const box = $('#clipList');
+    if (!box) return;
+    const f = foldAccents(st.q.trim());
+    const list = all.filter(c => (!st.tag || tagsOf(c).includes(st.tag)) && (!st.star || c.star) && (!st.notag || !tagsOf(c).length)
+      && (!f || foldAccents(`${c.title} ${c.note || ''} ${tagsOf(c).join(' ')} ${c.text || ''} ${c.url || ''}`).includes(f)));
+    box.innerHTML = list.length ? clipGrid(list) : '<p class="hint">Nessun elemento corrisponde.</p>';
+  };
+  draw();
+  $('#clipQ')?.addEventListener('input', e => { st.q = e.target.value; draw(); });
+  on('[data-cliptag]', 'click', e => { const t = e.currentTarget.dataset.cliptag; st.tag = st.tag === t ? '' : t; route(); });
+  on('[data-clipstar]', 'click', () => { st.star = !st.star; route(); });
+  on('[data-clipnotag]', 'click', () => { st.notag = !st.notag; route(); });
+  const save = async (opts) => {
+    try {
+      const { clip, existed } = await addClip(opts);
+      toast(existed ? 'L’avevi già salvato: eccolo' : 'Salvato nella Raccolta: aggiungi i tag');
+      go(`#/raccolta/${clip.id}`);
+    } catch (err) { toast(err.message || 'Non riesco a salvarlo', 'err'); }
+  };
+  $('#clipAdd').addEventListener('submit', e => {
+    e.preventDefault();
+    const v = $('#clipUrl').value.trim();
+    if (!v) { toast('Incolla prima il link del post'); $('#clipUrl').focus(); return; }
+    save({ url: v });
+  });
+  on('[data-act="clip-img"]', 'click', async () => { const files = await chooseImageFiles(); if (files.length) save({ files }); });
+  // un’immagine incollata (computer) diventa un elemento nuovo
+  const onPaste = e => {
+    if (isTyping() && document.activeElement?.id !== 'clipUrl') return;
+    const files = [...(e.clipboardData?.files || [])].filter(f => /^image\//.test(f.type));
+    if (!files.length) return;
+    e.preventDefault();
+    save({ files });
+  };
+  document.addEventListener('paste', onPaste);
+  addCleanup(() => document.removeEventListener('paste', onPaste));
+}
+function viewClip(id) {
+  const c = clipById(id);
+  if (!c) return notFound('Questo elemento della Raccolta');
+  const s = c.url ? socialOf(c.url) : null;
+  const places = clipPlaces(c);
+  const hints = clipTagHints().filter(t => !tagsOf(c).includes(t));
+  setView(`<div id="clipDetail">
+    <a class="back" href="#/raccolta">Raccolta</a>
+    <header class="page-head clip-head">
+      <div><h1>${c.star ? '<span class="pp-star">★</span> ' : ''}${esc(c.title || 'Senza titolo')}</h1>
+      <p class="meta">${esc([SOCIAL_NAMES[c.site] || '', new Date(c.created || Date.now()).toLocaleDateString('it', { day: 'numeric', month: 'long', year: 'numeric' })].filter(Boolean).join(' · '))}</p></div>
+    </header>
+    <div class="row-actions">
+      ${c.url ? `<a class="btn" href="${esc(c.url)}" target="_blank" rel="noopener">Apri su ${esc(SOCIAL_NAMES[c.site] === 'Sito' ? 'il sito' : SOCIAL_NAMES[c.site] || 'il sito')}</a>` : ''}
+      <button class="btn" type="button" data-act="clip-addimg">＋ Screenshot</button>
+      ${clipImgs(c).length ? '<button class="btn ghost" type="button" data-act="clip-ai">✨ Leggi lo schema con l’AI</button>' : ''}
+      <button class="btn ghost" type="button" data-act="clip-tosec">Metti in una sezione</button>
+      <button class="btn ghost" type="button" data-act="clip-tocn">Aggiungi a una nota clinica</button>
+      <button class="btn ghost" type="button" data-act="clip-star" aria-pressed="${!!c.star}">★ ${c.star ? 'Utile' : 'Segna utile'}</button>
+      <button class="btn ghost" type="button" data-act="clip-rename">Rinomina</button>
+    </div>
+    <div class="clip-fields">
+      <label class="field"><span>Tag: la materia e l’argomento, separati da virgole</span>
+        <input class="input" id="clipTags" value="${esc(tagsOf(c).join(', '))}" placeholder="Es. nefrologia, sindrome nefrosica" autocomplete="off" autocapitalize="off" list="clipTagList">
+        <datalist id="clipTagList">${hints.map(t => `<option value="${esc(t)}">`).join('')}</datalist></label>
+      ${hints.length ? `<div class="tag-suggest"><span class="hint">Tocca per aggiungere:</span>${hints.filter(t => clipWord(`${c.title} ${c.note || ''} ${c.text || ''}`).includes(clipWord(t))).concat(hints).filter((t, i, arr) => arr.indexOf(t) === i).slice(0, 12).map(t => `<button type="button" class="tag" data-cliphint="${esc(t)}">#${esc(t)}</button>`).join('')}</div>` : ''}
+      <label class="field"><span>Nota: perché ti è servito, cosa ricordare</span><textarea class="input" id="clipNote" rows="2" placeholder="Es. schema chiaro delle glomerulonefriti, rivederlo per l’esame">${esc(c.note || '')}</textarea></label>
+      <p class="hint" id="clipSaved" aria-live="polite"></p>
+    </div>
+    ${s && s.embed ? `<div class="clip-embed clip-embed-${esc(s.site)}"><iframe src="${esc(s.embed)}" title="Post di ${esc(SOCIAL_NAMES[s.site])}" loading="lazy" allow="autoplay; encrypted-media; picture-in-picture; clipboard-write; fullscreen" allowfullscreen scrolling="no"></iframe></div>
+      <p class="hint">Il post si vede da ${esc(SOCIAL_NAMES[s.site])} e serve internet: se l’autore lo cancella sparisce anche da qui. Per gli schemi importanti aggiungi uno screenshot, che resta tuo.</p>` : c.url ? `<p class="hint">Questo link non si può mostrare qui dentro: aprilo con il pulsante in alto. Per tenerne il contenuto aggiungi uno screenshot.</p>` : ''}
+    ${clipImgs(c).length ? `<h2 class="sub">Screenshot</h2><div class="clip-gal">${clipImgs(c).map((x, i) => `<figure class="clip-fig"><img class="nb-img" data-img="${esc(x.id)}" data-clipzoom="${esc(x.id)}" alt="Screenshot ${i + 1}" title="Tocca per ingrandire"><button type="button" class="btn sm ghost danger clip-x" data-clipdel="${esc(x.id)}" aria-label="Togli lo screenshot ${i + 1}">✕</button></figure>`).join('')}</div>` : ''}
+    ${c.text ? `<h2 class="sub">Contenuto letto dall’AI</h2><div class="notes clip-text">${renderMd(c.text)}</div>${c.doubt ? `<p class="hint warn-hint">Da verificare: ${esc(c.doubt)}</p>` : ''}` : ''}
+    <div class="fonti">
+      <h3>Dove compare</h3>
+      ${places.length ? `<ul class="fonti-list">${places.map(p => `<li>${esc(p.k)}: ${p.cn ? `<button type="button" class="link-btn" data-cnopen="${esc(p.cn)}">${esc(p.name)}</button>` : `<a href="${p.href}">${esc(p.name)}</a>`}</li>`).join('')}</ul>`
+        : `<p class="hint">${tagsOf(c).length ? 'Per ora in nessuna pagina: comparirà nelle note cliniche, sezioni, notebook e cartelle che avranno lo stesso nome di uno dei suoi tag (o la stessa specialità).' : 'Aggiungi un tag: comparirà nelle note cliniche, sezioni, notebook e cartelle con quel nome.'}</p>`}
+      ${tagsOf(c).length ? `<div class="tags">${tagsOf(c).map(t => `<a class="tag" href="#/tag/${encodeURIComponent(t)}">#${esc(t)}</a>`).join('')}</div>` : ''}
+    </div>
+    <div class="row-actions"><button class="btn ghost danger" type="button" data-act="clip-del">Elimina dalla Raccolta</button></div>
+  </div>`);
+  // tag e nota si salvano mentre scrivi
+  let t = 0;
+  const saveSoon = () => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      t = 0;
+      c.tags = parseTags($('#clipTags')?.value || '');
+      c.note = ($('#clipNote')?.value || '').trim();
+      await saveLink(c);
+      const el = $('#clipSaved'); if (el) el.textContent = 'Salvato';
+    }, 700);
+  };
+  addCleanup(() => {
+    if (!t) return;
+    clearTimeout(t);
+    t = 0;
+    const tg = $('#clipTags'), nt = $('#clipNote');
+    if (tg) c.tags = parseTags(tg.value);
+    if (nt) c.note = nt.value.trim();
+    saveLink(c);
+  });
+  $('#clipTags').addEventListener('input', saveSoon);
+  $('#clipNote').addEventListener('input', saveSoon);
+  // i tag nuovi aggiornano “Dove compare” quando esci dal campo
+  $('#clipTags').addEventListener('change', async () => { clearTimeout(t); t = 0; c.tags = parseTags($('#clipTags').value); await saveLink(c); route(); });
+  on('[data-cliphint]', 'click', async e => {
+    clearTimeout(t); t = 0;
+    c.tags = [...new Set([...parseTags($('#clipTags').value), normTag(e.currentTarget.dataset.cliphint)])];
+    c.note = $('#clipNote').value.trim();
+    await saveLink(c);
+    route();
+  });
+  // il post di Instagram dice quanto è alto: il riquadro si adatta
+  const onMsg = e => {
+    if (!/instagram\.com$/.test(new URL(e.origin || 'http://x').hostname)) return;
+    let d = e.data;
+    try { if (typeof d === 'string') d = JSON.parse(d); } catch { return; }
+    const h = d && d.type === 'MEASURE' && d.details && +d.details.height;
+    const fr = $('.clip-embed iframe');
+    if (h && fr) fr.style.height = `${Math.min(Math.max(h, 300), 2400)}px`;
+  };
+  window.addEventListener('message', onMsg);
+  addCleanup(() => window.removeEventListener('message', onMsg));
+  on('[data-act="clip-addimg"]', 'click', async () => { const files = await chooseImageFiles(); if (files.length && await addClipImages(c, files)) { toast('Screenshot aggiunto'); route(); } });
+  const onPaste = async e => {
+    if (isTyping()) return;
+    const files = [...(e.clipboardData?.files || [])].filter(f => /^image\//.test(f.type));
+    if (!files.length) return;
+    e.preventDefault();
+    if (await addClipImages(c, files)) { toast('Screenshot aggiunto'); route(); }
+  };
+  document.addEventListener('paste', onPaste);
+  addCleanup(() => document.removeEventListener('paste', onPaste));
+  on('[data-clipzoom]', 'click', e => openLightbox(e.currentTarget.dataset.clipzoom));
+  on('[data-clipdel]', 'click', async e => {
+    const iid = e.currentTarget.dataset.clipdel;
+    const ok = await modal({ title: 'Togliere lo screenshot?', text: 'Se l’hai messo anche in una sezione o in una nota clinica, lì resta.', confirm: 'Togli', danger: true });
+    if (!ok) return;
+    c.images = clipImgs(c).filter(x => x.id !== iid);
+    await saveLink(c);
+    await removeOrphanImages([iid]);
+    route();
+  });
+  on('[data-act="clip-star"]', 'click', async () => { c.star = !c.star; await saveLink(c); route(); });
+  on('[data-act="clip-rename"]', 'click', async () => {
+    const name = await modal({ title: 'Rinomina', input: true, value: c.title, confirm: 'Rinomina' });
+    if (!name) return;
+    c.title = name.slice(0, 160);
+    await saveLink(c);
+    route();
+  });
+  on('[data-cnopen]', 'click', e => showClinicNote(e.currentTarget.dataset.cnopen));
+  on('[data-act="clip-ai"]', 'click', async () => { if (await clipAiRead(c)) route(); });
+  on('[data-act="clip-tosec"]', 'click', async () => {
+    const sec = await pickSectionSheet('In quale sezione lo metto?');
+    if (!sec) return;
+    const imgs = clipImgs(c).map((x, i) => `![${c.title}${clipImgs(c).length > 1 ? ` ${i + 1}` : ''}](img:${x.id})`).join('\n\n');
+    const link = c.url ? `[${SOCIAL_NAMES[c.site] === 'Sito' ? 'Link' : `Su ${SOCIAL_NAMES[c.site]}`}](${c.url})` : '';
+    const block = [`### ${c.title}`, c.note ? `*${c.note.replace(/\n+/g, ' ')}*` : '', imgs, c.text || '', link].filter(Boolean).join('\n\n');
+    sec.md = String(sec.md || '').trim() ? `${sec.md.trimEnd()}\n\n${block}\n` : `${block}\n`;
+    await saveSection(sec);
+    toast(`Messo in “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
+  });
+  on('[data-act="clip-tocn"]', 'click', async () => {
+    const notes = clinicalNotes().slice().sort((x, y) => x.title.localeCompare(y.title, 'it'));
+    if (!notes.length) { toast('Non hai ancora note cliniche: i tag lo collegheranno da solo quando le creerai'); return; }
+    const pick = await actionSheet('Aggiungi a quale nota clinica?', notes.slice(0, 300).map(n => ({ key: n.id, label: n.specialty ? `${n.title} · ${n.specialty}` : n.title })));
+    const n = notes.find(x => x.id === pick);
+    if (!n) return;
+    // il tag con il nome della nota: così compare lì, e gli screenshot vanno tra le sue immagini
+    c.tags = [...new Set([...tagsOf(c), normTag(n.title)])];
+    await saveLink(c);
+    if (clipImgs(c).length) {
+      const have = new Set((n.images || []).map(x => x.id));
+      n.images = [...(n.images || []), ...clipImgs(c).filter(x => !have.has(x.id)).map(x => ({ id: x.id, cap: c.title, src: c.url || '' }))];
+      await saveLink(n);
+    }
+    toast(`Collegato a “${n.title}”`, '', { label: 'Apri', fn: () => showClinicNote(n.id) });
+    route();
+  });
+  on('[data-act="clip-del"]', 'click', async () => {
+    const ok = await modal({ title: 'Eliminare dalla Raccolta?', text: 'Spariscono il link, la nota e gli screenshot (tranne quelli che hai messo in una sezione o in una nota clinica).', confirm: 'Elimina', danger: true });
+    if (!ok) return;
+    const ids = clipImgs(c).map(x => x.id);
+    await removeRecords([{ store: 'links', rec: c }]);
+    await removeOrphanImages(ids);
+    toast('Eliminato');
+    go('#/raccolta');
+  });
+}
+/* ---------- l’AI legge gli screenshot: titolo, tag e il contenuto come testo ---------- */
+const CLIP_AI_SYS = `Sei un medico che aiuta una studentessa di medicina a schedare materiale di studio salvato dai social (schemi, infografiche, slide, tabelle).
+Guarda le IMMAGINI e rispondi SOLO con JSON valido, in italiano, senza altro testo:
+{"titolo": "titolo breve e specifico dell’argomento, al massimo 80 caratteri", "testo": "il contenuto trascritto fedelmente in Markdown: titoli, elenchi puntati e tabelle come nello schema; non aggiungere informazioni che non ci sono", "tag": ["da 2 a 5 tag brevi in minuscolo: la materia (per esempio nefrologia), poi la malattia o il tema principale"], "dubbi": "le parti illeggibili e le affermazioni che sembrano sbagliate, imprecise o superate, in una o due frasi; stringa vuota se non ce ne sono"}`;
+async function clipAiRead(c) {
+  if (!AI.ready()) { toast('Serve la chiave di Gemini o di Claude in Impostazioni'); return false; }
+  const ims = clipImgs(c).map(x => imageById(x.id)).filter(x => x && x.blob).slice(0, 8);
+  if (!ims.length) { toast('Gli screenshot non sono ancora su questo dispositivo: aspetta la sincronizzazione', 'err'); return false; }
+  const wait = toast('L’AI sta leggendo lo schema…');
+  let j;
+  try {
+    const images = [];
+    for (const im of ims) images.push({ mime: im.blob.type || im.mime || 'image/webp', data: await blobToB64(im.blob) });
+    const r = await AI.generate({ system: CLIP_AI_SYS, text: `Titolo attuale: ${c.title}${c.note ? `\nNota: ${c.note}` : ''}`, images, maxTokens: 6000 });
+    const m = String(r.text || '').match(/\{[\s\S]*\}/);
+    j = JSON.parse(m ? m[0] : '{}');
+  } catch (err) { toast(err.message || 'La lettura non è riuscita: riprova', 'err'); return false; }
+  finally { if (wait && wait.remove) wait.remove(); }
+  return new Promise(resolve => {
+    const sh = openSheet(`
+      <h2>Proposta dell’AI</h2>
+      <p class="hint">Controlla e correggi: viene salvata solo quando tocchi Salva.</p>
+      ${j.dubbi ? `<p class="hint warn-hint">Da verificare: ${esc(String(j.dubbi))}</p>` : ''}
+      <label class="field"><span>Titolo</span><input class="input" id="caT" value="${esc(String(j.titolo || c.title || ''))}"></label>
+      <label class="field"><span>Tag</span><input class="input" id="caTags" value="${esc([...new Set([...tagsOf(c), ...(j.tag || []).map(normTag)])].filter(Boolean).join(', '))}"></label>
+      <label class="field"><span>Contenuto</span><textarea class="input" id="caX" rows="12">${esc(String(j.testo || ''))}</textarea></label>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-ca="no">Annulla</button><button class="btn primary" type="button" data-ca="ok">Salva</button></div>`, { label: 'Proposta dell’AI', onClose: v => resolve(!!v) });
+    $('[data-ca="no"]', sh.el).onclick = () => sh.close(false);
+    $('[data-ca="ok"]', sh.el).onclick = async () => {
+      c.title = $('#caT', sh.el).value.trim().slice(0, 160) || c.title;
+      c.tags = parseTags($('#caTags', sh.el).value);
+      c.text = $('#caX', sh.el).value.trim();
+      c.doubt = String(j.dubbi || '').trim();
+      await saveLink(c);
+      toast('Salvato');
+      sh.close(true);
+    };
+  });
+}
+// riquadro “Dalla Raccolta” per le pagine che hanno elementi con i tag giusti
+function clipStrip(list, more) {
+  if (!list.length) return '';
+  return `<div class="clip-strip">${list.slice(0, 8).map(c => {
+    const im = clipImgs(c)[0];
+    return `<a class="clip-mini" href="#/raccolta/${c.id}" title="${esc(c.title)}">${im ? `<img class="nb-img" data-img="${esc(im.id)}" alt="">` : `<span class="clip-ph clip-${c.site || 'web'}">${esc(SOCIAL_NAMES[c.site] || 'Link')}</span>`}<span>${esc(c.title)}</span></a>`;
+  }).join('')}${list.length > 8 && more ? `<a class="clip-mini clip-more" href="${more}">Tutti e ${list.length}</a>` : ''}</div>`;
 }
