@@ -9288,14 +9288,14 @@ function modeHtml(sec, body, { inPanel = false } = {}) {
       </div>
       <div class="hm-wrap">
         ${im && im.blob
-          ? `<iframe class="hm-frame" sandbox="${HTML_SANDBOX}" title="${esc(h.name)}" allow="fullscreen; clipboard-write" referrerpolicy="no-referrer"></iframe>`
+          ? `<iframe class="hm-frame" data-hmid="${esc(h.id)}" sandbox="${HTML_SANDBOX}" title="${esc(h.name)}" allow="fullscreen; clipboard-write" referrerpolicy="no-referrer"></iframe>`
           : `<div class="empty hm-wait"><p>Questa mappa non è ancora arrivata su questo dispositivo: arriva con la prossima sincronizzazione con Drive.</p>${Sync.configured() ? '<button class="btn" type="button" data-hm="sync">Sincronizza adesso</button>' : ''}</div>`}
         <button class="btn hm-exit" type="button" data-hm="exit" hidden>✕ Esci dallo schermo intero</button>
       </div>
       ${inPanel ? '' : '<p class="hint">La mappa funziona come in Chrome ma isolata: non può leggere né cambiare i tuoi appunti. Se usa librerie prese da internet (grafici, Mermaid, D3…), le serve la connessione.</p>'}`;
     const fr = $('.hm-frame', body);
     if (fr && im && im.blob) {
-      im.blob.text().then(t => { if (fr.isConnected) fr.srcdoc = t; }).catch(() => toast('Non riesco ad aprire il file', 'err'));
+      im.blob.text().then(t => { if (fr.isConnected) fr.srcdoc = prepareHtmlSrcdoc(t, h.id); }).catch(() => toast('Non riesco ad aprire il file', 'err'));
     }
     if (full) setFull(true);
   };

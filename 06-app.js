@@ -1460,6 +1460,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.23", title: "mappe HTML: cambio scheda e salvataggio stato sistemati", html: `      <ul>
+        <li><strong>Cambio scheda nelle mappe HTML sistemato</strong>: risolto il bug per cui i link interni (<code>#scheda</code>) o l’uso di <code>localStorage</code>/<code>history</code> dentro le mappe HTML caricavano l’app Notebook dentro l’iframe bloccando IndexedDB.</li>
+        <li><strong>Memoria isolata per ogni mappa HTML</strong>: le mappe che salvano scheda attiva, punteggi o progressi di Active Recall in <code>localStorage</code> ora funzionano e ricordano lo stato su questo dispositivo restando completamente isolate dai tuoi appunti.</li>
+      </ul>` },
   { v: "4.22", title: "scrittura bloccata con S Pen nell’Atlante e immagini visibili in Affianca", html: `      <ul>
         <li><strong>Tavola bloccata mentre scrivi nell’Atlante</strong>: con <em>Evidenzia</em>, <em>Penna</em>, <em>Testo</em> o <em>Gomma</em> attivi l’immagine non si sposta né fa swipe mentre usi la penna o appoggi il palmo; per spostare o ingrandire puoi usare due dita (a penna sollevata) oppure il pulsante <strong>✋ Scorri</strong>.</li>
         <li><strong>Immagini dell’Atlante (e di tutte le sezioni) visibili in Affianca</strong>: le tavole e le figure ora si caricano subito nel pannello affiancato, mostrano anche eventuali evidenziazioni/note pastello salvate e si aprono nel visore a schermo intero con un tocco.</li>

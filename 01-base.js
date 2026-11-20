@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.22';
+const APP_VERSION = '4.23';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -3680,6 +3680,78 @@ function extractHtmlBlocks(md) {
   });
 }
 const EMBED_RESIZE = `<script>(function(){function s(){parent.postMessage({nbEmbedH:Math.ceil(document.documentElement.scrollHeight)},'*')}new ResizeObserver(s).observe(document.documentElement);addEventListener('load',s);s();})();<\/script>`;
+/* v4.23: compatibilità per mappe e blocchi HTML in iframe srcdoc sandbox:
+   - evita che i link #scheda / relativi risolvano sull’URL dell’app (che caricava Notebook dentro l’iframe bloccando IndexedDB)
+   - fornisce localStorage/sessionStorage isolati per ogni mappa (così schede, quiz e stato non vanno in SecurityError)
+   - protegge history.pushState/replaceState e submit di form vuoti */
+function htmlSandboxShim(mapId = '') {
+  let initJson = 'null';
+  if (mapId) {
+    try {
+      const raw = localStorage.getItem(`nb-hm:${mapId}`);
+      if (raw) { JSON.parse(raw); initJson = raw.replace(/<\//g, '<\\/').replace(/\u2028|\u2029/g, ''); }
+    } catch { initJson = 'null'; }
+  }
+  const idLit = JSON.stringify(String(mapId || ''));
+  return `<script>(function(){
+function mkStore(init,id){
+  var d=Object.create(null);
+  if(init&&typeof init==='object')Object.keys(init).forEach(function(k){d[k]=String(init[k]);});
+  var push=function(){if(!id)return;try{parent.postMessage({nbHmStore:id,data:Object.assign({},d)},'*');}catch(e){}};
+  var api={
+    getItem:function(k){k=String(k);return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;},
+    setItem:function(k,v){d[String(k)]=String(v);push();},
+    removeItem:function(k){delete d[String(k)];push();},
+    clear:function(){Object.keys(d).forEach(function(k){delete d[k];});push();},
+    key:function(i){var ks=Object.keys(d);return i>=0&&i<ks.length?ks[i]:null;}
+  };
+  if(typeof Proxy==='undefined')return api;
+  return new Proxy(api,{
+    get:function(t,p){if(p==='length')return Object.keys(d).length;if(p in t)return t[p];if(typeof p==='string'&&Object.prototype.hasOwnProperty.call(d,p))return d[p];return undefined;},
+    set:function(t,p,v){if(typeof p==='string'){d[p]=String(v);push();}return true;},
+    deleteProperty:function(t,p){if(typeof p==='string'){delete d[p];push();}return true;},
+    ownKeys:function(){return Object.keys(d);},
+    getOwnPropertyDescriptor:function(t,p){if(typeof p==='string'&&Object.prototype.hasOwnProperty.call(d,p))return{enumerable:true,configurable:true,value:d[p]};return undefined;}
+  });
+}
+try{void window.localStorage;}catch(e){try{Object.defineProperty(window,'localStorage',{value:mkStore(${initJson},${idLit}),configurable:true});}catch(e2){}}
+try{void window.sessionStorage;}catch(e){try{Object.defineProperty(window,'sessionStorage',{value:mkStore(null,''),configurable:true});}catch(e2){}}
+['pushState','replaceState'].forEach(function(fn){
+  var orig=history&&history[fn];
+  if(typeof orig!=='function')return;
+  try{history[fn]=function(st,ti,u){try{return orig.apply(history,arguments);}catch(e){if(typeof u==='string'&&u.charAt(0)==='#'&&location.href.indexOf('about:srcdoc')===0){try{location.hash=u;}catch(e2){}}}};}catch(e){}
+});
+document.addEventListener('click',function(e){
+  var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
+  if(!a)return;
+  var href=(a.getAttribute('href')||'').trim();
+  if(/^(https?:|mailto:|tel:|data:|blob:|javascript:)/i.test(href)){
+    if(/^(https?:|mailto:)/i.test(href)&&!a.getAttribute('target')){a.setAttribute('target','_blank');a.setAttribute('rel','noopener noreferrer');}
+    return;
+  }
+  e.preventDefault();
+  if(href.length>1&&href.charAt(0)==='#'){
+    setTimeout(function(){
+      var id=href.slice(1);try{id=decodeURIComponent(id);}catch(err){}
+      if(location.href.indexOf('about:srcdoc')===0){try{location.hash=href;}catch(err){}}
+      var el=document.getElementById(id)||document.getElementsByName(id)[0];
+      if(el&&el.offsetParent!==null&&el.scrollIntoView)el.scrollIntoView({behavior:'smooth',block:'nearest'});
+    },0);
+  }
+},true);
+document.addEventListener('submit',function(e){
+  var act=(e.target&&e.target.getAttribute?(e.target.getAttribute('action')||'').trim():'');
+  if(!act||!/^https?:/i.test(act))e.preventDefault();
+},true);
+})();<\/script>`;
+}
+function prepareHtmlSrcdoc(html, mapId = '') {
+  const shim = htmlSandboxShim(mapId);
+  const s = String(html || '');
+  if (/<head\b[^>]*>/i.test(s)) return s.replace(/<head\b[^>]*>/i, m => m + shim);
+  if (/<html\b[^>]*>/i.test(s)) return s.replace(/<html\b[^>]*>/i, m => m + '<head>' + shim + '</head>');
+  return shim + s;
+}
 function hydrateHtmlBlocks(root) {
   const list = root.matches && root.matches('.html-embed') ? [root] : [...root.querySelectorAll('.html-embed:not(.ready)')];
   list.forEach(box => {
@@ -3689,20 +3761,31 @@ function hydrateHtmlBlocks(root) {
     try { code = decodeURIComponent(escape(atob(box.dataset.html || ''))); } catch { return; }
     const fr = document.createElement('iframe');
     fr.className = 'html-frame';
-    fr.setAttribute('sandbox', 'allow-scripts allow-popups allow-forms');
+    fr.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms');
     fr.setAttribute('title', 'Contenuto HTML');
     fr.setAttribute('loading', 'lazy');
     const dark = document.documentElement.dataset.theme === 'dark';
-    fr.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><base target="_blank"><style>html{color-scheme:${dark ? 'dark' : 'light'}}body{margin:0;padding:12px;font-family:system-ui,sans-serif;line-height:1.5;${dark ? 'color:#e9ecf7;' : ''}}img{max-width:100%}</style></head><body>${code}${EMBED_RESIZE}</body></html>`;
+    fr.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${htmlSandboxShim('')}<style>html{color-scheme:${dark ? 'dark' : 'light'}}body{margin:0;padding:12px;font-family:system-ui,sans-serif;line-height:1.5;${dark ? 'color:#e9ecf7;' : ''}}img{max-width:100%}</style></head><body>${code}${EMBED_RESIZE}</body></html>`;
     box.append(fr);
   });
 }
 window.addEventListener('message', e => {
-  const h = e.data && e.data.nbEmbedH;
-  if (!h) return;
-  document.querySelectorAll('iframe.html-frame').forEach(fr => {
-    if (fr.contentWindow === e.source) fr.style.height = `${Math.min(Math.max(h, 40), 4000)}px`;
-  });
+  const d = e.data;
+  if (!d) return;
+  if (d.nbEmbedH) {
+    document.querySelectorAll('iframe.html-frame').forEach(fr => {
+      if (fr.contentWindow === e.source) fr.style.height = `${Math.min(Math.max(d.nbEmbedH, 40), 4000)}px`;
+    });
+    return;
+  }
+  if (typeof d.nbHmStore === 'string' && d.data && typeof d.data === 'object') {
+    const ok = [...document.querySelectorAll('iframe.hm-frame')].some(fr => fr.contentWindow === e.source && fr.dataset.hmid === d.nbHmStore);
+    if (!ok) return;
+    try {
+      const json = JSON.stringify(d.data);
+      if (json.length <= 262144) localStorage.setItem(`nb-hm:${d.nbHmStore}`, json);
+    } catch { /* spazio pieno */ }
+  }
 });
 
 /* ---------- PDF: annotazioni unite tra dispositivi ---------- */
