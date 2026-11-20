@@ -641,7 +641,7 @@ function viewPdf(id, pageParam) {
       // in fondo, come citazione con la fonte
       const quote = joined.split('\n').map(l => `> ${l}`).join('\n');
       const base = String(sec.md || '').replace(/\s+$/, '');
-      sec.md = `${base ? `${base}\n\n` : ''}${quote}\n>\n> — ${pdfSource(pagesTxt)}\n`;
+      sec.md = `${base ? `${base}\n\n` : ''}${quote}\n>\n> — [${pdfSource(pagesTxt)}](#/pdf/${meta.id}/${s.firstPage})\n`;
       await saveSection(sec);
       toast(`Aggiunto in fondo a “${sec.title}”`, '', { label: 'Apri', fn: () => go(`#/sec/${sec.id}/read`) });
       return;

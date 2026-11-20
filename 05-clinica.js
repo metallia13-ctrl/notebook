@@ -695,7 +695,7 @@ const SPECIALS = {
     parts: () => ['Caratteristiche', 'Habitat e trasmissione', 'Fattori di virulenza', 'Malattie', 'Diagnosi di laboratorio', 'Terapia e resistenze', 'Prevenzione', 'Note']
   },
   atlas: {
-    kind: 'atlas', route: 'atlas', name: 'Atlante diagnostico', noun: 'tracciato o immagine', links: true,
+    kind: 'atlas', route: 'atlas', name: 'Atlante diagnostico', noun: 'tracciato o immagine', links: true, grid: true,
     lede: 'ECG, emogasanalisi, Rx torace e altre immagini da imparare a leggere: carica la foto, segna le etichette, scrivi l’interpretazione.',
     typeLabel: 'Esame', types: { ecg: 'ECG', ega: 'Emogasanalisi', rx: 'Rx torace', eco: 'Ecografia', tc: 'TC o RM', altro: 'Altro' },
     groupLabel: 'Quadro', groupPh: 'Es. Blocchi di branca, Acidosi metabolica',
@@ -848,6 +848,665 @@ function specialSheet(cfg, sec = null) {
     setTimeout(() => $('#spTitle', sh.el)?.focus(), 40);
   });
 }
+/* ---------- v4.18: Atlante 2.0 (visore swipe, caricamento multiplo, filtri regione, confronto) ---------- */
+function atlasImagesOf(sec) {
+  const out = [];
+  const re = new RegExp(IMG_MD_RE.source, 'g');
+  let m;
+  while ((m = re.exec(sec?.md || ''))) {
+    out.push({ id: m[2], cap: (m[1] || '').trim() });
+  }
+  return out;
+}
+function atlasSlidesFrom(list) {
+  const slides = [];
+  list.forEach(s => {
+    const imgs = atlasImagesOf(s);
+    imgs.forEach((im, idx) => {
+      slides.push({ sec: s, imgId: im.id, cap: im.cap, photoIdx: idx, photoTotal: imgs.length });
+    });
+  });
+  return slides;
+}
+async function addPhotosToAtlasSec(sec) {
+  const files = await chooseImageFiles();
+  if (!files.length) return [];
+  const added = [];
+  const mdLines = [];
+  for (const f of files) {
+    try {
+      const im = await saveImage(await compressImage(f, { max: 2000, quality: 0.86 }), sec.notebookId);
+      const cap = f.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+      added.push({ id: im.id, cap });
+      mdLines.push(imageMd(im.id, cap));
+    } catch (err) {
+      toast(`${f.name}: ${err.message || 'errore'}`, 'err');
+    }
+  }
+  if (mdLines.length) {
+    const hd = /^##\s+Tracciato\s*$/m.test(sec.md || '') ? 'Tracciato' : 'Immagine';
+    await appendImagesUnder(sec, hd, mdLines);
+    toast(mdLines.length === 1 ? `Foto aggiunta a “${sec.title}”` : `${mdLines.length} foto aggiunte a “${sec.title}”`);
+  }
+  return added;
+}
+
+function atlasBatchUploadSheet(cfg) {
+  return new Promise(resolve => {
+    const nb = specialNb(cfg.kind);
+    const others = nb ? secsOf(nb.id).sort((a, b) => a.title.localeCompare(b.title, 'it')) : [];
+    const groups = [...new Set(others.map(s => s.sp?.group).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+    const allTagOpts = [...new Set(others.flatMap(x => tagsOf(x)))].sort((a, b) => a.localeCompare(b, 'it'));
+    const lastType = S()[`cropType_${cfg.kind}`] || Object.keys(cfg.types)[0];
+    let mode = 'per_image'; // 'per_image' | 'single_new' | 'existing'
+    let pickedSecId = others[0]?.id || '';
+    const queue = []; // { file, url, name }
+    const sh = openSheet(`
+      <h2>Carica tavole · ${esc(cfg.name)}</h2>
+      <p class="sheet-sub">Seleziona più immagini insieme dalla galleria o dalle slide: scegli apparato e ${cfg.groupLabel.toLowerCase()} una volta sola.</p>
+      <div class="seg sm" role="tablist" aria-label="Modalità caricamento">
+        <button type="button" role="tab" data-abm="per_image" aria-selected="true">Una scheda per immagine</button>
+        <button type="button" role="tab" data-abm="single_new" aria-selected="false">Tutte in una scheda</button>
+        ${others.length ? '<button type="button" role="tab" data-abm="existing" aria-selected="false">In una scheda esistente</button>' : ''}
+      </div>
+      <div class="ab-pick-row">
+        <button type="button" class="btn" data-ab="pick">＋ Scegli immagini</button>
+        <span class="hint" id="abCount">Nessuna immagine selezionata</span>
+      </div>
+      <div class="ab-files" id="abFiles"></div>
+      <div id="abNewMeta">
+        <div id="abSingleTitleBox" hidden>
+          <label class="field"><span>Titolo della scheda</span><input class="input" id="abSingleTitle" placeholder="${esc(cfg.namePh)}"></label>
+        </div>
+        <div class="grid2">
+          <label class="field"><span>${cfg.typeLabel}</span><select class="input" id="abType">${Object.entries(cfg.types).map(([k, l]) => `<option value="${k}" ${lastType === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field"><span>${cfg.groupLabel}</span><input class="input" id="abGroup" list="abGroups" placeholder="${esc(cfg.groupPh)}"><datalist id="abGroups">${groups.map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
+        </div>
+        <label class="field"><span>Tag, separati da virgole (facoltativi)</span><input class="input" id="abTags" placeholder="Es. Netter, esame" list="abTagList"><datalist id="abTagList">${allTagOpts.map(t => `<option value="${esc(t)}">`).join('')}</datalist></label>
+        <label class="check"><input type="checkbox" id="abTpl" checked><span>Prepara anche i titoli della scheda</span></label>
+      </div>
+      <div id="abExistMeta" hidden>
+        <label class="field"><span>Cerca la scheda</span><input type="search" class="input" id="abExistQ" placeholder="Filtra per nome…"></label>
+        <ul class="list pick-list ab-exist-list" id="abExistList"></ul>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-ab="no">Annulla</button>
+        <button class="btn primary" type="button" data-ab="ok" disabled>Carica</button>
+      </div>`, {
+      label: 'Carica tavole',
+      onClose: v => { queue.forEach(q => URL.revokeObjectURL(q.url)); resolve(v || false); }
+    });
+    const readNames = () => $$('.ab-file-name', sh.el).forEach(inp => { const it = queue[+inp.dataset.abi]; if (it) it.name = inp.value; });
+    const paintExist = () => {
+      const box = $('#abExistList', sh.el);
+      if (!box) return;
+      const f = foldAccents($('#abExistQ', sh.el)?.value.trim() || '');
+      const hits = others.filter(s => !f || foldAccents(`${s.title} ${s.sp?.group || ''} ${cfg.types[s.sp?.type] || ''}`).includes(f)).slice(0, 40);
+      box.innerHTML = hits.map(s => `<li><button type="button" class="row ${s.id === pickedSecId ? 'on' : ''}" data-ab-sec="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc([cfg.types[s.sp?.type], s.sp?.group].filter(Boolean).join(' · '))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna scheda trovata.</li>';
+    };
+    const paintFiles = () => {
+      const box = $('#abFiles', sh.el);
+      $('#abCount', sh.el).textContent = queue.length ? `${queue.length} ${queue.length === 1 ? 'immagine pronta' : 'immagini pronte'}` : 'Nessuna immagine selezionata';
+      const okBtn = $('[data-ab="ok"]', sh.el);
+      okBtn.disabled = !queue.length || (mode === 'existing' && !pickedSecId);
+      okBtn.textContent = queue.length ? `Carica ${queue.length} ${queue.length === 1 ? 'tavola' : 'tavole'}` : 'Carica';
+      box.innerHTML = queue.map((q, i) => `
+        <div class="ab-file">
+          <img src="${q.url}" alt="">
+          ${mode === 'per_image' ? `<input class="input ab-file-name" data-abi="${i}" value="${esc(q.name)}" placeholder="Titolo scheda" aria-label="Titolo tavola ${i + 1}">` : `<span class="ab-file-cap">${esc(q.name)}</span>`}
+          <button type="button" class="btn sm ghost" data-ab-del="${i}" aria-label="Rimuovi">✕</button>
+        </div>`).join('');
+    };
+    const paintMode = () => {
+      $$('[data-abm]', sh.el).forEach(b => b.setAttribute('aria-selected', String(b.dataset.abm === mode)));
+      $('#abNewMeta', sh.el).hidden = mode === 'existing';
+      $('#abExistMeta', sh.el).hidden = mode !== 'existing';
+      $('#abSingleTitleBox', sh.el).hidden = mode !== 'single_new';
+      if (mode === 'existing') paintExist();
+      paintFiles();
+    };
+    $('#abExistQ', sh.el)?.addEventListener('input', paintExist);
+    sh.el.addEventListener('click', async e => {
+      const mBtn = e.target.closest('[data-abm]');
+      if (mBtn) { readNames(); mode = mBtn.dataset.abm; paintMode(); return; }
+      const secBtn = e.target.closest('[data-ab-sec]');
+      if (secBtn) { pickedSecId = secBtn.dataset.abSec; paintExist(); paintFiles(); return; }
+      const delBtn = e.target.closest('[data-ab-del]');
+      if (delBtn) { readNames(); const [rm] = queue.splice(+delBtn.dataset.abDel, 1); if (rm) URL.revokeObjectURL(rm.url); paintFiles(); return; }
+      const act = e.target.closest('[data-ab]')?.dataset.ab;
+      if (!act) return;
+      if (act === 'no') { sh.close(false); return; }
+      if (act === 'pick') {
+        const files = await chooseImageFiles();
+        if (!files.length) return;
+        readNames();
+        files.forEach(file => {
+          const clean = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Tavola';
+          queue.push({ file, url: URL.createObjectURL(file), name: clean });
+        });
+        paintFiles();
+        return;
+      }
+      if (act === 'ok') {
+        readNames();
+        if (!queue.length) return;
+        if (mode === 'single_new' && !$('#abSingleTitle', sh.el).value.trim()) {
+          toast('Scrivi il titolo della scheda'); $('#abSingleTitle', sh.el).focus(); return;
+        }
+        const okBtn = $('[data-ab="ok"]', sh.el);
+        okBtn.disabled = true;
+        const nbx = await ensureSpecialNb(cfg);
+        const type = $('#abType', sh.el).value;
+        const group = $('#abGroup', sh.el).value.trim();
+        const tags = parseTags($('#abTags', sh.el).value);
+        const tpl = !!$('#abTpl', sh.el)?.checked;
+        S()[`cropType_${cfg.kind}`] = type;
+        Settings.save();
+        const savedImgs = [];
+        for (let i = 0; i < queue.length; i++) {
+          okBtn.textContent = `Elaboro ${i + 1} di ${queue.length}…`;
+          try {
+            const im = await saveImage(await compressImage(queue[i].file, { max: 2000, quality: 0.86 }), nbx.id);
+            savedImgs.push({ id: im.id, name: (queue[i].name || '').trim() || `Tavola ${i + 1}` });
+          } catch (err) {
+            toast(`${queue[i].file.name}: ${err.message || 'errore'}`, 'err');
+          }
+        }
+        if (!savedImgs.length) { okBtn.disabled = false; paintFiles(); return; }
+        const makeMd = (imgLines) => {
+          const parts = cfg.parts(type);
+          if (!tpl) return `## Immagine\n\n${imgLines.join('\n\n')}\n`;
+          return parts.map((p, idx) => idx === 0 ? `## ${p}\n\n${imgLines.join('\n\n')}\n\n` : `## ${p}\n\n`).join('');
+        };
+        if (mode === 'per_image') {
+          for (const it of savedImgs) {
+            const s = newSection(nbx.id, { title: it.name, md: makeMd([imageMd(it.id, it.name)]) });
+            s.sp = { type, group, links: [] };
+            s.tags = [...tags];
+            await saveSection(s);
+          }
+          toast(savedImgs.length === 1 ? 'Tavola caricata' : `${savedImgs.length} tavole caricate`);
+        } else if (mode === 'single_new') {
+          const title = $('#abSingleTitle', sh.el).value.trim();
+          const s = newSection(nbx.id, { title, md: makeMd(savedImgs.map(it => imageMd(it.id, it.name))) });
+          s.sp = { type, group, links: [] };
+          s.tags = [...tags];
+          await saveSection(s);
+          toast(`Scheda “${title}” creata con ${savedImgs.length} immagini`);
+        } else if (mode === 'existing') {
+          const sec = secById(pickedSecId);
+          if (sec) {
+            await appendImagesUnder(sec, 'Immagine', savedImgs.map(it => imageMd(it.id, it.name)));
+            toast(`${savedImgs.length} immagini aggiunte a “${sec.title}”`);
+          }
+        }
+        sh.close(true);
+      }
+    });
+    paintMode();
+  });
+}
+
+/* Motore zoom + pan + swipe per il visore su tablet (touch, pennino e mouse) */
+function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZoomChange = () => {} } = {}) {
+  let scale = 1, tx = 0, ty = 0;
+  let touchState = null;
+  let ptrState = null;
+  let lastTap = { t: 0, x: 0, y: 0 };
+
+  const clamp = () => {
+    if (scale <= 1.02) { scale = 1; tx = 0; ty = 0; return; }
+    const sr = stage.getBoundingClientRect();
+    const w = img.offsetWidth || sr.width;
+    const h = img.offsetHeight || sr.height;
+    const maxX = Math.max(0, (w * scale - sr.width) / 2 + 40);
+    const maxY = Math.max(0, (h * scale - sr.height) / 2 + 40);
+    tx = Math.max(-maxX, Math.min(maxX, tx));
+    ty = Math.max(-maxY, Math.min(maxY, ty));
+  };
+  const apply = (animate = false) => {
+    img.style.transition = animate ? 'transform 0.2s cubic-bezier(.2,.8,.2,1)' : 'none';
+    img.style.transform = `translate3d(${tx.toFixed(1)}px, ${ty.toFixed(1)}px, 0) scale(${scale.toFixed(4)})`;
+    stage.classList.toggle('zoomed', scale > 1.02);
+  };
+  const zoomAt = (nextScale, cx, cy, animate = false) => {
+    nextScale = Math.max(1, Math.min(5, nextScale));
+    if (nextScale <= 1.04) { scale = 1; tx = 0; ty = 0; apply(animate); onZoomChange(1); return; }
+    const sr = stage.getBoundingClientRect();
+    const ox = (cx - (sr.left + sr.width / 2)) - tx;
+    const oy = (cy - (sr.top + sr.height / 2)) - ty;
+    const ratio = nextScale / scale;
+    tx -= ox * (ratio - 1);
+    ty -= oy * (ratio - 1);
+    scale = nextScale;
+    clamp();
+    apply(animate);
+    onZoomChange(scale);
+  };
+  const reset = (animate = false) => { scale = 1; tx = 0; ty = 0; apply(animate); onZoomChange(1); };
+
+  const dist2 = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const mid2 = (a, b) => [(a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2];
+
+  const onTouchStart = e => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      if (touchState && touchState.mode === 'swipe') apply(false);
+      const [a, b] = e.touches;
+      const [mx, my] = mid2(a, b);
+      touchState = { kind: 'pinch', d0: dist2(a, b) || 1, mx0: mx, my0: my, s0: scale, tx0: tx, ty0: ty };
+    } else if (e.touches.length === 1) {
+      const t = e.touches[0];
+      touchState = { kind: 'one', x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, t0: Date.now(), tx0: tx, ty0: ty, mode: null };
+    }
+  };
+  const onTouchMove = e => {
+    if (!touchState) return;
+    if (e.touches.length === 2 && touchState.kind === 'pinch') {
+      e.preventDefault();
+      const [a, b] = e.touches;
+      const d = dist2(a, b);
+      const [mx, my] = mid2(a, b);
+      const sr = stage.getBoundingClientRect();
+      const ns = Math.max(1, Math.min(5, touchState.s0 * (d / touchState.d0)));
+      const ratio = ns / touchState.s0;
+      const ox = (touchState.mx0 - (sr.left + sr.width / 2)) - touchState.tx0;
+      const oy = (touchState.my0 - (sr.top + sr.height / 2)) - touchState.ty0;
+      scale = ns;
+      tx = touchState.tx0 - ox * (ratio - 1) + (mx - touchState.mx0);
+      ty = touchState.ty0 - oy * (ratio - 1) + (my - touchState.my0);
+      clamp();
+      apply(false);
+      onZoomChange(scale);
+      return;
+    }
+    if (e.touches.length === 1 && touchState.kind === 'one') {
+      const t = e.touches[0];
+      const dx = t.clientX - touchState.x0;
+      const dy = t.clientY - touchState.y0;
+      touchState.x = t.clientX;
+      touchState.y = t.clientY;
+      if (scale > 1.04) {
+        e.preventDefault();
+        touchState.mode = 'pan';
+        tx = touchState.tx0 + dx;
+        ty = touchState.ty0 + dy;
+        clamp();
+        apply(false);
+      } else if (allowSwipe) {
+        if (!touchState.mode && Math.hypot(dx, dy) > 8) {
+          touchState.mode = Math.abs(dx) >= Math.abs(dy) ? 'swipe' : 'ignore';
+        }
+        if (touchState.mode === 'swipe') {
+          e.preventDefault();
+          img.style.transition = 'none';
+          img.style.transform = `translate3d(${dx.toFixed(1)}px, 0, 0)`;
+        }
+      }
+    }
+  };
+  const onTouchEnd = e => {
+    if (!touchState) return;
+    if (touchState.kind === 'pinch') {
+      if (e.touches.length < 2) {
+        touchState = null;
+        if (scale < 1.08) reset(true);
+      }
+      return;
+    }
+    if (touchState.kind === 'one' && e.touches.length === 0) {
+      const st = touchState;
+      touchState = null;
+      const dx = st.x - st.x0, dy = st.y - st.y0, dt = Date.now() - st.t0;
+      if (st.mode === 'swipe') {
+        if (Math.abs(dx) > 65 || (Math.abs(dx) > 28 && dt < 260)) {
+          onSwipe(dx < 0 ? 1 : -1);
+        } else {
+          apply(true);
+        }
+      } else if (!st.mode && Math.hypot(dx, dy) < 12 && dt < 280) {
+        const now = Date.now();
+        if (now - lastTap.t < 320 && Math.hypot(st.x - lastTap.x, st.y - lastTap.y) < 40) {
+          lastTap.t = 0;
+          if (scale > 1.2) reset(true); else zoomAt(2.5, st.x, st.y, true);
+        } else {
+          lastTap = { t: now, x: st.x, y: st.y };
+        }
+      }
+    }
+  };
+
+  // Mouse e pennino (esclude touch, gestito sopra)
+  const onPtrDown = e => {
+    if (e.pointerType === 'touch' || e.button !== 0) return;
+    e.preventDefault();
+    try { stage.setPointerCapture(e.pointerId); } catch { /* niente */ }
+    ptrState = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: Date.now(), tx0: tx, ty0: ty, mode: null };
+  };
+  const onPtrMove = e => {
+    if (!ptrState || e.pointerId !== ptrState.id) return;
+    const dx = e.clientX - ptrState.x0, dy = e.clientY - ptrState.y0;
+    ptrState.x = e.clientX; ptrState.y = e.clientY;
+    if (scale > 1.04) {
+      ptrState.mode = 'pan';
+      tx = ptrState.tx0 + dx; ty = ptrState.ty0 + dy;
+      clamp(); apply(false);
+    } else if (allowSwipe) {
+      if (!ptrState.mode && Math.hypot(dx, dy) > 8) ptrState.mode = Math.abs(dx) >= Math.abs(dy) ? 'swipe' : 'ignore';
+      if (ptrState.mode === 'swipe') {
+        img.style.transition = 'none';
+        img.style.transform = `translate3d(${dx.toFixed(1)}px, 0, 0)`;
+      }
+    }
+  };
+  const onPtrUp = e => {
+    if (!ptrState || e.pointerId !== ptrState.id) return;
+    const st = ptrState; ptrState = null;
+    const dx = st.x - st.x0, dt = Date.now() - st.t0;
+    if (st.mode === 'swipe') {
+      if (Math.abs(dx) > 65 || (Math.abs(dx) > 28 && dt < 260)) onSwipe(dx < 0 ? 1 : -1);
+      else apply(true);
+    }
+  };
+  const onDblClick = e => {
+    if (scale > 1.2) reset(true); else zoomAt(2.5, e.clientX, e.clientY, true);
+  };
+  const onWheel = e => {
+    e.preventDefault();
+    zoomAt(scale * Math.exp(-e.deltaY * 0.0022), e.clientX, e.clientY, false);
+  };
+
+  stage.addEventListener('touchstart', onTouchStart, { passive: false });
+  stage.addEventListener('touchmove', onTouchMove, { passive: false });
+  stage.addEventListener('touchend', onTouchEnd, { passive: true });
+  stage.addEventListener('touchcancel', onTouchEnd, { passive: true });
+  stage.addEventListener('pointerdown', onPtrDown);
+  stage.addEventListener('pointermove', onPtrMove);
+  stage.addEventListener('pointerup', onPtrUp);
+  stage.addEventListener('pointercancel', onPtrUp);
+  stage.addEventListener('dblclick', onDblClick);
+  stage.addEventListener('wheel', onWheel, { passive: false });
+
+  return {
+    reset,
+    zoomStep: k => { const r = stage.getBoundingClientRect(); zoomAt(scale * k, r.left + r.width / 2, r.top + r.height / 2, true); },
+    getScale: () => scale,
+    destroy() {
+      stage.removeEventListener('touchstart', onTouchStart);
+      stage.removeEventListener('touchmove', onTouchMove);
+      stage.removeEventListener('touchend', onTouchEnd);
+      stage.removeEventListener('touchcancel', onTouchEnd);
+      stage.removeEventListener('pointerdown', onPtrDown);
+      stage.removeEventListener('pointermove', onPtrMove);
+      stage.removeEventListener('pointerup', onPtrUp);
+      stage.removeEventListener('pointercancel', onPtrUp);
+      stage.removeEventListener('dblclick', onDblClick);
+      stage.removeEventListener('wheel', onWheel);
+    }
+  };
+}
+
+function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
+  if (!items.length) { toast('Nessuna immagine da mostrare'); return; }
+  const cfg = SPECIALS[kind];
+  let idx = Math.max(0, Math.min(items.length - 1, startIdx));
+  let hideTitles = !!S().atlasHideTitles;
+  let revealed = false;
+  let pinned = null;
+  let notesOpen = false;
+  let changed = false;
+
+  const root = $('#modalRoot');
+  root.innerHTML = `
+    <div class="overlay full av-wrap" role="dialog" aria-modal="true" aria-label="${esc(cfg.name)}">
+      <header class="av-top">
+        <div class="av-info" id="avInfo"></div>
+        <div class="av-top-acts">
+          <button type="button" class="btn sm ghost" data-av="hide" aria-pressed="${hideTitles}" title="Nascondi i titoli per ripassare (H)">🙈<span>Nascondi titoli</span></button>
+          <button type="button" class="btn sm ghost" data-av="pin" aria-pressed="false" title="Blocca questa tavola a sinistra per confrontarla con le altre (P)">◫<span>Confronta</span></button>
+          <button type="button" class="btn sm ghost av-x" data-av="close" aria-label="Chiudi" title="Chiudi (Esc)">✕</button>
+        </div>
+      </header>
+      <div class="av-body" id="avBody">
+        <section class="av-pane av-pin-pane" id="avPinPane" hidden>
+          <div class="av-pin-bar">
+            <span class="av-pin-title" id="avPinTitle"></span>
+            <span class="inline">
+              <button type="button" class="btn sm ghost" data-av="swap" title="Scambia tavola bloccata e corrente">⇆</button>
+              <button type="button" class="btn sm ghost" data-av="unpin" title="Chiudi confronto">✕</button>
+            </span>
+          </div>
+          <div class="av-stage" id="avPinStage"><img class="av-img" id="avPinImg" alt="" draggable="false"></div>
+        </section>
+        <section class="av-pane av-main-pane">
+          <div class="av-stage" id="avStage"><img class="av-img" id="avImg" alt="" draggable="false"></div>
+          <button type="button" class="av-nav av-prev" data-av="prev" aria-label="Immagine precedente">‹</button>
+          <button type="button" class="av-nav av-next" data-av="next" aria-label="Immagine successiva">›</button>
+          <span class="av-zoom-pill" id="avZoomPill" hidden>100%</span>
+        </section>
+        <aside class="av-drawer" id="avDrawer" hidden aria-label="Note della scheda">
+          <div class="av-drawer-head">
+            <strong id="avDrawerTitle">Note</strong>
+            <span class="inline">
+              <button type="button" class="btn sm ghost" data-av="edit">✎ Modifica</button>
+              <button type="button" class="btn sm ghost" data-av="notes" aria-label="Chiudi note">✕</button>
+            </span>
+          </div>
+          <div class="av-drawer-body" id="avDrawerBody"></div>
+        </aside>
+      </div>
+      <div class="av-strip" id="avStrip" ${items.length > 1 ? '' : 'hidden'}></div>
+      <footer class="av-foot" id="avFoot">
+        <button type="button" class="btn sm" data-av="notes" aria-pressed="false">📝 Note</button>
+        <button type="button" class="btn sm" data-av="addphoto">＋ Foto</button>
+        <button type="button" class="btn sm" data-av="labels" id="avLblBtn">🏷 Etichette</button>
+        <button type="button" class="btn sm" data-av="io">🧩 Occlusion</button>
+        <button type="button" class="btn sm" data-av="recrop" id="avRecropBtn" hidden>✂ Ritaglia</button>
+        <button type="button" class="btn sm ghost" data-av="open">📄 Scheda</button>
+      </footer>
+    </div>`;
+
+  const imgEl = $('#avImg', root);
+  const stageEl = $('#avStage', root);
+  const pinImgEl = $('#avPinImg', root);
+  const pinStageEl = $('#avPinStage', root);
+  const stripEl = $('#avStrip', root);
+  const drawerEl = $('#avDrawer', root);
+  const zoomPill = $('#avZoomPill', root);
+
+  const cur = () => items[idx];
+
+  const mainZP = attachZoomPan(stageEl, imgEl, {
+    allowSwipe: true,
+    onSwipe: dir => step(dir),
+    onZoomChange: sc => {
+      zoomPill.hidden = sc <= 1.04;
+      zoomPill.textContent = `${Math.round(sc * 100)}%`;
+    }
+  });
+  const pinZP = attachZoomPan(pinStageEl, pinImgEl, { allowSwipe: false });
+
+  const renderStrip = () => {
+    stripEl.hidden = items.length <= 1;
+    if (items.length <= 1) return;
+    stripEl.innerHTML = items.map((it, i) => {
+      const u = imageUrl(it.imgId) || MISSING_IMG;
+      return `<button type="button" class="av-th ${i === idx ? 'on' : ''}" data-av-go="${i}" aria-label="Immagine ${i + 1}" title="${hideTitles ? `Immagine ${i + 1}` : esc(it.sec.title)}"><img src="${u}" alt="" loading="lazy"></button>`;
+    }).join('');
+  };
+
+  const renderPin = () => {
+    const pane = $('#avPinPane', root);
+    const body = $('#avBody', root);
+    pane.hidden = !pinned;
+    body.classList.toggle('comparing', !!pinned);
+    const pinBtn = $('[data-av="pin"]', root);
+    pinBtn.setAttribute('aria-pressed', String(!!pinned));
+    pinBtn.classList.toggle('on', !!pinned);
+    if (!pinned) return;
+    pinImgEl.src = imageUrl(pinned.imgId) || MISSING_IMG;
+    pinZP.reset(false);
+    $('#avPinTitle', root).textContent = hideTitles ? 'Tavola bloccata' : `${pinned.sec.title}${pinned.photoTotal > 1 ? ` (${pinned.photoIdx + 1}/${pinned.photoTotal})` : ''}`;
+  };
+
+  const renderDrawer = () => {
+    drawerEl.hidden = !notesOpen;
+    const btn = $('[data-av="notes"]', root);
+    btn.setAttribute('aria-pressed', String(notesOpen));
+    btn.classList.toggle('on', notesOpen);
+    if (!notesOpen) return;
+    const it = cur();
+    const s = it.sec;
+    $('#avDrawerTitle', root).textContent = hideTitles && !revealed ? 'Note della scheda' : s.title;
+    const linked = (s.sp?.links || []).map(secById).filter(Boolean);
+    const meta = [cfg.types[s.sp?.type], s.sp?.group, ...tagsOf(s).map(t => `#${t}`)].filter(Boolean).join(' · ');
+    const body = $('#avDrawerBody', root);
+    body.innerHTML = `
+      ${meta ? `<p class="av-drawer-meta">${esc(meta)}</p>` : ''}
+      ${s.md.trim() ? `<article class="notes av-notes">${renderMd(s.md)}</article>` : '<p class="hint">Nessuna nota scritta per questa scheda.</p>'}
+      ${linked.length ? `<div class="av-drawer-links"><span class="lbl">Collegata a</span><div class="tags">${linked.map(x => `<a class="tag" href="#/sec/${x.id}/read" data-av-close>${esc(x.title)}</a>`).join('')}</div></div>` : ''}`;
+    hydrateImages(body);
+  };
+
+  const renderSlide = () => {
+    const it = cur();
+    const s = it.sec;
+    mainZP.reset(false);
+    imgEl.src = imageUrl(it.imgId) || MISSING_IMG;
+    imgEl.alt = hideTitles && !revealed ? 'Tavola' : (it.cap || s.title);
+
+    const counter = `<span class="av-cnt">${idx + 1} / ${items.length}${it.photoTotal > 1 ? ` · foto ${it.photoIdx + 1}/${it.photoTotal}` : ''}</span>`;
+    const sub = [cfg.types[s.sp?.type], s.sp?.group, it.cap && it.cap !== s.title ? it.cap : ''].filter(Boolean).join(' · ');
+    if (hideTitles && !revealed) {
+      $('#avInfo', root).innerHTML = `${counter}<button type="button" class="av-reveal-btn" data-av="reveal">Tocca per vedere il titolo</button>`;
+    } else {
+      $('#avInfo', root).innerHTML = `${counter}<div class="av-tbox"><strong class="av-t">${esc(s.title)}</strong>${sub ? `<span class="av-s">${esc(sub)}</span>` : ''}</div>`;
+    }
+
+    $('[data-av="prev"]', root).hidden = items.length <= 1;
+    $('[data-av="next"]', root).hidden = items.length <= 1;
+    const hasLbl = (labelSets(s)[it.imgId]?.masks || []).length > 0;
+    $('#avLblBtn', root).textContent = hasLbl ? '🏷 Ripassa etichette' : '🏷 Etichette';
+    $('#avRecropBtn', root).hidden = !(typeof imageSourceOf === 'function' && imageSourceOf(it.imgId));
+
+    const hideBtn = $('[data-av="hide"]', root);
+    hideBtn.setAttribute('aria-pressed', String(hideTitles));
+    hideBtn.classList.toggle('on', hideTitles);
+
+    $$('.av-th', stripEl).forEach((b, i) => {
+      const on = i === idx;
+      b.classList.toggle('on', on);
+      if (on) b.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+    });
+    if (notesOpen) renderDrawer();
+  };
+
+  const step = dir => {
+    if (items.length <= 1) return;
+    idx = (idx + dir + items.length) % items.length;
+    revealed = false;
+    renderSlide();
+  };
+
+  const close = (notify = true) => {
+    mainZP.destroy();
+    pinZP.destroy();
+    document.removeEventListener('keydown', onKey, true);
+    root.innerHTML = '';
+    if (notify && changed && onChanged) onChanged();
+  };
+
+  const onKey = e => {
+    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
+    else if (e.key === '+' || e.key === '=') { e.preventDefault(); mainZP.zoomStep(1.3); }
+    else if (e.key === '-') { e.preventDefault(); mainZP.zoomStep(1 / 1.3); }
+    else if (e.key === '0') { e.preventDefault(); mainZP.reset(true); }
+    else if (e.key === 'h' || e.key === 'H') { e.preventDefault(); toggleHide(); }
+    else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); notesOpen = !notesOpen; renderDrawer(); }
+    else if (e.key === 'p' || e.key === 'P') { e.preventDefault(); togglePin(); }
+  };
+  document.addEventListener('keydown', onKey, true);
+
+  const toggleHide = () => {
+    hideTitles = !hideTitles;
+    revealed = false;
+    S().atlasHideTitles = hideTitles;
+    Settings.save();
+    renderStrip();
+    renderPin();
+    renderSlide();
+  };
+  const togglePin = () => {
+    if (pinned) { pinned = null; renderPin(); return; }
+    pinned = cur();
+    renderPin();
+    toast('Tavola bloccata a sinistra: scorri a destra per confrontare');
+  };
+
+  root.firstElementChild.addEventListener('click', async e => {
+    const lnk = e.target.closest('[data-av-close]');
+    if (lnk) { e.preventDefault(); const href = lnk.getAttribute('href'); close(); if (href) go(href); return; }
+    const th = e.target.closest('[data-av-go]');
+    if (th) { idx = +th.dataset.avGo; revealed = false; renderSlide(); return; }
+    const act = e.target.closest('[data-av]')?.dataset.av;
+    if (!act) return;
+    const it = cur();
+    if (act === 'close') close();
+    else if (act === 'prev') step(-1);
+    else if (act === 'next') step(1);
+    else if (act === 'hide') toggleHide();
+    else if (act === 'reveal') { revealed = true; renderSlide(); }
+    else if (act === 'pin') togglePin();
+    else if (act === 'unpin') { pinned = null; renderPin(); }
+    else if (act === 'swap' && pinned) {
+      const oldPin = pinned;
+      const oldIdx = items.indexOf(oldPin);
+      pinned = it;
+      if (oldIdx >= 0) idx = oldIdx;
+      revealed = false;
+      renderPin();
+      renderSlide();
+    }
+    else if (act === 'notes') { notesOpen = !notesOpen; renderDrawer(); }
+    else if (act === 'open') { close(); go(`#/sec/${it.sec.id}/read`); }
+    else if (act === 'edit') { close(); go(`#/sec/${it.sec.id}/edit`); }
+    else if (act === 'labels') { close(); startLabels(it.sec, it.imgId); }
+    else if (act === 'io') { close(); openOcclusionEditor({ imageId: it.imgId, notebookId: it.sec.notebookId, sectionId: it.sec.id }); }
+    else if (act === 'recrop') {
+      close(false);
+      const ok = await recropImage(it.imgId);
+      if (ok) { rehydrateMissing(); if (onChanged) onChanged(); }
+      openAtlasViewer({ kind, items, startIdx: idx, onChanged });
+    }
+    else if (act === 'addphoto') {
+      const added = await addPhotosToAtlasSec(it.sec);
+      if (added.length) {
+        changed = true;
+        // aggiorna i conteggi foto di questa scheda dentro items e inserisci le nuove subito dopo l'ultima di questa scheda
+        const secImgs = atlasImagesOf(it.sec);
+        let lastPos = idx;
+        items.forEach((x, i) => {
+          if (x.sec.id === it.sec.id) { x.photoTotal = secImgs.length; lastPos = i; }
+        });
+        const newSlides = added.map((a, k) => ({
+          sec: it.sec, imgId: a.id, cap: a.cap,
+          photoIdx: secImgs.length - added.length + k, photoTotal: secImgs.length
+        }));
+        items.splice(lastPos + 1, 0, ...newSlides);
+        idx = lastPos + 1;
+        revealed = false;
+        renderStrip();
+        renderSlide();
+      }
+    }
+  });
+
+  renderStrip();
+  renderSlide();
+}
+
 const spState = {};
 function viewSpecial(kind, p1) {
   const cfg = SPECIALS[kind];
@@ -857,36 +1516,77 @@ function viewSpecial(kind, p1) {
   const allTags = [...new Set(all.flatMap(x => tagsOf(x)))].sort((a, b) => a.localeCompare(b, 'it'));
   if (st.tag && !allTags.includes(st.tag)) st.tag = '';
   const isDiary = kind === 'diary';
+  const isAtlas = kind === 'anat' || kind === 'atlas';
   if (isDiary && p1 === 'procs') return viewDiaryProcs(cfg, all);
   if (kind === 'pharma' && p1 === 'compare') return viewPharmaCompare(cfg, all);
-  if ((kind === 'anat' || kind === 'atlas') && p1 === 'quiz') return viewImageQuiz(kind);
+  if (isAtlas && p1 === 'quiz') return viewImageQuiz(kind);
+  const density = S().atlasDensity || 'large';
   setView(`
     <header class="page-head">
       <div><h1>${cfg.name}</h1><p class="lede">${cfg.lede}</p></div>
-      <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button>
+      <div class="actions">
+        ${isAtlas ? '<button class="btn" type="button" data-act="sp-batch">＋ Carica tavole</button>' : ''}
+        <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button>
+      </div>
     </header>
     ${isDiary ? `<nav class="tabs" aria-label="Diario"><a href="#/diary" class="tab on" aria-current="page">Giornate${all.length ? ` (${all.length})` : ''}</a><a href="#/diary/procs" class="tab">Procedure</a></nav>` : ''}
-    ${kind === 'anat' || kind === 'atlas' ? `<nav class="tabs" aria-label="${esc(cfg.name)}"><a href="#/${cfg.route}" class="tab on" aria-current="page">Schede${all.length ? ` (${all.length})` : ''}</a><a href="#/${cfg.route}/quiz" class="tab">Indovina dall’immagine</a></nav>` : ''}
+    ${isAtlas ? `<nav class="tabs" aria-label="${esc(cfg.name)}"><a href="#/${cfg.route}" class="tab on" aria-current="page">Schede${all.length ? ` (${all.length})` : ''}</a><a href="#/${cfg.route}/quiz" class="tab">Indovina dall’immagine</a></nav>` : ''}
     ${kind === 'pharma' ? `<nav class="tabs" aria-label="Farmacologia"><a href="#/pharma" class="tab on" aria-current="page">Farmaci${all.length ? ` (${all.length})` : ''}</a><a href="#/pharma/compare" class="tab">Confronta</a></nav>` : ''}
     ${all.length ? `
       <div class="inline semei-tools">
         <input type="search" class="input search" id="spQ" placeholder="Cerca" aria-label="Cerca" value="${esc(st.q)}">
+        ${isAtlas ? '<button class="btn primary" type="button" data-act="sp-browse" id="spBrowse" title="Apri il visore a schermo intero con swipe">▶ Sfoglia</button>' : ''}
         ${isDiary ? '' : '<button class="btn" type="button" data-act="sp-random" title="Apre una scheda a caso in modalità Orale">Esercitati</button>'}
       </div>
-      ${isDiary ? '' : `<div class="tag-cloud" aria-label="Filtra">${Object.entries(cfg.types).filter(([k]) => all.some(s => s.sp?.type === k)).map(([k, l]) => `<button type="button" class="tag ${st.type === k ? 'on' : ''}" data-spt="${k}" aria-pressed="${st.type === k}">${l}</button>`).join('')}</div>`}
+      ${isDiary ? '' : `<div class="tag-cloud" aria-label="Filtra per ${esc(cfg.typeLabel)}">${Object.entries(cfg.types).filter(([k]) => all.some(s => s.sp?.type === k)).map(([k, l]) => `<button type="button" class="tag ${st.type === k ? 'on' : ''}" data-spt="${k}" aria-pressed="${st.type === k}">${l}</button>`).join('')}</div>`}
+      ${isAtlas ? '<div class="tag-cloud sp-groups" id="spGroups" aria-label="Filtra per regione"></div>' : ''}
       ${allTags.length ? `<div class="tag-cloud sp-tags" aria-label="Filtra per tag">${allTags.map(t => `<button type="button" class="tag ${st.tag === t ? 'on' : ''}" data-sptag="${esc(t)}" aria-pressed="${st.tag === t}">#${esc(t)}</button>`).join('')}</div>` : ''}
+      ${isAtlas ? `
+        <div class="anat-bar">
+          <span class="hint" id="spSummary"></span>
+          <div class="seg sm" role="group" aria-label="Vista griglia">
+            <button type="button" data-adens="large" aria-pressed="${density === 'large'}">Grandi</button>
+            <button type="button" data-adens="compact" aria-pressed="${density === 'compact'}">Compatte</button>
+            <button type="button" data-adens="list" aria-pressed="${density === 'list'}">Elenco</button>
+          </div>
+        </div>` : ''}
       <div id="spList"></div>` : `
-      <div class="empty"><p>${isDiary ? 'Ancora nessuna giornata. Creane una al termine di ogni turno: bastano pochi minuti, e alla fine del tirocinio hai l’elenco di casi e procedure.' : `Ancora nessuna scheda. Creane una per ogni ${cfg.noun}: i titoli sono già pronti, poi aggiungi foto (anche come esercizio delle etichette) e video.`}</p>
-        <button class="btn primary" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button></div>`}
+      <div class="empty"><p>${isDiary ? 'Ancora nessuna giornata. Creane una al termine di ogni turno: bastano pochi minuti, e alla fine del tirocinio hai l’elenco di casi e procedure.' : `Ancora nessuna scheda. ${isAtlas ? 'Carica più tavole insieme con “＋ Carica tavole” oppure crea una scheda alla volta.' : `Creane una per ogni ${cfg.noun}: i titoli sono già pronti, poi aggiungi foto (anche come esercizio delle etichette) e video.`}`}</p>
+        <div class="inline">
+          ${isAtlas ? '<button class="btn primary" type="button" data-act="sp-batch">＋ Carica tavole</button>' : ''}
+          <button class="btn ${isAtlas ? '' : 'primary'}" type="button" data-act="sp-new">${isDiary ? 'Nuova giornata' : 'Nuova scheda'}</button>
+        </div></div>`}
   `);
   on('[data-act="sp-new"]', 'click', async () => { const s = await specialSheet(cfg); if (s) { toast(isDiary ? 'Giornata creata' : 'Scheda creata'); go(`#/sec/${s.id}/edit`); } });
-  const filtered = () => {
+  on('[data-act="sp-batch"]', 'click', async () => { if (await atlasBatchUploadSheet(cfg)) route(); });
+
+  const filtered = (ignoreGroup = false) => {
     const toks = foldAccents(st.q).split(/\s+/).filter(Boolean);
-    return all.filter(s => (!st.type || s.sp?.type === st.type) && (!st.tag || tagsOf(s).includes(st.tag)) && (!toks.length || toks.every(t => foldAccents(`${s.title} ${s.md} ${Object.values(s.sp || {}).filter(v => typeof v === 'string').join(' ')} ${(s.sp?.procs || []).map(p => p.n).join(' ')} ${tagsOf(s).join(' ')}`).includes(t))));
+    return all.filter(s =>
+      (!st.type || s.sp?.type === st.type) &&
+      (ignoreGroup || !st.group || (s.sp?.group || '') === st.group) &&
+      (!st.tag || tagsOf(s).includes(st.tag)) &&
+      (!toks.length || toks.every(t => foldAccents(`${s.title} ${s.md} ${Object.values(s.sp || {}).filter(v => typeof v === 'string').join(' ')} ${(s.sp?.procs || []).map(p => p.n).join(' ')} ${tagsOf(s).join(' ')}`).includes(t)))
+    );
   };
+
+  let curSlides = [];
+  const drawGroupChips = () => {
+    const box = $('#spGroups');
+    if (!box) return;
+    const base = filtered(true);
+    const regions = [...new Set(base.map(s => (s.sp?.group || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'it'));
+    if (st.group && !regions.includes(st.group)) st.group = '';
+    box.hidden = !regions.length;
+    box.innerHTML = regions.length
+      ? `<span class="sp-grp-lbl">${esc(cfg.groupLabel)}:</span>${regions.map(g => `<button type="button" class="tag grp ${st.group === g ? 'on' : ''}" data-spg="${esc(g)}" aria-pressed="${st.group === g}">${esc(g)}</button>`).join('')}`
+      : '';
+  };
+
   const draw = () => {
     const box = $('#spList');
     if (!box) return;
+    if (isAtlas) drawGroupChips();
     const list = filtered();
     const groups = new Map();
     const keyOf = s => (isDiary ? (s.sp?.date || '').slice(0, 7) : (s.sp?.group || 'Senza gruppo'));
@@ -894,19 +1594,89 @@ function viewSpecial(kind, p1) {
     list.forEach(s => { const k = keyOf(s); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); });
     const label = k => (isDiary ? (k ? new Date(`${k}-01T12:00`).toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }) : 'Senza data') : k);
     const keys = [...groups.keys()].sort((a, b) => (isDiary ? b.localeCompare(a) : (a === 'Senza gruppo') - (b === 'Senza gruppo') || a.localeCompare(b, 'it')));
-    box.innerHTML = list.length ? keys.map(k => cfg.grid ? `<h2 class="sub">${esc(label(k))}</h2><div class="anat-grid">${groups.get(k).map(s => {
-      const im = imageRefs(s.md)[0];
-      return `<a class="anat-card" href="#/sec/${s.id}/read">${im ? `<img class="nb-img" data-img="${im}" alt="">` : '<span class="anat-none">Nessuna immagine</span>'}<span class="anat-t">${esc(s.title)}</span><span class="anat-s">${esc([cfg.types[s.sp?.type], ...tagsOf(s).map(t => `#${t}`)].filter(Boolean).join(' · '))}</span></a>`;
+
+    // Ordine coerente con la griglia visualizzata per lo swipe del visore
+    const orderedSecs = keys.flatMap(k => groups.get(k));
+    curSlides = isAtlas ? atlasSlidesFrom(orderedSecs) : [];
+    if (isAtlas) {
+      const b = $('#spBrowse');
+      if (b) { b.disabled = !curSlides.length; b.textContent = curSlides.length ? `▶ Sfoglia (${curSlides.length})` : '▶ Sfoglia'; }
+      const sum = $('#spSummary');
+      if (sum) sum.textContent = `${list.length} ${list.length === 1 ? 'scheda' : 'schede'} · ${curSlides.length} ${curSlides.length === 1 ? 'immagine' : 'immagini'}`;
+    }
+
+    const dens = S().atlasDensity || 'large';
+    const useGrid = isAtlas ? dens !== 'list' : !!cfg.grid;
+    box.innerHTML = list.length ? keys.map(k => useGrid ? `<h2 class="sub">${esc(label(k))}</h2><div class="anat-grid ${dens === 'compact' ? 'compact' : ''}">${groups.get(k).map(s => {
+      const imgs = atlasImagesOf(s);
+      const im = imgs[0]?.id;
+      const subTxt = [cfg.types[s.sp?.type], ...tagsOf(s).map(t => `#${t}`)].filter(Boolean).join(' · ');
+      return `<div class="anat-card ${im ? 'has-img' : ''}" data-card-sec="${s.id}" tabindex="0" role="button" aria-label="${esc(s.title)}${im ? ': apri nel visore' : ': apri scheda'}">
+        <div class="anat-thumb">
+          ${im ? `<img class="nb-img" data-img="${im}" alt="">` : '<span class="anat-none">Nessuna immagine</span>'}
+          ${imgs.length > 1 ? `<span class="anat-badge">${imgs.length} foto</span>` : ''}
+          <div class="anat-quick">
+            <button type="button" class="anat-qbtn" data-card-add="${s.id}" title="Aggiungi foto a questa scheda" aria-label="Aggiungi foto">＋</button>
+            <a class="anat-qbtn" href="#/sec/${s.id}/read" title="Apri la scheda completa" aria-label="Apri la scheda">📄</a>
+          </div>
+        </div>
+        <span class="anat-t">${esc(s.title)}</span>
+        ${subTxt ? `<span class="anat-s">${esc(subTxt)}</span>` : ''}
+      </div>`;
     }).join('')}</div>` : `<h2 class="sub">${esc(label(k))}</h2><ul class="list">${groups.get(k).map(s => {
-      const nImg = imageRefs(s.md).length;
+      const imgs = atlasImagesOf(s);
+      const nImg = imgs.length;
       const bits = [...specialMetaBits(s), nImg ? `${nImg} foto` : '', ...tagsOf(s).map(t => `#${t}`), s.incomplete ? '⚠ incompleta' : ''].filter(Boolean);
-      return `<li><a class="row" href="#/sec/${s.id}/read"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(bits.join(' · '))}</span></span>${isDiary ? '' : statusPill(s)}</a></li>`;
+      return `<li class="sp-lrow"><a class="row" href="#/sec/${s.id}/read" ${isAtlas && nImg ? `data-list-view="${s.id}"` : ''}><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(bits.join(' · '))}</span></span>${isDiary ? '' : statusPill(s)}</a>${isAtlas ? `<a class="btn sm ghost sp-lsec" href="#/sec/${s.id}/read" title="Apri la scheda completa" aria-label="Scheda">📄</a>` : ''}</li>`;
     }).join('')}</ul>`).join('') : '<p class="hint">Niente corrisponde.</p>';
   };
+
+  const openViewerAtSec = secId => {
+    const startIdx = curSlides.findIndex(x => x.sec.id === secId);
+    if (startIdx < 0) { const s = secById(secId); go(`#/sec/${secId}/${s && s.md.trim() ? 'read' : 'edit'}`); return; }
+    openAtlasViewer({ kind, items: [...curSlides], startIdx, onChanged: () => route() });
+  };
+
   draw();
   $('#spQ')?.addEventListener('input', e => { st.q = e.target.value; draw(); });
   on('[data-sptag]', 'click', e => { const k = e.currentTarget.dataset.sptag; st.tag = st.tag === k ? '' : k; $$('[data-sptag]').forEach(b => { b.classList.toggle('on', b.dataset.sptag === st.tag); b.setAttribute('aria-pressed', b.dataset.sptag === st.tag); }); draw(); });
   on('[data-spt]', 'click', e => { const k = e.currentTarget.dataset.spt; st.type = st.type === k ? '' : k; $$('[data-spt]').forEach(b => { b.classList.toggle('on', b.dataset.spt === st.type); b.setAttribute('aria-pressed', b.dataset.spt === st.type); }); draw(); });
+  $('#spGroups')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-spg]');
+    if (!b) return;
+    st.group = st.group === b.dataset.spg ? '' : b.dataset.spg;
+    draw();
+  });
+  on('[data-adens]', 'click', e => {
+    const d = e.currentTarget.dataset.adens;
+    S().atlasDensity = d;
+    Settings.save();
+    $$('[data-adens]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.adens === d)));
+    draw();
+  });
+  on('[data-act="sp-browse"]', 'click', () => {
+    if (!curSlides.length) return;
+    openAtlasViewer({ kind, items: [...curSlides], startIdx: 0, onChanged: () => route() });
+  });
+  $('#spList')?.addEventListener('click', async e => {
+    const addBtn = e.target.closest('[data-card-add]');
+    if (addBtn) {
+      e.preventDefault(); e.stopPropagation();
+      const s = secById(addBtn.dataset.cardAdd);
+      if (s && (await addPhotosToAtlasSec(s)).length) route();
+      return;
+    }
+    if (e.target.closest('.anat-qbtn')) return; // link alla scheda
+    const lv = e.target.closest('[data-list-view]');
+    if (lv) { e.preventDefault(); openViewerAtSec(lv.dataset.listView); return; }
+    const card = e.target.closest('[data-card-sec]');
+    if (card) { e.preventDefault(); openViewerAtSec(card.dataset.cardSec); }
+  });
+  $('#spList')?.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const card = e.target.closest('[data-card-sec]');
+    if (card && !e.target.closest('.anat-qbtn')) { e.preventDefault(); openViewerAtSec(card.dataset.cardSec); }
+  });
   on('[data-act="sp-random"]', 'click', () => {
     const list = filtered().filter(s => String(s.md || '').replace(/^##.*$/gm, '').trim());
     if (!list.length) { toast('Nessuna scheda scritta tra quelle filtrate'); return; }
@@ -1459,6 +2229,7 @@ function viewExamQ(p1, p2) {
           <a class="btn" href="#/examq/quiz" id="eqQuizBtn">Allenati su queste</a>
           <button class="btn ghost" type="button" data-act="eq-struct">${st ? 'Struttura dell’esame' : 'Imposta la struttura dell’esame'}</button>
           <button class="btn ghost" type="button" data-act="eq-real">Un appello vero</button>
+          <button class="btn ghost" type="button" data-act="eq-rescan" title="Scansiona tutti i notebook per collegare automaticamente le sezioni correlate">🔗 Riscansiona sezioni</button>
           <button class="btn ghost" type="button" data-act="eq-export">Scarica in Excel</button>
         </div>
         ${st ? `<p class="hint eq-st-sum">${esc(eqSubjLabel(eqState.nb))}: ${st.parts.map(p => `${esc(p.name)} (${p.n})`).join(' · ')}${st.notes ? ` · ${esc(st.notes.slice(0, 120))}` : ''}</p>` : ''}
@@ -1501,6 +2272,7 @@ function viewExamQ(p1, p2) {
   on('[data-act="eq-prep"]', 'click', async () => { const k = await eqPickSubject('Preparazione: quale materia?'); if (k) go(`#/examq/prep/${encodeURIComponent(k)}`); });
   on('[data-act="eq-real"]', 'click', async () => { const k = await eqPickSubject('Un appello vero: quale materia?'); if (k) go(`#/examq/real/${encodeURIComponent(k)}`); });
   on('[data-act="eq-struct"]', 'click', async () => { const k = await eqPickSubject('Struttura dell’esame: quale materia?'); if (k && await eqStructSheet(k)) route(); });
+  on('[data-act="eq-rescan"]', 'click', async () => { if (await eqRescanSheet(eqFiltered())) route(); });
   on('[data-act="eq-export"]', 'click', async () => {
     const list = eqFiltered();
     const sk = eqState.nb || (list[0] ? eqSubjKey(list[0]) : '');
@@ -2036,6 +2808,205 @@ function eqGuessSecs(x, max = 2) {
     return { s, sc: hitMain ? cover + hitMain * 0.05 : 0, ok: hitMain && (cover >= 0.6 || hitMain >= 3) };
   }).filter(o => o.ok).sort((a, b) => b.sc - a.sc);
   return { secs: scored.slice(0, max).map(o => o.s), guessed: true };
+}
+
+/* ---------- v4.16: Riscansione di tutti i notebook per collegare le sezioni alle domande d’esame ---------- */
+function eqScanSections(qs, { allNbs = true, onlyEmpty = true, includeBody = false, max = 3 } = {}) {
+  const norm = t => foldAccents(String(t || '')).replace(/[^a-z0-9]+/g, ' ').trim();
+  const secIdx = state.sections.map(s => {
+    const heads = [];
+    const md = String(s.md || '');
+    const re = /^#{1,4}\s+(.+)$/gm;
+    let m;
+    while ((m = re.exec(md))) {
+      const raw = stripMarks(stripCloze(m[1])).trim();
+      const hn = norm(raw);
+      if (hn.length >= 4) heads.push({ raw, norm: hn, stems: eqStems(raw) });
+    }
+    return {
+      s,
+      nbName: nbById(s.notebookId)?.name || '',
+      path: groupPathText(s),
+      normTitle: norm(s.title),
+      titleStems: eqStems(s.title),
+      heads,
+      tags: tagsOf(s).map(t => ({ raw: t, norm: norm(t) })).filter(t => t.norm.length >= 4),
+      bodyNorm: null
+    };
+  });
+  const getBody = item => {
+    if (item.bodyNorm === null) item.bodyNorm = ` ${norm(aiText(item.s.md || ''))} `;
+    return item.bodyNorm;
+  };
+  const results = [];
+  for (const x of qs) {
+    const existing = new Set((x.secIds || []).filter(id => secById(id)));
+    if (onlyEmpty && existing.size) continue;
+    const qNorm = norm(x.q);
+    const vars = eqVariants(x);
+    const allNorm = ` ${[qNorm, ...vars.map(norm)].filter(Boolean).join(' ')} `;
+    const mainStems = eqStems(x.q);
+    const extraStems = eqStems(vars.join(' ')).filter(st => !mainStems.includes(st));
+    const allStems = new Set([...mainStems, ...extraStems]);
+    if (!qNorm && !mainStems.length) continue;
+    const hits = [];
+    for (const it of secIdx) {
+      if (existing.has(it.s.id)) continue;
+      if (!allNbs && x.notebookId && it.s.notebookId !== x.notebookId) continue;
+      let sc = 0;
+      let why = '';
+      if (it.normTitle.length >= 4 && (allNorm.includes(` ${it.normTitle} `) || (qNorm.length >= 4 && ` ${it.normTitle} `.includes(` ${qNorm} `)))) {
+        sc = 2.0;
+        why = 'titolo';
+      }
+      if (it.titleStems.length && mainStems.length) {
+        const hm = it.titleStems.filter(t => mainStems.includes(t)).length;
+        const ha = it.titleStems.filter(t => allStems.has(t)).length;
+        const covT = (hm + (ha - hm) * 0.5) / it.titleStems.length;
+        const covQ = hm / mainStems.length;
+        if (hm >= 1 && (covT >= 0.55 || covQ >= 0.65 || hm >= 2)) {
+          sc = Math.max(sc, covT + covQ * 0.6 + hm * 0.12);
+          if (!why) why = 'titolo';
+        }
+      }
+      if (sc < 1.5 && it.heads.length) {
+        for (const h of it.heads) {
+          if (allNorm.includes(` ${h.norm} `) || (qNorm.length >= 5 && ` ${h.norm} `.includes(` ${qNorm} `))) {
+            if (1.35 > sc) { sc = 1.35; why = `paragrafo “${h.raw.slice(0, 34)}”`; }
+            break;
+          }
+          if (h.stems.length && mainStems.length) {
+            const hm = h.stems.filter(t => mainStems.includes(t)).length;
+            if (hm >= 2 || (hm >= 1 && hm / h.stems.length >= 0.7 && mainStems.length <= 2)) {
+              const s2 = 0.85 + hm * 0.1;
+              if (s2 > sc) { sc = s2; why = `paragrafo “${h.raw.slice(0, 34)}”`; }
+            }
+          }
+        }
+      }
+      if (sc < 0.9 && it.tags.length) {
+        const tg = it.tags.find(t => allNorm.includes(` ${t.norm} `));
+        if (tg) { sc = 0.9; why = `tag #${tg.raw}`; }
+      }
+      if (sc === 0 && includeBody && (qNorm.length >= 5 || mainStems.length >= 2)) {
+        const bn = getBody(it);
+        if (qNorm.length >= 5 && bn.includes(` ${qNorm} `)) { sc = 0.7; why = 'testo'; }
+        else if (mainStems.length >= 2 && mainStems.every(st => bn.includes(` ${st}`))) { sc = 0.62; why = 'testo'; }
+      }
+      if (sc >= 0.6) {
+        if (x.notebookId && it.s.notebookId === x.notebookId) sc += 0.25;
+        hits.push({ sec: it.s, nbName: it.nbName, path: it.path, sc, why });
+      }
+    }
+    if (hits.length) {
+      hits.sort((a, b) => b.sc - a.sc);
+      results.push({ x, hits: hits.slice(0, max) });
+    }
+  }
+  return results;
+}
+
+function eqRescanSheet(qs) {
+  return new Promise(resolve => {
+    const scopeLabel = eqState.nb ? `materia “${eqSubjLabel(eqState.nb)}” (${qs.length} domande)` : `tutte le ${qs.length} domande filtrate`;
+    let results = [];
+    const sh = openSheet(`
+      <h2>Riscansiona i notebook</h2>
+      <p class="sheet-sub">Cerca automaticamente le sezioni correlate per ${esc(scopeLabel)} confrontando titoli, paragrafi interni e tag.</p>
+      <div class="eq-rs-opts">
+        <label class="check"><input type="checkbox" id="rsAllNbs" checked><span>Cerca in tutti i notebook (non solo quello della materia)</span></label>
+        <label class="check"><input type="checkbox" id="rsOnlyEmpty" checked><span>Solo domande senza sezioni già collegate</span></label>
+        <label class="check"><input type="checkbox" id="rsBody"><span>Cerca anche nel testo degli appunti (se titolo e paragrafi non bastano)</span></label>
+      </div>
+      <div class="inline eq-rs-bar">
+        <span class="hint" id="rsSum" style="margin:0 auto 0 0"></span>
+        <button type="button" class="btn sm ghost" data-rs="all">Tutte</button>
+        <button type="button" class="btn sm ghost" data-rs="none">Nessuna</button>
+      </div>
+      <div class="eq-rs-list" id="rsList"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" type="button" data-rs="no">Annulla</button>
+        <button class="btn primary" type="button" data-rs="ok">Collega selezionate</button>
+      </div>`, { label: 'Riscansiona i notebook', onClose: v => resolve(!!v) });
+
+    const countChecked = () => $$('[data-rs-pair]:checked', sh.el).length;
+    const paintOk = () => {
+      const n = countChecked();
+      const b = $('[data-rs="ok"]', sh.el);
+      b.disabled = !n;
+      b.textContent = n ? `Collega selezionate (${n})` : 'Collega selezionate';
+    };
+    const run = () => {
+      results = eqScanSections(qs, {
+        allNbs: $('#rsAllNbs', sh.el).checked,
+        onlyEmpty: $('#rsOnlyEmpty', sh.el).checked,
+        includeBody: $('#rsBody', sh.el).checked
+      });
+      const totPairs = results.reduce((a, r) => a + r.hits.length, 0);
+      $('#rsSum', sh.el).textContent = results.length
+        ? `Trovati ${totPairs} collegamenti per ${results.length} ${results.length === 1 ? 'domanda' : 'domande'}.`
+        : 'Nessun nuovo collegamento trovato con questi criteri.';
+      const box = $('#rsList', sh.el);
+      if (!results.length) {
+        box.innerHTML = '<p class="hint" style="padding:12px 4px">Prova a deselezionare “Solo domande senza sezioni già collegate” oppure attiva “Cerca anche nel testo degli appunti”.</p>';
+      } else {
+        box.innerHTML = results.map((r, ri) => `
+          <div class="eq-rs-card">
+            <div class="eq-rs-q"><b>${eqFreq(r.x)}×</b> ${esc(r.x.q)}</div>
+            <div class="eq-rs-hits">
+              ${r.hits.map((h, hi) => `
+                <label class="check eq-rs-hit">
+                  <input type="checkbox" data-rs-pair="${ri}:${hi}" checked>
+                  <span>
+                    <span class="eq-rs-st">${esc(h.sec.title)}</span>
+                    <span class="eq-rs-sm">${esc([h.nbName, h.path].filter(Boolean).join(' › '))} · <em>${esc(h.why)}</em></span>
+                  </span>
+                </label>`).join('')}
+            </div>
+          </div>`).join('');
+      }
+      paintOk();
+    };
+    ['#rsAllNbs', '#rsOnlyEmpty', '#rsBody'].forEach(sel => $(sel, sh.el).addEventListener('change', run));
+    $('#rsList', sh.el).addEventListener('change', paintOk);
+    sh.el.addEventListener('click', async e => {
+      const b = e.target.closest('[data-rs]');
+      if (!b) return;
+      const k = b.dataset.rs;
+      if (k === 'no') { sh.close(false); return; }
+      if (k === 'all' || k === 'none') {
+        $$('[data-rs-pair]', sh.el).forEach(c => { c.checked = k === 'all'; });
+        paintOk();
+        return;
+      }
+      if (k === 'ok') {
+        const picked = $$('[data-rs-pair]:checked', sh.el).map(c => c.dataset.rsPair.split(':').map(Number));
+        if (!picked.length) return;
+        const byQ = new Map();
+        picked.forEach(([ri, hi]) => {
+          const r = results[ri];
+          const h = r && r.hits[hi];
+          if (!r || !h) return;
+          if (!byQ.has(r.x)) byQ.set(r.x, new Set(r.x.secIds || []));
+          byQ.get(r.x).add(h.sec.id);
+        });
+        const now = Date.now();
+        const updated = [];
+        for (const [x, set] of byQ.entries()) {
+          x.secIds = [...set];
+          x.updated = now;
+          updated.push(x);
+        }
+        if (updated.length) {
+          await DB.bulkPut('links', updated);
+          scheduleSync();
+        }
+        sh.close(true);
+        toast(`${picked.length} ${picked.length === 1 ? 'sezione collegata' : 'sezioni collegate'} a ${updated.length} ${updated.length === 1 ? 'domanda' : 'domande'}`);
+      }
+    });
+    run();
+  });
 }
 // peso di un argomento: le volte che è uscito, con l’ultimo anno che conta il doppio
 function eqWeightFn(key) {

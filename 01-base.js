@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.15';
+const APP_VERSION = '4.18';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -619,8 +619,16 @@ async function askPnote(value = '') {
   const v = await modal({ title: 'Nota a comparsa', text: 'Compare come ⓘ dopo il testo scelto: un tocco la apre. Utile per dettagli, esempi, eccezioni.', input: true, multiline: true, value, placeholder: 'Es. eccezione: nei bambini…', confirm: 'Aggiungi' });
   return v && String(v).trim() ? String(v).replace(/\]/g, ')').replace(/\n+/g, ' ').trim() : null;
 }
+function linkPdfCitations(md) {
+  if (!md || !state.pdfs.length || md.indexOf(', p.') < 0) return md;
+  return md.replace(/^(>\s*—\s*)([^\[\]\n]+?),\s*p\.\s*(\d+)([^\n]*)$/gm, (m, pre, name, pg, rest) => {
+    const f = foldAccents(name.trim());
+    const p = state.pdfs.find(x => foldAccents(x.name || '') === f);
+    return p ? `${pre}[${name}, p. ${pg}${rest}](#/pdf/${p.id}/${pg})` : m;
+  });
+}
 function renderMd(md) {
-  const src = renderXrefs(extractHtmlBlocks(md || '')
+  const src = renderXrefs(extractHtmlBlocks(linkPdfCitations(md || ''))
     .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`));
   const src2 = renderMarks(src).replace(clozeRe(), (m, t) => { const [term, hint] = splitHint(t); return `<mark class="cz"${hint ? ` data-hint="${esc(hint)}"` : ''}>${term}</mark>`; })
     // v3.57: note a comparsa, scritte ^[testo della nota]: una ⓘ che si apre con un tocco

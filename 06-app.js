@@ -1460,6 +1460,19 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.18", title: "Atlante 2.0: visore con swipe, confronto tavole, caricamento multiplo e filtri regione", html: `      <ul>
+        <li><strong>Visore a schermo intero con swipe</strong> (Atlante di anatomia e Atlante diagnostico): tocca una tavola (o <em>▶ Sfoglia</em>) per scorrerle tutte con le dita, con pinch-to-zoom, doppio tocco per ingrandire, striscia di miniature in basso e pannello <strong>📝 Note</strong> a comparsa senza uscire dal visore.</li>
+        <li><strong>Ripasso al volo e confronto</strong>: attiva <strong>🙈 Nascondi titoli</strong> per metterti alla prova mentre fai swipe (tocca per rivelare il nome) e <strong>◫ Confronta</strong> per bloccare una tavola a sinistra mentre a destra scorri le altre.</li>
+        <li><strong>＋ Carica tavole</strong>: seleziona più immagini insieme dalla galleria, imposta una sola volta apparato e regione e scegli se creare una scheda per immagine, unirle in una sola o aggiungerle a una scheda esistente; aggiunta rapida <strong>＋ Foto</strong> anche dalle card e dal visore.</li>
+        <li><strong>Filtri rapidi e vista</strong>: filtro a chip per <strong>Regione / Quadro</strong> (oltre ad Apparato e Tag), badge <em>N foto</em> sulle schede multi-immagine e selettore di vista (<em>Grandi / Compatte / Elenco</em>).</li>
+      </ul>` },
+  { v: "4.17", title: "citazioni dal PDF cliccabili in modalità Affianca", html: `      <ul>
+        <li><strong>Link alla pagina del PDF nelle citazioni</strong>: quando mandi un brano dal PDF a una sezione (<em>In una sezione</em>), la fonte (es. <code>— slide.neuroanatomia, p. 514</code>) diventa un link cliccabile che apre subito quella pagina del PDF in <strong>Affianca</strong>.</li>
+        <li>Funziona automaticamente anche sulle citazioni già salvate in precedenza e sui link alle pagine generati da <em>Appunti dalle evidenziazioni</em>.</li>
+      </ul>` },
+  { v: "4.16", title: "riscansione automatica dei notebook dalle domande d’esame", html: `      <ul>
+        <li><strong>🔗 Riscansiona sezioni</strong> in <em>Domande d’esame</em>: scansiona in un colpo solo tutti i notebook (titoli, paragrafi interni, tag e, se vuoi, anche il testo degli appunti) per trovare le sezioni correlate alle domande d’esame e collegarle in blocco con un clic.</li>
+      </ul>` },
   { v: "4.15", title: "schede riordinabili, preset dei quiz multi-sezione e barra tema mobile", html: `      <ul>
         <li><strong>Schede delle sezioni riordinabili e a scomparsa</strong>: in <em>Impostazioni → Schede sezioni</em> (raggiungibile subito dalla rotella <code>⚙</code> nella barra delle schede) puoi riordinare le schede con <code>↑ ↓</code> e scegliere quali spostare nel menu <em>Altro ▾</em>.</li>
         <li><strong>Preset rapidi per il Quiz multi-sezione</strong>: salva una selezione di sezioni/paragrafi con un nome (<em>＋ Salva preset</em>) e richiamala con un tocco.</li>
@@ -2319,6 +2332,15 @@ const Split = {
   },
   init() {
     document.addEventListener('click', e => {
+      const pl = e.target.closest('.notes a[href^="#/pdf/"]');
+      if (pl && !e.ctrlKey && !e.metaKey && !e.shiftKey && !EMBED) {
+        const m = (pl.getAttribute('href') || '').match(/^#\/pdf\/([^/]+)(?:\/(\d+))?/);
+        if (m && pdfById(m[1])) {
+          e.preventDefault();
+          this.show({ kind: 'pdf', id: m[1], page: +(m[2] || 1) });
+          return;
+        }
+      }
       const a = e.target.closest('a[href="#/split"], [data-split-open]');
       if (!a || e.ctrlKey || e.metaKey) return;
       e.preventDefault();
