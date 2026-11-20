@@ -9,7 +9,16 @@
    Il file del PDF resta su questo dispositivo (archivio pdfblobs); le
    annotazioni stanno nel record del PDF (archivio pdfs).
    ===================================================================== */
+// v4.21: Stabilo Boss Pastello per primi, seguiti dalla palette classica
+const PDF_PASTEL_KEYS = new Set(['c', 'a', 'f', 'i', 's', 'm']);
+const PDF_PASTEL_INKS = new Set(['#fce883', '#ffbe98', '#f9b4cf', '#d5b9f7', '#a3daf9', '#a6e5c8']);
 const PDF_COLORS = [
+  ['c', '#fce883', '#c89b1e', 'Giallo crema'],
+  ['a', '#ffbe98', '#df7847', 'Pesca pastello'],
+  ['f', '#f9b4cf', '#d46190', 'Rosa pastello'],
+  ['i', '#d5b9f7', '#8660bd', 'Lilla pastello'],
+  ['s', '#a3daf9', '#3b8ec4', 'Azzurro nuvola'],
+  ['m', '#a6e5c8', '#349970', 'Verde menta'],
   ['y', '#ffd84d', '#c27c00', 'Giallo'],
   ['g', '#7ee08a', '#15803d', 'Verde'],
   ['b', '#7cc7ff', '#1d4ed8', 'Azzurro'],
@@ -50,7 +59,18 @@ function shapeSvg(a, live = false) {
   }
   return `<rect class="ann-shape"${id} x="${Math.min(x1, x2)}" y="${Math.min(y1, y2)}" width="${Math.abs(x2 - x1)}" height="${Math.abs(y2 - y1)}" rx="2" ${st}/>`;
 }
-const PEN_INKS = [['#111111', 'Nero'], ['#1d4ed8', 'Blu'], ['#dc2626', 'Rosso'], ['#15803d', 'Verde']];
+const PEN_INKS = [
+  ['#fce883', 'Giallo crema'],
+  ['#ffbe98', 'Pesca pastello'],
+  ['#f9b4cf', 'Rosa pastello'],
+  ['#d5b9f7', 'Lilla pastello'],
+  ['#a3daf9', 'Azzurro nuvola'],
+  ['#a6e5c8', 'Verde menta'],
+  ['#111111', 'Nero'],
+  ['#1d4ed8', 'Blu'],
+  ['#dc2626', 'Rosso'],
+  ['#15803d', 'Verde']
+];
 const pdfCol = (k, i = 1) => (PDF_COLORS.find(c => c[0] === k) || PDF_COLORS[0])[i];
 const pdfById = id => state.pdfs.find(p => p.id === id);
 const pdfsOf = secId => state.pdfs.filter(p => p.sectionId === secId).sort((a, b) => a.created - b.created);
@@ -222,7 +242,7 @@ function viewPdf(id, pageParam) {
   const R = {
     doc: null, base: null, sizes: [], scale: 1, zoom: meta.zoom || 1, cur: 1,
     occQuiz: false, occOpen: new Set(), shape: S().pdfShape || 'rect',
-    tool: 'select', color: S().pdfColor || 'y', ink: S().pdfInk || '#1d4ed8', inkW: +(S().pdfInkW || 2),
+    tool: 'select', color: S().pdfColor || 'c', ink: S().pdfInk || '#1d4ed8', inkW: +(S().pdfInkW || 2),
     undo: [], rendered: new Map(), textCache: new Map(), hit: null, penSeen: false,
     destroyed: false, tab: S().pdfPanel || '', searchToken: 0, outline: null, thumbIo: null
   };
@@ -355,9 +375,9 @@ function viewPdf(id, pageParam) {
     svg.setAttribute('viewBox', `0 0 ${sz.width} ${sz.height}`);
     const anns = meta.annots.filter(a => a.page === n);
     svg.innerHTML = anns.map(a => {
-      if (a.type === 'hl') return `<g class="ann-hl" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="1.5" fill="${pdfCol(a.color)}"/>`).join('')}</g>`;
+      if (a.type === 'hl') return `<g class="ann-hl${PDF_PASTEL_KEYS.has(a.color) ? ' pastel' : ''}" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="1.5" fill="${pdfCol(a.color)}"/>`).join('')}</g>`;
       if (a.type === 'ul') return `<g class="ann-ul" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] - 1.6).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
-      if (a.type === 'ink') return `<path class="ann-ink ${inkIsMarker(a) ? 'marker' : ''}" data-id="${a.id}" d="${inkPath(a.pts)}" stroke="${esc(a.color)}" stroke-width="${a.w}"/>`;
+      if (a.type === 'ink') return `<path class="ann-ink ${inkIsMarker(a) ? `marker${PDF_PASTEL_INKS.has((a.color || '').toLowerCase()) ? ' pastel' : ''}` : ''}" data-id="${a.id}" d="${inkPath(a.pts)}" stroke="${esc(a.color)}" stroke-width="${a.w}"/>`;
       if (a.type === 'st') return `<g class="ann-ul" data-id="${a.id}">${a.rects.map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] * 0.52 - 0.8).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
       if (a.type === 'shape') return shapeSvg(a);
       if (a.type === 'text') return `<g class="ann-text" data-id="${a.id}">${String(a.text).split('\n').map((l, k) => `<text x="${a.x}" y="${(a.y + (k + 1) * a.fs * 1.25).toFixed(2)}" font-size="${a.fs}" fill="${esc(a.color)}">${esc(l)}</text>`).join('')}</g>`;
@@ -2047,6 +2067,12 @@ function viewPdf(id, pageParam) {
   document.addEventListener('pointerdown', onDocDown, true);
   pagesEl.addEventListener('contextmenu', onContext);
   window.addEventListener('resize', onResize);
+  const onEmbedMsg = e => {
+    if (e.origin !== location.origin || !e.data || e.data.nbEmbed !== 'goto') return;
+    const pg = +e.data.page;
+    if (pg > 0 && R.doc) goTo(pg, { flash: true });
+  };
+  if (EMBED) window.addEventListener('message', onEmbedMsg);
   addCleanup(() => {
     R.destroyed = true;
     if (PdfReader.ctx && PdfReader.ctx.R === R) PdfReader.stop(true);
@@ -2059,6 +2085,7 @@ function viewPdf(id, pageParam) {
     document.removeEventListener('keydown', onKey);
     document.removeEventListener('pointerdown', onDocDown, true);
     window.removeEventListener('resize', onResize);
+    if (EMBED) window.removeEventListener('message', onEmbedMsg);
     R.thumbIo?.disconnect();
     bar.remove();
     menu.remove();
@@ -2070,7 +2097,8 @@ function viewPdf(id, pageParam) {
   setTool('select');
   paintLegend();
   if (S().pdfNight) setNight(true);
-  if (R.tab) openPanel(R.tab);
+  // v4.21: dentro Affianca il pannello laterale resta chiuso all’apertura (apribile dal pulsante Pannello)
+  if (R.tab && !EMBED) openPanel(R.tab);
 
   // ---------- apertura del file
   (async () => {
@@ -2460,7 +2488,7 @@ function pdfLegendSheet() {
       <p class="sheet-sub">Dai un significato a ogni colore (per esempio giallo = definizioni, rosso = da sapere per l’esame). Vale per tutti i PDF: lo vedi sui colori dell’evidenziatore e negli appunti creati dalle evidenziazioni.</p>
       <div class="pdf-legend-ed">${PDF_COLORS.map(([k, , , n]) => `
         <label class="pdf-legend-row"><span class="rt-dot pdf-hl-dot" style="--dot:${pdfCol(k)}" aria-hidden="true"></span><span class="pdf-legend-n">${n}</span>
-          <input class="input" data-leg="${k}" value="${esc(L[k] || '')}" placeholder="${esc(({ y: 'es. Definizioni', g: 'es. Clinica', b: 'es. Meccanismi', r: 'es. Da sapere per l’esame', p: 'es. Farmaci' })[k] || 'Significato')}" maxlength="60"></label>`).join('')}
+          <input class="input" data-leg="${k}" value="${esc(L[k] || '')}" placeholder="${esc(({ c: 'es. Definizioni', a: 'es. Sintomi / Clinica', f: 'es. Farmaci / Terapia', i: 'es. Esame / Attenzione', s: 'es. Meccanismi / Anatomia', m: 'es. Diagnosi / Valori', y: 'es. Definizioni', g: 'es. Clinica', b: 'es. Meccanismi', r: 'es. Da sapere per l’esame', p: 'es. Farmaci' })[k] || 'Significato')}" maxlength="60"></label>`).join('')}
       </div>
       <div class="modal-actions">
         <button class="btn ghost" type="button" data-lg="no">Annulla</button>
@@ -2818,12 +2846,12 @@ async function exportAnnotatedPdf(meta, blob, jsDoc, onStep = () => {}) {
     const path = pts => pts.map(([x, y], i) => { const [X, Y] = P(x, y); return `${i ? 'L' : 'M'}${X.toFixed(2)} ${(-Y).toFixed(2)}`; }).join(' ');
     const stroke = (d, color, w, opacity = 1) => pg.drawSvgPath(d, { x: 0, y: 0, borderColor: col(color), borderWidth: w, borderOpacity: opacity, borderLineCap: LineCapStyle.Round });
     for (const a of [...list].sort((x, y) => (x.type === 'hl' ? 0 : 1) - (y.type === 'hl' ? 0 : 1))) {
-      if (a.type === 'hl') a.rects.forEach(r => pg.drawRectangle({ ...box(...r), color: col(pdfCol(a.color)), opacity: 0.45, blendMode: BlendMode.Multiply }));
+      if (a.type === 'hl') a.rects.forEach(r => pg.drawRectangle({ ...box(...r), color: col(pdfCol(a.color)), opacity: PDF_PASTEL_KEYS.has(a.color) ? 0.68 : 0.45, blendMode: BlendMode.Multiply }));
       else if (a.type === 'ul') a.rects.forEach(r => pg.drawRectangle({ ...box(r[0], r[1] + r[3] - 1.6, r[2], 1.6), color: col(pdfCol(a.color, 2)) }));
       else if (a.type === 'st') a.rects.forEach(r => pg.drawRectangle({ ...box(r[0], r[1] + r[3] * 0.52 - 0.8, r[2], 1.6), color: col(pdfCol(a.color, 2)) }));
       else if (a.type === 'ink' && a.pts?.length) {
         const pts = a.pts.length === 1 ? [a.pts[0], [a.pts[0][0] + 0.01, a.pts[0][1]]] : a.pts;
-        stroke(path(pts), a.color, a.w, inkIsMarker(a) ? 0.4 : 1);
+        stroke(path(pts), a.color, a.w, inkIsMarker(a) ? (PDF_PASTEL_INKS.has((a.color || '').toLowerCase()) ? 0.65 : 0.4) : 1);
       } else if (a.type === 'shape') {
         const [x1, y1, x2, y2] = a.box;
         if (a.kind === 'ellipse') {

@@ -287,7 +287,7 @@ function clozeCardsFromMd(md) {
   const lines = (md || '').split('\n');
   const out = [];
   // le | delle evidenziature {{y|…}} non separano le celle
-  const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').replace(/\{\{([uygbpovrtl])\|/g, '{{$1\u0001').split('|').map(x => x.replace(/\u0001/g, '|').trim());
+  const cells = l => l.trim().replace(/^\|/, '').replace(/\|$/, '').replace(/\{\{([ucafismygbpovrtl])\|/g, '{{$1\u0001').split('|').map(x => x.replace(/\u0001/g, '|').trim());
   const isSep = l => /^[\s|:-]+$/.test(l) && /-{2,}/.test(l);
   let heading = '';
   let header = null;

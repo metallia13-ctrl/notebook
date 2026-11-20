@@ -849,6 +849,7 @@ function modeRead(sec, body) {
     const readFolds = setupFolds(notesEl, sec.id);
     bindFoldAll($('[data-act="fold-all"]', body), readFolds);
     bindImagesToggle($('[data-act="imgs"]', body), prepareImages(notesEl, sec).count);
+    if (typeof attachInlineAtlasAnn === 'function') attachInlineAtlasAnn(notesEl, sec);
     markGlossary(notesEl);
     bindGlossaryClicks(notesEl);
     setupReadingTools(notesEl, sec);

@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.20';
+const APP_VERSION = '4.22';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -373,7 +373,7 @@ function newSection(nbId, { title, md, questions, source, groupId } = {}) {
 function repairClozeLine(line) {
   if (line.indexOf('==') < 0) return line;
   // "==" finito dentro l’apertura di un’evidenziatura: {{u==|testo → {{u|testo
-  line = line.replace(/\{\{([uygbpovrtl])==\|/g, '{{$1|');
+  line = line.replace(/\{\{([ucafismygbpovrtl])==\|/g, '{{$1|');
   let out = '';
   let open = -1;        // dove si è aperto il cloze (in out)
   let boldAt = -1;      // dove si è aperto il grassetto
@@ -449,7 +449,7 @@ function repairClozeLine(line) {
       i += 2;
       continue;
     }
-    const w = /^\{\{[uygbpovrtl]\|/.exec(line.slice(i, i + 4));
+    const w = /^\{\{[ucafismygbpovrtl]\|/.exec(line.slice(i, i + 4));
     if (w) { wraps.push(out.length); out += w[0]; i += 4; continue; }
     if (line.startsWith('}}', i)) {
       if (wraps.length) {
@@ -639,7 +639,7 @@ function renderMd(md) {
     html = mk.parse ? mk.parse(src2, { gfm: true, breaks: false }) : mk(src2);
   } else {
     html = src2.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')
-      .replace(/&lt;mark class=&quot;(cz|hl hl-[ygbpovrtl])&quot;&gt;/g, '<mark class="$1">').replace(/&lt;\/mark&gt;/g, '</mark>')
+      .replace(/&lt;mark class=&quot;(cz|hl hl-[cafismygbpovrtl])&quot;&gt;/g, '<mark class="$1">').replace(/&lt;\/mark&gt;/g, '</mark>')
       .replace(/&lt;u class=&quot;ul&quot;&gt;/g, '<u class="ul">').replace(/&lt;\/u&gt;/g, '</u>')
       .replace(/&lt;a class=&quot;xref&quot; href=&quot;(#\/sec\/[a-z0-9]+)&quot;&gt;(.*?)&lt;\/a&gt;/g, '<a class="xref" href="$1">$2</a>')
       .replace(/&lt;span class=&quot;xref missing&quot;[^&]*?(?:&quot;[^&]*?)*&gt;(.*?)&lt;\/span&gt;/g, '<span class="xref missing">$1</span>')
@@ -2164,7 +2164,7 @@ const HL_COLORS = [
   { key: 't', name: 'Turchese' },
   { key: 'l', name: 'Lime' }
 ];
-const MARK_RE = /\{\{([uygbpovrtl])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
+const MARK_RE = /\{\{([ucafismygbpovrtl])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
 function renderMarks(src) {
   let out = src;
   // dall’interno verso l’esterno, finché ce ne sono: regge anche più livelli uno dentro l’altro
@@ -2185,7 +2185,7 @@ const stripMarks = md => {
 // Tutto ciò che nel Markdown c’è ma nel testo mostrato non si vede: grassetti, cloze (con suggerimento),
 // evidenziature, tag HTML, link [testo](indirizzo), collegamenti [[Titolo|testo]], escape \*, segni di
 // elenco, titoli e citazioni a inizio riga, separatori delle tabelle
-const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[uygbpovrtl]\\||\\}\\}|<[^>\\n]{1,80}>|::(?:(?!==)[^\\n])*(?===)|\\]\\([^)\\n]*\\)|\\[\\[(?:[^\\]|\\n]*\\|)?|\\]\\]|\\[|\\\\(?=[!-/:-@\\[-`{-~])|(?:^|(?<=\\n))[ \\t]*(?:[-*+]|\\d{1,3}[.)]|#{1,6}|>)[ \\t]+|[ \\t]*\\|[ \\t]*)*';
+const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[ucafismygbpovrtl]\\||\\}\\}|<[^>\\n]{1,80}>|::(?:(?!==)[^\\n])*(?===)|\\]\\([^)\\n]*\\)|\\[\\[(?:[^\\]|\\n]*\\|)?|\\]\\]|\\[|\\\\(?=[!-/:-@\\[-`{-~])|(?:^|(?<=\\n))[ \\t]*(?:[-*+]|\\d{1,3}[.)]|#{1,6}|>)[ \\t]+|[ \\t]*\\|[ \\t]*)*';
 // caratteri che nel Markdown possono essere scritti come entità HTML
 const CHAR_ALT = { '&': '(?:&|&amp;)', '<': '(?:<|&lt;)', '>': '(?:>|&gt;)', '"': '(?:"|&quot;)', '\u00a0': '(?:\u00a0|&nbsp;| )', '’': '(?:’|\')', '‘': '(?:‘|\')', '“': '(?:“|")', '”': '(?:”|")' };
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2228,10 +2228,10 @@ function findSourceRange(md, selText, occurrence) {
   if (xo > xc) { const i = md.indexOf(']]', r.end); if (i >= 0) r.end = i + 2; }
   const lk = slice().match(/^[^[]*\]\([^)\n]*\)/);
   if (lk) { const i = md.lastIndexOf('[', r.start); if (i >= 0 && md.slice(i, r.start).indexOf('\n') < 0) r.start = i; }
-  const opens = (slice().match(/\{\{[uygbpovrtl]\|/g) || []).length;
+  const opens = (slice().match(/\{\{[ucafismygbpovrtl]\|/g) || []).length;
   const closes = (slice().match(/\}\}/g) || []).length;
   if (opens > closes && md.slice(r.end, r.end + 2) === '}}') r.end += 2;
-  if (closes > opens && /\{\{[uygbpovrtl]\|$/.test(md.slice(r.start - 4, r.start))) r.start -= 4;
+  if (closes > opens && /\{\{[ucafismygbpovrtl]\|$/.test(md.slice(r.start - 4, r.start))) r.start -= 4;
   return r;
 }
 
@@ -2246,7 +2246,7 @@ function markupSpans(md) {
     for (let i = 0; i < line.length; i++) {
       if (line[i] === '`') { const k = line.indexOf('`', i + 1); if (k > i) { i = k; continue; } }
       if (line.startsWith('**', i)) { if (bolds.length) spans.push([off + bolds.pop(), off + i + 2]); else bolds.push(i); i++; continue; }
-      if (/^\{\{[uygbpovrtl]\|/.test(line.slice(i, i + 4))) { wraps.push(i); i += 3; continue; }
+      if (/^\{\{[ucafismygbpovrtl]\|/.test(line.slice(i, i + 4))) { wraps.push(i); i += 3; continue; }
       if (line.startsWith('}}', i) && wraps.length) { spans.push([off + wraps.pop(), off + i + 2]); i++; continue; }
     }
     for (const m of line.matchAll(/\[\[[^\]\n]*\]\]|\[[^\]\n]*\]\([^)\n]*\)/g)) spans.push([off + m.index, off + m.index + m[0].length]);
@@ -2279,7 +2279,7 @@ function applyMarkToMd(md, r0, kind) {
     const segs = [];
     let s0 = r0.start;
     for (let i = r0.start; i < r0.end; i++) {
-      if (md[i] === '|' && !/\{\{[uygbpovrtl]$/.test(md.slice(Math.max(0, i - 3), i))) { segs.push([s0, i]); s0 = i + 1; }
+      if (md[i] === '|' && !/\{\{[ucafismygbpovrtl]$/.test(md.slice(Math.max(0, i - 3), i))) { segs.push([s0, i]); s0 = i + 1; }
     }
     if (segs.length) {
       segs.push([s0, r0.end]);
@@ -2312,7 +2312,7 @@ function applyMarkToMd(md, r0, kind) {
   const inner = md.slice(r.start, r.end);
   const before = md.slice(0, r.start);
   const after = md.slice(r.end);
-  const wrap = before.match(/\{\{([uygbpovrtl])\|$/);
+  const wrap = before.match(/\{\{([ucafismygbpovrtl])\|$/);
   if (wrap && after.startsWith('}}')) {
     // stesso tipo: toglie; colore diverso: cambia colore
     if (wrap[1] === kind || kind === 'none') return before.slice(0, -4) + inner + after.slice(2);
@@ -2332,7 +2332,7 @@ function wrapSelectionInTextarea(ta, open, close) {
   const trail = sel.match(/\s*$/)[0];
   const core = sel.trim();
   let next;
-  const already = core.match(/^\{\{([uygbpovrtl])\|([\s\S]*)\}\}$/);
+  const already = core.match(/^\{\{([ucafismygbpovrtl])\|([\s\S]*)\}\}$/);
   if (open.startsWith('{{') && already) {
     const k = open.slice(2, 3);
     next = already[1] === k ? already[2] : `${open}${already[2]}${close}`;

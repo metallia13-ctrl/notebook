@@ -1048,7 +1048,7 @@ function atlasBatchUploadSheet(cfg) {
 }
 
 /* Motore zoom + pan + swipe per il visore su tablet (touch, pennino e mouse) */
-function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, onZoomChange = () => {}, canSingleTouch = () => true, canPointer = () => true, allowPinchAlways = true, onPinchStart = () => {} } = {}) {
+function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, onZoomChange = () => {}, canSingleTouch = () => true, canPointer = () => true, canPinch = () => true, onPinchStart = () => {} } = {}) {
   let scale = 1, tx = 0, ty = 0;
   let touchState = null;
   let ptrState = null;
@@ -1090,7 +1090,7 @@ function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, 
 
   const onTouchStart = e => {
     if (e.touches.length === 2) {
-      if (!allowPinchAlways && !canSingleTouch()) return;
+      if (!canPinch(e)) { touchState = null; return; }
       e.preventDefault();
       onPinchStart();
       if (touchState && touchState.mode === 'swipe') apply(false);
@@ -1098,7 +1098,7 @@ function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, 
       const [mx, my] = mid2(a, b);
       touchState = { kind: 'pinch', d0: dist2(a, b) || 1, mx0: mx, my0: my, s0: scale, tx0: tx, ty0: ty };
     } else if (e.touches.length === 1) {
-      if (!canSingleTouch()) { touchState = null; return; }
+      if (!canSingleTouch(e)) { touchState = null; return; }
       const t = e.touches[0];
       touchState = { kind: 'one', x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, t0: Date.now(), tx0: tx, ty0: ty, mode: null };
     }
@@ -1106,6 +1106,7 @@ function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, 
   const onTouchMove = e => {
     if (!touchState) return;
     if (e.touches.length === 2 && touchState.kind === 'pinch') {
+      if (!canPinch(e)) { touchState = null; return; }
       e.preventDefault();
       const [a, b] = e.touches;
       const d = dist2(a, b);
@@ -1124,7 +1125,7 @@ function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, 
       return;
     }
     if (e.touches.length === 1 && touchState.kind === 'one') {
-      if (!canSingleTouch()) { touchState = null; return; }
+      if (!canSingleTouch(e)) { touchState = null; return; }
       const t = e.touches[0];
       const dx = t.clientX - touchState.x0;
       const dy = t.clientY - touchState.y0;
@@ -1189,6 +1190,7 @@ function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, 
   };
   const onPtrMove = e => {
     if (!ptrState || e.pointerId !== ptrState.id) return;
+    if (!canPointer(e)) { ptrState = null; return; }
     const dx = e.clientX - ptrState.x0, dy = e.clientY - ptrState.y0;
     ptrState.x = e.clientX; ptrState.y = e.clientY;
     if (scale > 1.04) {
@@ -1234,6 +1236,7 @@ function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, 
 
   return {
     reset,
+    cancel: () => { touchState = null; ptrState = null; },
     zoomStep: k => { const r = stage.getBoundingClientRect(); zoomAt(scale * k, r.left + r.width / 2, r.top + r.height / 2, true); },
     getScale: () => scale,
     destroy() {
@@ -1308,6 +1311,33 @@ function renderAtlasOverlay(svgEl, textsEl, sec, imgId, { hidden = false, editab
   return { vw, vh };
 }
 
+/* v4.22: mostra le annotazioni dell’Atlante anche sulle immagini inline (in Affianca e in Leggi) */
+function attachInlineAtlasAnn(root, sec) {
+  if (!root || !sec || !sec.atlasAnn) return;
+  $$('img.nb-img[data-img]', root).forEach(img => {
+    const imgId = img.dataset.img;
+    const ann = atlasAnnOf(sec, imgId, false);
+    if (!ann.strokes.length && !ann.texts.length) return;
+    let wrap = img.closest('.av-inline-wrap');
+    if (!wrap) {
+      wrap = document.createElement('span');
+      wrap.className = 'av-inline-wrap';
+      img.replaceWith(wrap);
+      const svg = document.createElementNS(SVG_NS, 'svg');
+      svg.setAttribute('class', 'av-ann-svg');
+      svg.setAttribute('aria-hidden', 'true');
+      const texts = document.createElement('div');
+      texts.className = 'av-ann-texts';
+      wrap.append(img, svg, texts);
+    }
+    const svg = wrap.querySelector('.av-ann-svg');
+    const texts = wrap.querySelector('.av-ann-texts');
+    const draw = () => renderAtlasOverlay(svg, texts, sec, imgId, { hidden: false, editable: false, imgEl: img });
+    draw();
+    if (!img.complete || !img.naturalWidth) img.addEventListener('load', draw, { once: true });
+  });
+}
+
 function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   if (!items.length) { toast('Nessuna immagine da mostrare'); return; }
   const cfg = SPECIALS[kind];
@@ -1325,6 +1355,8 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   let annColor = S().atlasColor || 'yellow';
   let annSize = S().atlasSize || 'm'; // 's' | 'm' | 'l'
   let penSeen = false;
+  let penDown = false;
+  let penUpAt = 0;
   let drawCur = null;
   let dragTxt = null;
   let saveT = 0;
@@ -1520,6 +1552,7 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
 
   const drawingActive = () => annotating && annTool !== 'hand';
 
+  const hasStylusTouch = e => [...(e?.touches || [])].some(t => t.touchType === 'stylus');
   const mainZP = attachZoomPan(stageEl, mediaEl, {
     allowSwipe: true,
     onSwipe: dir => step(dir),
@@ -1527,9 +1560,10 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
       zoomPill.hidden = sc <= 1.04;
       zoomPill.textContent = `${Math.round(sc * 100)}%`;
     },
-    canSingleTouch: () => !drawingActive() || (penSeen && mainZP.getScale() > 1.04),
-    canPointer: e => !drawingActive() || (e.pointerType === 'touch' && penSeen),
-    allowPinchAlways: true,
+    // v4.22: quando scrivi o evidenzi l’immagine resta bloccata (niente spostamento con penna o palmo)
+    canSingleTouch: e => !drawingActive() && !penDown && !hasStylusTouch(e),
+    canPointer: () => !drawingActive(),
+    canPinch: e => !drawingActive() || (!penDown && !drawCur && !dragTxt && Date.now() - penUpAt > 180 && !hasStylusTouch(e)),
     onPinchStart: cancelActiveDraw
   });
   const pinZP = attachZoomPan(pinStageEl, pinMediaEl, { allowSwipe: false });
@@ -1696,8 +1730,8 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   // Gestione scrittura, evidenziazione, gomma e trascinamento note sulla tavola
   const onAnnDown = e => {
     if (!drawingActive()) return;
-    if (e.pointerType === 'pen') penSeen = true;
-    if (e.pointerType === 'touch' && penSeen) return; // scarto palmo: con S Pen il dito sposta la tavola
+    if (e.pointerType === 'pen') { penSeen = true; penDown = true; mainZP.cancel(); }
+    if (e.pointerType === 'touch' && penSeen) { e.preventDefault(); return; } // scarto palmo: il palmo non scrive e non sposta la tavola
     if (e.button > 0 && !penErases(e)) return;
 
     const it = cur();
@@ -1788,6 +1822,7 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   };
 
   const onAnnUp = e => {
+    if (e.pointerType === 'pen') { penDown = false; penUpAt = Date.now(); }
     if (dragTxt && e.pointerId === dragTxt.id) {
       const d = dragTxt;
       dragTxt = null;
@@ -1822,9 +1857,9 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   stageEl.addEventListener('pointerdown', onAnnDown);
   stageEl.addEventListener('pointermove', onAnnMove);
   stageEl.addEventListener('pointerup', onAnnUp);
-  stageEl.addEventListener('pointercancel', cancelActiveDraw);
+  stageEl.addEventListener('pointercancel', e => { if (e.pointerType === 'pen') { penDown = false; penUpAt = Date.now(); } cancelActiveDraw(); });
   stageEl.addEventListener('contextmenu', e => { if (annotating) e.preventDefault(); });
-  twoFingerTap(stageEl, () => undoAnn(), () => annotating && penSeen);
+  twoFingerTap(stageEl, () => undoAnn(), () => annotating && penSeen && !penDown && !drawCur);
 
   // Eventi barra strumenti di annotazione
   annBar.addEventListener('click', e => {

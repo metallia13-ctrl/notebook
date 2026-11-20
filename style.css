@@ -1853,8 +1853,10 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 .pdf-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; border-radius: 3px; }
 .pdf-ann { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; mix-blend-mode: multiply; overflow: visible; }
 .pdf-ann .ann-hl rect { opacity: 0.55; }
+.pdf-ann .ann-hl.pastel rect { opacity: 0.78; }
 .pdf-ann .ann-ink { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .pdf-ann .ann-ink.marker { opacity: 0.4; stroke-linecap: square; }
+.pdf-ann .ann-ink.marker.pastel { opacity: 0.68; }
 .pdf-pins { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
 .pdf-pin {
   position: absolute;
@@ -3747,8 +3749,46 @@ body.au-on .view { padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px)
    ===================================================================== */
 .split-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
 .split-body:has(> .split-frame) { overflow: hidden; padding: 0; }
-body.embed .nav, body.embed .nav-show, body.embed .pad-fab, body.embed .pdf-back, body.embed .pdf-split-btn, body.embed .guard-banner { display: none !important; }
+body.embed .nav, body.embed .nav-show, body.embed .pad-fab, body.embed .pdf-back, body.embed .pdf-split-btn, body.embed .guard-banner, body.embed .pdf-title { display: none !important; }
 body.embed .view { margin: 0 !important; max-width: none !important; padding: 0 !important; }
+/* v4.21: lettore PDF completo e usabile in spazi stretti dentro Affianca */
+body.embed .pdf-bar { padding: 4px 8px; gap: 6px; flex-wrap: nowrap; }
+body.embed .pdf-pageno { margin-right: auto; }
+body.embed .pdf-bar .btn span { display: none; }
+body.embed .pdf-bar .btn.sm { padding: 0 9px; min-height: 32px; }
+body.embed .pdf-tools { flex-wrap: wrap; overflow-x: visible; row-gap: 5px; column-gap: 6px; padding: 5px 8px; }
+body.embed .pdf-toolset { flex-wrap: wrap; }
+body.embed .pdf-tool { min-height: 30px; padding: 3px 6px; }
+body.embed .pdf-tool span { display: none; }
+body.embed .pdf-pen-opts { flex-wrap: wrap; gap: 4px 6px; }
+body.embed .pdf-pen-opts > span { flex-wrap: wrap; }
+body.embed .pdf-zoom { margin-left: 0; }
+body.embed .pdf-tools .btn.sm { min-height: 30px; padding: 0 8px; font-size: 0.82rem; }
+body.embed .pdf-listen-btn span { display: none; }
+
+/* v4.21: Stabilo Boss Pastello per evidenziatore PDF ed esportazione in appunti */
+.hl-c { background: rgba(252, 232, 131, 0.52); }
+.hl-a { background: rgba(255, 190, 152, 0.50); }
+.hl-f { background: rgba(249, 180, 207, 0.48); }
+.hl-i { background: rgba(213, 185, 247, 0.48); }
+.hl-s { background: rgba(163, 218, 249, 0.50); }
+.hl-m { background: rgba(166, 229, 200, 0.50); }
+:root[data-theme="dark"] mark.hl-c { background: rgba(252, 232, 131, 0.30); }
+:root[data-theme="dark"] mark.hl-a { background: rgba(255, 190, 152, 0.30); }
+:root[data-theme="dark"] mark.hl-f { background: rgba(249, 180, 207, 0.30); }
+:root[data-theme="dark"] mark.hl-i { background: rgba(213, 185, 247, 0.30); }
+:root[data-theme="dark"] mark.hl-s { background: rgba(163, 218, 249, 0.30); }
+:root[data-theme="dark"] mark.hl-m { background: rgba(166, 229, 200, 0.30); }
+.rt-dot.hl-c { background: #fce883; }
+.rt-dot.hl-a { background: #ffbe98; }
+.rt-dot.hl-f { background: #f9b4cf; }
+.rt-dot.hl-i { background: #d5b9f7; }
+.rt-dot.hl-s { background: #a3daf9; }
+.rt-dot.hl-m { background: #a6e5c8; }
+.pdf-hl-dot[data-hlc="m"], .pdf-hl-dot[data-c="m"], .pdf-hl-dot[data-ac="m"], .ink-dot[data-ink="#a6e5c8"] { margin-right: 6px; position: relative; }
+.pdf-hl-dot[data-hlc="m"]::after, .pdf-hl-dot[data-c="m"]::after, .pdf-hl-dot[data-ac="m"]::after, .ink-dot[data-ink="#a6e5c8"]::after {
+  content: ""; position: absolute; right: -5px; top: 3px; bottom: 3px; width: 1px; background: var(--line); pointer-events: none;
+}
 
 /* =====================================================================
    v3.61: interrogazione, indovina dall’immagine
@@ -5177,6 +5217,9 @@ td.tbl-cell-hide.shown * { visibility: visible; }
 .av-ann-svg path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .av-ann-svg .av-pen { opacity: 0.96; }
 .av-ann-texts { position: absolute; inset: 0; pointer-events: none; }
+.av-inline-wrap { position: relative; display: inline-block; max-width: 100%; border-radius: var(--r-md); overflow: hidden; line-height: 0; }
+.av-inline-wrap > img.nb-img { margin: 0 !important; display: block; }
+.av-inline-wrap .av-txt { font-size: 0.72rem !important; padding: 2px 6px; }
 .av-ann-off { display: none !important; }
 .av-txt {
   position: absolute; transform: translate(-50%, -50%); max-width: 62%;

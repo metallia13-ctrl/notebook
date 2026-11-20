@@ -1460,6 +1460,14 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.22", title: "scrittura bloccata con S Pen nell’Atlante e immagini visibili in Affianca", html: `      <ul>
+        <li><strong>Tavola bloccata mentre scrivi nell’Atlante</strong>: con <em>Evidenzia</em>, <em>Penna</em>, <em>Testo</em> o <em>Gomma</em> attivi l’immagine non si sposta né fa swipe mentre usi la penna o appoggi il palmo; per spostare o ingrandire puoi usare due dita (a penna sollevata) oppure il pulsante <strong>✋ Scorri</strong>.</li>
+        <li><strong>Immagini dell’Atlante (e di tutte le sezioni) visibili in Affianca</strong>: le tavole e le figure ora si caricano subito nel pannello affiancato, mostrano anche eventuali evidenziazioni/note pastello salvate e si aprono nel visore a schermo intero con un tocco.</li>
+      </ul>` },
+  { v: "4.21", title: "palette Stabilo Pastello nel lettore PDF e lettore completo migliorato in Affianca", html: `      <ul>
+        <li><strong>Evidenziatori e penna Stabilo Pastello nel lettore PDF</strong>: i 6 colori pastello (<em>Giallo crema, Pesca pastello, Rosa pastello, Lilla pastello, Azzurro nuvola, Verde menta</em>) compaiono per primi nella barra degli evidenziatori, nella barra di selezione e nella penna/evidenziatore a mano libera, prima della palette classica; funzionano anche in <em>Appunti dalle evidenziazioni</em> e nell’esportazione del PDF annotato.</li>
+        <li><strong>Lettore PDF completo in Affianca migliorato</strong>: tutti gli strumenti (evidenziatori, penna, forme, testo, note, occlusioni, ritaglia, zoom e <em>Altro ▾</em>) restano subito visibili su righe compatte senza tagliarsi fuori schermo, viene eliminato il titolo duplicato, il pannello laterale non copre più le pagine all’apertura e cliccare un’altra citazione dello stesso PDF salta subito alla pagina senza ricaricarlo.</li>
+      </ul>` },
   { v: "4.20", title: "Image occlusion: Scorri e zoom funzionanti + evidenziazione e note pastello nell’Atlante", html: `      <ul>
         <li><strong>Image occlusion ed Etichette: Scorri e zoom sistemati</strong>: in modalità <em>Scorri</em> trascini la tavola con dito, S Pen o mouse (doppio tocco per ingrandire), con pulsanti <code>− / 100% / ＋</code> e pinch-to-zoom a due dita attivo anche mentre sei in <em>Disegna</em>.</li>
         <li><strong>Evidenzia e scrivi nell’Atlante</strong>: nel visore delle tavole tocca <strong>🖍 Annota</strong> per usare l’evidenziatore (con fusione trasparente che lascia nitide le scritte), la penna a mano libera con scarto del palmo per S Pen e le note di <strong>Testo</strong> posizionabili sulla tavola, nella palette <strong>Stabilo Pastello</strong> (giallo crema, pesca, rosa, lilla, azzurro nuvola, verde menta e grafite).</li>
@@ -1959,13 +1967,35 @@ const Split = {
       <div class="split-body" tabindex="-1"></div>`;
     document.body.append(el);
     this.el = el;
+    // v4.22: idrata sempre immagini e blocchi HTML nel pannello Affianca (è fuori da #view/#modalRoot)
+    const spObs = new MutationObserver(list => list.forEach(m => m.addedNodes.forEach(n => {
+      if (n.nodeType === 1) { hydrateImages(n); hydrateHtmlBlocks(n); }
+    })));
+    spObs.observe(el, { childList: true, subtree: true });
     el.addEventListener('click', e => {
       const b = e.target.closest('[data-sp]');
       if (b) { this.act(b.dataset.sp); return; }
       const x = e.target.closest('a.xref');
       if (x) {
         const id = (x.getAttribute('href') || '').match(/#\/sec\/([^/]+)/)?.[1];
-        if (id) { e.preventDefault(); this.show({ kind: 'sec', id }); }
+        if (id) { e.preventDefault(); this.show({ kind: 'sec', id }); return; }
+      }
+      const img = e.target.closest('img.nb-img');
+      if (img && !img.closest('.io, .wy-b') && img.dataset.state === 'ok') {
+        const sec = this.item && (this.item.kind === 'sec' || this.item.kind === 'map') ? secById(this.item.id) : null;
+        const nb = sec && nbById(sec.notebookId);
+        if (nb && (nb.kind === 'anat' || nb.kind === 'atlas') && typeof openAtlasViewer === 'function') {
+          const slides = atlasSlidesFrom([sec]);
+          const startIdx = Math.max(0, slides.findIndex(sl => sl.imgId === img.dataset.img));
+          if (slides.length) {
+            openAtlasViewer({
+              kind: nb.kind, items: slides, startIdx,
+              onChanged: () => { if (this.isOpen() && this.item?.kind === 'sec' && this.item.id === sec.id) this.show(this.item); }
+            });
+            return;
+          }
+        }
+        openLightbox(img.dataset.img, sec ? { notebookId: sec.notebookId, sectionId: sec.id } : null);
       }
     });
     el.addEventListener('change', e => {
@@ -2078,8 +2108,13 @@ const Split = {
         return;
       }
       body.innerHTML = sec.md.trim() ? `<article class="notes split-notes">${renderMd(sec.md)}</article>` : '<p class="hint">Questa sezione è ancora vuota.</p>';
+      hydrateImages(body);
+      hydrateHtmlBlocks(body);
       const art = $('.split-notes', body);
-      if (art) setupFolds(art, sec.id);
+      if (art) {
+        setupFolds(art, sec.id);
+        if (typeof attachInlineAtlasAnn === 'function') attachInlineAtlasAnn(art, sec);
+      }
       body.scrollTop = 0;
       return;
     }
@@ -2087,19 +2122,32 @@ const Split = {
     if (!meta) { this.close(); toast('Questo PDF non c’è più'); return; }
     $('.split-kind', this.el).textContent = 'PDF';
     $('.split-name', this.el).textContent = meta.name;
-    body.innerHTML = '<p class="hint split-wait">Apro il PDF…</p>';
+    if (!(this.frame && this.frame.isConnected && this.framePdfId === meta.id)) {
+      body.innerHTML = '<p class="hint split-wait">Apro il PDF…</p>';
+    }
     try {
-      // v3.60: il lettore completo (evidenziatori, penna, segnalibri, figure…) dentro il pannello
+      // v4.21: lettore PDF completo dentro Affianca (URL robusto, ripresa pagina, salto rapido senza ricaricare)
       this.dropDoc();
       if (!EMBED) {
         $('.split-pdfbar', this.el).hidden = true;
+        const targetPage = item.page > 0 ? item.page : (meta.lastPage || 1);
+        if (this.frame && this.frame.isConnected && this.framePdfId === meta.id) {
+          try {
+            this.frame.contentWindow?.postMessage({ nbEmbed: 'goto', page: targetPage }, location.origin);
+            return;
+          } catch { /* ricarico il frame */ }
+        }
         body.innerHTML = '';
         const fr = document.createElement('iframe');
         fr.className = 'split-frame';
         fr.title = `PDF: ${meta.name}`;
-        fr.src = `index.html?embed=1#/pdf/${meta.id}/${Math.max(1, item.page || 1)}`;
+        const u = new URL('index.html', document.baseURI);
+        u.search = '?embed=1';
+        u.hash = `#/pdf/${meta.id}/${Math.max(1, targetPage)}`;
+        fr.src = u.href;
         body.append(fr);
         this.frame = fr;
+        this.framePdfId = meta.id;
         return;
       }
       let pdf;
@@ -2138,6 +2186,7 @@ const Split = {
     const p = this.pdf;
     this.pdf = null;
     this.waitQ = [];
+    if (this.item && this.item.kind !== 'pdf') { this.frame = null; this.framePdfId = ''; }
     if (p && !p.shared) { try { p.doc.destroy(); } catch { /* già chiuso */ } }
   },
   layoutPdf() {
@@ -2273,6 +2322,7 @@ const Split = {
     this.rendered.clear();
     $('.split-body', this.el).innerHTML = '';
     this.frame = null;
+    this.framePdfId = '';
     this.applyMode();
     setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
   },
