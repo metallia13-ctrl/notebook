@@ -1460,6 +1460,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.19", title: "editor delle sezioni: rientri e sottolivelli negli elenchi puntati sistemati", html: `      <ul>
+        <li><strong>Rientro affidabile nell’anteprima modificabile</strong>: <code>Tab</code>, <code>Maiusc+Tab</code> e i pulsanti <em>Rientra → / ← Riduci rientro</em> spostano direttamente le voci dell’elenco mantenendo cursore, sottovoci e sincronizzazione immediata con il codice Markdown.</li>
+        <li><strong>Invio su una sottovoce vuota</strong>: torna automaticamente indietro di un livello anche nell’anteprima, oltre che nel codice.</li>
+        <li><strong>Elenchi numerati e marcatori visivi</strong>: rientro multi-riga corretto nel codice Markdown e marcatori distinti per i livelli annidati.</li>
+      </ul>` },
   { v: "4.18", title: "Atlante 2.0: visore con swipe, confronto tavole, caricamento multiplo e filtri regione", html: `      <ul>
         <li><strong>Visore a schermo intero con swipe</strong> (Atlante di anatomia e Atlante diagnostico): tocca una tavola (o <em>▶ Sfoglia</em>) per scorrerle tutte con le dita, con pinch-to-zoom, doppio tocco per ingrandire, striscia di miniature in basso e pannello <strong>📝 Note</strong> a comparsa senza uscire dal visore.</li>
         <li><strong>Ripasso al volo e confronto</strong>: attiva <strong>🙈 Nascondi titoli</strong> per metterti alla prova mentre fai swipe (tocca per rivelare il nome) e <strong>◫ Confronta</strong> per bloccare una tavola a sinistra mentre a destra scorri le altre.</li>

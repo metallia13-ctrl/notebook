@@ -3382,23 +3382,25 @@ function indentLines(ta, dir) {
   const endPos = e > s && v[e - 1] === '\n' ? e - 1 : e;
   const le = lineEnd(v, Math.max(endPos, s));
   const prevLine = ls > 0 ? v.slice(lineStart(v, ls - 1), ls - 1) : '';
-  const prevOrdered = /^\s*\d+[.)]\s/.test(prevLine);
+  const prevOrd = prevLine.match(/^\s*(\d+[.)]\s+)/);
+  const addStep = prevOrd ? prevOrd[1].length : 2;
   const lines = v.slice(ls, le).split('\n');
   let first = 0;
   let total = 0;
-  const out = lines.map((l, i) => {
+  const out = lines.map((raw, i) => {
+    const l = raw.replace(/^\t+/, m => '  '.repeat(m.length));
+    const tabDiff = l.length - raw.length;
     const lead = l.match(/^ */)[0].length;
     if (dir > 0) {
-      if (!l.trim()) return l;
-      const step = i === 0 && prevOrdered ? 3 : 2;
-      if (i === 0) first = step;
-      total += step;
-      return ' '.repeat(step) + l;
+      if (!l.trim()) { if (i === 0) first = tabDiff; total += tabDiff; return l; }
+      if (i === 0) first = addStep + tabDiff;
+      total += addStep + tabDiff;
+      return ' '.repeat(addStep) + l;
     }
     const step = lead >= 3 && lead % 3 === 0 && lead % 2 !== 0 ? 3 : 2;
     const rm = Math.min(lead, step);
-    if (i === 0) first = -rm;
-    total -= rm;
+    if (i === 0) first = tabDiff - rm;
+    total += tabDiff - rm;
     return l.slice(rm);
   });
   ta.setRangeText(out.join('\n'), ls, le, 'preserve');
@@ -7836,19 +7838,32 @@ function wyList(list, pad) {
   const loose = [];
   [...list.children].forEach(c => {
     if (c.tagName === 'LI') items.push({ li: c, subs: [] });
-    else if (c.tagName === 'UL' || c.tagName === 'OL') { if (items.length) items[items.length - 1].subs.push(c); else loose.push(c); }
+    else if (c.tagName === 'UL' || c.tagName === 'OL') {
+      if (items.length) items[items.length - 1].subs.push(c);
+      else loose.push(c);
+    } else if (c.querySelector && c.querySelector('ul, ol')) {
+      [...c.querySelectorAll(':scope > ul, :scope > ol')].forEach(u => {
+        if (items.length) items[items.length - 1].subs.push(u);
+        else loose.push(u);
+      });
+    }
   });
   const out = loose.map(sub => wyList(sub, pad));
   items.forEach(({ li, subs }) => {
     const own = document.createElement('div');
-    li.childNodes.forEach(c => {
-      if (c.nodeType === 1 && (c.tagName === 'UL' || c.tagName === 'OL')) subs.unshift(c);
-      else own.append(c.cloneNode(true));
-    });
+    const ownSubs = [];
+    const collect = node => {
+      node.childNodes.forEach(c => {
+        if (c.nodeType === 1 && (c.tagName === 'UL' || c.tagName === 'OL')) ownSubs.push(c);
+        else if (c.nodeType === 1 && (c.tagName === 'DIV' || c.tagName === 'BLOCKQUOTE') && c.querySelector('ul, ol')) collect(c);
+        else own.append(c.cloneNode(true));
+      });
+    };
+    collect(li);
     const marker = ordered ? `${n++}. ` : '- ';
     const text = wyLine(wyInline(own)).replace(/\n/g, ' ');
     let s = `${pad}${marker}${text}`;
-    subs.forEach(sub => { s += `\n${wyList(sub, pad + ' '.repeat(marker.length))}`; });
+    [...ownSubs, ...subs].forEach(sub => { s += `\n${wyList(sub, pad + ' '.repeat(marker.length))}`; });
     out.push(s);
   });
   return out.join('\n');
@@ -7982,11 +7997,104 @@ function setupWysiwyg(box, ta, tools) {
     e.preventDefault();
     document.execCommand('insertText', false, text);
   });
+  // v4.19: rientro/riduzione diretto sul DOM (senza execCommand, che stacca i <li> o crea <blockquote>)
+  const wyIndent = dir => {
+    const x = selIn();
+    if (!x) return false;
+    const { r, el: blk, s } = x;
+    const sc = r.startContainer, so = r.startOffset;
+    const ec = r.endContainer, eo = r.endOffset;
+    const liOf = n => (n && (n.nodeType === 1 ? n : n.parentElement))?.closest('li');
+    const liStart = liOf(sc);
+    const liEnd = liOf(ec);
+    let lis = [];
+    if (r.collapsed) {
+      if (liStart && blk.contains(liStart)) lis = [liStart];
+    } else if (liStart && liStart === liEnd && blk.contains(liStart)) {
+      lis = [liStart];
+    } else {
+      const hit = [...blk.querySelectorAll('li')].filter(li => r.intersectsNode(li) && !(liStart && li !== liStart && li.contains(liStart)));
+      lis = hit.filter(li => !hit.some(other => other !== li && other.contains(li)));
+    }
+    if (!lis.length) return 'not-li';
+
+    let changed = false;
+    let blockedFirst = false;
+    if (dir > 0) {
+      for (const li of lis) {
+        const list = li.parentElement;
+        if (!list || (list.tagName !== 'UL' && list.tagName !== 'OL')) continue;
+        let prev = li.previousElementSibling;
+        while (prev && prev.tagName !== 'LI') prev = prev.previousElementSibling;
+        if (!prev) { blockedFirst = true; continue; }
+        let sub = prev.lastElementChild;
+        if (!sub || sub.tagName !== list.tagName) {
+          sub = document.createElement(list.tagName);
+          prev.appendChild(sub);
+        }
+        sub.appendChild(li);
+        changed = true;
+      }
+    } else {
+      for (const li of [...lis].reverse()) {
+        const list = li.parentElement;
+        if (!list || (list.tagName !== 'UL' && list.tagName !== 'OL')) continue;
+        const p = list.parentElement;
+        let grandList = null;
+        let insertAfter = null;
+        if (p && p.tagName === 'LI' && blk.contains(p)) {
+          grandList = p.parentElement;
+          insertAfter = p;
+        } else if (p && (p.tagName === 'UL' || p.tagName === 'OL') && blk.contains(p)) {
+          grandList = p;
+          insertAfter = list;
+        }
+        if (!grandList || (grandList.tagName !== 'UL' && grandList.tagName !== 'OL')) continue;
+        const following = [];
+        let sib = li.nextElementSibling;
+        while (sib) { following.push(sib); sib = sib.nextElementSibling; }
+        if (following.length) {
+          let sub = li.lastElementChild;
+          if (!sub || sub.tagName !== list.tagName) {
+            sub = document.createElement(list.tagName);
+            li.appendChild(sub);
+          }
+          following.forEach(node => sub.appendChild(node));
+        }
+        grandList.insertBefore(li, insertAfter.nextSibling);
+        if (!list.children.length) list.remove();
+        changed = true;
+      }
+    }
+    if (changed) {
+      try {
+        const nr = document.createRange();
+        nr.setStart(sc, so);
+        nr.setEnd(ec, eo);
+        s.removeAllRanges();
+        s.addRange(nr);
+      } catch { /* cursore invariato */ }
+      dirty.add(blk);
+      flush();
+    } else if (blockedFirst) {
+      toast('Per rientrare una voce deve essercene una sopra nello stesso elenco');
+    }
+    return true;
+  };
   box.addEventListener('keydown', e => {
-    if (e.key === 'Tab') {
-      const sel = getSelection();
-      const li = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement).closest('li');
-      if (li && box.contains(li)) { e.preventDefault(); document.execCommand(e.shiftKey ? 'outdent' : 'indent'); markDirty(blockOf(li)); }
+    if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      const res = wyIndent(e.shiftKey ? -1 : 1);
+      if (res && res !== 'not-li') e.preventDefault();
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      const x = selIn();
+      if (!x || !x.r.collapsed) return;
+      const li = (x.r.startContainer.nodeType === 1 ? x.r.startContainer : x.r.startContainer.parentElement)?.closest('li');
+      const list = li && li.parentElement;
+      const nested = list && list.parentElement && (list.parentElement.tagName === 'LI' || list.parentElement.tagName === 'UL' || list.parentElement.tagName === 'OL') && x.el.contains(list.parentElement);
+      if (nested && !li.textContent.trim() && !li.querySelector('ul, ol, img')) {
+        e.preventDefault();
+        wyIndent(-1);
+      }
     }
   });
   ta.addEventListener('focusin', () => { lastFocus = 'ta'; });
@@ -8061,13 +8169,10 @@ function setupWysiwyg(box, ta, tools) {
       if (anc && x.el.contains(anc) && !anc.classList.contains(`hl-${k}`)) { anc.className = `hl hl-${k}`; markDirty(x.el); return true; }
       return wrap(tag('mark', `hl hl-${k}`), n => n.tagName === 'MARK' && n.classList.contains(`hl-${k}`)) || true;
     }
-    if (d.ins === 'list') { const x = selIn(); if (!x) return true; document.execCommand('insertUnorderedList'); markDirty(x.el); return true; }
+    if (d.ins === 'list') { const x = selIn(); if (!x) return true; document.execCommand('insertUnorderedList'); dirty.add(x.el); flush(); return true; }
     if (d.indent) {
-      const x = selIn();
-      if (!x) return true;
-      if (!(x.r.startContainer.nodeType === 1 ? x.r.startContainer : x.r.startContainer.parentElement).closest('li')) { toast('Il rientro vale per le voci di un elenco'); return true; }
-      document.execCommand(+d.indent > 0 ? 'indent' : 'outdent');
-      markDirty(x.el);
+      const res = wyIndent(+d.indent);
+      if (res === 'not-li') toast('Il rientro vale per le voci di un elenco');
       return true;
     }
     if (d.act === 'pnote') {

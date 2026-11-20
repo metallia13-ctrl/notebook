@@ -609,6 +609,9 @@ details.fresh .list { margin-top: 8px; }
 .notes ul, .notes ol { padding-left: 1.4em; margin: 0.5em 0; }
 .notes li { margin: 0.25em 0; }
 .notes li::marker { color: var(--accent); }
+.notes li > ul, .notes li > ol { margin: 0.2em 0; }
+.notes ul ul { list-style-type: circle; }
+.notes ul ul ul { list-style-type: square; }
 .notes strong { font-weight: 700; }
 .notes blockquote {
   margin: 1em 0;
