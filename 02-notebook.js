@@ -593,9 +593,20 @@ function viewSection(id, mode) {
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
     </header>
-    <nav class="tabs" aria-label="Modalità di studio">
-      ${modes.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}${m === 'html' && htmlsOf(sec).length ? ` (${htmlsOf(sec).length})` : ''}${m === 'papers' && papersOfSec(sec).length ? ` (${papersOfSec(sec).length})` : ''}</a>`).join('')}
-    </nav>
+    ${(() => {
+      const ord = typeof TabCfg !== 'undefined' ? TabCfg.ordered(modes) : modes;
+      const moreSet = typeof TabCfg !== 'undefined' ? TabCfg.moreSet() : new Set();
+      let vis = ord.filter(([m]) => !moreSet.has(m));
+      let hid = ord.filter(([m]) => moreSet.has(m));
+      if (!vis.length) { vis = ord; hid = []; }
+      const tabLabel = (m, l) => `${l}${m === 'video' && videosOf(sec).length ? ` (${videosOf(sec).length})` : ''}${m === 'html' && htmlsOf(sec).length ? ` (${htmlsOf(sec).length})` : ''}${m === 'papers' && papersOfSec(sec).length ? ` (${papersOfSec(sec).length})` : ''}`;
+      const activeHid = hid.find(([m]) => m === mode);
+      return `<nav class="tabs" aria-label="Modalità di studio">
+        ${vis.map(([m, l]) => `<a href="#/sec/${id}/${m}" class="tab ${m === mode ? 'on' : ''}" ${m === mode ? 'aria-current="page"' : ''}>${tabLabel(m, l)}</a>`).join('')}
+        ${hid.length ? `<button type="button" class="tab tab-more${activeHid ? ' on' : ''}" data-act="tab-more">${activeHid ? `${tabLabel(activeHid[0], activeHid[1])} ▾` : `Altro (${hid.length}) ▾`}</button>` : ''}
+        <button type="button" class="tab tab-cfg" data-act="tab-cfg" title="Personalizza ordine e schede visibili" aria-label="Personalizza schede">⚙</button>
+      </nav>`;
+    })()}
     <section id="modeBody" class="mode-body"></section>
     ${prevSec || nextSec ? `
       <nav class="sec-pager" aria-label="Sezioni vicine">
@@ -614,6 +625,14 @@ function viewSection(id, mode) {
   on('[data-act="case-pdf"]', 'click', async () => { if (await addPdfTo(sec)) route(); });
   // Cambiare scheda non riempie la cronologia: il tasto Indietro torna al notebook.
   on('.tabs a', 'click', e => { e.preventDefault(); Nav.replace(e.currentTarget.getAttribute('href')); });
+  on('[data-act="tab-cfg"]', 'click', () => { sessionStorage.setItem('nb-set-tab', 'tabs'); go('#/settings'); });
+  on('[data-act="tab-more"]', 'click', async () => {
+    const ord = typeof TabCfg !== 'undefined' ? TabCfg.ordered(modes) : modes;
+    const moreSet = typeof TabCfg !== 'undefined' ? TabCfg.moreSet() : new Set();
+    const hid = ord.filter(([m]) => moreSet.has(m));
+    const ch = await actionSheet('Altre schede', hid.map(([m, l]) => ({ key: m, label: l + (m === mode ? ' (attiva)' : '') })));
+    if (ch) Nav.replace(`#/sec/${id}/${ch}`);
+  });
   const tabsEl = $('.tabs');
   const onTab = $('.tab.on', tabsEl);
   if (tabsEl && onTab) {
@@ -9689,6 +9708,8 @@ function viewDiscQuiz(kind, id) {
     return names.length ? (names.length <= 3 ? names.join(' vs ') : `${title} (${names.length} sezioni)`) : title;
   };
 
+  const presetHost = grp || nb;
+  const getPresets = () => Array.isArray(presetHost.dqPresets) ? presetHost.dqPresets : [];
   pickHost.innerHTML = `
     <details class="dq-picker" id="dqPicker" open>
       <summary class="dq-picker-sum">
@@ -9696,14 +9717,23 @@ function viewDiscQuiz(kind, id) {
         <span class="dq-picker-cnt" id="dqPickCnt"></span>
       </summary>
       <div class="dq-picker-in">
+        <div class="dq-presets" id="dqPresets"></div>
         <div class="dq-picker-bar">
           <input type="search" class="input" id="dqPickQ" placeholder="Cerca sezione o paragrafo…" aria-label="Cerca sezione o paragrafo">
           <button type="button" class="btn sm ghost" data-dqp="all">Tutto</button>
           <button type="button" class="btn sm ghost" data-dqp="none">Nessuno</button>
+          <button type="button" class="btn sm" data-dqp="save" title="Salva questa selezione per rilanciarla con un tocco">＋ Salva preset</button>
         </div>
         <ul class="dq-sec-list" id="dqSecList"></ul>
       </div>
     </details>`;
+  const renderPresets = () => {
+    const list = getPresets();
+    const el = $('#dqPresets', pickHost);
+    if (!el) return;
+    el.hidden = !list.length;
+    el.innerHTML = list.map(pr => `<span class="dq-chip"><button type="button" class="dq-chip-t" data-dp-load="${esc(pr.id)}">${esc(pr.name)}</button><button type="button" class="dq-chip-x" data-dp-del="${esc(pr.id)}" aria-label="Elimina preset ${esc(pr.name)}">×</button></span>`).join('');
+  };
 
   const renderPicker = () => {
     const { nSec, nPart } = selSummary();
@@ -9752,9 +9782,42 @@ function viewDiscQuiz(kind, id) {
   pickHost.addEventListener('input', e => {
     if (e.target.id === 'dqPickQ') { filterQ = e.target.value; renderPicker(); }
   });
-  pickHost.addEventListener('click', e => {
+  pickHost.addEventListener('click', async e => {
+    const ld = e.target.closest('[data-dp-load]');
+    if (ld) {
+      const pr = getPresets().find(x => x.id === ld.dataset.dpLoad);
+      if (pr && pr.sel) {
+        usable.forEach(u => {
+          const arr = Array.isArray(pr.sel[u.sec.id]) ? pr.sel[u.sec.id] : [];
+          sel.set(u.sec.id, new Set(arr.filter(i => u.parts.some(p => p.idx === i))));
+        });
+        renderPicker();
+        toast(`Preset “${pr.name}” caricato`);
+      }
+      return;
+    }
+    const dl = e.target.closest('[data-dp-del]');
+    if (dl) {
+      presetHost.dqPresets = getPresets().filter(x => x.id !== dl.dataset.dpDel);
+      await saveNotebook(nb);
+      renderPresets();
+      return;
+    }
     const b = e.target.closest('[data-dqp]');
     if (b) {
+      if (b.dataset.dqp === 'save') {
+        const { nSec } = selSummary();
+        if (!nSec) { toast('Seleziona almeno una sezione o un paragrafo prima di salvare', 'err'); return; }
+        const name = await modal({ title: 'Salva preset', text: 'Un nome breve per richiamare questa selezione con un tocco.', input: true, placeholder: 'Es. Strati corteccia vs cervelletto', confirm: 'Salva' });
+        if (!name) return;
+        const snap = {};
+        usable.forEach(u => { const s = sel.get(u.sec.id); if (s && s.size) snap[u.sec.id] = [...s]; });
+        presetHost.dqPresets = [{ id: uid(), name: String(name).trim(), sel: snap }, ...getPresets()].slice(0, 20);
+        await saveNotebook(nb);
+        renderPresets();
+        toast('Preset salvato');
+        return;
+      }
       const on = b.dataset.dqp === 'all';
       usable.forEach(u => sel.set(u.sec.id, new Set(on ? u.parts.map(p => p.idx) : [])));
       renderPicker();
@@ -9784,6 +9847,7 @@ function viewDiscQuiz(kind, id) {
     }
   });
 
+  renderPresets();
   renderPicker();
   renderDiscQuizHost(box, {
     title,

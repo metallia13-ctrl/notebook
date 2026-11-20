@@ -29,13 +29,23 @@ function viewSettings() {
       </div>
       <p class="hint" id="${p}Msg" aria-live="polite"></p>
     </div>`;
+  const curTab = sessionStorage.getItem('nb-set-tab') || 'look';
+  const SET_TABS = [
+    ['look', 'Aspetto e lettura'],
+    ['menu', 'Menu laterale'],
+    ['tabs', 'Schede sezioni'],
+    ['ai', 'Intelligenza artificiale'],
+    ['sync', 'Sincronizzazione'],
+    ['study', 'Studio e flashcard'],
+    ['data', 'Backup e app']
+  ];
   setView(`
     <header class="page-head"><h1>Impostazioni</h1></header>
-    <ul class="list quick-links">
-      <li><a class="row" href="#/guide"><span class="row-main"><span class="row-title">Guida all’uso</span><span class="row-sub">Come funziona ogni parte dell’app</span></span><span class="ext" aria-hidden="true">›</span></a></li>
-      <li><a class="row" href="#/links"><span class="row-main"><span class="row-title">Link utili</span><span class="row-sub">StudyHub, Gemini, PubMed, Manuale MSD e i tuoi</span></span><span class="ext" aria-hidden="true">›</span></a></li>
-    </ul>
+    <nav class="set-tabs" role="tablist" aria-label="Categorie impostazioni">
+      ${SET_TABS.map(([k, l]) => `<button type="button" class="set-tab${curTab === k ? ' on' : ''}" role="tab" aria-selected="${curTab === k}" data-stab="${k}">${l}</button>`).join('')}
+    </nav>
 
+    <div class="set-pane" data-spane="ai" ${curTab === 'ai' ? '' : 'hidden'}>
     <section class="block">
       <h2>Intelligenza artificiale</h2>
       <label class="field"><span>Servizio da usare</span>
@@ -49,7 +59,9 @@ function viewSettings() {
       <p class="hint">Le chiavi restano salvate solo su questo dispositivo: non sono nel codice su GitHub e non finiscono nel backup.</p>
     </section>
     ${settingsPromptsHtml()}
+    </div>
 
+    <div class="set-pane" data-spane="sync" ${curTab === 'sync' ? '' : 'hidden'}>
     <section class="block">
       <h2>Sincronizzazione con Google Drive</h2>
       <p class="hint">Serve lo script “sync-notebook.gs”: crealo su script.google.com, distribuiscilo come app web e incolla qui il suo indirizzo e la frase segreta che hai scritto nello script.</p>
@@ -68,6 +80,9 @@ function viewSettings() {
       <p class="hint">La sincronizzazione parte da sola all’apertura, quando torni sull’app e qualche secondo dopo ogni modifica. I PDF si caricano su Drive a pezzi; per le lezioni audio su Drive serve lo script nella versione 3 (il file sync-notebook.gs aggiornato: le istruzioni sono in cima).</p>
     </section>
 
+    </div>
+
+    <div class="set-pane" data-spane="study" ${curTab === 'study' ? '' : 'hidden'}>
     <section class="block">
       <h2>Flashcard</h2>
       <label class="field narrow"><span>Nuove flashcard al giorno per notebook</span>
@@ -88,12 +103,18 @@ function viewSettings() {
       <div class="actions"><button class="btn sm ghost" type="button" data-act="anki-reset">Ripristina i valori di Anki</button></div>
     </section>
 
+    </div>
+
+    <div class="set-pane" data-spane="data" ${curTab === 'data' ? '' : 'hidden'}>
     <section class="block">
       <h2>Immagini</h2>
       <p class="hint" id="imgInfo"></p>
       <button class="btn sm" data-act="img-clean" hidden>Elimina le immagini non usate</button>
     </section>
 
+    </div>
+
+    <div class="set-pane" data-spane="sync" ${curTab === 'sync' ? '' : 'hidden'}>
     <section class="block">
       <h2>StudyHub</h2>
       <p class="hint" id="bridgeInfo">${Bridge.pending() ? `${Bridge.pending()} ${Bridge.pending() === 1 ? 'aggiornamento attende' : 'aggiornamenti attendono'} che StudyHub li legga su questo dispositivo.` : 'Nessun aggiornamento in attesa per StudyHub.'}</p>
@@ -103,12 +124,18 @@ function viewSettings() {
       <a class="btn sm" href="#/studyhub" data-sh-open>Apri StudyHub qui accanto</a>
     </section>
 
+    </div>
+
+    <div class="set-pane" data-spane="study" ${curTab === 'study' ? '' : 'hidden'}>
     <section class="block">
       <h2>Importazione</h2>
       <label class="field narrow"><span>Pagine per sezione, valore iniziale</span>
         <input class="input" type="number" id="stPer" min="1" max="30" value="${st.pagesPerSection}" inputmode="numeric"></label>
     </section>
 
+    </div>
+
+    <div class="set-pane" data-spane="look" ${curTab === 'look' ? '' : 'hidden'}>
     <section class="block">
       <h2>Lettura e aspetto</h2>
       <div class="field"><span class="lbl">Filtro luce blu</span>
@@ -164,6 +191,34 @@ function viewSettings() {
       <p class="hint">Il tema “Carta” e l’interlinea ampia affaticano meno la vista nelle sessioni lunghe.</p>
     </section>
 
+    </div>
+
+    <div class="set-pane" data-spane="menu" ${curTab === 'menu' ? '' : 'hidden'}>
+    <section class="block">
+      <h2>Voci del menu laterale</h2>
+      <p class="hint">Scegli quali sezioni mostrare nella barra laterale sul computer e sul tablet. Le sezioni nascoste restano sempre raggiungibili da <strong>Ctrl+K</strong> (Vai a…) o da <strong>Altro</strong>.</p>
+      <div class="inline" style="margin-bottom:12px">
+        <button class="btn sm" type="button" data-navvis="all">Mostra tutto</button>
+        <button class="btn sm ghost" type="button" data-navvis="min">Solo essenziali</button>
+      </div>
+      <div id="navVisList">${NavVis.settingsHtml()}</div>
+    </section>
+    </div>
+
+    <div class="set-pane" data-spane="tabs" ${curTab === 'tabs' ? '' : 'hidden'}>
+    <section class="block">
+      <h2>Schede delle sezioni</h2>
+      <p class="hint">Scegli l’ordine delle schede in cima a ogni sezione e quali tenere sempre visibili. Quelle non spuntate vanno nel menu a scomparsa <strong>Altro ▾</strong>.</p>
+      <div class="inline" style="margin-bottom:12px">
+        <button class="btn sm" type="button" data-tabcfg="all">Tutte visibili</button>
+        <button class="btn sm ghost" type="button" data-tabcfg="min">Solo essenziali</button>
+        <button class="btn sm ghost" type="button" data-tabcfg="reset">Ripristina ordine</button>
+      </div>
+      <ul class="list tabcfg-list" id="tabCfgList">${TabCfg.settingsHtml()}</ul>
+    </section>
+    </div>
+
+    <div class="set-pane" data-spane="data" ${curTab === 'data' ? '' : 'hidden'}>
     <section class="block">
       <h2>Backup</h2>
       <p class="hint">Un file unico con notebook, sezioni, flashcard, immagini, fogli del blocco note, PDF con annotazioni e segnalibri, glossario, note cliniche, prompt, statistiche e preferenze di lettura. Le chiavi dell’AI e la frase segreta di Drive restano fuori. Tienilo da parte prima di cambiare telefono.</p>
@@ -184,11 +239,50 @@ function viewSettings() {
       <button class="btn primary" data-act="install" ${installPrompt ? '' : 'hidden'}>Installa l’app</button>
     </section>
 
+    <ul class="list quick-links" style="margin-top:20px">
+      <li><a class="row" href="#/guide"><span class="row-main"><span class="row-title">Guida all’uso</span><span class="row-sub">Come funziona ogni parte dell’app</span></span><span class="ext" aria-hidden="true">›</span></a></li>
+      <li><a class="row" href="#/links"><span class="row-main"><span class="row-title">Link utili</span><span class="row-sub">StudyHub, Gemini, PubMed, Manuale MSD e i tuoi</span></span><span class="ext" aria-hidden="true">›</span></a></li>
+    </ul>
+    </div>
+
     <p class="version">StudyHub Notebook ${APP_VERSION}</p>
   `);
 
+  on('[data-stab]', 'click', e => {
+    const k = e.currentTarget.dataset.stab;
+    sessionStorage.setItem('nb-set-tab', k);
+    $$('[data-stab]').forEach(b => { const on = b.dataset.stab === k; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
+    $$('[data-spane]').forEach(p => { p.hidden = p.dataset.spane !== k; });
+  });
+  $('#navVisList')?.addEventListener('change', e => {
+    const c = e.target.closest('[data-nv-key]');
+    if (!c) return;
+    NavVis.setHidden(c.dataset.nvKey, !c.checked);
+  });
+  on('[data-navvis]', 'click', e => {
+    const mode = e.currentTarget.dataset.navvis;
+    NavVis.preset(mode);
+    const box = $('#navVisList');
+    if (box) box.innerHTML = NavVis.settingsHtml();
+  });
+  const redrawTabCfg = () => { const ul = $('#tabCfgList'); if (ul) ul.innerHTML = TabCfg.settingsHtml(); };
+  $('#tabCfgList')?.addEventListener('change', e => {
+    const c = e.target.closest('[data-tc-vis]');
+    if (c) TabCfg.setMore(c.dataset.tcVis, !c.checked);
+  });
+  $('#tabCfgList')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-tc-mv]');
+    if (!b) return;
+    TabCfg.move(b.dataset.tcKey, +b.dataset.tcMv);
+    redrawTabCfg();
+  });
+  on('[data-tabcfg]', 'click', e => {
+    TabCfg.preset(e.currentTarget.dataset.tabcfg);
+    redrawTabCfg();
+  });
+
   bindSettingsPrompts($('#view'));
-  const blueSave = () => { st.blueOn = $('#stBlue').checked; st.blueAuto = $('#stBlueAuto').checked; st.blueLevel = +$('#stBlueLevel').value; Settings.save(); applyBlueLight(); };
+  const blueSave = () => { st.blueOn = $('#stBlue').checked; st.blueAuto = $('#stBlueAuto').checked; st.blueLevel = +$('#stBlueLevel').value; Settings.save(); applyBlueLight(); NavTheme.paint(); };
   ['#stBlue', '#stBlueAuto'].forEach(id => $(id).addEventListener('change', blueSave));
   $('#stBlueLevel').addEventListener('input', blueSave);
   const fillSys = () => {
@@ -368,7 +462,7 @@ function viewSettings() {
     st.pagesPerSection = v;
     Settings.save();
   });
-  $('#stTheme').addEventListener('change', e => { st.theme = e.target.value; Settings.save(); applyTheme(); });
+  $('#stTheme').addEventListener('change', e => { st.theme = e.target.value; Settings.save(); applyTheme(); NavTheme.paint(); });
   $('#stLook').addEventListener('change', e => { st.look = e.target.value; Settings.save(); applyTheme(); });
   [['#stFont', 'readFont'], ['#stSize', 'readSize'], ['#stSpacing', 'readSpacing']].forEach(([sel, key]) => {
     $(sel).addEventListener('change', e => { st[key] = e.target.value; Settings.save(); applyTheme(); });
@@ -1260,6 +1354,8 @@ async function init() {
   SelGesture.init();
   NavHide.init();
   NavPins.init();
+  NavVis.init();
+  NavTheme.init();
   CmdPalette.init();
   FullScreen.init();
   setupFileLaunch();
@@ -1364,6 +1460,16 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.15", title: "schede riordinabili, preset dei quiz multi-sezione e barra tema mobile", html: `      <ul>
+        <li><strong>Schede delle sezioni riordinabili e a scomparsa</strong>: in <em>Impostazioni → Schede sezioni</em> (raggiungibile subito dalla rotella <code>⚙</code> nella barra delle schede) puoi riordinare le schede con <code>↑ ↓</code> e scegliere quali spostare nel menu <em>Altro ▾</em>.</li>
+        <li><strong>Preset rapidi per il Quiz multi-sezione</strong>: salva una selezione di sezioni/paragrafi con un nome (<em>＋ Salva preset</em>) e richiamala con un tocco.</li>
+        <li><strong>Barra rapida Tema e Notte su mobile e tablet</strong>: due pulsanti compatti in alto per cambiare tema (<em>Scuro / Carta / Chiaro</em>) e luce blu anche su schermi stretti.</li>
+      </ul>` },
+  { v: "4.14", title: "impostazioni a categorie, menu laterale personalizzabile e tema rapido", html: `      <ul>
+        <li><strong>Impostazioni ordinate a categorie</strong>: barra cliccabile in alto (<em>Aspetto e lettura</em>, <em>Menu laterale</em>, <em>Intelligenza artificiale</em>, <em>Sincronizzazione</em>, <em>Studio e flashcard</em>, <em>Backup e app</em>) per trovare subito quello che cerchi senza scorrere una pagina infinita.</li>
+        <li><strong>Menu laterale personalizzabile</strong>: in <em>Impostazioni → Menu laterale</em> puoi attivare o disattivare singole voci (con i preset <em>Mostra tutto</em> e <em>Solo essenziali</em>).</li>
+        <li><strong>Tema e modalità notte nella barra laterale</strong>: due pulsanti rapidi in fondo alla barra laterale per cambiare al volo tra <em>Scuro</em>, <em>Carta</em> e <em>Chiaro</em> e attivare/disattivare il filtro luce blu (<em>Notte</em>).</li>
+      </ul>` },
   { v: "4.13", title: "quiz su più sezioni scegliendo i singoli paragrafi", html: `      <ul>
         <li><strong>Quiz multi-sezione</strong>: ora il pulsante <strong>Quiz</strong> c’è anche in cima a ogni <strong>notebook</strong> (oltre che nelle cartelle) e apre il selettore <em>Materiale per il quiz</em>.</li>
         <li><strong>Selezione per paragrafo</strong>: puoi spuntare intere sezioni oppure espanderle (<code>▸</code>) per scegliere solo i singoli paragrafi/titoli da mescolare insieme (es. gli strati di una struttura con quelli di un’altra).</li>
@@ -2461,6 +2567,168 @@ const NavPins = {
       this.toggle(b.dataset.pinKey);
     });
     this.render();
+  }
+};
+
+/* ---------- v4.14: Voci attivabili/disattivabili e Tema rapido nella barra laterale ---------- */
+const NavVis = {
+  GROUPS: [
+    ['Strumenti', [['studyhub', 'StudyHub'], ['pad', 'Blocco note'], ['split', 'Affianca'], ['calendar', 'Calendario']]],
+    ['Clinica', [['clinic', 'Note cliniche'], ['examq', 'Domande d’esame'], ['cases', 'Casi clinici'], ['lab', 'Laboratorio'], ['semei', 'Semeiotica'], ['papers', 'Articoli'], ['raccolta', 'Raccolta'], ['viva', 'Interrogazione'], ['scores', 'Score clinici'], ['micro', 'Microbiologia'], ['pharma', 'Farmacologia'], ['anat', 'Atlante di anatomia'], ['atlas', 'Atlante diagnostico'], ['diary', 'Diario di tirocinio']]],
+    ['Altro', [['glossary', 'Glossario'], ['incomplete', 'Da completare'], ['links', 'Link utili'], ['guide', 'Guida']]]
+  ],
+  ESSENTIAL: new Set(['studyhub', 'pad', 'split', 'calendar', 'examq', 'viva', 'incomplete']),
+  hiddenSet() { return new Set(Array.isArray(S().navHidden) ? S().navHidden : []); },
+  setHidden(key, hide) {
+    const set = this.hiddenSet();
+    if (hide) set.add(key); else set.delete(key);
+    S().navHidden = [...set];
+    Settings.save();
+    this.apply();
+  },
+  preset(mode) {
+    if (mode === 'all') S().navHidden = [];
+    else {
+      const all = this.GROUPS.flatMap(([, items]) => items.map(([k]) => k));
+      S().navHidden = all.filter(k => !this.ESSENTIAL.has(k));
+    }
+    Settings.save();
+    this.apply();
+  },
+  settingsHtml() {
+    const h = this.hiddenSet();
+    return this.GROUPS.map(([title, items]) => `
+      <div class="nv-grp">
+        <h3 class="sub3">${title}</h3>
+        <div class="nv-grid">${items.map(([k, l]) => `<label class="check"><input type="checkbox" data-nv-key="${k}" ${h.has(k) ? '' : 'checked'}><span>${l}</span></label>`).join('')}</div>
+      </div>`).join('');
+  },
+  apply() {
+    const nav = $('.nav');
+    if (!nav) return;
+    const h = this.hiddenSet();
+    $$('.nav > a.nav-extra[data-nav]', nav).forEach(a => {
+      if (a.dataset.nav === 'settings') return;
+      a.classList.toggle('nav-off', h.has(a.dataset.nav));
+    });
+    // nasconde i titoli di categoria rimasti senza voci visibili
+    $$('.nav > .nav-cat', nav).forEach(cat => {
+      let el = cat.nextElementSibling;
+      let any = false;
+      while (el && !el.classList.contains('nav-cat') && !el.classList.contains('nav-foot')) {
+        if (el.matches('a.nav-extra') && !el.classList.contains('nav-off')) any = true;
+        el = el.nextElementSibling;
+      }
+      cat.classList.toggle('nav-off', !any);
+    });
+  },
+  init() { this.apply(); }
+};
+
+/* ---------- v4.15: Schede delle sezioni riordinabili e a scomparsa ---------- */
+const TabCfg = {
+  ESSENTIAL: new Set(['cloze', 'read', 'dquiz', 'cards', 'edit']),
+  moreSet() { return new Set(Array.isArray(S().tabMore) ? S().tabMore : []); },
+  ordered(list = MODES) {
+    const ord = Array.isArray(S().tabOrder) ? S().tabOrder : [];
+    const map = new Map(list.map(x => [x[0], x]));
+    const out = [];
+    if (map.has('case')) { out.push(map.get('case')); map.delete('case'); }
+    ord.forEach(k => { if (map.has(k)) { out.push(map.get(k)); map.delete(k); } });
+    map.forEach(v => out.push(v));
+    return out;
+  },
+  setMore(key, inMore) {
+    const set = this.moreSet();
+    if (inMore) set.add(key); else set.delete(key);
+    S().tabMore = [...set];
+    Settings.save();
+  },
+  move(key, dir) {
+    const list = this.ordered(MODES).map(x => x[0]);
+    const i = list.indexOf(key);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    S().tabOrder = list;
+    Settings.save();
+  },
+  preset(mode) {
+    if (mode === 'all') S().tabMore = [];
+    else if (mode === 'min') S().tabMore = MODES.map(x => x[0]).filter(k => !this.ESSENTIAL.has(k));
+    else if (mode === 'reset') { S().tabOrder = []; S().tabMore = []; }
+    Settings.save();
+  },
+  settingsHtml() {
+    const list = this.ordered(MODES);
+    const more = this.moreSet();
+    return list.map(([k, l], i) => `
+      <li class="tabcfg-row">
+        <label class="check"><input type="checkbox" data-tc-vis="${k}" ${more.has(k) ? '' : 'checked'}><span>${esc(l)}</span></label>
+        <span class="tabcfg-st">${more.has(k) ? 'in Altro ▾' : 'visibile'}</span>
+        <span class="tabcfg-mv">
+          <button type="button" class="btn sm ghost" data-tc-mv="-1" data-tc-key="${k}" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su ${esc(l)}">↑</button>
+          <button type="button" class="btn sm ghost" data-tc-mv="1" data-tc-key="${k}" ${i === list.length - 1 ? 'disabled' : ''} aria-label="Sposta giù ${esc(l)}">↓</button>
+        </span>
+      </li>`).join('');
+  }
+};
+
+const NavTheme = {
+  THEMES: [['dark', '🌙', 'Scuro'], ['sepia', '📜', 'Carta'], ['light', '☀️', 'Chiaro']],
+  cycleTheme() {
+    const order = ['dark', 'sepia', 'light'];
+    const cur = S().theme === 'auto' ? (document.documentElement.dataset.theme || 'dark') : (S().theme || 'dark');
+    S().theme = order[(order.indexOf(cur) + 1) % order.length];
+    Settings.save();
+    applyTheme();
+    this.paint();
+    const sel = $('#stTheme'); if (sel) sel.value = S().theme;
+  },
+  toggleBlue() {
+    S().blueOn = !document.documentElement.classList.contains('bluelight');
+    S().blueAuto = false;
+    Settings.save();
+    applyBlueLight();
+    this.paint();
+    const cb = $('#stBlue'); if (cb) cb.checked = S().blueOn;
+  },
+  paint() {
+    const cur = S().theme === 'auto' ? (document.documentElement.dataset.theme || 'dark') : (S().theme || 'dark');
+    const info = this.THEMES.find(x => x[0] === cur) || this.THEMES[0];
+    const on = document.documentElement.classList.contains('bluelight');
+    $$('[data-qtheme]').forEach(tb => {
+      tb.innerHTML = `<span aria-hidden="true">${info[1]}</span><span>${info[2]}</span>`;
+      tb.title = `Tema attuale: ${info[2]} (clicca per cambiare tra Scuro, Carta e Chiaro)`;
+    });
+    $$('[data-qblue]').forEach(bb => {
+      bb.classList.toggle('on', on);
+      bb.setAttribute('aria-pressed', String(on));
+      bb.title = on ? 'Filtro luce blu attivo (clicca per spegnere)' : 'Attiva filtro luce blu (notte)';
+    });
+  },
+  init() {
+    const nav = $('.nav');
+    if (nav && !$('#navFoot')) {
+      nav.insertAdjacentHTML('beforeend', `
+        <div class="nav-foot" id="navFoot">
+          <button type="button" class="nav-qbtn" data-qtheme></button>
+          <button type="button" class="nav-qbtn" data-qblue aria-pressed="false"><span aria-hidden="true">🕯️</span><span>Notte</span></button>
+        </div>`);
+    }
+    const view = $('#view');
+    if (view && !$('#mobTheme')) {
+      view.insertAdjacentHTML('beforebegin', `
+        <div class="mob-theme" id="mobTheme" aria-label="Tema e luce blu">
+          <button type="button" class="nav-qbtn" data-qtheme></button>
+          <button type="button" class="nav-qbtn" data-qblue aria-pressed="false"><span aria-hidden="true">🕯️</span><span>Notte</span></button>
+        </div>`);
+    }
+    document.addEventListener('click', e => {
+      if (e.target.closest('[data-qtheme]')) this.cycleTheme();
+      else if (e.target.closest('[data-qblue]')) this.toggleBlue();
+    });
+    this.paint();
   }
 };
 
