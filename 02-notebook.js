@@ -8532,15 +8532,20 @@ function openLabelEditor(sec, imageId) {
           <header class="io-head">
             <h2 id="lbTitle">Ritaglia le etichette</h2>
             <p class="hint">Trascina sopra ogni scritta da staccare: ogni riquadro diventa un’etichetta da rimettere al suo posto. Tocca un riquadro per selezionarlo.</p>
-            <div class="inline">
+            <div class="io-controls">
               <div class="seg sm" role="tablist" aria-label="Modalità">
                 <button role="tab" data-mode="draw" aria-selected="true">Disegna</button>
                 <button role="tab" data-mode="scroll" aria-selected="false">Scorri</button>
               </div>
+              <div class="io-zoom" role="group" aria-label="Zoom">
+                <button type="button" class="btn sm ghost" data-ioz="out" aria-label="Riduci zoom" title="Riduci zoom">−</button>
+                <button type="button" class="btn sm ghost io-zval" data-ioz="reset" title="Ripristina 100%">100%</button>
+                <button type="button" class="btn sm ghost" data-ioz="in" aria-label="Ingrandisci" title="Ingrandisci">＋</button>
+              </div>
               ${occ.length ? `<button class="btn sm ghost" type="button" data-lb="occ">Usa i ${occ.length} riquadri dell’occlusione</button>` : ''}
             </div>
           </header>
-          <div class="io-body">
+          <div class="io-body" id="lbBody">
             <div class="io io-stage drawing" id="lbStage" style="aspect-ratio:${im.w}/${im.h}">
               <img class="nb-img" data-img="${im.id}" alt="" draggable="false">
               <div id="lbMasks"></div>
@@ -8558,8 +8563,15 @@ function openLabelEditor(sec, imageId) {
           </footer>
         </div>
       </div>`;
+    const bodyEl = $('#lbBody', root);
     const stage = $('#lbStage', root);
     const draft = $('#lbDraft', root);
+    const vp = attachIoViewport(bodyEl, stage, {
+      canPan: () => mode === 'scroll',
+      zOut: $('[data-ioz="out"]', root),
+      zIn: $('[data-ioz="in"]', root),
+      zReset: $('[data-ioz="reset"]', root)
+    });
     const draw = () => {
       $('#lbMasks', root).innerHTML = masks.map((m, i) =>
         `<div class="io-mask edit lb-cut ${sel === m.id ? 'sel' : ''}" data-m="${m.id}" style="${posStyle(m)}"><span>${i + 1}</span></div>`).join('');
@@ -8567,9 +8579,17 @@ function openLabelEditor(sec, imageId) {
       $('#lbSel', root).hidden = !sel;
     };
     stage.addEventListener('pointerdown', e => {
+      if (mode !== 'draw') return;
       const el = e.target.closest('.io-mask');
       if (!el) { if (sel) { sel = null; draw(); } return; }
       e.preventDefault();
+      sel = el.dataset.m;
+      draw();
+    });
+    stage.addEventListener('click', e => {
+      if (mode !== 'scroll' || vp.wasDragged()) return;
+      const el = e.target.closest('.io-mask');
+      if (!el) { if (sel) { sel = null; draw(); } return; }
       sel = el.dataset.m;
       draw();
     });
@@ -8582,8 +8602,9 @@ function openLabelEditor(sec, imageId) {
       mode = b.dataset.mode;
       $$('[data-mode]', root).forEach(x => x.setAttribute('aria-selected', x.dataset.mode === mode));
       stage.classList.toggle('drawing', mode === 'draw');
+      vp.syncMode();
     }));
-    const close = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const close = v => { vp.destroy(); root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
     const onKey = e => {
       if (e.key === 'Escape') { e.stopPropagation(); close(false); }
       else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); masks = masks.filter(m => m.id !== sel); sel = null; draw(); }

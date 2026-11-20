@@ -1048,7 +1048,7 @@ function atlasBatchUploadSheet(cfg) {
 }
 
 /* Motore zoom + pan + swipe per il visore su tablet (touch, pennino e mouse) */
-function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZoomChange = () => {} } = {}) {
+function attachZoomPan(stage, target, { allowSwipe = false, onSwipe = () => {}, onZoomChange = () => {}, canSingleTouch = () => true, canPointer = () => true, allowPinchAlways = true, onPinchStart = () => {} } = {}) {
   let scale = 1, tx = 0, ty = 0;
   let touchState = null;
   let ptrState = null;
@@ -1057,16 +1057,16 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
   const clamp = () => {
     if (scale <= 1.02) { scale = 1; tx = 0; ty = 0; return; }
     const sr = stage.getBoundingClientRect();
-    const w = img.offsetWidth || sr.width;
-    const h = img.offsetHeight || sr.height;
+    const w = target.offsetWidth || sr.width;
+    const h = target.offsetHeight || sr.height;
     const maxX = Math.max(0, (w * scale - sr.width) / 2 + 40);
     const maxY = Math.max(0, (h * scale - sr.height) / 2 + 40);
     tx = Math.max(-maxX, Math.min(maxX, tx));
     ty = Math.max(-maxY, Math.min(maxY, ty));
   };
   const apply = (animate = false) => {
-    img.style.transition = animate ? 'transform 0.2s cubic-bezier(.2,.8,.2,1)' : 'none';
-    img.style.transform = `translate3d(${tx.toFixed(1)}px, ${ty.toFixed(1)}px, 0) scale(${scale.toFixed(4)})`;
+    target.style.transition = animate ? 'transform 0.2s cubic-bezier(.2,.8,.2,1)' : 'none';
+    target.style.transform = `translate3d(${tx.toFixed(1)}px, ${ty.toFixed(1)}px, 0) scale(${scale.toFixed(4)})`;
     stage.classList.toggle('zoomed', scale > 1.02);
   };
   const zoomAt = (nextScale, cx, cy, animate = false) => {
@@ -1090,12 +1090,15 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
 
   const onTouchStart = e => {
     if (e.touches.length === 2) {
+      if (!allowPinchAlways && !canSingleTouch()) return;
       e.preventDefault();
+      onPinchStart();
       if (touchState && touchState.mode === 'swipe') apply(false);
       const [a, b] = e.touches;
       const [mx, my] = mid2(a, b);
       touchState = { kind: 'pinch', d0: dist2(a, b) || 1, mx0: mx, my0: my, s0: scale, tx0: tx, ty0: ty };
     } else if (e.touches.length === 1) {
+      if (!canSingleTouch()) { touchState = null; return; }
       const t = e.touches[0];
       touchState = { kind: 'one', x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, t0: Date.now(), tx0: tx, ty0: ty, mode: null };
     }
@@ -1121,6 +1124,7 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
       return;
     }
     if (e.touches.length === 1 && touchState.kind === 'one') {
+      if (!canSingleTouch()) { touchState = null; return; }
       const t = e.touches[0];
       const dx = t.clientX - touchState.x0;
       const dy = t.clientY - touchState.y0;
@@ -1139,8 +1143,8 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
         }
         if (touchState.mode === 'swipe') {
           e.preventDefault();
-          img.style.transition = 'none';
-          img.style.transform = `translate3d(${dx.toFixed(1)}px, 0, 0)`;
+          target.style.transition = 'none';
+          target.style.transform = `translate3d(${dx.toFixed(1)}px, 0, 0)`;
         }
       }
     }
@@ -1178,7 +1182,7 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
 
   // Mouse e pennino (esclude touch, gestito sopra)
   const onPtrDown = e => {
-    if (e.pointerType === 'touch' || e.button !== 0) return;
+    if (e.pointerType === 'touch' || e.button !== 0 || !canPointer(e)) return;
     e.preventDefault();
     try { stage.setPointerCapture(e.pointerId); } catch { /* niente */ }
     ptrState = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t0: Date.now(), tx0: tx, ty0: ty, mode: null };
@@ -1194,8 +1198,8 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
     } else if (allowSwipe) {
       if (!ptrState.mode && Math.hypot(dx, dy) > 8) ptrState.mode = Math.abs(dx) >= Math.abs(dy) ? 'swipe' : 'ignore';
       if (ptrState.mode === 'swipe') {
-        img.style.transition = 'none';
-        img.style.transform = `translate3d(${dx.toFixed(1)}px, 0, 0)`;
+        target.style.transition = 'none';
+        target.style.transform = `translate3d(${dx.toFixed(1)}px, 0, 0)`;
       }
     }
   };
@@ -1209,6 +1213,7 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
     }
   };
   const onDblClick = e => {
+    if (!canPointer(e)) return;
     if (scale > 1.2) reset(true); else zoomAt(2.5, e.clientX, e.clientY, true);
   };
   const onWheel = e => {
@@ -1246,6 +1251,63 @@ function attachZoomPan(stage, img, { allowSwipe = false, onSwipe = () => {}, onZ
   };
 }
 
+/* v4.20: Palette Stabilo Boss Pastello per evidenziazioni, penna e note sulle tavole dell’Atlante */
+const ATLAS_COLORS = [
+  { key: 'yellow', name: 'Giallo crema',   dot: '#fce883', hl: '#fce883', pen: '#c89b1e', bg: 'rgba(252, 232, 131, 0.93)', bd: '#d8b63a' },
+  { key: 'peach',  name: 'Pesca pastello', dot: '#ffbe98', hl: '#ffbe98', pen: '#df7847', bg: 'rgba(255, 190, 152, 0.93)', bd: '#e29060' },
+  { key: 'pink',   name: 'Rosa pastello',  dot: '#f9b4cf', hl: '#f9b4cf', pen: '#d46190', bg: 'rgba(249, 180, 207, 0.93)', bd: '#de7fa5' },
+  { key: 'lilac',  name: 'Lilla pastello', dot: '#d5b9f7', hl: '#d5b9f7', pen: '#8660bd', bg: 'rgba(213, 185, 247, 0.93)', bd: '#a784d8' },
+  { key: 'blue',   name: 'Azzurro nuvola', dot: '#a3daf9', hl: '#a3daf9', pen: '#3b8ec4', bg: 'rgba(163, 218, 249, 0.93)', bd: '#64b2e0' },
+  { key: 'mint',   name: 'Verde menta',    dot: '#a6e5c8', hl: '#a6e5c8', pen: '#349970', bg: 'rgba(166, 229, 200, 0.93)', bd: '#5fc096' },
+  { key: 'ink',    name: 'Grafite',        dot: '#334155', hl: '#cbd5e1', pen: '#1e293b', bg: 'rgba(255, 255, 255, 0.94)', bd: '#94a3b8' }
+];
+const atlasColorOf = k => ATLAS_COLORS.find(c => c.key === k) || ATLAS_COLORS[0];
+
+function atlasAnnOf(sec, imgId, create = false) {
+  if (!sec) return { strokes: [], texts: [] };
+  if (!sec.atlasAnn || typeof sec.atlasAnn !== 'object') {
+    if (!create) return { strokes: [], texts: [] };
+    sec.atlasAnn = {};
+  }
+  if (!sec.atlasAnn[imgId]) {
+    if (!create) return { strokes: [], texts: [] };
+    sec.atlasAnn[imgId] = { strokes: [], texts: [] };
+  }
+  const a = sec.atlasAnn[imgId];
+  if (!Array.isArray(a.strokes)) a.strokes = [];
+  if (!Array.isArray(a.texts)) a.texts = [];
+  return a;
+}
+
+function renderAtlasOverlay(svgEl, textsEl, sec, imgId, { hidden = false, editable = false, imgEl = null } = {}) {
+  const im = imageById(imgId);
+  const nw = (imgEl && imgEl.naturalWidth) || im?.w || 1000;
+  const nh = (imgEl && imgEl.naturalHeight) || im?.h || 750;
+  const vw = 1000;
+  const vh = +(1000 * (nh / (nw || 1))).toFixed(2);
+  svgEl.setAttribute('viewBox', `0 0 ${vw} ${vh}`);
+  svgEl.classList.toggle('av-ann-off', hidden);
+  textsEl.classList.toggle('av-ann-off', hidden);
+  textsEl.classList.toggle('av-ann-edit', editable);
+  if (hidden) { svgEl.innerHTML = ''; textsEl.innerHTML = ''; return { vw, vh }; }
+  const ann = atlasAnnOf(sec, imgId, false);
+  // Evidenziatore prima (sotto), penna sopra
+  const hl = ann.strokes.filter(s => s.k === 'hl');
+  const pen = ann.strokes.filter(s => s.k !== 'hl');
+  const pathHtml = s => {
+    const pts = (s.p || []).map(([x, y]) => [+(x * vw).toFixed(2), +(y * vh).toFixed(2)]);
+    if (!pts.length) return '';
+    return `<path data-sid="${s.id}" class="${s.k === 'hl' ? 'av-hl' : 'av-pen'}" d="${inkPath(pts)}" stroke="${esc(s.c)}" stroke-width="${s.w}"/>`;
+  };
+  svgEl.innerHTML = `<g class="av-hl-layer">${hl.map(pathHtml).join('')}</g><g class="av-pen-layer">${pen.map(pathHtml).join('')}</g>`;
+  textsEl.innerHTML = ann.texts.map(t => {
+    const col = atlasColorOf(t.c);
+    const sz = t.sz === 's' ? '0.72rem' : t.sz === 'l' ? '1rem' : '0.84rem';
+    return `<div class="av-txt" data-tid="${t.id}" style="left:${(t.x * 100).toFixed(3)}%;top:${(t.y * 100).toFixed(3)}%;--av-bg:${col.bg};--av-bd:${col.bd};font-size:${sz}">${esc(t.t)}</div>`;
+  }).join('');
+  return { vw, vh };
+}
+
 function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   if (!items.length) { toast('Nessuna immagine da mostrare'); return; }
   const cfg = SPECIALS[kind];
@@ -1255,6 +1317,22 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   let pinned = null;
   let notesOpen = false;
   let changed = false;
+
+  // Stato annotazioni (v4.20)
+  let annotating = false;
+  let hideAnn = false;
+  let annTool = S().atlasTool || 'hl'; // 'hl' | 'pen' | 'text' | 'eraser' | 'hand'
+  let annColor = S().atlasColor || 'yellow';
+  let annSize = S().atlasSize || 'm'; // 's' | 'm' | 'l'
+  let penSeen = false;
+  let drawCur = null;
+  let dragTxt = null;
+  let saveT = 0;
+  let pendingSec = null;
+  const undoMap = new Map(); // imgId -> stack of actions
+
+  const HL_WIDTH = { s: 14, m: 24, l: 38 };
+  const PEN_WIDTH = { s: 2.6, m: 4.6, l: 8 };
 
   const root = $('#modalRoot');
   root.innerHTML = `
@@ -1267,6 +1345,29 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
           <button type="button" class="btn sm ghost av-x" data-av="close" aria-label="Chiudi" title="Chiudi (Esc)">✕</button>
         </div>
       </header>
+      <div class="av-ann-bar" id="avAnnBar" hidden role="toolbar" aria-label="Strumenti di annotazione">
+        <div class="av-ann-tools" role="group" aria-label="Strumento">
+          <button type="button" class="btn sm ghost" data-atool="hl" aria-pressed="false" title="Evidenziatore pastello">🖍<span>Evidenzia</span></button>
+          <button type="button" class="btn sm ghost" data-atool="pen" aria-pressed="false" title="Penna a mano libera">✏️<span>Penna</span></button>
+          <button type="button" class="btn sm ghost" data-atool="text" aria-pressed="false" title="Tocca sulla tavola per scrivere una nota">T<span>Testo</span></button>
+          <button type="button" class="btn sm ghost" data-atool="eraser" aria-pressed="false" title="Cancella un tratto o una nota">⌫<span>Gomma</span></button>
+          <button type="button" class="btn sm ghost" data-atool="hand" aria-pressed="false" title="Sposta e ingrandisci la tavola">✋<span>Scorri</span></button>
+        </div>
+        <div class="av-ann-colors" role="group" aria-label="Colori Stabilo pastello">
+          ${ATLAS_COLORS.map(c => `<button type="button" class="av-cdot" data-acol="${c.key}" style="--c:${c.dot}" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+        </div>
+        <div class="av-ann-sizes" role="group" aria-label="Spessore">
+          <button type="button" class="btn sm ghost" data-asz="s" title="Fine">S</button>
+          <button type="button" class="btn sm ghost" data-asz="m" title="Medio">M</button>
+          <button type="button" class="btn sm ghost" data-asz="l" title="Largo">L</button>
+        </div>
+        <div class="av-ann-acts">
+          <button type="button" class="btn sm ghost" data-aact="undo" title="Annulla (Ctrl+Z o doppio tocco a due dita)">↶</button>
+          <button type="button" class="btn sm ghost" data-aact="toggle-vis" aria-pressed="false" title="Nascondi o mostra i segni">👁</button>
+          <button type="button" class="btn sm ghost danger" data-aact="clear" title="Cancella tutti i segni di questa tavola">🗑</button>
+          <button type="button" class="btn sm primary" data-aact="done">Fine</button>
+        </div>
+      </div>
       <div class="av-body" id="avBody">
         <section class="av-pane av-pin-pane" id="avPinPane" hidden>
           <div class="av-pin-bar">
@@ -1276,10 +1377,22 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
               <button type="button" class="btn sm ghost" data-av="unpin" title="Chiudi confronto">✕</button>
             </span>
           </div>
-          <div class="av-stage" id="avPinStage"><img class="av-img" id="avPinImg" alt="" draggable="false"></div>
+          <div class="av-stage" id="avPinStage">
+            <div class="av-media" id="avPinMedia">
+              <img class="av-img" id="avPinImg" alt="" draggable="false">
+              <svg class="av-ann-svg" id="avPinAnnSvg" aria-hidden="true"></svg>
+              <div class="av-ann-texts" id="avPinAnnTexts"></div>
+            </div>
+          </div>
         </section>
         <section class="av-pane av-main-pane">
-          <div class="av-stage" id="avStage"><img class="av-img" id="avImg" alt="" draggable="false"></div>
+          <div class="av-stage" id="avStage">
+            <div class="av-media" id="avMedia">
+              <img class="av-img" id="avImg" alt="" draggable="false">
+              <svg class="av-ann-svg" id="avAnnSvg" aria-hidden="true"></svg>
+              <div class="av-ann-texts" id="avAnnTexts"></div>
+            </div>
+          </div>
           <button type="button" class="av-nav av-prev" data-av="prev" aria-label="Immagine precedente">‹</button>
           <button type="button" class="av-nav av-next" data-av="next" aria-label="Immagine successiva">›</button>
           <span class="av-zoom-pill" id="avZoomPill" hidden>100%</span>
@@ -1297,6 +1410,7 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
       </div>
       <div class="av-strip" id="avStrip" ${items.length > 1 ? '' : 'hidden'}></div>
       <footer class="av-foot" id="avFoot">
+        <button type="button" class="btn sm" data-av="ann" id="avAnnBtn" aria-pressed="false">🖍 Annota</button>
         <button type="button" class="btn sm" data-av="notes" aria-pressed="false">📝 Note</button>
         <button type="button" class="btn sm" data-av="addphoto">＋ Foto</button>
         <button type="button" class="btn sm" data-av="labels" id="avLblBtn">🏷 Etichette</button>
@@ -1304,27 +1418,466 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
         <button type="button" class="btn sm" data-av="recrop" id="avRecropBtn" hidden>✂ Ritaglia</button>
         <button type="button" class="btn sm ghost" data-av="open">📄 Scheda</button>
       </footer>
+      <div class="av-pop-bg" id="avPopBg" hidden></div>
     </div>`;
 
   const imgEl = $('#avImg', root);
+  const mediaEl = $('#avMedia', root);
+  const svgEl = $('#avAnnSvg', root);
+  const textsEl = $('#avAnnTexts', root);
   const stageEl = $('#avStage', root);
+
   const pinImgEl = $('#avPinImg', root);
+  const pinMediaEl = $('#avPinMedia', root);
+  const pinSvgEl = $('#avPinAnnSvg', root);
+  const pinTextsEl = $('#avPinAnnTexts', root);
   const pinStageEl = $('#avPinStage', root);
+
   const stripEl = $('#avStrip', root);
   const drawerEl = $('#avDrawer', root);
   const zoomPill = $('#avZoomPill', root);
+  const annBar = $('#avAnnBar', root);
+  const annBtn = $('#avAnnBtn', root);
+  const popBg = $('#avPopBg', root);
 
   const cur = () => items[idx];
 
-  const mainZP = attachZoomPan(stageEl, imgEl, {
+  const fitMedia = (stage, media, img, imgId) => {
+    const sr = stage.getBoundingClientRect();
+    if (!sr.width || !sr.height) return;
+    const pw = Math.max(40, sr.width - 20);
+    const ph = Math.max(40, sr.height - 20);
+    const im = imageById(imgId);
+    const nw = img.naturalWidth || im?.w || 1000;
+    const nh = img.naturalHeight || im?.h || 750;
+    const k = Math.min(pw / nw, ph / nh);
+    media.style.width = `${Math.max(1, Math.round(nw * k))}px`;
+    media.style.height = `${Math.max(1, Math.round(nh * k))}px`;
+  };
+
+  let curVb = { vw: 1000, vh: 750 };
+  const paintOverlay = () => {
+    const it = cur();
+    curVb = renderAtlasOverlay(svgEl, textsEl, it.sec, it.imgId, { hidden: hideAnn, editable: annotating, imgEl });
+    const ann = atlasAnnOf(it.sec, it.imgId, false);
+    const count = ann.strokes.length + ann.texts.length;
+    annBtn.textContent = annotating ? '🖍 Annota (attivo)' : (count ? `🖍 Annota (${count})` : '🖍 Annota');
+    if (pinned && pinned.imgId === it.imgId) {
+      renderAtlasOverlay(pinSvgEl, pinTextsEl, pinned.sec, pinned.imgId, { hidden: hideAnn, editable: false, imgEl: pinImgEl });
+    }
+  };
+
+  const scheduleSave = sec => {
+    changed = true;
+    pendingSec = sec;
+    clearTimeout(saveT);
+    saveT = setTimeout(() => {
+      const s = pendingSec;
+      pendingSec = null;
+      saveT = 0;
+      if (s) saveSection(s);
+    }, 650);
+  };
+  const flushSave = () => {
+    clearTimeout(saveT);
+    saveT = 0;
+    if (pendingSec) { const s = pendingSec; pendingSec = null; saveSection(s); }
+  };
+
+  const pushUndo = (imgId, entry) => {
+    if (!undoMap.has(imgId)) undoMap.set(imgId, []);
+    const st = undoMap.get(imgId);
+    st.push(entry);
+    if (st.length > 60) st.shift();
+  };
+
+  const undoAnn = () => {
+    const it = cur();
+    const st = undoMap.get(it.imgId);
+    if (!st || !st.length) { toast('Niente da annullare su questa tavola'); return; }
+    const u = st.pop();
+    const ann = atlasAnnOf(it.sec, it.imgId, true);
+    if (u.kind === 'add-stroke') ann.strokes = ann.strokes.filter(s => s.id !== u.id);
+    else if (u.kind === 'del-stroke') ann.strokes.push(u.item);
+    else if (u.kind === 'add-text') ann.texts = ann.texts.filter(t => t.id !== u.id);
+    else if (u.kind === 'del-text') ann.texts.push(u.item);
+    else if (u.kind === 'edit-text') {
+      const t = ann.texts.find(x => x.id === u.prev.id);
+      if (t) Object.assign(t, u.prev);
+    } else if (u.kind === 'clear') {
+      ann.strokes = u.prev.strokes;
+      ann.texts = u.prev.texts;
+    }
+    paintOverlay();
+    scheduleSave(it.sec);
+  };
+
+  const cancelActiveDraw = () => {
+    if (drawCur && drawCur.path && drawCur.path.isConnected) drawCur.path.remove();
+    drawCur = null;
+    dragTxt = null;
+  };
+
+  const drawingActive = () => annotating && annTool !== 'hand';
+
+  const mainZP = attachZoomPan(stageEl, mediaEl, {
     allowSwipe: true,
     onSwipe: dir => step(dir),
     onZoomChange: sc => {
       zoomPill.hidden = sc <= 1.04;
       zoomPill.textContent = `${Math.round(sc * 100)}%`;
+    },
+    canSingleTouch: () => !drawingActive() || (penSeen && mainZP.getScale() > 1.04),
+    canPointer: e => !drawingActive() || (e.pointerType === 'touch' && penSeen),
+    allowPinchAlways: true,
+    onPinchStart: cancelActiveDraw
+  });
+  const pinZP = attachZoomPan(pinStageEl, pinMediaEl, { allowSwipe: false });
+
+  const ro = new ResizeObserver(() => {
+    const it = cur();
+    if (it) fitMedia(stageEl, mediaEl, imgEl, it.imgId);
+    if (pinned) fitMedia(pinStageEl, pinMediaEl, pinImgEl, pinned.imgId);
+  });
+  ro.observe(stageEl);
+  ro.observe(pinStageEl);
+
+  imgEl.addEventListener('load', () => {
+    const it = cur();
+    if (!it) return;
+    fitMedia(stageEl, mediaEl, imgEl, it.imgId);
+    paintOverlay();
+  });
+  pinImgEl.addEventListener('load', () => {
+    if (!pinned) return;
+    fitMedia(pinStageEl, pinMediaEl, pinImgEl, pinned.imgId);
+    renderAtlasOverlay(pinSvgEl, pinTextsEl, pinned.sec, pinned.imgId, { hidden: hideAnn, editable: false, imgEl: pinImgEl });
+  });
+
+  const paintAnnBar = () => {
+    annBar.hidden = !annotating;
+    annBtn.setAttribute('aria-pressed', String(annotating));
+    annBtn.classList.toggle('on', annotating);
+    stageEl.classList.toggle('av-drawing', drawingActive());
+    stageEl.dataset.atool = annotating ? annTool : '';
+    $$('[data-atool]', annBar).forEach(b => {
+      const on = b.dataset.atool === annTool;
+      b.setAttribute('aria-pressed', String(on));
+      b.classList.toggle('on', on);
+    });
+    $$('[data-acol]', annBar).forEach(b => b.classList.toggle('on', b.dataset.acol === annColor));
+    $$('[data-asz]', annBar).forEach(b => b.classList.toggle('on', b.dataset.asz === annSize));
+    const visBtn = $('[data-aact="toggle-vis"]', annBar);
+    visBtn.setAttribute('aria-pressed', String(hideAnn));
+    visBtn.classList.toggle('on', hideAnn);
+    visBtn.textContent = hideAnn ? '🙈' : '👁';
+    visBtn.title = hideAnn ? 'Mostra i segni' : 'Nascondi i segni';
+    paintOverlay();
+  };
+
+  // Popover inline per aggiungere/modificare note di testo o confermare pulizia (non usa #modalRoot)
+  const openPop = html => {
+    popBg.innerHTML = `<div class="av-pop" role="dialog" aria-modal="true">${html}</div>`;
+    popBg.hidden = false;
+  };
+  const closePop = () => {
+    popBg.hidden = true;
+    popBg.innerHTML = '';
+  };
+  popBg.addEventListener('click', e => { if (e.target === popBg) closePop(); });
+
+  const openTextEditor = ({ x, y, existing = null }) => {
+    const it = cur();
+    const initColor = existing ? existing.c : annColor;
+    const initVal = existing ? existing.t : '';
+    let pickedColor = initColor;
+    openPop(`
+      <h3>${existing ? 'Modifica nota sulla tavola' : 'Nuova nota sulla tavola'}</h3>
+      <textarea class="input av-pop-ta" id="avTxtInput" rows="3" placeholder="Es. Nervo vago (X) – fibre parasimpatiche">${esc(initVal)}</textarea>
+      <div class="av-ann-colors av-pop-cols">
+        ${ATLAS_COLORS.map(c => `<button type="button" class="av-cdot ${c.key === pickedColor ? 'on' : ''}" data-pcol="${c.key}" style="--c:${c.dot}" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+      </div>
+      <div class="av-pop-acts">
+        ${existing ? '<button type="button" class="btn sm ghost danger" data-pop="del">Elimina</button>' : ''}
+        <button type="button" class="btn sm ghost" data-pop="cancel">Annulla</button>
+        <button type="button" class="btn sm primary" data-pop="ok">Salva</button>
+      </div>`);
+    const inp = $('#avTxtInput', popBg);
+    setTimeout(() => { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }, 20);
+    $$('[data-pcol]', popBg).forEach(b => b.addEventListener('click', () => {
+      pickedColor = b.dataset.pcol;
+      $$('[data-pcol]', popBg).forEach(k => k.classList.toggle('on', k.dataset.pcol === pickedColor));
+    }));
+    const saveTxt = () => {
+      const val = inp.value.trim();
+      const ann = atlasAnnOf(it.sec, it.imgId, true);
+      if (!val) {
+        if (existing) {
+          ann.texts = ann.texts.filter(t => t.id !== existing.id);
+          pushUndo(it.imgId, { kind: 'del-text', item: { ...existing } });
+          paintOverlay(); scheduleSave(it.sec);
+        }
+        closePop();
+        return;
+      }
+      if (existing) {
+        pushUndo(it.imgId, { kind: 'edit-text', prev: { ...existing } });
+        existing.t = val;
+        existing.c = pickedColor;
+        existing.sz = annSize;
+      } else {
+        const nt = { id: uid(), x: +x.toFixed(4), y: +y.toFixed(4), t: val, c: pickedColor, sz: annSize };
+        ann.texts.push(nt);
+        pushUndo(it.imgId, { kind: 'add-text', id: nt.id });
+      }
+      if (hideAnn) { hideAnn = false; paintAnnBar(); }
+      else paintOverlay();
+      scheduleSave(it.sec);
+      closePop();
+    };
+    $('[data-pop="cancel"]', popBg).onclick = closePop;
+    $('[data-pop="ok"]', popBg).onclick = saveTxt;
+    const delBtn = $('[data-pop="del"]', popBg);
+    if (delBtn && existing) delBtn.onclick = () => {
+      const ann = atlasAnnOf(it.sec, it.imgId, true);
+      ann.texts = ann.texts.filter(t => t.id !== existing.id);
+      pushUndo(it.imgId, { kind: 'del-text', item: { ...existing } });
+      paintOverlay();
+      scheduleSave(it.sec);
+      closePop();
+    };
+    inp.addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); saveTxt(); }
+    });
+  };
+
+  // Coordinate normalizzate 0..1 relative alla tavola (funziona a qualsiasi zoom/pan!)
+  const normPoint = e => {
+    const r = mediaEl.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    return [Math.max(0, Math.min(1, x)), Math.max(0, Math.min(1, y))];
+  };
+
+  const eraseAt = e => {
+    const it = cur();
+    const ann = atlasAnnOf(it.sec, it.imgId, false);
+    if (!ann.strokes.length && !ann.texts.length) return;
+    const hitTxt = e.target.closest?.('.av-txt');
+    if (hitTxt) {
+      const t = ann.texts.find(x => x.id === hitTxt.dataset.tid);
+      if (t) {
+        ann.texts = ann.texts.filter(x => x !== t);
+        pushUndo(it.imgId, { kind: 'del-text', item: { ...t } });
+        paintOverlay();
+        scheduleSave(it.sec);
+        return;
+      }
+    }
+    // Hit test geometrico sui tratti (molto più affidabile di elementFromPoint su tratti sottili)
+    const pt = normPoint(e);
+    if (!pt) return;
+    const px = pt[0] * curVb.vw, py = pt[1] * curVb.vh;
+    for (let i = ann.strokes.length - 1; i >= 0; i--) {
+      const s = ann.strokes[i];
+      const rad = Math.max(18, (s.w || 6) * 0.75);
+      const hit = (s.p || []).some(([x, y]) => Math.hypot(x * curVb.vw - px, y * curVb.vh - py) <= rad);
+      if (hit) {
+        ann.strokes.splice(i, 1);
+        pushUndo(it.imgId, { kind: 'del-stroke', item: s });
+        paintOverlay();
+        scheduleSave(it.sec);
+        return;
+      }
+    }
+  };
+
+  // Gestione scrittura, evidenziazione, gomma e trascinamento note sulla tavola
+  const onAnnDown = e => {
+    if (!drawingActive()) return;
+    if (e.pointerType === 'pen') penSeen = true;
+    if (e.pointerType === 'touch' && penSeen) return; // scarto palmo: con S Pen il dito sposta la tavola
+    if (e.button > 0 && !penErases(e)) return;
+
+    const it = cur();
+    const isEraser = annTool === 'eraser' || penErases(e);
+    const txtEl = e.target.closest?.('.av-txt');
+
+    if (isEraser) {
+      e.preventDefault();
+      e.stopPropagation();
+      try { stageEl.setPointerCapture(e.pointerId); } catch { /* ignora */ }
+      drawCur = { id: e.pointerId, kind: 'eraser' };
+      eraseAt(e);
+      return;
+    }
+
+    // Trascinamento o modifica di una nota di testo esistente
+    if (txtEl && annTool === 'text') {
+      const ann = atlasAnnOf(it.sec, it.imgId, false);
+      const t = ann.texts.find(x => x.id === txtEl.dataset.tid);
+      if (!t) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try { stageEl.setPointerCapture(e.pointerId); } catch { /* ignora */ }
+      dragTxt = { id: e.pointerId, item: t, el: txtEl, x0: e.clientX, y0: e.clientY, prev: { ...t }, moved: false };
+      return;
+    }
+
+    if (annTool === 'text') {
+      const pt = normPoint(e);
+      if (!pt) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openTextEditor({ x: pt[0], y: pt[1] });
+      return;
+    }
+
+    // Penna o Evidenziatore Stabilo Pastello
+    const pt = normPoint(e);
+    if (!pt) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (hideAnn) { hideAnn = false; paintAnnBar(); }
+    try { stageEl.setPointerCapture(e.pointerId); } catch { /* ignora */ }
+
+    const col = atlasColorOf(annColor);
+    const isHl = annTool === 'hl';
+    const strokeCol = isHl ? col.hl : col.pen;
+    const strokeW = isHl ? HL_WIDTH[annSize] : PEN_WIDTH[annSize];
+
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('class', isHl ? 'av-hl' : 'av-pen');
+    path.setAttribute('stroke', strokeCol);
+    path.setAttribute('stroke-width', String(strokeW));
+    const layer = svgEl.querySelector(isHl ? '.av-hl-layer' : '.av-pen-layer') || svgEl;
+    layer.appendChild(path);
+
+    drawCur = { id: e.pointerId, kind: annTool, color: strokeCol, w: strokeW, path, pts: [pt] };
+    path.setAttribute('d', inkPath([[+(pt[0] * curVb.vw).toFixed(2), +(pt[1] * curVb.vh).toFixed(2)]]));
+  };
+
+  const onAnnMove = e => {
+    if (dragTxt && e.pointerId === dragTxt.id) {
+      const dx = e.clientX - dragTxt.x0, dy = e.clientY - dragTxt.y0;
+      if (!dragTxt.moved && Math.hypot(dx, dy) > 6) dragTxt.moved = true;
+      if (dragTxt.moved) {
+        const pt = normPoint(e);
+        if (pt) {
+          dragTxt.item.x = +pt[0].toFixed(4);
+          dragTxt.item.y = +pt[1].toFixed(4);
+          dragTxt.el.style.left = `${(dragTxt.item.x * 100).toFixed(3)}%`;
+          dragTxt.el.style.top = `${(dragTxt.item.y * 100).toFixed(3)}%`;
+        }
+      }
+      return;
+    }
+    if (!drawCur || e.pointerId !== drawCur.id) return;
+    if (drawCur.kind === 'eraser') { eraseAt(e); return; }
+    const evs = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
+    for (const ev of evs) {
+      const pt = normPoint(ev);
+      if (!pt) continue;
+      const last = drawCur.pts[drawCur.pts.length - 1];
+      if (Math.hypot((pt[0] - last[0]) * curVb.vw, (pt[1] - last[1]) * curVb.vh) >= 1.8) {
+        drawCur.pts.push(pt);
+      }
+    }
+    drawCur.path.setAttribute('d', inkPath(drawCur.pts.map(([x, y]) => [+(x * curVb.vw).toFixed(2), +(y * curVb.vh).toFixed(2)])));
+  };
+
+  const onAnnUp = e => {
+    if (dragTxt && e.pointerId === dragTxt.id) {
+      const d = dragTxt;
+      dragTxt = null;
+      const it = cur();
+      if (d.moved) {
+        pushUndo(it.imgId, { kind: 'edit-text', prev: d.prev });
+        scheduleSave(it.sec);
+      } else {
+        openTextEditor({ x: d.item.x, y: d.item.y, existing: d.item });
+      }
+      return;
+    }
+    if (!drawCur || e.pointerId !== drawCur.id) return;
+    const c = drawCur;
+    drawCur = null;
+    if (c.kind === 'eraser') return;
+    const it = cur();
+    const ann = atlasAnnOf(it.sec, it.imgId, true);
+    const stroke = {
+      id: uid(),
+      k: c.kind === 'hl' ? 'hl' : 'pen',
+      c: c.color,
+      w: c.w,
+      p: c.pts.map(([x, y]) => [+x.toFixed(4), +y.toFixed(4)])
+    };
+    ann.strokes.push(stroke);
+    pushUndo(it.imgId, { kind: 'add-stroke', id: stroke.id });
+    paintOverlay();
+    scheduleSave(it.sec);
+  };
+
+  stageEl.addEventListener('pointerdown', onAnnDown);
+  stageEl.addEventListener('pointermove', onAnnMove);
+  stageEl.addEventListener('pointerup', onAnnUp);
+  stageEl.addEventListener('pointercancel', cancelActiveDraw);
+  stageEl.addEventListener('contextmenu', e => { if (annotating) e.preventDefault(); });
+  twoFingerTap(stageEl, () => undoAnn(), () => annotating && penSeen);
+
+  // Eventi barra strumenti di annotazione
+  annBar.addEventListener('click', e => {
+    const t = e.target.closest('[data-atool]');
+    if (t) {
+      annTool = t.dataset.atool;
+      S().atlasTool = annTool; Settings.save();
+      paintAnnBar();
+      return;
+    }
+    const c = e.target.closest('[data-acol]');
+    if (c) {
+      annColor = c.dataset.acol;
+      if (annTool === 'eraser' || annTool === 'hand') annTool = 'hl';
+      S().atlasColor = annColor; S().atlasTool = annTool; Settings.save();
+      paintAnnBar();
+      return;
+    }
+    const sz = e.target.closest('[data-asz]');
+    if (sz) {
+      annSize = sz.dataset.asz;
+      S().atlasSize = annSize; Settings.save();
+      paintAnnBar();
+      return;
+    }
+    const a = e.target.closest('[data-aact]')?.dataset.aact;
+    if (!a) return;
+    if (a === 'undo') undoAnn();
+    else if (a === 'toggle-vis') { hideAnn = !hideAnn; paintAnnBar(); }
+    else if (a === 'done') { annotating = false; paintAnnBar(); }
+    else if (a === 'clear') {
+      const it = cur();
+      const ann = atlasAnnOf(it.sec, it.imgId, false);
+      if (!ann.strokes.length && !ann.texts.length) { toast('Nessun segno da cancellare'); return; }
+      openPop(`
+        <h3>Cancellare i segni su questa tavola?</h3>
+        <p class="hint">Verranno rimossi ${ann.strokes.length} tratti e ${ann.texts.length} note (puoi comunque fare Annulla).</p>
+        <div class="av-pop-acts">
+          <button type="button" class="btn sm ghost" data-pop="no">Annulla</button>
+          <button type="button" class="btn sm danger-solid" data-pop="yes">Cancella tutto</button>
+        </div>`);
+      $('[data-pop="no"]', popBg).onclick = closePop;
+      $('[data-pop="yes"]', popBg).onclick = () => {
+        const curAnn = atlasAnnOf(it.sec, it.imgId, true);
+        pushUndo(it.imgId, { kind: 'clear', prev: { strokes: [...curAnn.strokes], texts: curAnn.texts.map(x => ({ ...x })) } });
+        curAnn.strokes = [];
+        curAnn.texts = [];
+        paintOverlay();
+        scheduleSave(it.sec);
+        closePop();
+      };
     }
   });
-  const pinZP = attachZoomPan(pinStageEl, pinImgEl, { allowSwipe: false });
 
   const renderStrip = () => {
     stripEl.hidden = items.length <= 1;
@@ -1343,10 +1896,16 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
     const pinBtn = $('[data-av="pin"]', root);
     pinBtn.setAttribute('aria-pressed', String(!!pinned));
     pinBtn.classList.toggle('on', !!pinned);
+    requestAnimationFrame(() => {
+      const it = cur();
+      if (it) fitMedia(stageEl, mediaEl, imgEl, it.imgId);
+      if (pinned) fitMedia(pinStageEl, pinMediaEl, pinImgEl, pinned.imgId);
+    });
     if (!pinned) return;
     pinImgEl.src = imageUrl(pinned.imgId) || MISSING_IMG;
     pinZP.reset(false);
     $('#avPinTitle', root).textContent = hideTitles ? 'Tavola bloccata' : `${pinned.sec.title}${pinned.photoTotal > 1 ? ` (${pinned.photoIdx + 1}/${pinned.photoTotal})` : ''}`;
+    renderAtlasOverlay(pinSvgEl, pinTextsEl, pinned.sec, pinned.imgId, { hidden: hideAnn, editable: false, imgEl: pinImgEl });
   };
 
   const renderDrawer = () => {
@@ -1369,11 +1928,15 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   };
 
   const renderSlide = () => {
+    flushSave();
+    cancelActiveDraw();
     const it = cur();
     const s = it.sec;
     mainZP.reset(false);
     imgEl.src = imageUrl(it.imgId) || MISSING_IMG;
     imgEl.alt = hideTitles && !revealed ? 'Tavola' : (it.cap || s.title);
+    fitMedia(stageEl, mediaEl, imgEl, it.imgId);
+    paintOverlay();
 
     const counter = `<span class="av-cnt">${idx + 1} / ${items.length}${it.photoTotal > 1 ? ` · foto ${it.photoIdx + 1}/${it.photoTotal}` : ''}</span>`;
     const sub = [cfg.types[s.sp?.type], s.sp?.group, it.cap && it.cap !== s.title ? it.cap : ''].filter(Boolean).join(' · ');
@@ -1409,6 +1972,8 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   };
 
   const close = (notify = true) => {
+    flushSave();
+    ro.disconnect();
     mainZP.destroy();
     pinZP.destroy();
     document.removeEventListener('keydown', onKey, true);
@@ -1417,8 +1982,17 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
   };
 
   const onKey = e => {
-    if (e.key === 'Escape') { e.stopPropagation(); close(); }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+    const typing = e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      if (!popBg.hidden) { closePop(); return; }
+      if (annotating) { annotating = false; paintAnnBar(); return; }
+      close();
+      return;
+    }
+    if (typing) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && annotating) { e.preventDefault(); undoAnn(); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
     else if (e.key === '+' || e.key === '=') { e.preventDefault(); mainZP.zoomStep(1.3); }
     else if (e.key === '-') { e.preventDefault(); mainZP.zoomStep(1 / 1.3); }
@@ -1469,6 +2043,7 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
       renderPin();
       renderSlide();
     }
+    else if (act === 'ann') { annotating = !annotating; paintAnnBar(); }
     else if (act === 'notes') { notesOpen = !notesOpen; renderDrawer(); }
     else if (act === 'open') { close(); go(`#/sec/${it.sec.id}/read`); }
     else if (act === 'edit') { close(); go(`#/sec/${it.sec.id}/edit`); }
@@ -1484,7 +2059,6 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
       const added = await addPhotosToAtlasSec(it.sec);
       if (added.length) {
         changed = true;
-        // aggiorna i conteggi foto di questa scheda dentro items e inserisci le nuove subito dopo l'ultima di questa scheda
         const secImgs = atlasImagesOf(it.sec);
         let lastPos = idx;
         items.forEach((x, i) => {
@@ -1503,6 +2077,7 @@ function openAtlasViewer({ kind, items, startIdx = 0, onChanged = null }) {
     }
   });
 
+  paintAnnBar();
   renderStrip();
   renderSlide();
 }

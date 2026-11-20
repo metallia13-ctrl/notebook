@@ -1460,6 +1460,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.20", title: "Image occlusion: Scorri e zoom funzionanti + evidenziazione e note pastello nell’Atlante", html: `      <ul>
+        <li><strong>Image occlusion ed Etichette: Scorri e zoom sistemati</strong>: in modalità <em>Scorri</em> trascini la tavola con dito, S Pen o mouse (doppio tocco per ingrandire), con pulsanti <code>− / 100% / ＋</code> e pinch-to-zoom a due dita attivo anche mentre sei in <em>Disegna</em>.</li>
+        <li><strong>Evidenzia e scrivi nell’Atlante</strong>: nel visore delle tavole tocca <strong>🖍 Annota</strong> per usare l’evidenziatore (con fusione trasparente che lascia nitide le scritte), la penna a mano libera con scarto del palmo per S Pen e le note di <strong>Testo</strong> posizionabili sulla tavola, nella palette <strong>Stabilo Pastello</strong> (giallo crema, pesca, rosa, lilla, azzurro nuvola, verde menta e grafite).</li>
+        <li>Le annotazioni si salvano nella scheda (e si sincronizzano) e seguono fedelmente zoom, spostamento e vista <em>Confronta</em>.</li>
+      </ul>` },
   { v: "4.19", title: "editor delle sezioni: rientri e sottolivelli negli elenchi puntati sistemati", html: `      <ul>
         <li><strong>Rientro affidabile nell’anteprima modificabile</strong>: <code>Tab</code>, <code>Maiusc+Tab</code> e i pulsanti <em>Rientra → / ← Riduci rientro</em> spostano direttamente le voci dell’elenco mantenendo cursore, sottovoci e sincronizzazione immediata con il codice Markdown.</li>
         <li><strong>Invio su una sottovoce vuota</strong>: torna automaticamente indietro di un livello anche nell’anteprima, oltre che nel codice.</li>

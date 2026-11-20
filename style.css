@@ -1098,7 +1098,14 @@ mark.cz {
 .io-head .hint { margin: 4px 0 8px; }
 .seg.sm { margin: 0; }
 .seg.sm button { min-width: 0; min-height: 32px; padding: 0 14px; font-size: 0.86rem; }
-.io-body { flex: 1; overflow: auto; padding: 14px 16px; -webkit-overflow-scrolling: touch; }
+.io-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.io-zoom { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); }
+.io-zoom .btn { min-height: 28px; padding: 0 9px; font-size: 0.84rem; border-radius: 999px; }
+.io-zoom .io-zval { min-width: 48px; font-variant-numeric: tabular-nums; font-weight: 650; }
+.io-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px; -webkit-overflow-scrolling: touch; }
+.io-body.io-zoomed { padding-left: 16px !important; padding-right: 16px !important; }
+.io-body.panning { cursor: grab; touch-action: none; }
+.io-body.panning:active { cursor: grabbing; }
 .io-sel { padding: 10px 16px 0; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
 .io-sel .field { flex: 1 1 220px; margin: 0; }
 .io-foot {
@@ -1123,8 +1130,10 @@ mark.cz {
   overflow: hidden;
 }
 .io img.nb-img { display: block; width: 100%; height: auto; margin: 0; border: 0; border-radius: 0; cursor: default; pointer-events: none; }
-.io-stage { touch-action: pan-x pan-y pinch-zoom; }
+.io-stage { touch-action: none; }
 .io-stage.drawing { touch-action: none; cursor: crosshair; }
+.io-stage.panning { touch-action: none; cursor: grab; }
+.io-stage.panning:active { cursor: grabbing; }
 .io-stage.crop { background: #fff; position: relative; max-width: 880px; margin: 0 auto; border-radius: 8px; overflow: hidden; }
 .io-stage.crop canvas { display: block; width: 100%; height: auto; }
 
@@ -5153,11 +5162,71 @@ td.tbl-cell-hide.shown * { visibility: visible; }
   overflow: hidden; position: relative; touch-action: none; cursor: grab; padding: 10px;
 }
 .av-stage.zoomed { cursor: move; }
-.av-img {
-  max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; border-radius: 6px;
-  transform-origin: center center; will-change: transform; pointer-events: none;
+.av-media {
+  position: relative; flex: 0 0 auto; background: #fff; border-radius: 6px; overflow: hidden;
+  transform-origin: center center; will-change: transform;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
 }
+.av-img {
+  display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none;
+}
+.av-ann-svg {
+  position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+}
+.av-ann-svg .av-hl-layer { mix-blend-mode: multiply; opacity: 0.76; }
+.av-ann-svg path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.av-ann-svg .av-pen { opacity: 0.96; }
+.av-ann-texts { position: absolute; inset: 0; pointer-events: none; }
+.av-ann-off { display: none !important; }
+.av-txt {
+  position: absolute; transform: translate(-50%, -50%); max-width: 62%;
+  padding: 3px 8px; border-radius: 6px; border: 1.5px solid var(--av-bd, #d8b63a);
+  background: var(--av-bg, rgba(252, 232, 131, 0.93)); color: #18202c;
+  font-weight: 650; line-height: 1.25; white-space: pre-wrap; word-break: break-word;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22); pointer-events: none;
+}
+.av-ann-texts.av-ann-edit .av-txt { pointer-events: auto; cursor: move; }
+.av-stage.av-drawing { cursor: crosshair; }
+.av-stage.av-drawing[data-atool="text"] { cursor: text; }
+.av-stage.av-drawing[data-atool="eraser"] { cursor: cell; }
+
+/* Barra strumenti annotazione Stabilo Pastello (v4.20) */
+.av-ann-bar {
+  display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap;
+  padding: 6px 12px; background: rgba(15, 25, 40, 0.96);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12); flex: 0 0 auto;
+}
+.av-ann-tools, .av-ann-colors, .av-ann-sizes, .av-ann-acts {
+  display: flex; align-items: center; gap: 4px;
+}
+.av-ann-bar .btn { color: #e2ecf8; border-color: rgba(255, 255, 255, 0.16); min-height: 30px; padding: 0 9px; }
+.av-ann-bar .btn.on { background: var(--accent); color: #09131c; border-color: var(--accent); }
+.av-ann-bar .btn span { margin-left: 4px; }
+@media (max-width: 760px) { .av-ann-bar .btn span { display: none; } }
+.av-cdot {
+  width: 24px; height: 24px; border-radius: 999px; border: 2px solid rgba(255, 255, 255, 0.35);
+  background: var(--c); cursor: pointer; padding: 0; transition: transform 0.12s, box-shadow 0.12s;
+}
+.av-cdot:hover { transform: scale(1.1); }
+.av-cdot.on { border-color: #fff; box-shadow: 0 0 0 2px var(--accent); transform: scale(1.12); }
+.av-ann-acts { margin-left: auto; }
+
+/* Popover inline per testo / conferma pulizia nell’Atlante */
+.av-pop-bg {
+  position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(4, 9, 18, 0.62); backdrop-filter: blur(3px);
+}
+.av-pop-bg[hidden] { display: none; }
+.av-pop {
+  width: min(100%, 380px); padding: 16px; border-radius: var(--r-lg);
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5); user-select: text; -webkit-user-select: text;
+}
+.av-pop h3 { margin: 0 0 10px; font-size: 1rem; }
+.av-pop-ta { width: 100%; min-height: 76px; resize: vertical; margin-bottom: 10px; }
+.av-pop-cols { margin-bottom: 12px; gap: 6px; }
+.av-pop-acts { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.av-pop-acts [data-pop="del"] { margin-right: auto; }
 .av-nav {
   position: absolute; top: 50%; transform: translateY(-50%); z-index: 3;
   width: 42px; height: 64px; border: none; border-radius: 10px;

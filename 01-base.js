@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.19';
+const APP_VERSION = '4.20';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -2547,17 +2547,19 @@ function pickImage(candidates, notebookId) {
   });
 }
 
-/* Disegno di riquadri con dito o mouse, in coordinate relative (0-1) */
+/* Disegno di riquadri con dito, pennino o mouse, in coordinate relative (0-1) */
 function rectDrawing(stage, { canDraw, onDraft, onDone }) {
   let start = null;
   let pid = null;
+  const cancel = () => { if (!start) return; start = null; pid = null; onDraft(null); };
   const rel = e => {
     const r = stage.getBoundingClientRect();
     return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
   };
   const box = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+  stage.addEventListener('io-cancel-draw', cancel);
   stage.addEventListener('pointerdown', e => {
-    if (!canDraw() || e.target.closest('.io-mask')) return;
+    if (!canDraw() || !e.isPrimary || (e.button && e.button !== 0) || e.target.closest('.io-mask')) return;
     e.preventDefault();
     start = rel(e);
     pid = e.pointerId;
@@ -2568,10 +2570,211 @@ function rectDrawing(stage, { canDraw, onDraft, onDone }) {
     if (!start || e.pointerId !== pid) return;
     const b = box(start, rel(e));
     start = null;
+    pid = null;
     onDraft(null);
     if (b.w > 0.015 && b.h > 0.01) onDone(b);
   });
-  stage.addEventListener('pointercancel', () => { start = null; onDraft(null); });
+  stage.addEventListener('pointercancel', cancel);
+}
+
+/* v4.20: Zoom e scorrimento affidabili per Image Occlusion e Ritaglia etichette
+   (funziona con dito, S Pen e mouse, con pinch a due dita anche in modalità Disegna) */
+function attachIoViewport(bodyEl, stageEl, { canPan, zOut, zIn, zReset }) {
+  let zoom = 1;
+  let baseW = 0;
+  let ptr = null;
+  let touch = null;
+  let draggedAt = 0;
+  let lastTap = { t: 0, x: 0, y: 0 };
+
+  const measureBase = () => {
+    const cs = getComputedStyle(bodyEl);
+    const pad = (parseFloat(cs.paddingLeft) || 16) + (parseFloat(cs.paddingRight) || 16);
+    baseW = Math.min(880, Math.max(220, bodyEl.clientWidth - pad));
+  };
+  const paintZoom = () => {
+    if (zReset) zReset.textContent = `${Math.round(zoom * 100)}%`;
+    if (zOut) zOut.disabled = zoom <= 1.01;
+    if (zIn) zIn.disabled = zoom >= 3.99;
+  };
+  const setZoom = (next, cx = null, cy = null) => {
+    next = Math.max(1, Math.min(4, next));
+    if (next < 1.03) next = 1;
+    if (!baseW) measureBase();
+    const br = bodyEl.getBoundingClientRect();
+    const px = cx === null ? br.left + br.width / 2 : cx;
+    const py = cy === null ? br.top + br.height / 2 : cy;
+    const sr1 = stageEl.getBoundingClientRect();
+    const fx = sr1.width ? (px - sr1.left) / sr1.width : 0.5;
+    const fy = sr1.height ? (py - sr1.top) / sr1.height : 0.5;
+
+    zoom = next;
+    bodyEl.classList.toggle('io-zoomed', zoom > 1.01);
+    if (zoom <= 1.01) {
+      stageEl.style.width = '';
+      stageEl.style.maxWidth = '';
+      bodyEl.scrollLeft = 0;
+      bodyEl.scrollTop = 0;
+    } else {
+      stageEl.style.maxWidth = 'none';
+      stageEl.style.width = `${Math.round(baseW * zoom)}px`;
+      const sr2 = stageEl.getBoundingClientRect();
+      bodyEl.scrollLeft += (sr2.left + fx * sr2.width) - px;
+      bodyEl.scrollTop += (sr2.top + fy * sr2.height) - py;
+    }
+    paintZoom();
+  };
+
+  const syncMode = () => {
+    const pan = canPan();
+    stageEl.classList.toggle('panning', pan);
+    bodyEl.classList.toggle('panning', pan);
+  };
+
+  if (zOut) zOut.addEventListener('click', () => setZoom(zoom / 1.3));
+  if (zIn) zIn.addEventListener('click', () => setZoom(zoom * 1.3));
+  if (zReset) zReset.addEventListener('click', () => setZoom(1));
+
+  // Mouse e pennino (S Pen) in modalità Scorri
+  const onPtrDown = e => {
+    if (e.pointerType === 'touch' || !canPan() || e.button !== 0) return;
+    ptr = { id: e.pointerId, x0: e.clientX, y0: e.clientY, sl0: bodyEl.scrollLeft, st0: bodyEl.scrollTop, moved: false };
+  };
+  const onPtrMove = e => {
+    if (!ptr || e.pointerId !== ptr.id) return;
+    const dx = e.clientX - ptr.x0;
+    const dy = e.clientY - ptr.y0;
+    if (!ptr.moved && Math.hypot(dx, dy) > 5) {
+      ptr.moved = true;
+      try { bodyEl.setPointerCapture(ptr.id); } catch { /* ignora */ }
+    }
+    if (ptr.moved) {
+      e.preventDefault();
+      bodyEl.scrollLeft = ptr.sl0 - dx;
+      bodyEl.scrollTop = ptr.st0 - dy;
+    }
+  };
+  const onPtrUp = e => {
+    if (!ptr || e.pointerId !== ptr.id) return;
+    if (ptr.moved) draggedAt = Date.now();
+    ptr = null;
+  };
+
+  // Touch: 2 dita = pinch-zoom + pan sempre (anche in Disegna); 1 dito = pan in Scorri + doppio tocco zoom
+  const dist2 = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const mid2 = (a, b) => [(a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2];
+
+  const onTouchStart = e => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      stageEl.dispatchEvent(new CustomEvent('io-cancel-draw'));
+      const [a, b] = e.touches;
+      const [mx, my] = mid2(a, b);
+      if (!baseW) measureBase();
+      touch = { kind: 'pinch', d0: dist2(a, b) || 1, z0: zoom, mx, my };
+    } else if (e.touches.length === 1 && canPan()) {
+      const t = e.touches[0];
+      touch = { kind: 'pan', x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY, sl0: bodyEl.scrollLeft, st0: bodyEl.scrollTop, moved: false, t0: Date.now() };
+    }
+  };
+  const onTouchMove = e => {
+    if (!touch) return;
+    if (touch.kind === 'pinch' && e.touches.length === 2) {
+      e.preventDefault();
+      const [a, b] = e.touches;
+      const d = dist2(a, b);
+      const [mx, my] = mid2(a, b);
+      const next = touch.z0 * (d / touch.d0);
+      setZoom(next, mx, my);
+      bodyEl.scrollLeft -= (mx - touch.mx);
+      bodyEl.scrollTop -= (my - touch.my);
+      touch.mx = mx;
+      touch.my = my;
+      draggedAt = Date.now();
+      return;
+    }
+    if (touch.kind === 'pan' && e.touches.length === 1) {
+      const t = e.touches[0];
+      const dx = t.clientX - touch.x0;
+      const dy = t.clientY - touch.y0;
+      touch.x = t.clientX;
+      touch.y = t.clientY;
+      if (!touch.moved && Math.hypot(dx, dy) > 6) touch.moved = true;
+      if (touch.moved) {
+        e.preventDefault();
+        bodyEl.scrollLeft = touch.sl0 - dx;
+        bodyEl.scrollTop = touch.st0 - dy;
+      }
+    }
+  };
+  const onTouchEnd = e => {
+    if (!touch) return;
+    if (touch.kind === 'pinch') {
+      if (e.touches.length < 2) touch = null;
+      return;
+    }
+    if (touch.kind === 'pan' && e.touches.length === 0) {
+      const st = touch;
+      touch = null;
+      if (st.moved) {
+        draggedAt = Date.now();
+      } else if (Date.now() - st.t0 < 280 && !e.target.closest('.io-mask')) {
+        const now = Date.now();
+        if (now - lastTap.t < 320 && Math.hypot(st.x - lastTap.x, st.y - lastTap.y) < 40) {
+          lastTap.t = 0;
+          setZoom(zoom > 1.25 ? 1 : 2.2, st.x, st.y);
+        } else {
+          lastTap = { t: now, x: st.x, y: st.y };
+        }
+      }
+    }
+  };
+
+  const onWheel = e => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    setZoom(zoom * Math.exp(-e.deltaY * 0.0025), e.clientX, e.clientY);
+  };
+  const onDblClick = e => {
+    if (!canPan() || e.target.closest('.io-mask')) return;
+    setZoom(zoom > 1.25 ? 1 : 2.2, e.clientX, e.clientY);
+  };
+  const onResize = () => {
+    if (zoom <= 1.01) measureBase();
+  };
+
+  bodyEl.addEventListener('pointerdown', onPtrDown);
+  bodyEl.addEventListener('pointermove', onPtrMove);
+  bodyEl.addEventListener('pointerup', onPtrUp);
+  bodyEl.addEventListener('pointercancel', onPtrUp);
+  bodyEl.addEventListener('touchstart', onTouchStart, { passive: false });
+  bodyEl.addEventListener('touchmove', onTouchMove, { passive: false });
+  bodyEl.addEventListener('touchend', onTouchEnd, { passive: true });
+  bodyEl.addEventListener('touchcancel', onTouchEnd, { passive: true });
+  bodyEl.addEventListener('wheel', onWheel, { passive: false });
+  stageEl.addEventListener('dblclick', onDblClick);
+  window.addEventListener('resize', onResize);
+
+  requestAnimationFrame(() => { measureBase(); paintZoom(); syncMode(); });
+
+  return {
+    syncMode,
+    setZoom,
+    wasDragged: () => Date.now() - draggedAt < 260,
+    destroy() {
+      bodyEl.removeEventListener('pointerdown', onPtrDown);
+      bodyEl.removeEventListener('pointermove', onPtrMove);
+      bodyEl.removeEventListener('pointerup', onPtrUp);
+      bodyEl.removeEventListener('pointercancel', onPtrUp);
+      bodyEl.removeEventListener('touchstart', onTouchStart);
+      bodyEl.removeEventListener('touchmove', onTouchMove);
+      bodyEl.removeEventListener('touchend', onTouchEnd);
+      bodyEl.removeEventListener('touchcancel', onTouchEnd);
+      bodyEl.removeEventListener('wheel', onWheel);
+      stageEl.removeEventListener('dblclick', onDblClick);
+      window.removeEventListener('resize', onResize);
+    }
+  };
 }
 const posStyle = m => `left:${(m.x * 100).toFixed(3)}%;top:${(m.y * 100).toFixed(3)}%;width:${(m.w * 100).toFixed(3)}%;height:${(m.h * 100).toFixed(3)}%`;
 
@@ -2609,13 +2812,20 @@ function openOcclusionEditor({ imageId, notebookId, sectionId = null, group = nu
         <div class="io-editor" role="dialog" aria-modal="true" aria-labelledby="ioTitle">
           <header class="io-head">
             <h2 id="ioTitle">Image occlusion</h2>
-            <p class="hint">Trascina sull’immagine per coprire ogni etichetta da ricordare: ogni riquadro diventa una flashcard. Tocca un riquadro per selezionarlo.</p>
-            <div class="seg sm" role="tablist" aria-label="Modalità">
-              <button role="tab" data-mode="draw" aria-selected="true">Disegna</button>
-              <button role="tab" data-mode="scroll" aria-selected="false">Scorri</button>
+            <p class="hint">Trascina sull’immagine per coprire ogni etichetta (pizzica con due dita o usa +/− per ingrandire). In <strong>Scorri</strong> sposti la tavola con dito, pennino o mouse; doppio tocco ingrandisce.</p>
+            <div class="io-controls">
+              <div class="seg sm" role="tablist" aria-label="Modalità">
+                <button role="tab" data-mode="draw" aria-selected="true">Disegna</button>
+                <button role="tab" data-mode="scroll" aria-selected="false">Scorri</button>
+              </div>
+              <div class="io-zoom" role="group" aria-label="Zoom">
+                <button type="button" class="btn sm ghost" data-ioz="out" aria-label="Riduci zoom" title="Riduci zoom">−</button>
+                <button type="button" class="btn sm ghost io-zval" data-ioz="reset" title="Ripristina 100%">100%</button>
+                <button type="button" class="btn sm ghost" data-ioz="in" aria-label="Ingrandisci" title="Ingrandisci">＋</button>
+              </div>
             </div>
           </header>
-          <div class="io-body">
+          <div class="io-body" id="ioBody">
             <div class="io io-stage drawing" id="ioStage" style="aspect-ratio:${im.w}/${im.h}">
               <img class="nb-img" data-img="${im.id}" alt="" draggable="false">
               <div id="ioMasks"></div>
@@ -2634,10 +2844,17 @@ function openOcclusionEditor({ imageId, notebookId, sectionId = null, group = nu
           </footer>
         </div>
       </div>`;
+    const bodyEl = $('#ioBody', root);
     const stage = $('#ioStage', root);
     const draft = $('#ioDraft', root);
     const selBox = $('#ioSel', root);
     const label = $('#ioLabel', root);
+    const vp = attachIoViewport(bodyEl, stage, {
+      canPan: () => mode === 'scroll',
+      zOut: $('[data-ioz="out"]', root),
+      zIn: $('[data-ioz="in"]', root),
+      zReset: $('[data-ioz="reset"]', root)
+    });
     const draw = () => {
       $('#ioMasks', root).innerHTML = masks.map((m, i) =>
         `<div class="io-mask edit ${sel === m.id ? 'sel' : ''}" data-m="${m.id}" style="${posStyle(m)}"><span>${i + 1}</span></div>`).join('');
@@ -2647,9 +2864,17 @@ function openOcclusionEditor({ imageId, notebookId, sectionId = null, group = nu
       if (m && document.activeElement !== label) label.value = m.label || '';
     };
     stage.addEventListener('pointerdown', e => {
+      if (mode !== 'draw') return;
       const el = e.target.closest('.io-mask');
       if (!el) { if (sel) { sel = null; draw(); } return; }
       e.preventDefault();
+      sel = el.dataset.m;
+      draw();
+    });
+    stage.addEventListener('click', e => {
+      if (mode !== 'scroll' || vp.wasDragged()) return;
+      const el = e.target.closest('.io-mask');
+      if (!el) { if (sel) { sel = null; draw(); } return; }
       sel = el.dataset.m;
       draw();
     });
@@ -2663,8 +2888,9 @@ function openOcclusionEditor({ imageId, notebookId, sectionId = null, group = nu
       mode = b.dataset.mode;
       $$('[data-mode]', root).forEach(x => x.setAttribute('aria-selected', x.dataset.mode === mode));
       stage.classList.toggle('drawing', mode === 'draw');
+      vp.syncMode();
     }));
-    const close = v => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+    const close = v => { vp.destroy(); root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
     const onKey = e => {
       if (e.key === 'Escape') { e.stopPropagation(); close(false); }
       else if ((e.key === 'Delete' || e.key === 'Backspace') && sel && document.activeElement !== label) {
