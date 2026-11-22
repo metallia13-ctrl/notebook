@@ -1346,13 +1346,20 @@ async function init() {
   obs.observe($('#modalRoot'), { childList: true, subtree: true });
   // StudyHub conferma la ricezione scrivendo nel localStorage condiviso
   window.addEventListener('storage', e => { if (e.key === Bridge.ACK) Bridge.prune(); });
-  document.addEventListener('visibilitychange', () => {
+  document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'visible') {
       Bridge.prune();
       updateBadge();
       if (Sync.configured() && Date.now() - (Sync.meta().lastSync || 0) > 60000) Sync.run({ silent: true });
-    } else if (Sync.timer) {
-      Sync.run({ silent: true }); // modifiche in sospeso: prova a inviarle subito
+    } else {
+      await Resume.flushSync(true);
+      if (Sync.timer) Sync.run({ silent: true }); // modifiche in sospeso: prova a inviarle subito
+    }
+  });
+  window.addEventListener('nb-live', e => {
+    if (e.detail?.store === 'links') {
+      NavPins.syncFromState();
+      Resume.syncFromState();
     }
   });
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
@@ -1468,6 +1475,19 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.30", title: "editor potenziato: fusione AI di più fonti, gestione visuale dei paragrafi e vista Anteprima/Codice", html: `      <ul>
+        <li><strong>✨ Fondi più fonti e riordina (AI)</strong>: nuova modalità predefinita in <em>Modifica</em> per accorpare testi disordinati da più fonti (libro, slide, NotebookLM) eliminando i duplicati senza perdere dettagli unici; include opzione per mantenere i titoli esistenti, campo per indicazioni extra, riquadro per <strong>incollare una seconda fonte</strong> direttamente da fondere e anteprima <em>Dopo / Prima / Codice</em> con conteggio delle ridondanze rimosse.</li>
+        <li><strong>📑 Gestione visuale dei paragrafi</strong>: pannello <em>Paragrafi</em> con elenco di tutti i titoli <code>H2/H3/H4</code> per saltare subito, spostare interi paragrafi con <code>↑ ↓</code>, cambiare livello (<code>← →</code>), rinominare (<code>✎</code>), unire due paragrafi (<code>🔗</code>) o aggiungerli al volo.</li>
+        <li><strong>Barra del blocco attivo e strumenti comodi</strong>: cambia tipo al blocco con <code>T · H2 · H3 · H4</code>, sposta singoli blocchi, inserisci nuovi paragrafi/titoli sotto o in fondo; <strong>↶ Annulla / ↷ Ripeti</strong>, vista <strong>Anteprima | Codice | Entrambi</strong> (affiancata su schermo largo), <strong>🔍 Trova e sostituisci</strong> (<code>Ctrl+F</code>), elenco numerato <code>1.</code>, evidenziatori <strong>Stabilo Pastello</strong> per primi e salvataggio rapido con <code>Ctrl+S</code>.</li>
+      </ul>` },
+  { v: "4.29", title: "flashcard da testo selezionato: elenchi annidati integri e pulsante Elenco sistemato", html: `      <ul>
+        <li><strong>Flashcard (e Note cliniche) da elenchi puntati annidati</strong>: risolto il bug per cui selezionando un elenco con più livelli di rientro venivano cancellate tutte le voci padre e si perdevano i rientri. Ora vengono mantenute tutte le voci e la gerarchia completa (<code>- </code>, <code>  - </code>, <code>    - </code>…).</li>
+        <li><strong>Pulsante “Elenco” nell’editor delle flashcard e nel codice delle sezioni</strong>: selezionando una o più righe e toccando <em>Elenco</em>, il testo non viene più cancellato ma trasformato in elenco puntato (toccando di nuovo lo toglie), mantenendo la selezione pronta per rientrare subito con <code>→</code> o <code>Tab</code>.</li>
+      </ul>` },
+  { v: "4.28", title: "sincronizzazione di Preferiti del menu laterale e “Riprendi”", html: `      <ul>
+        <li><strong>Preferiti del menu laterale sincronizzati</strong>: le voci fissate con la stellina ★ in cima alla barra laterale si sincronizzano con Google Drive (e nei backup) e si uniscono automaticamente se le modifichi da due dispositivi diversi.</li>
+        <li><strong>“Riprendi” sincronizzato tra dispositivi</strong>: l’ultima sezione studiata (con la scheda aperta e il punto relativo della pagina) segue automaticamente il dispositivo più recente, aggiornando subito sia la barra laterale sia la scheda in Home.</li>
+      </ul>` },
   { v: "4.27", title: "nuovo logo e set completo di icone PWA", html: `      <ul>
         <li><strong>Nuovo logo dell’app</strong>: quaderno medico in stile <em>vetrino</em> (sfondo ottanio scuro, dorso turchese, segnalibro ed evidenziatore giallo crema pastello, scheda retrostante e badge croce medica), aggiornato sia nella barra laterale sia come favicon vettoriale (<code>icon.svg</code>).</li>
         <li><strong>Icone PWA e scorciatoie rigenerate</strong>: aggiornate <code>icon-192</code>, <code>icon-512</code>, <code>icon-maskable-512</code> (per la schermata Home Android), <code>icon-monochrome-512</code> (icone a tema Android) e le 4 icone delle scorciatoie rapide.</li>
@@ -2613,13 +2633,31 @@ const CmdPalette = {
 
 const NavPins = {
   KEY: 'nb-nav-pins',
-  load() {
-    try { const a = JSON.parse(localStorage.getItem(this.KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  rec() { return state.links.find(l => l.id === '_navpins' || l.kind === 'navpins') || null; },
+  loadLocal() {
+    try { const a = JSON.parse(localStorage.getItem(this.KEY) || '[]'); return Array.isArray(a) ? a.filter(x => typeof x === 'string') : []; }
     catch { return []; }
   },
-  save(list) { try { localStorage.setItem(this.KEY, JSON.stringify(list)); } catch { /* niente */ } },
+  load() {
+    const r = this.rec();
+    if (r && Array.isArray(r.pins)) return r.pins.filter(x => typeof x === 'string');
+    return this.loadLocal();
+  },
+  saveLocal(list) { try { localStorage.setItem(this.KEY, JSON.stringify(list)); } catch { /* niente */ } },
+  async save(list) {
+    const clean = [...new Set(list.filter(x => typeof x === 'string'))];
+    this.saveLocal(clean);
+    const rec = this.rec() || { id: '_navpins', kind: 'navpins', notebookId: '_navpins', created: Date.now() };
+    rec.pins = clean;
+    await saveLink(rec);
+  },
+  syncFromState() {
+    const r = this.rec();
+    if (r && Array.isArray(r.pins)) this.saveLocal(r.pins);
+    this.render();
+  },
   toggle(key) {
-    const cur = this.load();
+    const cur = [...this.load()];
     const i = cur.indexOf(key);
     if (i >= 0) { cur.splice(i, 1); toast('Rimosso dai preferiti'); }
     else { cur.push(key); toast('Aggiunto ai preferiti in cima alla barra'); }
@@ -2653,6 +2691,7 @@ const NavPins = {
       const orig = $(`.nav > a.nav-extra[data-nav="${k}"]`);
       if (!orig) return;
       const clone = orig.cloneNode(true);
+      clone.classList.remove('nav-off');
       clone.classList.add('nav-pinned');
       // evita id duplicati (es. #shBadge, #incBadge)
       $$('[id]', clone).forEach(x => x.removeAttribute('id'));
@@ -2664,6 +2703,13 @@ const NavPins = {
   init() {
     const nav = $('.nav');
     if (!nav) return;
+    // migrazione automatica v4.28: se hai già preferiti in locale e non ancora su Drive, li prepara alla sincronizzazione
+    const r = this.rec();
+    if (r && Array.isArray(r.pins)) this.saveLocal(r.pins);
+    else {
+      const local = this.loadLocal();
+      if (local.length) this.save(local);
+    }
     $$('.nav > a.nav-extra[data-nav]', nav).forEach(a => {
       if ($('.nav-pin-btn', a)) return;
       const b = document.createElement('button');
@@ -2929,17 +2975,75 @@ const FullScreen = {
   }
 };
 
-/* ---------- “Riprendi”: l’ultima sezione studiata, con la scheda e il punto ---------- */
+/* ---------- “Riprendi”: l’ultima sezione studiata, sincronizzata tra dispositivi ---------- */
 const Resume = {
   KEY: 'nb-last-study',
   pendingY: null,
-  get() { try { return JSON.parse(localStorage.getItem(this.KEY) || 'null'); } catch { return null; } },
+  syncT: 0,
+  dirty: false,
+  rec() { return state.links.find(l => l.id === '_resume' || l.kind === 'resume') || null; },
+  fromRec(r) {
+    if (!r || !r.secId) return null;
+    return { id: r.secId, mode: r.mode || '', y: Math.round(r.y || 0), ry: typeof r.ry === 'number' ? r.ry : null, dev: r.dev || '', t: r.t || r.updated || 0 };
+  },
+  getLocal() { try { return JSON.parse(localStorage.getItem(this.KEY) || 'null'); } catch { return null; } },
+  saveLocal(obj) { try { localStorage.setItem(this.KEY, JSON.stringify(obj)); } catch { /* niente */ } },
+  get() {
+    const l = this.getLocal();
+    const s = this.fromRec(this.rec());
+    const lOk = l && l.id && secById(l.id);
+    const sOk = s && s.id && secById(s.id);
+    if (lOk && sOk) return (s.t || 0) > (l.t || 0) ? s : l;
+    return sOk ? s : (lOk ? l : (s || l));
+  },
+  scheduleSync(delay = 2500) {
+    this.dirty = true;
+    clearTimeout(this.syncT);
+    this.syncT = setTimeout(() => this.flushSync(false), delay);
+  },
+  async flushSync(force = false) {
+    clearTimeout(this.syncT);
+    this.syncT = 0;
+    if (!force && !this.dirty) return;
+    const l = this.getLocal();
+    if (!l || !l.id || !secById(l.id)) { this.dirty = false; return; }
+    const existing = this.rec();
+    const cur = this.fromRec(existing);
+    if (cur && cur.id === l.id && cur.mode === (l.mode || '') && Math.abs((cur.y || 0) - (l.y || 0)) < 120 && (cur.t || 0) >= (l.t || 0)) {
+      this.dirty = false;
+      return;
+    }
+    this.dirty = false;
+    const rec = existing || { id: '_resume', kind: 'resume', notebookId: '_resume', created: Date.now() };
+    rec.secId = l.id;
+    rec.mode = l.mode || '';
+    rec.y = Math.round(l.y || 0);
+    rec.ry = typeof l.ry === 'number' ? l.ry : 0;
+    rec.dev = l.dev || DEVICE_ID;
+    rec.t = l.t || Date.now();
+    await saveLink(rec);
+  },
+  syncFromState() {
+    const s = this.fromRec(this.rec());
+    const l = this.getLocal();
+    if (s && (!l || (s.t || 0) > (l.t || 0))) this.saveLocal(s);
+    this.refresh();
+  },
   save(hash, y) {
     const m = String(hash || '').match(/^#\/sec\/([^/]+)(?:\/([^/]+))?/);
     if (!m) return;
     const sec = secById(m[1]);
     if (!sec || m[2] === 'edit') return;
-    try { localStorage.setItem(this.KEY, JSON.stringify({ id: m[1], mode: m[2] || '', y: Math.round(y || 0), t: Date.now() })); } catch { /* niente */ }
+    const yy = Math.max(0, Math.round(y || 0));
+    const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const ry = maxY > 40 ? +(Math.min(1, yy / maxY)).toFixed(3) : 0;
+    const obj = { id: m[1], mode: m[2] || '', y: yy, ry, dev: DEVICE_ID, t: Date.now() };
+    this.saveLocal(obj);
+    const synced = this.fromRec(this.rec());
+    const secChanged = !synced || synced.id !== obj.id || synced.mode !== obj.mode;
+    const scrollMoved = !synced || Math.abs((synced.y || 0) - yy) >= 180 || (typeof synced.ry === 'number' && Math.abs(synced.ry - ry) >= 0.08);
+    if (secChanged) this.scheduleSync(2500);
+    else if (scrollMoved) this.scheduleSync(4500);
   },
   target() {
     const r = this.get();
@@ -2948,18 +3052,24 @@ const Resume = {
   },
   go() {
     const r = this.target();
-    if (!r) { toast('Non hai ancora studiato nessuna sezione su questo dispositivo'); return; }
-    this.pendingY = r.y || 0;
+    if (!r) { toast('Non hai ancora studiato nessuna sezione'); return; }
+    const sameDev = !r.dev || r.dev === DEVICE_ID;
+    this.pendingY = sameDev ? { y: r.y || 0, ry: null } : { y: r.y || 0, ry: typeof r.ry === 'number' ? r.ry : null };
     const h = `#/sec/${r.id}${r.mode ? `/${r.mode}` : ''}`;
     if (location.hash === h) route(); else go(h);
   },
   // da chiamare dopo che la sezione è stata disegnata
   restore() {
     if (this.pendingY === null) return;
-    const y = this.pendingY;
+    const p = typeof this.pendingY === 'object' ? this.pendingY : { y: +this.pendingY || 0, ry: null };
     this.pendingY = null;
     let tries = 0;
-    const step = () => { window.scrollTo(0, y); if (Math.abs(window.scrollY - y) > 4 && ++tries < 15) setTimeout(step, 80); };
+    const step = () => {
+      const maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const y = p.ry !== null && maxY > 40 ? Math.round(p.ry * maxY) : p.y;
+      window.scrollTo(0, y);
+      if (Math.abs(window.scrollY - y) > 4 && ++tries < 15) setTimeout(step, 80);
+    };
     requestAnimationFrame(step);
   },
   label() {
@@ -2974,6 +3084,12 @@ const Resume = {
     if (r) { $('span', a).textContent = 'Riprendi'; a.title = `Torna a “${r.sec.title}”`; $('.nav-resume-t', a).textContent = r.sec.title; }
   },
   init() {
+    // migrazione / allineamento v4.28 tra locale e Drive
+    const l = this.getLocal();
+    const s = this.fromRec(this.rec());
+    if (s && (!l || (s.t || 0) > (l.t || 0))) this.saveLocal(s);
+    else if (l && l.id && secById(l.id) && (!s || (l.t || 0) > (s.t || 0))) this.scheduleSync(1200);
+
     const firstLink = $('.nav a[data-nav="notebooks"]');
     if (firstLink && !$('#navResume')) {
       firstLink.insertAdjacentHTML('beforebegin', `<a href="#/resume" id="navResume" class="nav-extra nav-resume" hidden>
@@ -2989,7 +3105,7 @@ const Resume = {
     // la posizione si salva anche quando l’app va in secondo piano o si chiude
     const flush = () => { if (/^#\/sec\//.test(location.hash)) this.save(location.hash, window.scrollY); };
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
-    window.addEventListener('pagehide', flush);
+    window.addEventListener('pagehide', () => { flush(); this.flushSync(true); });
     let t = 0;
     window.addEventListener('scroll', () => { clearTimeout(t); t = setTimeout(flush, 600); }, { passive: true });
     this.refresh();
@@ -4591,6 +4707,8 @@ const HELP = {
   firstPass3R: { t: 'Prima passata (3R + Coda di chiusura)', b: `Trasforma la prima lettura in <b>memorizzazione attiva</b>, senza sovraccaricare la memoria di lavoro:<br><br><b>Suddivisione dei blocchi (✂️ Dividi / 🔗 Unisci)</b>: se un blocco mette insieme due strutture che preferisci studiare separate, tocca <b>✂️ Dividi</b> e poi <b>✂️ Dividi qui</b> tra le due parti (oppure usa <b>🔗 Unisci</b>). Dal pulsante <b>Blocco X di Y ▾</b> in alto puoi anche scegliere il preset <em>Per titoli</em>, <em>Standard</em> o <em>Ogni voce</em>. La tua scelta resta salvata sulla sezione.<br><br><b>1. Leggi</b>: concentrati sul micro-blocco visibile. Con <b>🙈 Oscura</b> copri subito i sottopunti (o scegli <em>Solo Cloze</em> nella barra).<br><b>2. Copri e ripeti</b>: il testo sparisce lasciando solo il titolo. Ripeti a voce alta o annota 2–3 parole chiave; con <b>❓ Collega (Perché?)</b> o <b>✨ Domanda AI</b> hai uno spunto causale/clinico.<br><b>3. Verifica</b>: confronta con il testo. Seleziona una parola e premi <b>== Cloze</b> per aggiungerla ai ripassi futuri (se tocchi <em>== Cloze</em> senza selezione su un blocco che ne ha già, nasconde subito i cloze esistenti). Poi scegli <b>✓ Fissato</b> o <b>↻ Da riprendere</b>.<br><br><b>Coda di chiusura (Criterio = 1)</b>: finiti tutti i blocchi, l’app ti ripropone <b>solo</b> quelli segnati <em>Da riprendere</em>, già coperti, finché non li richiami almeno 1 volta (<i>Successive Relearning</i>).<br><br><i>Scorciatoie da tastiera:</i> <b>Spazio / Invio</b> avanza di passo; in Verifica <b>1</b> = Da riprendere, <b>2</b> = Fissato.` },
   srsAlgo: { t: 'Come vengono calcolati gli intervalli di ripasso', b: `I 4 pulsanti usano una ripetizione dilazionata progressiva (SM-2 modificato, coerente con le flashcard):<br><br>• <b>Di nuovo (Oggi)</b>: la sezione resta nei ripassi di oggi (la rivedi dopo le altre), azzera la serie e abbassa leggermente la facilità (<code>−0,20</code>).<br>• <b>Difficile</b>: intervallo più breve (alla prima volta <b>1 g</b>, poi crescita graduale del 20–30%) e facilità <code>−0,15</code>.<br>• <b>Bene</b>: intervallo standard (alla prima volta <b>3 g</b>, poi <b>6+ g</b> e moltiplicato per la facilità, tenendo conto anche di eventuali giorni di ritardo).<br>• <b>Facile</b>: intervallo più lungo (alla prima volta <b>5 g</b>, poi bonus del 30%) e facilità <code>+0,15</code>.<br><br>I 4 intervalli sono sempre strettamente crescenti, così ogni valutazione ha un effetto reale distinto. Se la sezione è collegata a StudyHub, la valutazione viene inviata anche lì.` },
   preTest: { t: 'Pre-test rapido (60s) e Radar di lettura', b: `Tentare di rispondere a qualche domanda <b>prima</b> di leggere — anche sbagliando quasi tutto — prepara il cervello a riconoscere e fissare meglio le informazioni durante la lettura (<i>Pretesting Effect</i>).<br><br><b>Come usarlo:</b><br>1. L’app propone 3–5 domande prese dalla sezione, dai suoi titoli o generate con l’AI.<br>2. Non serve scrivere risposte lunghe (puoi anche rispondere solo a mente o scrivere 2 parole in 60 secondi).<br>3. Tocca <b>Fissa radar in Leggi</b> (o <b>Avvia Prima passata</b>): le domande restano in una barra compatta in cima così, mentre leggi, cerchi attivamente quelle risposte e le spunti man mano.` },
+  editor: { t: 'Come usare l’editor delle sezioni', b: `L’editor è pensato per scrivere e riordinare velocemente senza dover ricordare la sintassi Markdown:<br><br><b>📑 Paragrafi</b>: apre l’indice di tutti i titoli della sezione. Con <b>↑ ↓</b> sposti l’intero paragrafo (con tutto quello che contiene), con <b>← →</b> cambi livello (<code>H2 ↔ H3 ↔ H4</code>), con <b>🔗</b> unisci il contenuto nel paragrafo sopra togliendo il titolo intermedio, con <b>✎</b> rinomini.<br><br><b>Barra del blocco attivo</b> (in cima all’anteprima): mostra su che tipo di blocco hai il cursore e ti permette di cambiarlo con un tocco (<b>T · H2 · H3 · H4</b>), spostarlo su/giù o inserire subito un nuovo paragrafo/titolo sotto.<br><br><b>✨ Fondi / Riformatta</b>: usa l’AI per fondere testi presi da più fonti eliminando i doppioni senza perdere dettagli (puoi anche incollare una seconda fonte direttamente dentro).<br><br><b>Vista</b>: scegli <b>Anteprima</b> (pulita, ideale su tablet), <b>Codice</b> o <b>Entrambi</b>. Usa <b>↶ / ↷</b> per annullare/ripetere, <b>🔍 Trova</b> (<code>Ctrl+F</code>) per cercare e sostituire, <code>Ctrl+S</code> per salvare.` },
+  aiMerge: { t: 'Fondi più fonti e riformatta con l’AI', b: `<b>🔀 Fondi più fonti e riordina</b> è pensata per quando hai incollato appunti da libro, slide o NotebookLM e alcuni concetti (es. una classe di cellule o una via nervosa) compaiono ripetuti in due punti diversi:<br><br>• <b>Accorpa i doppioni</b> in un unico elenco/paragrafo coerente;<br>• <b>Conserva ogni dettaglio unico</b> (numeri, sinonimi, eccezioni, clinica) senza inventare nozioni esterne;<br>• <b>Preserva intatti</b> tutti i tuoi <code>==cloze==</code>, evidenziature, link e immagini.<br><br>Con <b>＋ Incolla una seconda fonte</b> puoi incollare subito testo nuovo e fonderlo dentro la sezione in un solo passaggio. Prima di applicare vedi sempre il confronto <b>Dopo / Prima / Codice</b> e il controllo automatico delle parole.` },
   modes: { t: 'Le schede della sezione', b: `<b>Cloze</b>: i termini chiave sono nascosti, toccali per scoprirli.<br><b>Leggi</b>: gli appunti, con <b>Prima passata</b>, <b>Oscura dettagli</b> e <b>Pre-test</b> per memorizzare già alla prima lettura; selezionando il testo evidenzi o crei cloze e flashcard.<br><b>Mappe</b>: gli appunti come mappa concettuale.<br><b>Pagina bianca</b>: scrivi tutto quello che ricordi, poi confronti.<br><b>Orale</b>: ripeti a voce come all’esame, poi confronti.<br><b>Domande</b>, <b>Flashcard</b>, <b>Video</b>, <b>Modifica</b>.<br><br>Nei casi clinici c’è anche <b>Risolvi</b>: il caso si scopre una parte alla volta.<br><br>Quando confronti, segna col semaforo: tocca il pallino accanto ai titoli o il margine sinistro.` },
   // Pagine
   notebooks: { t: 'I tuoi notebook', b: `<b>Adesso</b>: in cima trovi una sola cosa da fare, con il tempo che serve: prima le flashcard che sono tornate, poi i ripassi in scadenza, poi l’argomento più importante per l’esame più vicino, poi dove eri rimasta. Con “Altro” ti propone la successiva.<br><br>Un notebook per ogni materia. Toccane uno per vedere macro-argomenti e sezioni; da qui ne crei di nuovi.` },

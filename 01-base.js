@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.27';
+const APP_VERSION = '4.30';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -2035,6 +2035,22 @@ async function applyRemote(records, m = Sync.meta(), merged = []) {
       if (mergePdfMeta(local, normalizeRecord('pdfs', r.data), r.updated)) { puts.pdfs.push(local); changed++; }
       continue;
     }
+    // v4.28: “Riprendi” si aggiorna in blocco (vince la lettura più recente, senza mischiare sezione di un dispositivo e scheda di un altro)
+    if (r.store === 'links' && (r.id === '_resume' || r.data?.kind === 'resume') && local) {
+      const remote = normalizeRecord('links', r.data);
+      remote.updated = r.updated;
+      delete remote._sv;
+      const lt = local.t || local.updated || 0;
+      const rt = remote.t || remote.updated || 0;
+      if (rt > lt) {
+        assignInPlace(local, remote);
+        local._sv = r.updated;
+        puts.links.push(local);
+        baseDels.push(bkey);
+        changed++;
+      }
+      continue;
+    }
     const canMerge = MERGE_STORES.includes(r.store);
     const remote = normalizeRecord(r.store, r.data);
     remote.updated = r.updated;
@@ -2087,13 +2103,15 @@ async function applyRemote(records, m = Sync.meta(), merged = []) {
 }
 // avvisa di cosa è stato unito (e dove restano due versioni da scegliere)
 function mergeNotice(merged) {
-  const conf = merged.filter(x => x.conflicts);
+  const vis = merged.filter(x => x.conflicts || !(x.store === 'links' && /^_/.test(x.id || '')));
+  if (!vis.length) return;
+  const conf = vis.filter(x => x.conflicts);
   const names = list => list.map(x => x.title).filter(Boolean).slice(0, 3).map(t => `“${t.length > 40 ? `${t.slice(0, 39)}…` : t}”`).join(', ');
   if (conf.length) {
     const sec = conf.find(x => x.store === 'sections');
     toast(`Modifiche di due dispositivi unite. In ${names(conf) || `${conf.length} elementi`} avevano cambiato le stesse righe: ho tenuto entrambe le versioni, segnate con ⚠️.`, '', sec ? { label: 'Apri', fn: () => go(`#/sec/${sec.id}/edit`) } : null);
   } else {
-    toast(merged.length === 1 ? `Ho unito le modifiche fatte su due dispositivi${names(merged) ? ` in ${names(merged)}` : ''}` : `Ho unito le modifiche fatte su due dispositivi in ${merged.length} elementi`);
+    toast(vis.length === 1 ? `Ho unito le modifiche fatte su due dispositivi${names(vis) ? ` in ${names(vis)}` : ''}` : `Ho unito le modifiche fatte su due dispositivi in ${vis.length} elementi`);
   }
 }
 async function syncImages(recs) {
@@ -2149,6 +2167,8 @@ async function syncImages(recs) {
 }
 
 function refreshAfterSync() {
+  if (typeof NavPins !== 'undefined' && NavPins.syncFromState) NavPins.syncFromState();
+  if (typeof Resume !== 'undefined' && Resume.syncFromState) Resume.syncFromState();
   const h = location.hash || '#/notebooks';
   if (/^#\/(notebooks|nb\/|review|cards|deck\/)/.test(h) || h === '#/' || h === '') route();
   else toast('Dati aggiornati da un altro dispositivo');
@@ -4126,6 +4146,8 @@ async function restoreBackup(bk) {
   state.images = await DB.all('images');
   state.links = await DB.all('links');
   state.pdfs = await DB.all('pdfs');
+  if (typeof NavPins !== 'undefined' && NavPins.syncFromState) NavPins.syncFromState();
+  if (typeof Resume !== 'undefined' && Resume.syncFromState) Resume.syncFromState();
   updateBadge();
   scheduleSync();
   setTimeout(() => { PdfCloud.uploadPending(); PdfIndex.run(); }, 1500);

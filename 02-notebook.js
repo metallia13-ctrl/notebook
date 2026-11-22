@@ -1463,25 +1463,58 @@ async function saveMySchemas(list) {
   rec.list = list;
   await saveLink(rec);
 }
-function schemaSystem(sc, missing) {
-  return `Riorganizzi gli appunti di uno studente di medicina dentro uno schema fisso, SENZA cambiarne il contenuto.
+const ED_HL_COLORS = [
+  { key: 'c', name: 'Giallo crema', pastel: true },
+  { key: 'a', name: 'Pesca pastello', pastel: true },
+  { key: 'f', name: 'Rosa pastello', pastel: true },
+  { key: 'i', name: 'Lilla pastello', pastel: true },
+  { key: 's', name: 'Azzurro nuvola', pastel: true },
+  { key: 'm', name: 'Verde menta', pastel: true },
+  ...HL_COLORS
+];
+
+function mergeSystem({ keepHeads = false, extra = '', hasSecond = false } = {}) {
+  const extraBlock = extra.trim() ? `\n\nINDICAZIONI SPECIFICHE DELLA STUDENTESSA (seguile con priorità):\n- ${extra.trim()}` : '';
+  return `Riordini e fondi appunti di uno studente di medicina${hasSecond ? ' provenienti da due fonti diverse' : ' (spesso incollati in modo disordinato da più fonti)'}.
+
+OBIETTIVO PRINCIPALE — FUSIONE E DEDUPLICAZIONE SENZA PERDITA DI DETTAGLI:
+- Individua argomenti, strutture, cellule, vie o concetti ripetuti in più punti del testo e accorpali in UN UNICO paragrafo o elenco puntato coerente, eliminando le ripetizioni identiche.
+- NON perdere nessun dettaglio unico: ogni numero, sinonimo, nucleo, recettore, eccezione, esempio o nota clinica presente in una qualunque delle fonti deve comparire nel testo finale.
+- Se due fonti danno sfumature leggermente diverse o complementari sullo stesso punto, integrale entrambe chiaramente (non tagliare né appiattire).
+- NON aggiungere nozioni esterne che non siano presenti nei testi forniti.
+
+STRUTTURA E FORMATTAZIONE:
+- Titoli: ${keepHeads ? 'mantieni il più possibile i titoli ("## ", "### ") già presenti negli appunti, accorpando i duplicati sotto il titolo esistente più appropriato; aggiungi sottotitoli "### " solo se serve chiarezza.' : 'organizza il materiale in una gerarchia logica e chiara con titoli "## " e sottotitoli "### " (dal generale al particolare: definizione/struttura, suddivisione, connessioni/meccanismi, funzione, clinica).'}
+- Dentro ogni sezione: elenchi puntati brevi e gerarchici (con sottopunti rientrati di 2 spazi); usa una tabella Markdown quando 3 o più elementi hanno le stesse caratteristiche confrontabili; grassetto solo sui termini chiave.
+- Se gli appunti iniziano con un titolo "# ", mantienilo come prima riga.
+- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (con eventuale ::suggerimento, non aggiungerne e non toglierne), {{lettera|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", i link [fonte, p. N](#/pdf/...) e eventuali blocchi \`\`\`html.
+
+Rispondi SOLO con gli appunti fusi in Markdown, senza commenti prima o dopo.${extraBlock}${styleRulesBlock()}`;
+}
+
+function schemaSystem(sc, missing, extra = '') {
+  const extraBlock = extra.trim() ? `\n\nINDICAZIONI SPECIFICHE DELLA STUDENTESSA:\n- ${extra.trim()}` : '';
+  return `Riorganizzi e fondi gli appunti di uno studente di medicina dentro uno schema fisso, SENZA aggiungere nozioni esterne e SENZA perdere dettagli.
 
 SCHEMA: questi titoli di secondo livello ("## "), in questo ordine esatto, scritti esattamente così:
 ${sc.heads.map(h => `## ${h}`).join('\n')}
 
 Regole:
-- Usa SOLO le informazioni che ci sono negli appunti: non aggiungere nozioni, non correggere, non riassumere togliendo dettagli, numeri o esempi. Ogni informazione degli appunti deve comparire sotto la voce giusta.
+- Usa SOLO le informazioni presenti negli appunti: non aggiungere nozioni esterne, non riassumere togliendo dettagli, numeri, sinonimi o esempi.
+- Se lo stesso argomento compare ripetuto in più punti (es. da due fonti diverse), fondilo in un unico elenco/paragrafo coerente eliminando le ripetizioni identiche ma conservando tutti i dettagli unici.
 - Quello che non rientra in nessuna voce va in fondo, sotto "## Altro" (se non c’è niente, non mettere "## Altro").
 - Voce per cui negli appunti non c’è niente: ${missing ? 'tieni il titolo e sotto scrivi solo "*(manca negli appunti)*".' : 'non mettere il titolo.'}
 - Dentro ogni voce: elenchi puntati brevi, con i sottopunti rientrati; una tabella Markdown quando 3 o più elementi hanno le stesse caratteristiche (classificazioni, confronti); grassetto solo sui termini chiave. Puoi usare titoli "### " dentro una voce.
-- La prima riga resta il titolo "# " degli appunti, uguale.
-- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (non aggiungerne e non toglierne), {{lettera|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", e qualsiasi altra sintassi che non riconosci.
+- La prima riga resta il titolo "# " degli appunti, uguale (se presente).
+- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (non aggiungerne e non toglierne), {{lettera|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", i link [fonte, p. N](#/pdf/...) e qualsiasi altra sintassi che non riconosci.
 
-Rispondi SOLO con gli appunti in Markdown, senza nessun altro testo prima o dopo.${styleRulesBlock()}`;
+Rispondi SOLO con gli appunti in Markdown, senza nessun altro testo prima o dopo.${extraBlock}${styleRulesBlock()}`;
 }
-// cosa è cambiato davvero: parole sparite, cloze e immagini
+
+// cosa è cambiato davvero: parole sparite, conteggio parole, cloze e immagini
 function reformatCheck(before, after) {
   const words = t => (foldAccents(aiText(stripCloze(String(t || '')))).match(/[a-z0-9]{5,}/g) || []);
+  const allW = t => (aiText(stripCloze(String(t || ''))).match(/[A-Za-zÀ-ÿ0-9]+/g) || []).length;
   const aft = new Set(words(after).map(w => w.slice(0, 7)));
   const lostMap = new Map();
   (aiText(stripCloze(before)).match(/[A-Za-zÀ-ÿ0-9]{5,}/g) || []).forEach(w => { const k = foldAccents(w).toLowerCase().slice(0, 7); if (!aft.has(k) && !lostMap.has(k)) lostMap.set(k, w.toLowerCase()); });
@@ -1491,64 +1524,119 @@ function reformatCheck(before, after) {
   const count = (t, re) => (String(t).match(re) || []).length;
   return {
     lost: [...lostMap.values()], total: bef.size, added: added.length,
+    wordsBefore: allW(before), wordsAfter: allW(after),
     cloze: [count(before, /==[^=\n]+==/g), count(after, /==[^=\n]+==/g)],
     imgs: [imageRefs(before).length, imageRefs(after).length]
   };
 }
-// scegli lo schema → l’AI riordina → controlli prima/dopo → restituisce il testo nuovo (o null)
-function reformatFlow(sec, text) {
+
+// v4.30: Fondi fonti e riordina / Riformatta con uno schema → anteprima Prima / Dopo / Codice
+function reformatFlow(sec, text, { startMode = null } = {}) {
   return new Promise(resolve => {
     let done = false;
+    let savedExtra = '';
+    let savedSrc2 = '';
     const ctl = new AbortController();
     const pick = () => {
-      const last = S().fmtSchema || 'generic';
+      const last = startMode || S().fmtSchema || 'merge';
       const list = allSchemas();
+      const validIds = new Set(['merge', 'generic', ...list.map(x => x.id)]);
+      const picked = validIds.has(last) ? last : 'merge';
       const sh = openSheet(`
-        <h2>Riformatta con uno schema</h2>
-        <p class="sheet-sub">Scegli il tipo di argomento: la sezione viene riordinata sempre sotto gli stessi titoli, nello stesso ordine, senza aggiungere né togliere contenuti. Vedi il risultato prima di usarlo.</p>
-        <div class="sch-list" role="radiogroup" aria-label="Schema">
-          ${list.map(sc => `<label class="sch-opt"><input type="radio" name="sch" value="${esc(sc.id)}" ${last === sc.id ? 'checked' : ''}><span><b>${esc(sc.name)}</b>${sc.mine ? ' <small class="muted-inline">(tuo)</small>' : ''}<small>${esc(sc.heads.join(' · '))}</small></span>${sc.mine ? `<button type="button" class="btn sm ghost" data-sch="edit:${esc(sc.id)}" aria-label="Modifica lo schema ${esc(sc.name)}">✎</button>` : ''}</label>`).join('')}
-          <label class="sch-opt"><input type="radio" name="sch" value="generic" ${last === 'generic' || !list.some(x => x.id === last) ? 'checked' : ''}><span><b>Solo elenchi e tabelle</b><small>Senza titoli fissi: riordina come nell’importazione, con le tue regole di formattazione</small></span></label>
+        <div class="sch-head-row">
+          <h2>✨ Fondi fonti e riformatta</h2>
+          ${typeof helpBtn === 'function' ? helpBtn('aiMerge') : ''}
         </div>
-        <label class="check"><input type="checkbox" id="schMiss" ${S().fmtMissing !== false ? 'checked' : ''}><span>Segna le voci che mancano negli appunti, così vedi cosa completare</span></label>
+        <p class="sheet-sub">Riordina appunti disordinati da più fonti rimuovendo i doppioni senza perdere dettagli, oppure organizza tutto sotto uno schema fisso. Controlli sempre il risultato prima di applicarlo.</p>
+        <div class="sch-list" role="radiogroup" aria-label="Modalità">
+          <label class="sch-opt sch-opt-hi">
+            <input type="radio" name="sch" value="merge" ${picked === 'merge' ? 'checked' : ''}>
+            <span><b>🔀 Fondi più fonti e riordina</b><small>Accorpa gli argomenti ripetuti (es. da libro + slide), toglie i duplicati e conserva tutti i dettagli unici</small></span>
+          </label>
+          ${list.map(sc => `<label class="sch-opt"><input type="radio" name="sch" value="${esc(sc.id)}" ${picked === sc.id ? 'checked' : ''}><span><b>${esc(sc.name)}</b>${sc.mine ? ' <small class="muted-inline">(tuo)</small>' : ''}<small>${esc(sc.heads.join(' · '))}</small></span>${sc.mine ? `<button type="button" class="btn sm ghost" data-sch="edit:${esc(sc.id)}" aria-label="Modifica lo schema ${esc(sc.name)}">✎</button>` : ''}</label>`).join('')}
+          <label class="sch-opt"><input type="radio" name="sch" value="generic" ${picked === 'generic' ? 'checked' : ''}><span><b>Solo elenchi e tabelle</b><small>Riordina come nell’importazione, applicando le tue regole di formattazione</small></span></label>
+        </div>
+        <div class="sch-opts-ctx">
+          <label class="check" id="schKeepWrap"><input type="checkbox" id="schKeep" ${S().fmtKeepHeads ? 'checked' : ''}><span>Mantieni il più possibile i titoli che ho già (accorpa solo i doppioni)</span></label>
+          <label class="check" id="schMissWrap"><input type="checkbox" id="schMiss" ${S().fmtMissing !== false ? 'checked' : ''}><span>Segna le voci dello schema che mancano negli appunti</span></label>
+        </div>
+        <label class="field sch-extra-f"><span>Indicazioni extra <small class="muted-inline">(facoltativo)</small></span>
+          <input class="input" id="schExtra" value="${esc(savedExtra)}" placeholder="Es. Unisci le due parti sulle cellule del bulbo; metti le fibre in tabella"></label>
+        <details class="sch-src2" ${savedSrc2 ? 'open' : ''}>
+          <summary>＋ Incolla una seconda fonte da fondere qui dentro <span class="muted-inline">(facoltativo)</span></summary>
+          <textarea class="input sch-src2-ta" id="schSrc2" rows="5" placeholder="Incolla qui appunti da un’altra fonte (slide, libro, NotebookLM…): verranno fusi con quelli già presenti senza duplicati.">${esc(savedSrc2)}</textarea>
+        </details>
         <p class="err-line" id="schErr" hidden></p>
         <div class="modal-actions">
           <button class="btn ghost" type="button" data-sch="new">+ Il mio schema</button>
           <button class="btn ghost" type="button" data-sch="no">Annulla</button>
-          <button class="btn primary" type="button" data-sch="go">Riformatta</button>
-        </div>`, { label: 'Riformatta con uno schema', onClose: () => { if (!done) { done = true; ctl.abort(); resolve(null); } } });
+          <button class="btn primary" type="button" data-sch="go">Avvia AI</button>
+        </div>`, { label: 'Fondi fonti e riformatta', onClose: () => { if (!done) { done = true; ctl.abort(); resolve(null); } } });
+
+      const syncCtx = () => {
+        const id = $('input[name="sch"]:checked', sh.el)?.value || 'merge';
+        $('#schKeepWrap', sh.el).hidden = id !== 'merge';
+        $('#schMissWrap', sh.el).hidden = id === 'merge' || id === 'generic';
+        const goBtn = $('[data-sch="go"]', sh.el);
+        if (goBtn && !goBtn.disabled) goBtn.textContent = id === 'merge' ? '🔀 Fondi e riordina' : '✨ Riformatta';
+      };
+      syncCtx();
+      sh.el.addEventListener('change', e => { if (e.target.name === 'sch') syncCtx(); });
+
       sh.el.addEventListener('click', async e => {
         const b = e.target.closest('[data-sch]');
         if (!b) return;
         const k = b.dataset.sch;
         if (k === 'no') { sh.close(null); return; }
-        if (k === 'new' || k.startsWith('edit:')) { e.preventDefault(); done = true; sh.close(null); done = false; editSchema(k === 'new' ? null : mySchemas().find(x => x.id === k.slice(5))); return; }
+        if (k === 'new' || k.startsWith('edit:')) {
+          e.preventDefault();
+          savedExtra = $('#schExtra', sh.el)?.value || '';
+          savedSrc2 = $('#schSrc2', sh.el)?.value || '';
+          done = true; sh.close(null); done = false;
+          editSchema(k === 'new' ? null : mySchemas().find(x => x.id === k.slice(5)));
+          return;
+        }
         if (k !== 'go') return;
-        const id = $('input[name="sch"]:checked', sh.el)?.value || 'generic';
+        const id = $('input[name="sch"]:checked', sh.el)?.value || 'merge';
         const missing = $('#schMiss', sh.el).checked;
-        S().fmtSchema = id; S().fmtMissing = missing; Settings.save();
+        const keepHeads = $('#schKeep', sh.el).checked;
+        savedExtra = ($('#schExtra', sh.el)?.value || '').trim();
+        savedSrc2 = ($('#schSrc2', sh.el)?.value || '').trim();
+        S().fmtSchema = id; S().fmtMissing = missing; S().fmtKeepHeads = keepHeads; Settings.save();
         const sc = allSchemas().find(x => x.id === id);
+        const hasSecond = !!savedSrc2;
+        const payloadText = hasSecond
+          ? `FONTE 1 (appunti attuali della sezione “${sec.title}”):\n\n${text}\n\n---\n\nFONTE 2 (seconda fonte da integrare e fondere senza duplicati):\n\n${savedSrc2}`
+          : `APPUNTI DA RIORDINARE E FONDERE (sezione “${sec.title}”):\n\n${text}`;
+        const combinedBefore = hasSecond ? `${text}\n\n${savedSrc2}` : text;
+
         b.disabled = true;
-        b.textContent = 'Riformatto… (può servire un minuto)';
+        b.textContent = id === 'merge' ? 'Fondo e riordino… (può servire un minuto)' : 'Riformatto… (può servire un minuto)';
         $('#schErr', sh.el).hidden = true;
         try {
           let md, truncated = false;
-          if (sc) {
-            const r = await AI.generate({ system: schemaSystem(sc, missing), text: `APPUNTI DA RIORDINARE (sezione “${sec.title}”):\n\n${text}`, signal: ctl.signal });
+          if (id === 'merge') {
+            const r = await AI.generate({ system: mergeSystem({ keepHeads, extra: savedExtra, hasSecond }), text: payloadText, signal: ctl.signal });
+            md = String(r.text || '').trim().replace(/^```(?:markdown|md)?[ \t]*\n/i, '').replace(/\n```\s*$/, '').trim();
+            truncated = !!r.truncated;
+          } else if (sc) {
+            const r = await AI.generate({ system: schemaSystem(sc, missing, savedExtra), text: payloadText, signal: ctl.signal });
             md = String(r.text || '').trim().replace(/^```(?:markdown|md)?[ \t]*\n/i, '').replace(/\n```\s*$/, '').trim();
             truncated = !!r.truncated;
           } else {
-            const r = await aiFormatNotes({ text, cloze: S().aiCloze, questions: false, signal: ctl.signal });
+            const srcForGeneric = savedExtra ? `${payloadText}\n\nINDICAZIONI EXTRA: ${savedExtra}` : payloadText;
+            const r = await aiFormatNotes({ text: srcForGeneric, cloze: S().aiCloze, questions: false, signal: ctl.signal });
             md = r.md; truncated = !!r.truncated;
           }
           if (!md) throw new Error('L’AI non ha restituito appunti utilizzabili.');
           if (done) return;
           done = true; sh.close(null); done = false;
-          preview(md, sc, truncated);
+          preview(md, sc, truncated, id, combinedBefore);
         } catch (err) {
           if (err.name === 'AbortError' || !sh.el.isConnected) return;
           const el = $('#schErr', sh.el); el.textContent = err.message || 'Non riuscito'; el.hidden = false;
-          b.disabled = false; b.textContent = 'Riformatta';
+          b.disabled = false;
+          syncCtx();
         }
       });
     };
@@ -1580,35 +1668,53 @@ function reformatFlow(sec, text) {
         sh.close(null);
       });
     };
-    const preview = (md, sc, truncated) => {
-      const ck = reformatCheck(text, md);
+    const preview = (md, sc, truncated, modeId, combinedBefore) => {
+      const ck = reformatCheck(combinedBefore, md);
+      const diffPct = ck.wordsBefore ? Math.round(((ck.wordsAfter - ck.wordsBefore) / ck.wordsBefore) * 100) : 0;
+      const diffTxt = diffPct < 0 ? `${diffPct}% ridondanze rimosse` : diffPct > 0 ? `+${diffPct}%` : 'invariato';
       const warn = [];
       if (truncated) warn.push('La risposta dell’AI è stata troncata: manca la fine. Meglio non usarla.');
-      if (ck.lost.length > Math.max(3, ck.total * 0.04)) warn.push(`${ck.lost.length} parole dei tuoi appunti non compaiono più (per esempio: ${ck.lost.slice(0, 8).join(', ')}). Controlla che non sia sparito qualcosa.`);
-      if (ck.added > Math.max(8, ck.total * 0.08)) warn.push(`Ci sono circa ${ck.added} parole che nei tuoi appunti non c’erano: controlla che l’AI non abbia aggiunto nozioni.`);
+      if (ck.lost.length > Math.max(4, ck.total * 0.05)) warn.push(`${ck.lost.length} parole dei tuoi appunti non compaiono più (per esempio: ${ck.lost.slice(0, 8).join(', ')}). Controlla che non sia sparito un dettaglio unico.`);
+      if (ck.added > Math.max(10, ck.total * 0.09)) warn.push(`Ci sono circa ${ck.added} parole che nei tuoi appunti non c’erano: controlla che l’AI non abbia aggiunto nozioni.`);
       if (ck.cloze[1] !== ck.cloze[0]) warn.push(`I cloze erano ${ck.cloze[0]}, ora sono ${ck.cloze[1]}.`);
       if (ck.imgs[1] < ck.imgs[0]) warn.push(`Mancano ${ck.imgs[0] - ck.imgs[1]} immagini.`);
-      // poche parole non ritrovate: di solito l’AI le ha solo scritte in un altro modo, ma è meglio saperlo
-      const note = !warn.some(w => w.includes('non compaiono più')) && ck.lost.length ? `Parole dei tuoi appunti che non ritrovo: ${ck.lost.slice(0, 10).join(', ')}. Di solito sono solo scritte in un altro modo: dai un’occhiata.` : '';
+      const note = !warn.some(w => w.includes('non compaiono più')) && ck.lost.length ? `Parole riscritte o non ritrovate tali e quali: ${ck.lost.slice(0, 10).join(', ')}. Dai un’occhiata.` : '';
+      const modeLbl = modeId === 'merge' ? '🔀 Fusione e riordino' : sc ? `schema “${sc.name}”` : 'elenchi e tabelle';
       const sh = openSheet(`
-        <h2>Controlla prima di usarla</h2>
-        <p class="sheet-sub">${esc(sec.title)}${sc ? ` · schema “${esc(sc.name)}”` : ''}</p>
-        ${warn.length ? `<ul class="sch-warn">${warn.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : note ? '' : '<p class="sch-ok">Nessuna parola dei tuoi appunti è sparita; cloze e immagini sono gli stessi.</p>'}
+        <h2>Controlla prima di applicare</h2>
+        <p class="sheet-sub">${esc(sec.title)} · ${esc(modeLbl)}</p>
+        <div class="sch-stats">
+          <span>Parole: <b>${ck.wordsBefore}</b> → <b>${ck.wordsAfter}</b> (${esc(diffTxt)})</span>
+          ${ck.cloze[0] || ck.cloze[1] ? `<span>Cloze: <b>${ck.cloze[0]}</b> → <b>${ck.cloze[1]}</b></span>` : ''}
+          ${ck.imgs[0] ? `<span>Immagini: <b>${ck.imgs[1]}/${ck.imgs[0]}</b></span>` : ''}
+        </div>
+        ${warn.length ? `<ul class="sch-warn">${warn.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : note ? '' : '<p class="sch-ok">Tutti i concetti unici, i cloze e le immagini risultano conservati.</p>'}
         ${note ? `<p class="sch-note">${esc(note)}</p>` : ''}
-        <div class="seg" role="tablist"><button type="button" class="seg-btn on" data-pv="after" role="tab" aria-selected="true">Dopo</button><button type="button" class="seg-btn" data-pv="before" role="tab" aria-selected="false">Prima</button></div>
+        <div class="seg sm" role="tablist">
+          <button type="button" class="seg-btn on" data-pv="after" role="tab" aria-selected="true">Dopo</button>
+          <button type="button" class="seg-btn" data-pv="before" role="tab" aria-selected="false">Prima</button>
+          <button type="button" class="seg-btn" data-pv="code" role="tab" aria-selected="false">Codice</button>
+        </div>
         <div class="sch-prev notes" id="schPrev">${renderMd(md)}</div>
         <div class="modal-actions">
           <button class="btn ghost" type="button" data-pv="no">Lascia com’era</button>
-          <button class="btn" type="button" data-pv="back">Altro schema</button>
+          <button class="btn" type="button" data-pv="back">Cambia opzioni</button>
           <button class="btn primary" type="button" data-pv="ok">Usa questa versione</button>
         </div>`, { label: 'Anteprima della riformattazione', onClose: () => { if (!done) { done = true; resolve(null); } } });
+      const prevEl = $('#schPrev', sh.el);
+      hydrateImages(prevEl);
       sh.el.addEventListener('click', e => {
         const b = e.target.closest('[data-pv]');
         if (!b) return;
         const k = b.dataset.pv;
-        if (k === 'after' || k === 'before') {
+        if (k === 'after' || k === 'before' || k === 'code') {
           $$('.seg-btn', sh.el).forEach(x => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-selected', String(on)); });
-          $('#schPrev', sh.el).innerHTML = renderMd(k === 'after' ? md : text);
+          if (k === 'code') {
+            prevEl.innerHTML = `<pre class="sch-code">${esc(md)}</pre>`;
+          } else {
+            prevEl.innerHTML = renderMd(k === 'after' ? md : combinedBefore);
+            hydrateImages(prevEl);
+          }
         } else if (k === 'no') sh.close(null);
         else if (k === 'back') { done = true; sh.close(null); done = false; pick(); }
         else if (k === 'ok') { done = true; sh.close(null); resolve(md); }
@@ -1618,49 +1724,274 @@ function reformatFlow(sec, text) {
   });
 }
 
+/* ---------- v4.30: Struttura e gestione paragrafi in Markdown ---------- */
+function parseMdHeadings(md) {
+  const src = String(md || '').replace(/\r\n?/g, '\n');
+  const lines = src.split('\n');
+  const offsets = [];
+  let pos = 0;
+  for (const l of lines) { offsets.push(pos); pos += l.length + 1; }
+
+  const list = [];
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\s*```/.test(l)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const m = l.match(/^(#{1,4})\s+(.+?)\s*#*$/);
+    if (m) {
+      const rawTitle = m[2].trim();
+      const title = stripMarks(stripCloze(rawTitle)).replace(/\*\*|__|`/g, '').trim() || rawTitle;
+      list.push({ line: i, level: m[1].length, rawTitle, title, charOffset: offsets[i] });
+    }
+  }
+  for (let k = 0; k < list.length; k++) {
+    let end = lines.length;
+    for (let j = k + 1; j < list.length; j++) {
+      if (list[j].level <= list[k].level) { end = list[j].line; break; }
+    }
+    list[k].endLine = end;
+    let bodyLines = 0;
+    for (let ln = list[k].line + 1; ln < end; ln++) {
+      if (lines[ln].trim() && !/^#{1,6}\s/.test(lines[ln])) bodyLines++;
+    }
+    list[k].bodyLines = bodyLines;
+    // verifica se esiste un paragrafo fratello precedente/successivo nello stesso genitore
+    let prevPeer = -1;
+    for (let j = k - 1; j >= 0; j--) {
+      if (list[j].level < list[k].level) break;
+      if (list[j].level === list[k].level) { prevPeer = j; break; }
+    }
+    let nextPeer = -1;
+    for (let j = k + 1; j < list.length; j++) {
+      if (list[j].level < list[k].level) break;
+      if (list[j].level === list[k].level) { nextPeer = j; break; }
+    }
+    list[k].prevPeer = prevPeer;
+    list[k].nextPeer = nextPeer;
+  }
+  return { lines, list };
+}
+
+function cleanMdSpacing(lines) {
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').replace(/\n+$/, '') + (lines.some(l => l.trim()) ? '\n' : '');
+}
+
+function moveMdHeading(md, idx, dir) {
+  const { lines, list } = parseMdHeadings(md);
+  const cur = list[idx];
+  if (!cur) return null;
+  const peerIdx = dir < 0 ? cur.prevPeer : cur.nextPeer;
+  if (peerIdx < 0) return null;
+  const a = dir < 0 ? list[peerIdx] : cur;
+  const b = dir < 0 ? cur : list[peerIdx];
+  const before = lines.slice(0, a.line);
+  const segA = lines.slice(a.line, a.endLine);
+  const segB = lines.slice(b.line, b.endLine);
+  const after = lines.slice(b.endLine);
+  const trimBlank = arr => {
+    const r = [...arr];
+    while (r.length && !r[0].trim()) r.shift();
+    while (r.length && !r[r.length - 1].trim()) r.pop();
+    return r;
+  };
+  const parts = [trimBlank(before), trimBlank(segB), trimBlank(segA), trimBlank(after)].filter(p => p.length);
+  return parts.map(p => p.join('\n')).join('\n\n') + '\n';
+}
+
+function shiftMdHeadingLevel(md, idx, delta) {
+  const { lines, list } = parseMdHeadings(md);
+  const cur = list[idx];
+  if (!cur) return null;
+  const nextLvl = Math.max(2, Math.min(4, cur.level + delta));
+  if (nextLvl === cur.level) return null;
+  lines[cur.line] = `${'#'.repeat(nextLvl)} ${cur.rawTitle}`;
+  return cleanMdSpacing(lines);
+}
+
+function renameMdHeading(md, idx, newTitle) {
+  const { lines, list } = parseMdHeadings(md);
+  const cur = list[idx];
+  const clean = String(newTitle || '').replace(/\n+/g, ' ').trim();
+  if (!cur || !clean) return null;
+  lines[cur.line] = `${'#'.repeat(cur.level)} ${clean}`;
+  return cleanMdSpacing(lines);
+}
+
+function mergeMdHeadingUp(md, idx) {
+  const { lines, list } = parseMdHeadings(md);
+  const cur = list[idx];
+  if (!cur || idx === 0) return null;
+  lines.splice(cur.line, 1);
+  return cleanMdSpacing(lines);
+}
+
+function deleteMdHeading(md, idx) {
+  const { lines, list } = parseMdHeadings(md);
+  const cur = list[idx];
+  if (!cur) return null;
+  lines.splice(cur.line, cur.endLine - cur.line);
+  return cleanMdSpacing(lines);
+}
+
 function modeEdit(sec, body, opts = {}) {
   const edMd0 = sec.md; // com’era quando hai aperto Modifica
   const otherNbs = state.notebooks.filter(n => n.id !== sec.notebookId);
+  const savedView = (() => {
+    try {
+      const v = localStorage.getItem('nb-ed-view');
+      if (v === 'wy' || v === 'code' || v === 'split') return v;
+      return localStorage.getItem('nb-code-open') === '1' ? 'split' : 'wy';
+    } catch { return 'wy'; }
+  })();
+  const qCount = (sec.questions || []).length;
+  const lCount = secLinksOf(sec).length;
+  const curGrpName = groupOf(sec)?.name || 'Nessuna cartella';
+  const curTags = tagsOf(sec);
+
   body.innerHTML = `
-    <div class="grid2 ed-head">
-      <label class="field"><span>Titolo del micro-argomento</span><input class="input" id="edTitle" value="${esc(sec.title)}"></label>
-      <label class="field"><span>Cartella</span>
-        <select class="input" id="edGroup">${groupOptions(nbById(sec.notebookId), groupOf(sec)?.id || '')}</select></label>
+    <div class="ed-top">
+      <label class="field ed-title-f">
+        <span>Titolo del micro-argomento</span>
+        <input class="input" id="edTitle" value="${esc(sec.title)}">
+      </label>
+      <details class="ed-meta" id="edMeta">
+        <summary>
+          <span>Cartella e tag</span>
+          <small class="muted-inline" id="edMetaSum">${esc(curGrpName)}${curTags.length ? ` · ${curTags.length} tag` : ''}</small>
+        </summary>
+        <div class="ed-meta-body">
+          <label class="field"><span>Cartella</span>
+            <select class="input" id="edGroup">${groupOptions(nbById(sec.notebookId), groupOf(sec)?.id || '')}</select></label>
+          ${tagFieldHtml('edTags', curTags)}
+        </div>
+      </details>
     </div>
-    ${tagFieldHtml('edTags', tagsOf(sec))}
-    <div class="edit-tools" role="toolbar" aria-label="Formattazione">
-      <button class="btn sm" data-wrap="==" title="Nasconde il testo selezionato nella modalità Cloze">Cloze</button>
-      <button class="btn sm" data-act="hint" title="Aggiunge un suggerimento al cloze dove si trova il cursore">Suggerimento</button>
-      <button class="btn sm" data-act="pnote" title="Una nota che compare come ⓘ dove hai il cursore: un tocco la apre">ⓘ Nota</button>
-      <button class="btn sm" data-wrap="**">Grassetto</button>
-      <button class="btn sm" data-mark="u">Sottolinea</button>
-      <span class="hl-pick" role="group" aria-label="Evidenzia">${HL_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}</span>
-      <button class="btn sm" data-ins="list">Elenco</button>
-      <button class="btn sm" data-indent="1" title="Sposta la riga a destra (Tab)">Rientra →</button>
-      <button class="btn sm" data-indent="-1" title="Sposta la riga a sinistra (Maiusc+Tab)">← Riduci rientro</button>
-      <button class="btn sm" data-ins="table">Tabella</button>
-      <button class="btn sm" data-act="xref" title="Inserisce un collegamento a un’altra sezione">Link a pagina</button>
-      <button class="btn sm" data-act="html" title="Inserisce un blocco HTML">HTML</button>
-      <button class="btn sm" data-act="img">Immagine</button>
-      <button class="btn sm" data-act="pdf-fig">Figura da PDF</button>
-      <button class="btn sm" data-act="hw">Scrivi a mano</button>
-      ${AI.ready() ? '<button class="btn sm" data-act="ai-format" title="Riordina la sezione sotto titoli fissi (malattia, farmaco, struttura anatomica…), senza aggiungere contenuti">✨ Riformatta con uno schema</button>' : ''}
+
+    <div class="edit-tools ed-v2" role="toolbar" aria-label="Strumenti dell’editor">
+      <div class="ed-row">
+        <span class="ed-grp" role="group" aria-label="Annulla e ripeti">
+          <button class="btn sm ghost" type="button" data-ed="undo" title="Annulla ultima modifica" disabled>↶</button>
+          <button class="btn sm ghost" type="button" data-ed="redo" title="Ripeti modifica" disabled>↷</button>
+        </span>
+        <span class="ed-grp" role="group" aria-label="Cloze e note">
+          <button class="btn sm" type="button" data-wrap="==" title="Nasconde il testo selezionato nella modalità Cloze">Cloze</button>
+          <button class="btn sm ghost" type="button" data-act="hint" title="Aggiunge un suggerimento al cloze dove si trova il cursore">? Indizio</button>
+          <button class="btn sm ghost" type="button" data-act="pnote" title="Una nota che compare come ⓘ dove hai il cursore">ⓘ</button>
+        </span>
+        <span class="ed-grp" role="group" aria-label="Stile del testo">
+          <button class="btn sm" type="button" data-wrap="**" title="Grassetto"><strong>G</strong></button>
+          <button class="btn sm" type="button" data-mark="u" title="Sottolinea"><u>S</u></button>
+          <button class="btn sm" type="button" data-ed="hl-pop" aria-expanded="false" title="Evidenzia con Stabilo Pastello o colori classici">🖍 ▾</button>
+        </span>
+        <span class="ed-grp" role="group" aria-label="Elenchi e rientri">
+          <button class="btn sm" type="button" data-ins="list" title="Elenco puntato">• Elenco</button>
+          <button class="btn sm ghost" type="button" data-ins="olist" title="Elenco numerato">1.</button>
+          <button class="btn sm ghost" type="button" data-indent="1" title="Sposta a destra (Tab)">→</button>
+          <button class="btn sm ghost" type="button" data-indent="-1" title="Riduci rientro (Maiusc+Tab)">←</button>
+        </span>
+      </div>
+      <div class="ed-row ed-row-2">
+        <button class="btn sm" type="button" data-ed="outline" aria-expanded="false" title="Vedi, sposta, rinomina o unisci i paragrafi della sezione">📑 Paragrafi <span class="ed-pcnt" id="edPcnt"></span></button>
+        <button class="btn sm ghost" type="button" data-ed="find" aria-expanded="false" title="Trova e sostituisci (Ctrl+F)">🔍 Trova</button>
+        <button class="btn sm ghost" type="button" data-ed="ins-pop" aria-expanded="false" title="Inserisci tabella, immagine, figura da PDF, link o HTML">＋ Inserisci ▾</button>
+        ${AI.ready() ? '<button class="btn sm ed-ai-btn" type="button" data-act="ai-format" title="Fondi testi da più fonti eliminando i doppioni, oppure applica uno schema fisso">✨ Fondi / Riformatta</button>' : ''}
+        <div class="seg sm ed-vseg" role="tablist" aria-label="Vista editor">
+          <button type="button" role="tab" data-edview="wy" aria-selected="${savedView === 'wy'}">Anteprima</button>
+          <button type="button" role="tab" data-edview="code" aria-selected="${savedView === 'code'}">Codice</button>
+          <button type="button" role="tab" data-edview="split" aria-selected="${savedView === 'split'}">Entrambi</button>
+        </div>
+        ${typeof helpBtn === 'function' ? helpBtn('editor') : ''}
+      </div>
     </div>
-    <p class="hint edit-hint">Scrivi direttamente nell’anteprima: seleziona il testo e usa i pulsanti qui sopra. Invio apre un nuovo paragrafo, Tab rientra una voce di elenco. Immagini e blocchi HTML si modificano nel codice: toccali per andarci.</p>
-    <div class="wy-wrap">
-      <article class="notes wy" id="edWy" aria-label="Anteprima modificabile della sezione"></article>
+
+    <div class="ed-pop" id="edHlPop" hidden role="dialog" aria-label="Colori evidenziatore">
+      <div class="ed-pop-lbl">Stabilo Pastello</div>
+      <div class="ed-pop-dots">
+        ${ED_HL_COLORS.filter(c => c.pastel).map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+      </div>
+      <div class="ed-pop-lbl">Classici</div>
+      <div class="ed-pop-dots">
+        ${ED_HL_COLORS.filter(c => !c.pastel).map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+        <button class="btn sm ghost ed-pop-clear" data-mark="none" type="button" title="Togli evidenziazione">✕ Togli</button>
+      </div>
     </div>
-    <details class="code-box" id="codeBox" ${localStorage.getItem('nb-code-open') === '0' ? '' : 'open'}>
-      <summary>Codice <span class="muted-inline">Markdown: qui vedi la sintassi e correggi gli errori; il blocco dove sei si illumina sopra</span></summary>
-      <label class="sr-only" for="edMd">Testo della sezione in Markdown</label>
-      <textarea id="edMd" class="input md-edit" spellcheck="false">${esc(sec.md)}</textarea>
-      <p class="hint edit-hint">Nel codice, negli elenchi Invio crea una nuova voce e Invio su una voce vuota torna indietro di un livello.</p>
+
+    <div class="ed-pop ed-menu-pop" id="edInsPop" hidden role="menu" aria-label="Inserisci nella sezione">
+      <button class="ed-mitem" type="button" data-ins="table">▦ Tabella</button>
+      <button class="ed-mitem" type="button" data-act="xref">🔗 Link a pagina</button>
+      <button class="ed-mitem" type="button" data-act="img">🖼 Immagine</button>
+      <button class="ed-mitem" type="button" data-act="pdf-fig">📄 Figura da PDF</button>
+      <button class="ed-mitem" type="button" data-act="hw">✍️ Scrivi a mano</button>
+      <button class="ed-mitem" type="button" data-act="html">&lt;/&gt; Blocco HTML</button>
+    </div>
+
+    <section class="ed-outline" id="edOutline" hidden aria-label="Gestione dei paragrafi"></section>
+
+    <div class="ed-find" id="edFind" hidden role="search" aria-label="Trova e sostituisci">
+      <div class="ed-find-row">
+        <input class="input sm" id="edFindQ" placeholder="Trova nel testo…" autocomplete="off">
+        <span class="ed-find-cnt" id="edFindCnt"></span>
+        <button class="btn sm ghost" type="button" data-fnd="prev" title="Precedente">↑</button>
+        <button class="btn sm ghost" type="button" data-fnd="next" title="Successivo">↓</button>
+        <button class="btn sm ghost" type="button" data-fnd="close" aria-label="Chiudi cerca">✕</button>
+      </div>
+      <div class="ed-find-row">
+        <input class="input sm" id="edReplQ" placeholder="Sostituisci con…" autocomplete="off">
+        <button class="btn sm ghost" type="button" data-fnd="one">Sostituisci</button>
+        <button class="btn sm" type="button" data-fnd="all">Sostituisci tutto</button>
+      </div>
+    </div>
+
+    <div class="ed-workspace view-${savedView}" id="edWork">
+      <div class="wy-wrap" id="edWyWrap">
+        <div class="ed-blkbar" id="edBlkBar" role="toolbar" aria-label="Blocco attivo">
+          <span class="ed-blk-tag" id="edBlkTag">Paragrafo</span>
+          <span class="ed-blk-types" role="group" aria-label="Tipo di blocco">
+            <button class="btn sm ghost" type="button" data-btype="p" title="Testo normale">T</button>
+            <button class="btn sm ghost" type="button" data-btype="h2" title="Titolo paragrafo (##)">H2</button>
+            <button class="btn sm ghost" type="button" data-btype="h3" title="Sottotitolo (###)">H3</button>
+            <button class="btn sm ghost" type="button" data-btype="h4" title="Sottotitolo 4 (####)">H4</button>
+          </span>
+          <span class="ed-blk-acts" role="group" aria-label="Azioni sul blocco">
+            <button class="btn sm ghost" type="button" data-bact="up" title="Sposta questo blocco su">↑</button>
+            <button class="btn sm ghost" type="button" data-bact="down" title="Sposta questo blocco giù">↓</button>
+            <button class="btn sm ghost" type="button" data-bact="add-p" title="Nuovo paragrafo sotto">＋ ¶</button>
+            <button class="btn sm ghost" type="button" data-bact="add-h2" title="Nuovo titolo H2 sotto">＋ H2</button>
+            <button class="btn sm ghost danger" type="button" data-bact="del" title="Elimina questo blocco">🗑</button>
+          </span>
+        </div>
+        <article class="notes wy" id="edWy" aria-label="Anteprima modificabile della sezione"></article>
+        <div class="ed-wy-foot">
+          <button class="btn sm ghost" type="button" data-bact="end-p">＋ Paragrafo in fondo</button>
+          <button class="btn sm ghost" type="button" data-bact="end-h2">＋ Titolo H2 in fondo</button>
+        </div>
+      </div>
+
+      <div class="ed-code-pane" id="edCodePane">
+        <div class="ed-code-head">
+          <span>Codice Markdown</span>
+          <small class="muted-inline">Tab rientra · Invio continua l’elenco</small>
+        </div>
+        <label class="sr-only" for="edMd">Testo della sezione in Markdown</label>
+        <textarea id="edMd" class="input md-edit" spellcheck="false">${esc(sec.md)}</textarea>
+      </div>
+    </div>
+
+    <details class="ed-extra" id="edExtra">
+      <summary>
+        <span>Domande per il richiamo e link utili</span>
+        <small class="muted-inline" id="edExtraSum">${qCount ? `${qCount} domande` : 'nessuna domanda'}${lCount ? ` · ${lCount} link` : ''}</small>
+      </summary>
+      <div class="ed-extra-body">
+        <label class="field"><span>Domande per il richiamo, una riga “D:” e una “R:” per domanda</span>
+          <textarea id="edQs" class="input qs-edit" spellcheck="false">${esc(serializeQs(sec.questions))}</textarea></label>
+        ${AI.ready() ? `<button class="btn sm" type="button" data-act="ai-qs">Aggiungi domande con ${AI.name()}</button>` : ''}
+        <label class="field"><span>Link a siti utili, uno per riga: Titolo | https://indirizzo</span>
+          <textarea id="edLinks" class="input qs-edit links-edit" spellcheck="false" placeholder="Radiopaedia: stenosi aortica | https://radiopaedia.org/…">${esc(secLinksOf(sec).map(l => `${l.title} | ${l.url}`).join('\n'))}</textarea></label>
+      </div>
     </details>
-    <label class="field"><span>Domande per il richiamo, una riga “D:” e una “R:” per domanda</span>
-      <textarea id="edQs" class="input qs-edit" spellcheck="false">${esc(serializeQs(sec.questions))}</textarea></label>
-    <label class="field"><span>Link a siti utili, uno per riga: Titolo | https://indirizzo</span>
-      <textarea id="edLinks" class="input qs-edit links-edit" spellcheck="false" placeholder="Radiopaedia: stenosi aortica | https://radiopaedia.org/…">${esc(secLinksOf(sec).map(l => `${l.title} | ${l.url}`).join('\n'))}</textarea></label>
-    ${AI.ready() ? `<button class="btn sm" data-act="ai-qs">Aggiungi domande con ${AI.name()}</button>` : ''}
+
     ${otherNbs.length && !opts.onDone ? `
       <details class="move">
         <summary>Sposta in un altro notebook</summary>
@@ -1670,11 +2001,348 @@ function modeEdit(sec, body, opts = {}) {
         </div>
       </details>` : ''}
     <div class="save-bar">
-      <button class="btn primary" data-act="save">Salva</button>
+      <button class="btn primary" id="edSaveBtn" data-act="save" title="Salva (Ctrl+S)">Salva</button>
       ${opts.onDone ? '<button class="btn ghost" type="button" data-act="ed-cancel">Chiudi senza salvare</button>' : `<a class="btn ghost" href="#/sec/${sec.id}/read">Annulla</a>
       <button class="btn ghost danger push" data-act="del">Elimina sezione</button>`}
     </div>`;
-  bindGroupSelect($('#edGroup', body), () => nbById(sec.notebookId));
+
+  const ta = $('#edMd', body);
+  const workEl = $('#edWork', body);
+  const outlineEl = $('#edOutline', body);
+  const findEl = $('#edFind', body);
+  const hlPop = $('#edHlPop', body);
+  const insPop = $('#edInsPop', body);
+  const saveBtn = $('#edSaveBtn', body);
+  const blkTag = $('#edBlkTag', body);
+
+  // ---------- Cronologia Undo / Redo ----------
+  let hist = [ta.value];
+  let hi = 0;
+  let histT = 0;
+  const syncUndoBtns = () => {
+    const u = $('[data-ed="undo"]', body), r = $('[data-ed="redo"]', body);
+    if (u) u.disabled = hi <= 0;
+    if (r) r.disabled = hi >= hist.length - 1;
+  };
+  const syncDirty = () => {
+    if (!saveBtn) return;
+    const dirtyNow = ta.value !== edMd0
+      || $('#edTitle', body).value.trim() !== sec.title
+      || $('#edQs', body).value !== serializeQs(sec.questions);
+    saveBtn.textContent = dirtyNow ? 'Salva •' : 'Salva';
+  };
+  const pushHist = (force = false) => {
+    clearTimeout(histT);
+    histT = 0;
+    const v = ta.value;
+    if (!force && v === hist[hi]) { syncDirty(); return; }
+    if (v === hist[hi]) { syncDirty(); return; }
+    hist = hist.slice(0, hi + 1);
+    hist.push(v);
+    if (hist.length > 45) hist.shift();
+    hi = hist.length - 1;
+    syncUndoBtns();
+    syncDirty();
+  };
+  const pushHistSoon = () => {
+    syncDirty();
+    clearTimeout(histT);
+    histT = setTimeout(() => pushHist(false), 650);
+  };
+  const applyValue = (nextMd, { record = true, focusOffset = null } = {}) => {
+    if (record) pushHist(true);
+    ta.value = nextMd;
+    if (record) pushHist(true);
+    wy.render();
+    renderOutline();
+    syncDirty();
+    if (focusOffset !== null) {
+      if (viewMode === 'code') jumpInTextarea(ta, { start: focusOffset, end: focusOffset });
+      else wy.focusCharOffset(focusOffset);
+    }
+  };
+  const doUndo = () => {
+    wy.flush();
+    pushHist(false);
+    if (hi <= 0) return;
+    hi--;
+    ta.value = hist[hi];
+    wy.render();
+    renderOutline();
+    syncUndoBtns();
+    syncDirty();
+  };
+  const doRedo = () => {
+    if (hi >= hist.length - 1) return;
+    hi++;
+    ta.value = hist[hi];
+    wy.render();
+    renderOutline();
+    syncUndoBtns();
+    syncDirty();
+  };
+
+  // ---------- Selettore vista Anteprima / Codice / Entrambi ----------
+  let viewMode = savedView;
+  const setViewMode = m => {
+    wy.flush();
+    viewMode = m;
+    workEl.classList.remove('view-wy', 'view-code', 'view-split');
+    workEl.classList.add(`view-${m}`);
+    $$('[data-edview]', body).forEach(b => b.setAttribute('aria-selected', String(b.dataset.edview === m)));
+    try { localStorage.setItem('nb-ed-view', m); localStorage.setItem('nb-code-open', m === 'wy' ? '0' : '1'); } catch { /* niente */ }
+    if (m !== 'code') wy.render();
+  };
+  $$('[data-edview]', body).forEach(b => b.addEventListener('click', () => setViewMode(b.dataset.edview)));
+
+  // ---------- Popover Evidenziatore e menu Inserisci ----------
+  const closePops = () => {
+    hlPop.hidden = true;
+    insPop.hidden = true;
+    $('[data-ed="hl-pop"]', body)?.setAttribute('aria-expanded', 'false');
+    $('[data-ed="ins-pop"]', body)?.setAttribute('aria-expanded', 'false');
+  };
+  const openPopNear = (pop, btn) => {
+    const wasOpen = !pop.hidden;
+    closePops();
+    if (wasOpen) return;
+    pop.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    const r = btn.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const pw = pop.offsetWidth || 240;
+    const left = Math.max(8, Math.min(vw - pw - 8, r.left));
+    const top = Math.min(window.innerHeight - (pop.offsetHeight || 160) - 8, r.bottom + 6);
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.max(8, Math.round(top))}px`;
+  };
+  const onDocPopDown = e => {
+    if (hlPop.hidden && insPop.hidden) return;
+    if (e.target.closest('#edHlPop, #edInsPop, [data-ed="hl-pop"], [data-ed="ins-pop"]')) return;
+    closePops();
+  };
+  document.addEventListener('pointerdown', onDocPopDown, true);
+  addCleanup(() => document.removeEventListener('pointerdown', onDocPopDown, true));
+
+  // ---------- Gestione Paragrafi (📑 Paragrafi) ----------
+  const renderOutline = () => {
+    const { list } = parseMdHeadings(ta.value);
+    const cntEl = $('#edPcnt', body);
+    if (cntEl) cntEl.textContent = list.length ? `(${list.length})` : '';
+    if (outlineEl.hidden) return;
+    outlineEl.innerHTML = `
+      <div class="ed-ol-head">
+        <strong>Struttura paragrafi</strong>
+        <span class="ed-ol-hacts">
+          <button type="button" class="btn sm ghost" data-ol="add-h2">＋ Titolo H2</button>
+          <button type="button" class="btn sm ghost" data-ol="add-h3">＋ Sottotitolo H3</button>
+          <button type="button" class="btn sm ghost" data-ol="close" aria-label="Chiudi struttura">✕</button>
+        </span>
+      </div>
+      ${list.length ? `
+        <ul class="ed-ol-list">
+          ${list.map((h, i) => `
+            <li class="ed-ol-row lv-${h.level}">
+              <button type="button" class="ed-ol-go" data-ol-go="${i}" title="Vai al paragrafo">
+                <span class="ed-ol-lv">H${h.level}</span>
+                <span class="ed-ol-t">${esc(h.title)}</span>
+                <small class="ed-ol-n">${h.bodyLines ? `${h.bodyLines}` : 'vuoto'}</small>
+              </button>
+              <span class="ed-ol-ctl">
+                <button type="button" class="btn sm ghost" data-ol-act="up:${i}" ${h.prevPeer < 0 ? 'disabled' : ''} title="Sposta l’intero paragrafo su">↑</button>
+                <button type="button" class="btn sm ghost" data-ol-act="down:${i}" ${h.nextPeer < 0 ? 'disabled' : ''} title="Sposta l’intero paragrafo giù">↓</button>
+                <button type="button" class="btn sm ghost" data-ol-act="prom:${i}" ${h.level <= 2 ? 'disabled' : ''} title="Alza livello titolo (es. H3 → H2)">←</button>
+                <button type="button" class="btn sm ghost" data-ol-act="dem:${i}" ${h.level >= 4 ? 'disabled' : ''} title="Abbassa livello titolo (es. H2 → H3)">→</button>
+                <button type="button" class="btn sm ghost" data-ol-act="ren:${i}" title="Rinomina titolo">✎</button>
+                ${i > 0 ? `<button type="button" class="btn sm ghost" data-ol-act="merge:${i}" title="Unisci il contenuto nel paragrafo sopra (toglie questo titolo)">🔗</button>` : ''}
+                <button type="button" class="btn sm ghost danger" data-ol-act="del:${i}" title="Elimina paragrafo (annullabile con ↶)">🗑</button>
+              </span>
+            </li>`).join('')}
+        </ul>` : '<p class="hint ed-ol-empty">Nessun titolo ancora: usa <strong>＋ Titolo H2</strong> qui sopra oppure <strong>H2 / H3</strong> nella barra del blocco per organizzare i paragrafi.</p>'}`;
+  };
+
+  outlineEl.addEventListener('click', async e => {
+    const goBtn = e.target.closest('[data-ol-go]');
+    if (goBtn) {
+      wy.flush();
+      const { list } = parseMdHeadings(ta.value);
+      const h = list[+goBtn.dataset.olGo];
+      if (!h) return;
+      if (viewMode === 'code') jumpInTextarea(ta, { start: h.charOffset, end: h.charOffset + h.rawTitle.length + h.level + 1 });
+      else wy.focusCharOffset(h.charOffset);
+      return;
+    }
+    const ol = e.target.closest('[data-ol]')?.dataset.ol;
+    if (ol) {
+      if (ol === 'close') { outlineEl.hidden = true; $('[data-ed="outline"]', body)?.setAttribute('aria-expanded', 'false'); return; }
+      const lvl = ol === 'add-h3' ? 3 : 2;
+      const t = await modal({ title: lvl === 3 ? 'Nuovo sottotitolo (H3)' : 'Nuovo paragrafo (H2)', input: true, placeholder: 'Es. Connessioni efferenti', confirm: 'Aggiungi' });
+      if (!t || !t.trim()) return;
+      wy.flush();
+      const baseMd = ta.value.trimEnd();
+      const add = `${baseMd ? `${baseMd}\n\n` : ''}${'#'.repeat(lvl)} ${t.trim()}\n\n- `;
+      applyValue(add, { focusOffset: add.length });
+      return;
+    }
+    const actBtn = e.target.closest('[data-ol-act]');
+    if (!actBtn || actBtn.disabled) return;
+    wy.flush();
+    const [kind, rawIdx] = actBtn.dataset.olAct.split(':');
+    const idx = +rawIdx;
+    let next = null;
+    if (kind === 'up') next = moveMdHeading(ta.value, idx, -1);
+    else if (kind === 'down') next = moveMdHeading(ta.value, idx, 1);
+    else if (kind === 'prom') next = shiftMdHeadingLevel(ta.value, idx, -1);
+    else if (kind === 'dem') next = shiftMdHeadingLevel(ta.value, idx, 1);
+    else if (kind === 'merge') {
+      next = mergeMdHeadingUp(ta.value, idx);
+      if (next !== null) toast('Paragrafo unito in quello sopra', '', { label: 'Annulla', fn: doUndo });
+    } else if (kind === 'del') {
+      next = deleteMdHeading(ta.value, idx);
+      if (next !== null) toast('Paragrafo eliminato', '', { label: 'Annulla', fn: doUndo });
+    } else if (kind === 'ren') {
+      const { list } = parseMdHeadings(ta.value);
+      const cur = list[idx];
+      if (!cur) return;
+      const v = await modal({ title: 'Rinomina paragrafo', input: true, value: cur.rawTitle, confirm: 'Salva' });
+      if (!v || !v.trim()) return;
+      next = renameMdHeading(ta.value, idx, v);
+    }
+    if (next !== null) applyValue(next);
+  });
+
+  // ---------- Trova e sostituisci ----------
+  let findMatches = [];
+  let findIdx = -1;
+  const computeMatches = () => {
+    const q = ($('#edFindQ', body)?.value || '');
+    findMatches = [];
+    if (!q) { $('#edFindCnt', body).textContent = ''; findIdx = -1; return; }
+    const hay = ta.value.toLowerCase();
+    const needle = q.toLowerCase();
+    let i = hay.indexOf(needle);
+    while (i >= 0) {
+      findMatches.push([i, i + q.length]);
+      i = hay.indexOf(needle, i + Math.max(1, needle.length));
+    }
+    if (!findMatches.length) { findIdx = -1; $('#edFindCnt', body).textContent = '0 trovati'; }
+    else {
+      if (findIdx < 0 || findIdx >= findMatches.length) findIdx = 0;
+      $('#edFindCnt', body).textContent = `${findIdx + 1}/${findMatches.length}`;
+    }
+  };
+  const jumpFind = dir => {
+    wy.flush();
+    computeMatches();
+    if (!findMatches.length) return;
+    findIdx = (findIdx + dir + findMatches.length) % findMatches.length;
+    $('#edFindCnt', body).textContent = `${findIdx + 1}/${findMatches.length}`;
+    const [a, b] = findMatches[findIdx];
+    if (viewMode === 'wy') {
+      wy.focusCharOffset(a);
+    } else {
+      jumpInTextarea(ta, { start: a, end: b });
+    }
+  };
+  const toggleFind = forceOpen => {
+    const open = forceOpen === undefined ? findEl.hidden : forceOpen;
+    findEl.hidden = !open;
+    $('[data-ed="find"]', body)?.setAttribute('aria-expanded', String(open));
+    if (open) {
+      wy.flush();
+      const inp = $('#edFindQ', body);
+      inp.focus();
+      inp.select();
+      computeMatches();
+    }
+  };
+  $('#edFindQ', body).addEventListener('input', () => { findIdx = -1; computeMatches(); });
+  $('#edFindQ', body).addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); jumpFind(e.shiftKey ? -1 : 1); }
+    else if (e.key === 'Escape') { e.preventDefault(); toggleFind(false); }
+  });
+  findEl.addEventListener('click', e => {
+    const f = e.target.closest('[data-fnd]')?.dataset.fnd;
+    if (!f) return;
+    if (f === 'close') { toggleFind(false); return; }
+    if (f === 'prev') { jumpFind(-1); return; }
+    if (f === 'next') { jumpFind(1); return; }
+    const q = $('#edFindQ', body).value;
+    const rep = $('#edReplQ', body).value;
+    if (!q) { toast('Scrivi prima cosa cercare'); return; }
+    wy.flush();
+    computeMatches();
+    if (!findMatches.length) { toast('Nessuna corrispondenza trovata'); return; }
+    if (f === 'one') {
+      const idx = findIdx >= 0 ? findIdx : 0;
+      const [a, b] = findMatches[idx];
+      const next = ta.value.slice(0, a) + rep + ta.value.slice(b);
+      applyValue(next, { focusOffset: a + rep.length });
+      computeMatches();
+      toast('Sostituito');
+    } else if (f === 'all') {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      const count = findMatches.length;
+      const next = ta.value.replace(re, () => rep);
+      applyValue(next);
+      computeMatches();
+      toast(`${count} ${count === 1 ? 'occorrenza sostituita' : 'occorrenze sostituite'}`, '', { label: 'Annulla', fn: doUndo });
+    }
+  });
+
+  // ---------- Aggiornamento Barra Blocco Attivo ----------
+  const paintBlkBar = info => {
+    if (!blkTag) return;
+    const labels = { p: 'Paragrafo', h1: 'Titolo H1', h2: 'Titolo H2', h3: 'Titolo H3', h4: 'Titolo H4', list: 'Elenco', table: 'Tabella', blockquote: 'Citazione', code: 'Codice / HTML', lock: 'Immagine / HTML' };
+    blkTag.textContent = labels[info?.kind] || 'Blocco';
+    $$('[data-btype]', body).forEach(b => b.classList.toggle('on', b.dataset.btype === info?.kind));
+    const u = $('[data-bact="up"]', body), d = $('[data-bact="down"]', body);
+    if (u) u.disabled = !info?.canUp;
+    if (d) d.disabled = !info?.canDown;
+  };
+
+  // ---------- Inizializzazione WYSIWYG ----------
+  const wy = setupWysiwyg($('#edWy', body), ta, $('.edit-tools', body), {
+    extraBars: [hlPop, insPop],
+    onContentChange: () => { pushHistSoon(); renderOutline(); },
+    onBeforeMutate: () => pushHist(true),
+    onAfterMutate: () => { pushHist(true); renderOutline(); },
+    onActiveChange: paintBlkBar
+  });
+
+  // la barra degli strumenti resta in alto sotto le schede mentre scorri
+  const tabsEl = $('#view .tabs');
+  const setTop = () => document.documentElement.style.setProperty('--tabs-h', `${tabsEl ? tabsEl.offsetHeight : 0}px`);
+  setTop();
+  window.addEventListener('resize', setTop);
+  addCleanup(() => window.removeEventListener('resize', setTop));
+
+  const refresh = () => { wy.render(); renderOutline(); syncDirty(); };
+  setupListEditing(ta);
+  ta.addEventListener('input', () => { pushHistSoon(); renderOutline(); });
+
+  // Aggiorna riepilogo Cartella/Tag e Domande/Link
+  const syncMetaSum = () => {
+    const gSel = $('#edGroup', body);
+    const gName = gSel?.selectedOptions?.[0]?.textContent || 'Nessuna cartella';
+    const ts = parseTags($('#edTags', body)?.value || '');
+    const el = $('#edMetaSum', body);
+    if (el) el.textContent = `${gName}${ts.length ? ` · ${ts.length} tag` : ''}`;
+  };
+  const syncExtraSum = () => {
+    const qn = parseQuestions($('#edQs', body)?.value || '').length;
+    const ln = parseSecLinks($('#edLinks', body)?.value || '').length;
+    const el = $('#edExtraSum', body);
+    if (el) el.textContent = `${qn ? `${qn} ${qn === 1 ? 'domanda' : 'domande'}` : 'nessuna domanda'}${ln ? ` · ${ln} link` : ''}`;
+    syncDirty();
+  };
+  $('#edTitle', body).addEventListener('input', syncDirty);
+  $('#edGroup', body).addEventListener('change', syncMetaSum);
+  $('#edTags', body)?.addEventListener('change', syncMetaSum);
+  $('#edQs', body).addEventListener('input', syncExtraSum);
+  $('#edLinks', body).addEventListener('input', syncExtraSum);
+
+  bindGroupSelect($('#edGroup', body), () => { syncMetaSum(); return nbById(sec.notebookId); });
   if (opts.onDone) on('[data-act="ed-cancel"]', 'click', () => opts.onDone(), body);
   if (editJump && editJump.secId === sec.id) {
     const jmp = editJump;
@@ -1682,10 +2350,61 @@ function modeEdit(sec, body, opts = {}) {
     setTimeout(() => wy.jump(jmp), 80);
   }
   bindTagField(body, 'edTags');
+
+  // Evita che i pulsanti tolgano la selezione dal testo
+  $$('.edit-tools button, #edHlPop button, #edBlkBar button', body).forEach(b => b.addEventListener('pointerdown', e => e.preventDefault()));
+
+  // Comandi toolbar speciali (undo/redo, outline, find, popovers)
+  on('[data-ed]', 'click', e => {
+    const k = e.currentTarget.dataset.ed;
+    if (k === 'undo') { doUndo(); return; }
+    if (k === 'redo') { doRedo(); return; }
+    if (k === 'outline') {
+      wy.flush();
+      outlineEl.hidden = !outlineEl.hidden;
+      e.currentTarget.setAttribute('aria-expanded', String(!outlineEl.hidden));
+      if (!outlineEl.hidden) renderOutline();
+      return;
+    }
+    if (k === 'find') { toggleFind(); return; }
+    if (k === 'hl-pop') { openPopNear(hlPop, e.currentTarget); return; }
+    if (k === 'ins-pop') { openPopNear(insPop, e.currentTarget); return; }
+  }, body);
+
+  // Comandi Barra Blocco Attivo (T/H2/H3/H4, ↑/↓, ＋¶, ＋H2, 🗑)
+  on('[data-btype]', 'click', e => {
+    wy.setBlockType(e.currentTarget.dataset.btype);
+  }, body);
+  on('[data-bact]', 'click', e => {
+    const a = e.currentTarget.dataset.bact;
+    if (a === 'up') wy.moveBlock(-1);
+    else if (a === 'down') wy.moveBlock(1);
+    else if (a === 'add-p') wy.insertBlockAfter('p', false);
+    else if (a === 'add-h2') wy.insertBlockAfter('h2', false);
+    else if (a === 'end-p') wy.insertBlockAfter('p', true);
+    else if (a === 'end-h2') wy.insertBlockAfter('h2', true);
+    else if (a === 'del') {
+      if (wy.deleteBlock()) toast('Blocco eliminato', '', { label: 'Annulla', fn: doUndo });
+    }
+  }, body);
+
+  // Scorciatoie Ctrl+S (Salva) e Ctrl+F (Trova)
+  const onEdKey = e => {
+    if ($('#modalRoot').children.length) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === 's') { e.preventDefault(); $('[data-act="save"]', body)?.click(); }
+      else if (k === 'f') { e.preventDefault(); toggleFind(true); }
+    }
+  };
+  document.addEventListener('keydown', onEdKey);
+  addCleanup(() => document.removeEventListener('keydown', onEdKey));
+
+  // ---------- Azioni testo & inserimento (quando il focus è nel codice o dopo il pass-through da WYSIWYG) ----------
   on('[data-act="pnote"]', 'click', async () => {
     const note = await askPnote();
-    if (note) insertAtCursor(ta, `^[${note}]`);
-  });
+    if (note) { pushHist(true); insertAtCursor(ta, `^[${note}]`); pushHist(true); refresh(); }
+  }, body);
   on('[data-act="hint"]', 'click', async () => {
     const { selectionStart: s0, selectionEnd: s1 } = ta;
     let r = clozeAround(ta.value, s0);
@@ -1700,54 +2419,69 @@ function modeEdit(sec, body, opts = {}) {
     const v = await modal({ title: 'Suggerimento', text: `Per “${term}”: una domanda o un indizio che compare come “?” accanto al termine nascosto. Lascia vuoto per toglierlo.`, input: true, value: old, placeholder: 'Es. ormone che abbassa la glicemia', confirm: 'Salva', allowEmpty: true });
     if (v === null) return;
     const clean = cleanHint(v);
+    pushHist(true);
     ta.focus();
     ta.setRangeText(`==${term}${clean ? `::${clean}` : ''}==`, r.start, r.end, 'end');
+    pushHist(true);
     refresh();
   }, body);
   on('[data-act="html"]', 'click', async () => {
+    closePops();
     const { selectionStart: s0, selectionEnd: s1 } = ta;
     const code = await modal({ title: 'Blocco HTML', text: 'Incolla il codice HTML, anche una pagina intera con il suo stile. Si vede in un riquadro dentro gli appunti, separato dal resto dell’app.', input: true, multiline: true, placeholder: '<div>…</div>', confirm: 'Inserisci' });
     if (!code) return;
     const before = ta.value.slice(0, s0);
     const pre = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+    pushHist(true);
     ta.focus();
     ta.setRangeText(`${pre}\`\`\`html\n${code.trim()}\n\`\`\`\n\n`, s0, s1, 'end');
+    pushHist(true);
     refresh();
   }, body);
   on('[data-act="xref"]', 'click', async () => {
+    closePops();
     const { selectionStart: s0, selectionEnd: s1 } = ta;
     const s = await sectionPickerSheet('Collega una pagina', sec.id);
     if (!s) return;
     const label = ta.value.slice(s0, s1).trim().replace(/[\[\]|\n]/g, ' ');
     const title = s.title.replace(/[\[\]|]/g, ' ').trim();
+    pushHist(true);
     ta.focus();
     ta.setRangeText(`[[${title}${label && label !== title ? `|${label}` : ''}]]`, s0, s1, 'end');
+    pushHist(true);
     refresh();
   }, body);
-  const ta = $('#edMd', body);
-  const wy = setupWysiwyg($('#edWy', body), ta, $('.edit-tools', body));
-  // la barra degli strumenti resta in alto sotto le schede mentre scorri
-  const tabsEl = $('#view .tabs');
-  const setTop = () => document.documentElement.style.setProperty('--tabs-h', `${tabsEl ? tabsEl.offsetHeight : 0}px`);
-  setTop();
-  window.addEventListener('resize', setTop);
-  addCleanup(() => window.removeEventListener('resize', setTop));
-  const refresh = () => wy.render();
-  $('#codeBox', body).addEventListener('toggle', e => { try { localStorage.setItem('nb-code-open', e.target.open ? '1' : '0'); } catch { /* niente */ } });
-  setupListEditing(ta);
-  on('[data-indent]', 'click', e => { ta.focus(); indentLines(ta, +e.currentTarget.dataset.indent); }, body);
-  on('[data-mark]', 'click', e => { if (wrapSelectionInTextarea(ta, `{{${e.currentTarget.dataset.mark}|`, '}}')) refresh(); }, body);
+  on('[data-indent]', 'click', e => { pushHist(true); ta.focus(); indentLines(ta, +e.currentTarget.dataset.indent); pushHist(true); refresh(); }, body);
+  on('[data-mark]', 'click', e => {
+    const k = e.currentTarget.dataset.mark;
+    closePops();
+    pushHist(true);
+    if (k === 'none') {
+      const { selectionStart: s, selectionEnd: en, value: v } = ta;
+      if (s === en) { toast('Seleziona prima il testo'); ta.focus(); return; }
+      const cleaned = stripMarks(v.slice(s, en));
+      ta.focus();
+      ta.setRangeText(cleaned, s, en, 'select');
+      pushHist(true);
+      refresh();
+      return;
+    }
+    if (wrapSelectionInTextarea(ta, `{{${k}|`, '}}')) { pushHist(true); refresh(); }
+  }, body);
   on('[data-act="hw"]', 'click', async () => {
+    closePops();
     const im = await openHandwritingPad(sec.notebookId);
-    if (im) insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+    if (im) { pushHist(true); insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`); pushHist(true); refresh(); }
   }, body);
   on('[data-act="img"]', 'click', async () => {
+    closePops();
     const im = await addImageFromDevice(sec.notebookId);
-    if (im) insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+    if (im) { pushHist(true); insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`); pushHist(true); refresh(); }
   }, body);
   on('[data-act="pdf-fig"]', 'click', async () => {
+    closePops();
     const list = await openPdfCropper(sec.notebookId, { sec });
-    if (list.length) insertAtCursor(ta, `\n\n${list.map(r => imageMd(r.id, r.caption)).join('\n\n')}\n\n`);
+    if (list.length) { pushHist(true); insertAtCursor(ta, `\n\n${list.map(r => imageMd(r.id, r.caption)).join('\n\n')}\n\n`); pushHist(true); refresh(); }
   }, body);
   // Immagini incollate (es. uno screenshot su Windows)
   ta.addEventListener('paste', async e => {
@@ -1756,13 +2490,14 @@ function modeEdit(sec, body, opts = {}) {
     e.preventDefault();
     try {
       const im = await saveImage(await compressImage(item.getAsFile()), sec.notebookId);
+      pushHist(true);
       insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+      pushHist(true);
+      refresh();
       toast('Immagine incollata');
     } catch (err) { toast(err.message, 'err'); }
   });
 
-  // Evita che i pulsanti tolgano la selezione dal testo
-  $$('.edit-tools button', body).forEach(b => b.addEventListener('pointerdown', e => e.preventDefault()));
   on('[data-wrap]', 'click', e => {
     const w = e.currentTarget.dataset.wrap;
     const { selectionStart: s, selectionEnd: en, value: v } = ta;
@@ -1773,29 +2508,37 @@ function modeEdit(sec, body, opts = {}) {
     const core = sel.trim();
     const wrapped = core.startsWith(w) && core.endsWith(w) && core.length > w.length * 2;
     const next = wrapped ? core.slice(w.length, -w.length) : w + core + w;
+    pushHist(true);
     ta.focus();
     ta.setRangeText(lead + next + trail, s, en, 'select');
+    pushHist(true);
     refresh();
   }, body);
   on('[data-ins]', 'click', e => {
     const kind = e.currentTarget.dataset.ins;
-    const snippet = kind === 'table'
-      ? '\n\n| Voce | Caratteristica | Note |\n|---|---|---|\n|  |  |  |\n'
-      : '\n- ';
+    closePops();
+    pushHist(true);
     ta.focus();
-    ta.setRangeText(snippet, ta.selectionStart, ta.selectionEnd, 'end');
+    if (kind === 'list' || kind === 'olist') {
+      toggleListLines(ta, kind === 'olist');
+      pushHist(true);
+      refresh();
+      return;
+    }
+    const snippet = '\n\n| Voce | Caratteristica | Note |\n|---|---|---|\n|  |  |  |\n';
+    const pos = ta.selectionEnd ?? ta.value.length;
+    ta.setRangeText(snippet, pos, pos, 'end');
+    pushHist(true);
     refresh();
   }, body);
 
   on('[data-act="ai-format"]', 'click', async () => {
     if (!ta.value.trim()) { toast('Non c’è testo da riformattare'); return; }
     wy.flush();
-    const prev = ta.value;
-    const md = await reformatFlow(sec, prev);
+    const md = await reformatFlow(sec, ta.value);
     if (!md || !ta.isConnected) return;
-    ta.value = md;
-    refresh();
-    toast('Fatto: controlla e poi Salva la sezione', '', { label: 'Annulla', fn: () => { if (ta.isConnected) { ta.value = prev; refresh(); } } });
+    applyValue(md);
+    toast('Fatto: controlla e poi Salva la sezione', '', { label: 'Annulla', fn: doUndo });
   }, body);
 
   // v3.95: arrivi qui da “Formato degli appunti”: la riformattazione si apre da sola
@@ -1803,6 +2546,7 @@ function modeEdit(sec, body, opts = {}) {
 
   on('[data-act="ai-qs"]', 'click', async e => {
     const btn = e.currentTarget;
+    wy.flush();
     if (!ta.value.trim()) { toast('Scrivi prima gli appunti'); return; }
     btn.disabled = true;
     btn.textContent = 'Genero le domande…';
@@ -1812,6 +2556,7 @@ function modeEdit(sec, body, opts = {}) {
       if (!parsed.length) throw new Error('Nessuna domanda riconosciuta nella risposta.');
       const box = $('#edQs', body);
       box.value = [box.value.trim(), serializeQs(parsed)].filter(Boolean).join('\n\n');
+      syncExtraSum();
       toast(`${parsed.length} domande aggiunte. Salva per tenerle.`);
     } catch (err) {
       toast(err.message, 'err');
@@ -1855,7 +2600,7 @@ function modeEdit(sec, body, opts = {}) {
     cards.forEach(c => { c.notebookId = target; });
     if (cards.length) await saveCards(cards);
     toast(`Spostata in ${nbById(target)?.name || 'altro notebook'}`);
-    go(`#/sec/${sec.id}/read`);
+    go(`#/nb/${target}`);
   }, body);
 
   on('[data-act="del"]', 'click', async () => {
@@ -1867,6 +2612,10 @@ function modeEdit(sec, body, opts = {}) {
     toast('Sezione eliminata');
     go(`#/nb/${nbId}`);
   }, body);
+
+  renderOutline();
+  syncUndoBtns();
+  syncDirty();
 }
 
 /* ---------------------------------------------------------------------
@@ -2891,6 +3640,87 @@ function stableSelection(bar, check, { delay = 380, place = null } = {}) {
   SelGesture.subs.add(later);
   return { changed() { bar.hidden = true; later(); }, cancel() { clearTimeout(t); }, done() { clearTimeout(t); SelGesture.subs.delete(later); } };
 }
+/* v4.29: estrae il testo selezionato preservando elenchi puntati/numerati annidati e tutti i livelli di rientro */
+function extractSelectedListMd(container, range) {
+  const skipEl = el => el.matches('.pnote, .fold-btn, .fold-pk-btn, button');
+  const sliceTextNode = tn => {
+    const val = tn.nodeValue || '';
+    if (!val) return '';
+    try {
+      if (range.comparePoint(tn, val.length) < 0 || range.comparePoint(tn, 0) > 0) return '';
+    } catch {
+      if (!range.intersectsNode(tn)) return '';
+    }
+    const a = tn === range.startContainer ? range.startOffset : 0;
+    const b = tn === range.endContainer ? range.endOffset : val.length;
+    return b > a ? val.slice(a, b) : '';
+  };
+  const ownText = (root, skipLists) => {
+    let out = '';
+    const walk = node => {
+      for (const c of node.childNodes) {
+        if (c.nodeType === 3) { out += sliceTextNode(c); continue; }
+        if (c.nodeType !== 1) continue;
+        if (skipEl(c)) continue;
+        if (skipLists && (c.tagName === 'UL' || c.tagName === 'OL')) continue;
+        if (c.tagName === 'BR') { out += ' '; continue; }
+        walk(c);
+      }
+    };
+    walk(root);
+    return out.replace(/[\s\u00a0]+/g, ' ').trim();
+  };
+
+  const liMap = new Map();
+  $$('li', container).forEach(li => {
+    if (li.closest('.html-embed')) return;
+    const t = ownText(li, true);
+    if (t) liMap.set(li, t);
+  });
+  if (!liMap.size) return '';
+
+  const nonListBlocks = [];
+  $$('h1, h2, h3, h4, h5, h6, p', container).forEach(el => {
+    if (el.closest('li, td, th, ul, ol, .html-embed')) return;
+    const t = ownText(el, false);
+    if (t) nonListBlocks.push({ el, text: t });
+  });
+  // Se è selezionata solo una singola voce (o parte di essa) senza altri blocchi, resta testo normale
+  if (liMap.size === 1 && !nonListBlocks.length) return '';
+
+  const markerFor = li => {
+    const list = li.parentElement;
+    if (list && list.tagName === 'OL') {
+      const start = +(list.getAttribute('start') || 1);
+      const siblings = [...list.children].filter(x => x.tagName === 'LI');
+      const idx = Math.max(0, siblings.indexOf(li));
+      return `${start + idx}. `;
+    }
+    return '- ';
+  };
+  const indentFor = li => {
+    let pad = '';
+    let p = li.parentElement?.closest('li');
+    while (p && container.contains(p)) {
+      if (liMap.has(p)) pad = ' '.repeat(markerFor(p).length) + pad;
+      p = p.parentElement?.closest('li');
+    }
+    return pad;
+  };
+
+  const entries = [
+    ...nonListBlocks.map(b => ({ el: b.el, kind: 'text', line: b.text })),
+    ...[...liMap.entries()].map(([li, t]) => ({ el: li, kind: 'li', line: `${indentFor(li)}${markerFor(li)}${t}` }))
+  ];
+  entries.sort((a, b) => (a.el === b.el ? 0 : (a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)));
+
+  let out = '';
+  for (let i = 0; i < entries.length; i++) {
+    if (i > 0) out += (entries[i].kind === 'li' && entries[i - 1].kind === 'li') ? '\n' : '\n\n';
+    out += entries[i].line;
+  }
+  return out;
+}
 function setupReadingTools(container, sec) {
   const bar = document.createElement('div');
   bar.className = 'sel-bar rt-bar';
@@ -2943,9 +3773,8 @@ function setupReadingTools(container, sec) {
     pre.setEnd(range.startContainer, range.startOffset);
     const norm = s => s.replace(/\s+/g, ' ');
     const occurrence = countOccurrences(norm(pre.toString()), norm(text).trim());
-    // elenco puntato se la selezione prende più voci
-    const lis = $$('li', container).filter(li => range.intersectsNode(li) && !li.querySelector('li'));
-    const listText = lis.length > 1 ? lis.map(li => '- ' + li.textContent.trim()).join('\n') : '';
+    // v4.29: conserva tutte le voci padre/figlie e i rientri degli elenchi annidati (senza cancellare le voci con sottopunti)
+    const listText = extractSelectedListMd(container, range);
     return { text: text.trim(), occurrence, listText };
   };
   const stable = stableSelection(bar, () => { const c = capture(); if (c) last = c; return !!c; }, { place: () => placeSelBar(bar, container) });
@@ -3016,7 +3845,7 @@ function setupReadingTools(container, sec) {
       });
       return;
     }
-    if (pieces.length > 1 && (kind === 'card' || kind === 'clin')) c.listText = pieces.map(p => `- ${p.text}`).join('\n');
+    if (pieces.length > 1 && (kind === 'card' || kind === 'clin')) c.listText = pieces.map(p => p.listText || `- ${p.text}`).join('\n');
     if (kind === 'gloss') {
       if (await glossarySheet(null, { term: c.text.slice(0, 80), nbId: sec.notebookId })) { const y = window.scrollY; route(); window.scrollTo(0, y); }
       return;
@@ -3351,19 +4180,20 @@ function cardFieldToolsHtml() {
 }
 function bindCardFieldTools(root, fields, notebookId) {
   let last = fields[fields.length - 1];
-  fields.forEach(f => { f.addEventListener('focus', () => { last = f; }); setupListEditing(f); });
+  fields.forEach(f => {
+    const pick = () => { last = f; f.dataset.touched = '1'; };
+    f.addEventListener('focus', pick);
+    f.addEventListener('pointerdown', pick);
+    setupListEditing(f);
+  });
   $$('[data-ct]', root).forEach(b => b.addEventListener('pointerdown', e => {
     if (!['img', 'hw'].includes(b.dataset.ct)) e.preventDefault();
   }));
   $$('[data-ct]', root).forEach(b => b.addEventListener('click', async () => {
     const ta = last;
     const k = b.dataset.ct;
-    if (k === 'list') {
-      const v = ta.value;
-      const s = ta.selectionStart;
-      const atLineStart = s === 0 || v[s - 1] === '\n';
-      insertAtCursor(ta, atLineStart ? '- ' : '\n- ');
-    } else if (k === 'in' || k === 'out') { ta.focus(); indentLines(ta, k === 'in' ? 1 : -1); }
+    if (k === 'list') { ta.focus(); toggleListLines(ta); }
+    else if (k === 'in' || k === 'out') { ta.focus(); indentLines(ta, k === 'in' ? 1 : -1); }
     else if (k === 'bold') wrapSelectionInTextarea(ta, '**', '**');
     else if (k === 'hl') wrapSelectionInTextarea(ta, '{{y|', '}}');
     else if (k === 'img') { const im = await addImageFromDevice(notebookId); if (im) insertAtCursor(ta, `\n${imageMd(im.id)}\n`); }
@@ -3387,6 +4217,51 @@ async function openHandwritingPadNested(notebookId) {
 const LIST_RE = /^(\s*)([-*+]|\d+[.)])(\s+)(.*)$/;
 function lineStart(v, pos) { return v.lastIndexOf('\n', pos - 1) + 1; }
 function lineEnd(v, pos) { const e = v.indexOf('\n', pos); return e < 0 ? v.length : e; }
+/* v4.30: trasforma le righe selezionate (o la riga del cursore) in elenco puntato o numerato senza mai cancellare il testo */
+function toggleListLines(ta, ordered = false) {
+  const v = ta.value;
+  const s = ta.selectionStart ?? v.length;
+  const e = ta.selectionEnd ?? s;
+  const ls = lineStart(v, s);
+  const endPos = e > s && v[e - 1] === '\n' ? e - 1 : e;
+  const le = lineEnd(v, Math.max(endPos, s));
+  const lines = v.slice(ls, le).split('\n');
+  const nonEmpty = lines.filter(l => l.trim());
+  if (!nonEmpty.length) {
+    const lead = lines[0] || '';
+    const ins = `${lead}${ordered ? '1. ' : '- '}`;
+    ta.setRangeText(ins, ls, le, 'end');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  const sameRe = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/;
+  const allSame = nonEmpty.every(l => sameRe.test(l));
+  let firstDelta = 0;
+  let num = 1;
+  const out = lines.map((l, i) => {
+    if (!l.trim()) return l;
+    const m = l.match(/^(\s*)(?:([-*+]|\d+[.)])\s+)?(.*)$/);
+    const pad = m[1] || '';
+    const hadMarker = m[2] ? m[0].slice(pad.length, m[0].length - m[3].length) : '';
+    const rest = m[3] || '';
+    if (allSame) {
+      if (i === 0) firstDelta = -hadMarker.length;
+      return pad + rest;
+    }
+    const nextMarker = ordered ? `${num++}. ` : '- ';
+    if (i === 0) firstDelta = nextMarker.length - hadMarker.length;
+    return `${pad}${nextMarker}${rest}`;
+  });
+  const joined = out.join('\n');
+  ta.setRangeText(joined, ls, le, 'preserve');
+  if (s === e) {
+    const pos = Math.max(ls, s + firstDelta);
+    ta.setSelectionRange(pos, pos);
+  } else {
+    ta.setSelectionRange(ls, ls + joined.length);
+  }
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
 function indentLines(ta, dir) {
   const v = ta.value;
   const s = ta.selectionStart;
@@ -7933,30 +8808,68 @@ function taOffsetY(ta, pos) {
   return y;
 }
 
-function setupWysiwyg(box, ta, tools) {
+function setupWysiwyg(box, ta, tools, opts = {}) {
+  const { extraBars = [], onContentChange = () => {}, onBeforeMutate = () => {}, onAfterMutate = () => {}, onActiveChange = () => {} } = opts;
   let raws = [], types = [];
   let enabled = true;
   const dirty = new Set();
   let timer = 0;
   let lastFocus = 'wy';
+  let curIdx = -1;
   const starts = () => { const s = []; let a = 0; raws.forEach(r => { s.push(a); a += r.length; }); return s; };
+  const contentIndices = () => raws.map((r, i) => (types[i] === 'space' || !r.trim() ? -1 : i)).filter(i => i >= 0);
+
+  const kindOfBlock = i => {
+    const raw = (raws[i] || '').trim();
+    const tp = types[i];
+    if (!raw) return 'p';
+    const hm = raw.match(/^(#{1,4})\s+/);
+    if (hm) return `h${hm[1].length}`;
+    if (tp === 'list') return 'list';
+    if (tp === 'table') return 'table';
+    if (tp === 'blockquote') return 'blockquote';
+    if (tp === 'code' || raw.includes('```')) return 'code';
+    if (/!\[[^\]]*\]\(img:/.test(raw)) return 'lock';
+    return 'p';
+  };
+
+  const notifyActive = i => {
+    const idxs = contentIndices();
+    if (i < 0 && idxs.length) i = idxs[0];
+    curIdx = i;
+    const pos = idxs.indexOf(i);
+    $$('.wy-b', box).forEach(x => x.classList.toggle('wy-cur', +x.dataset.b === i));
+    onActiveChange({
+      idx: i,
+      kind: i >= 0 ? kindOfBlock(i) : 'p',
+      canUp: pos > 0,
+      canDown: pos >= 0 && pos < idxs.length - 1
+    });
+  };
+
   const render = () => {
     const t = wyTokenize(ta.value);
     raws = t.raws; types = t.types; enabled = t.ok;
     if (!enabled) {
-      box.innerHTML = `<div class="wy-note">L’anteprima modificabile non è disponibile per questo testo: modifica nel codice qui sotto.</div>${renderMd(ta.value)}`;
+      box.innerHTML = `<div class="wy-note">L’anteprima modificabile non è disponibile per questo testo: modifica nel codice.</div>${renderMd(ta.value)}`;
       box.removeAttribute('data-ph');
+      notifyActive(-1);
       return;
     }
     const html = raws.map((raw, i) => {
       if (types[i] === 'space' || !raw.trim()) return '';
       const inner = renderMd(raw);
       const lock = !WY_EDITABLE.has(types[i]) || /<img|<iframe|html-embed|html-block/.test(inner) || raw.includes('```');
-      return `<div class="wy-b${lock ? ' wy-lock' : ''}" data-b="${i}" contenteditable="${lock ? 'false' : 'true'}"${lock ? ' title="Questo blocco si modifica nel codice qui sotto: toccalo per andarci"' : ' spellcheck="true"'}>${inner}</div>`;
+      return `<div class="wy-b${lock ? ' wy-lock' : ''}" data-b="${i}" contenteditable="${lock ? 'false' : 'true'}"${lock ? ' title="Questo blocco si modifica nel codice: toccalo per andarci"' : ' spellcheck="true"'}>${inner}</div>`;
     }).join('');
     box.innerHTML = html || '<div class="wy-b wy-new" data-b="new" contenteditable="true" spellcheck="true"><p><br></p></div>';
     box.toggleAttribute('data-empty', !html);
+    hydrateImages(box);
+    hydrateHtmlBlocks(box);
+    const idxs = contentIndices();
+    notifyActive(idxs.includes(curIdx) ? curIdx : (idxs[0] ?? -1));
   };
+
   const convert = el => {
     if (!el.isConnected) return;
     const md = wyBlockToMd(el).replace(/\n{3,}/g, '\n\n').trim();
@@ -7970,37 +8883,43 @@ function setupWysiwyg(box, ta, tools) {
       const lead = raw.match(/^\n*/)[0];
       const trail = raw.match(/\n*$/)[0];
       raws[i] = md ? `${lead}${md}${trail}` : '';
-      // blocco svuotato: tolgo anche la riga vuota che lo seguiva
       if (!md && types[i + 1] === 'space') raws[i + 1] = '';
     }
     ta.value = raws.join('');
   };
+
   const flush = () => {
     clearTimeout(timer);
     timer = 0;
     if (!dirty.size) return;
     dirty.forEach(convert);
     dirty.clear();
+    onContentChange();
   };
   const markDirty = el => { if (!el) return; dirty.add(el); clearTimeout(timer); timer = setTimeout(flush, 250); };
   const blockOf = node => { const n = node && (node.nodeType === 1 ? node : node.parentElement); const b = n && n.closest('.wy-b'); return b && box.contains(b) ? b : null; };
+
   box.addEventListener('input', e => markDirty(blockOf(e.target)));
   box.addEventListener('focusin', e => {
     lastFocus = 'wy';
     const b = blockOf(e.target);
-    $$('.wy-cur', box).forEach(x => x.classList.toggle('wy-cur', x === b));
-    if (b && b.dataset.b !== 'new') showInCode(+b.dataset.b);
+    if (b && b.dataset.b !== 'new') {
+      notifyActive(+b.dataset.b);
+      showInCode(+b.dataset.b);
+    } else {
+      notifyActive(-1);
+    }
   });
   // uscendo dall’anteprima ridisegno i blocchi, così titoli ed elenchi nuovi prendono forma
   box.addEventListener('focusout', e => {
     if (e.relatedTarget && box.contains(e.relatedTarget)) return;
-    if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.edit-tools')) return;
+    if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.edit-tools, .ed-blkbar, .ed-pop')) return;
     flush();
     setTimeout(() => { if (!box.contains(document.activeElement)) render(); }, 0);
   });
   box.addEventListener('click', e => {
     const b = e.target.closest('.wy-lock');
-    if (b) { goToCode(+b.dataset.b); return; }
+    if (b) { notifyActive(+b.dataset.b); goToCode(+b.dataset.b); return; }
     if (e.target.closest('a')) e.preventDefault();
   });
   // incollare: solo testo, niente stili presi da altre pagine
@@ -8010,6 +8929,7 @@ function setupWysiwyg(box, ta, tools) {
     e.preventDefault();
     document.execCommand('insertText', false, text);
   });
+
   // v4.19: rientro/riduzione diretto sul DOM (senza execCommand, che stacca i <li> o crea <blockquote>)
   const wyIndent = dir => {
     const x = selIn();
@@ -8031,6 +8951,7 @@ function setupWysiwyg(box, ta, tools) {
     }
     if (!lis.length) return 'not-li';
 
+    onBeforeMutate();
     let changed = false;
     let blockedFirst = false;
     if (dir > 0) {
@@ -8089,11 +9010,13 @@ function setupWysiwyg(box, ta, tools) {
       } catch { /* cursore invariato */ }
       dirty.add(blk);
       flush();
+      onAfterMutate();
     } else if (blockedFirst) {
       toast('Per rientrare una voce deve essercene una sopra nello stesso elenco');
     }
     return true;
   };
+
   box.addEventListener('keydown', e => {
     if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey) {
       const res = wyIndent(e.shiftKey ? -1 : 1);
@@ -8110,10 +9033,10 @@ function setupWysiwyg(box, ta, tools) {
       }
     }
   });
+
   ta.addEventListener('focusin', () => { lastFocus = 'ta'; });
   let tt = 0;
   ta.addEventListener('input', () => { if (box.contains(document.activeElement)) return; clearTimeout(tt); tt = setTimeout(render, 300); });
-  // dal codice all’anteprima: il blocco dove sta il cursore si illumina
   const syncFromCode = () => {
     if (!enabled) return;
     const pos = ta.selectionStart;
@@ -8121,13 +9044,14 @@ function setupWysiwyg(box, ta, tools) {
     let i = st.length - 1;
     while (i > 0 && st[i] > pos) i--;
     while (i > 0 && (types[i] === 'space' || !raws[i].trim())) i--;
-    $$('.wy-b', box).forEach(x => x.classList.toggle('wy-cur', +x.dataset.b === i));
+    notifyActive(i);
   };
   ta.addEventListener('click', syncFromCode);
   ta.addEventListener('keyup', syncFromCode);
+
   const showInCode = i => {
     const st = starts();
-    if (st[i] === undefined) return;
+    if (st[i] === undefined || !ta.offsetParent) return;
     const y = taOffsetY(ta, st[i] + (raws[i].match(/^\n*/)[0].length));
     ta.scrollTop = Math.max(0, y - 12);
   };
@@ -8136,9 +9060,147 @@ function setupWysiwyg(box, ta, tools) {
     const st = starts();
     const lead = (raws[i] || '').match(/^\n*/)[0].length;
     const a = (st[i] ?? 0) + lead, b = (st[i] ?? 0) + (raws[i] || '').trimEnd().length;
-    const det = ta.closest('details');
-    if (det) det.open = true;
+    const work = ta.closest('.ed-workspace');
+    if (work && work.classList.contains('view-wy')) {
+      work.classList.remove('view-wy');
+      work.classList.add('view-split');
+      $$('[data-edview]', work.parentElement).forEach(btn => btn.setAttribute('aria-selected', String(btn.dataset.edview === 'split')));
+    }
     jumpInTextarea(ta, { start: a, end: b });
+  };
+
+  /* ---------- Operazioni sui blocchi (T/H2/H3/H4, ↑/↓, ＋¶, ＋H2, 🗑) ---------- */
+  const focusBlockEl = (el, { selectAll = false, atEnd = true } = {}) => {
+    if (!el) return;
+    if (el.classList.contains('wy-lock')) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const s = getSelection();
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    if (!selectAll) r.collapse(!atEnd);
+    s.removeAllRanges();
+    s.addRange(r);
+  };
+
+  const setBlockType = kind => {
+    flush();
+    const prefix = kind === 'h2' ? '## ' : kind === 'h3' ? '### ' : kind === 'h4' ? '#### ' : '';
+    if (lastFocus === 'ta' || !enabled) {
+      onBeforeMutate();
+      const v = ta.value;
+      const pos = ta.selectionStart ?? v.length;
+      const ls = lineStart(v, pos);
+      const le = lineEnd(v, pos);
+      const line = v.slice(ls, le);
+      const cleaned = line.replace(/^\s*#{1,6}\s+/, '').replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '');
+      const nextLine = prefix ? `${prefix}${cleaned}` : cleaned;
+      ta.focus();
+      ta.setRangeText(nextLine, ls, le, 'end');
+      onAfterMutate();
+      render();
+      return;
+    }
+    const idxs = contentIndices();
+    const i = idxs.includes(curIdx) ? curIdx : idxs[0];
+    if (i === undefined) {
+      insertBlockAfter(kind, true);
+      return;
+    }
+    const raw = raws[i] || '';
+    if (raw.includes('```') || /!\[[^\]]*\]\(img:/.test(raw) || types[i] === 'table') {
+      toast('Questo blocco (tabella, immagine o HTML) non si trasforma in titolo');
+      return;
+    }
+    onBeforeMutate();
+    const lead = raw.match(/^\n*/)[0];
+    const trail = raw.match(/\n*$/)[0];
+    const core = raw.trim();
+    const lines = core.split('\n');
+    const firstClean = lines[0].replace(/^\s*#{1,6}\s+/, '').replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '');
+    const rest = lines.slice(1).join('\n').trim();
+    if (prefix) {
+      raws[i] = rest ? `${lead}${prefix}${firstClean}\n\n${rest}${trail}` : `${lead}${prefix}${firstClean}${trail}`;
+    } else {
+      raws[i] = `${lead}${firstClean}${rest ? `\n${rest}` : ''}${trail}`;
+    }
+    ta.value = raws.join('');
+    onAfterMutate();
+    render();
+    const el = box.querySelector(`.wy-b[data-b="${i}"]`) || box.querySelector('.wy-b');
+    if (el) { notifyActive(+el.dataset.b); focusBlockEl(el, { atEnd: true }); }
+  };
+
+  const moveBlock = dir => {
+    flush();
+    const idxs = contentIndices();
+    const pos = idxs.indexOf(curIdx);
+    const targetPos = pos + dir;
+    if (pos < 0 || targetPos < 0 || targetPos >= idxs.length) return;
+    onBeforeMutate();
+    const blocks = idxs.map(i => raws[i].trim());
+    [blocks[pos], blocks[targetPos]] = [blocks[targetPos], blocks[pos]];
+    ta.value = blocks.join('\n\n') + '\n';
+    onAfterMutate();
+    render();
+    const newIdxs = contentIndices();
+    const newI = newIdxs[targetPos] ?? newIdxs[0];
+    const el = box.querySelector(`.wy-b[data-b="${newI}"]`);
+    if (el) { notifyActive(newI); focusBlockEl(el, { atEnd: true }); }
+  };
+
+  const insertBlockAfter = (kind, atEnd = false) => {
+    flush();
+    onBeforeMutate();
+    const idxs = contentIndices();
+    const snippet = kind === 'h2' ? '## Nuovo titolo' : kind === 'h3' ? '### Nuovo sottotitolo' : 'Nuovo paragrafo';
+    const blocks = idxs.map(i => raws[i].trim());
+    let insertPos = blocks.length;
+    if (!atEnd && curIdx >= 0) {
+      const pos = idxs.indexOf(curIdx);
+      if (pos >= 0) insertPos = pos + 1;
+    }
+    blocks.splice(insertPos, 0, snippet);
+    ta.value = blocks.join('\n\n') + '\n';
+    onAfterMutate();
+    render();
+    const newIdxs = contentIndices();
+    const newI = newIdxs[insertPos] ?? newIdxs[newIdxs.length - 1];
+    const el = box.querySelector(`.wy-b[data-b="${newI}"]`);
+    if (el) { notifyActive(newI); focusBlockEl(el, { selectAll: true }); }
+  };
+
+  const deleteBlock = () => {
+    flush();
+    const idxs = contentIndices();
+    const pos = idxs.indexOf(curIdx);
+    if (pos < 0) return false;
+    onBeforeMutate();
+    const blocks = idxs.map(i => raws[i].trim());
+    blocks.splice(pos, 1);
+    ta.value = blocks.length ? blocks.join('\n\n') + '\n' : '';
+    onAfterMutate();
+    render();
+    const newIdxs = contentIndices();
+    const nextI = newIdxs[Math.min(pos, newIdxs.length - 1)] ?? -1;
+    notifyActive(nextI);
+    return true;
+  };
+
+  const focusCharOffset = offset => {
+    flush();
+    const st = starts();
+    let i = st.length - 1;
+    while (i > 0 && st[i] > offset) i--;
+    while (i > 0 && (types[i] === 'space' || !raws[i].trim())) i--;
+    const el = box.querySelector(`.wy-b[data-b="${i}"]`);
+    if (el) {
+      notifyActive(i);
+      focusBlockEl(el, { atEnd: false });
+    }
   };
 
   /* Strumenti di formattazione quando scrivi nell’anteprima */
@@ -8154,8 +9216,9 @@ function setupWysiwyg(box, ta, tools) {
     const x = selIn();
     if (!x) { toast('Metti il cursore nel testo dell’anteprima'); return false; }
     const anc = (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('mark, u, strong, b');
-    if (anc && x.el.contains(anc) && matches(anc)) { unwrap(anc); markDirty(x.el); return true; }
+    if (anc && x.el.contains(anc) && matches(anc)) { onBeforeMutate(); unwrap(anc); dirty.add(x.el); flush(); onAfterMutate(); return true; }
     if (x.r.collapsed) { toast('Seleziona prima il testo'); return false; }
+    onBeforeMutate();
     const w = make();
     w.append(x.r.extractContents());
     x.r.insertNode(w);
@@ -8163,7 +9226,9 @@ function setupWysiwyg(box, ta, tools) {
     const nr = document.createRange();
     nr.selectNodeContents(w);
     x.s.addRange(nr);
-    markDirty(x.el);
+    dirty.add(x.el);
+    flush();
+    onAfterMutate();
     return true;
   };
   const tag = (name, cls) => () => { const e = document.createElement(name); if (cls) e.className = cls; return e; };
@@ -8172,17 +9237,37 @@ function setupWysiwyg(box, ta, tools) {
     const b = e.target.closest('button');
     if (!b) return false;
     const d = b.dataset;
+    if (d.ed || d.edview || d.btype || d.bact) return false;
     if (d.wrap === '==') return wrap(tag('mark', 'cz'), n => n.tagName === 'MARK' && n.classList.contains('cz')) || true;
     if (d.wrap === '**') return wrap(tag('strong'), n => n.tagName === 'STRONG' || n.tagName === 'B') || true;
     if (d.mark === 'u') return wrap(tag('u', 'ul'), n => n.tagName === 'U') || true;
+    if (d.mark === 'none') {
+      const x = selIn();
+      if (!x) return true;
+      const anc = (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('mark.hl, u.ul');
+      if (anc && x.el.contains(anc)) { onBeforeMutate(); unwrap(anc); dirty.add(x.el); flush(); onAfterMutate(); }
+      else toast('Metti il cursore dentro un testo evidenziato per togliere il colore');
+      const pop = b.closest('.ed-pop'); if (pop) pop.hidden = true;
+      return true;
+    }
     if (d.mark) {
       const k = d.mark;
+      const pop = b.closest('.ed-pop'); if (pop) pop.hidden = true;
       const x = selIn();
       const anc = x && (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('mark.hl');
-      if (anc && x.el.contains(anc) && !anc.classList.contains(`hl-${k}`)) { anc.className = `hl hl-${k}`; markDirty(x.el); return true; }
+      if (anc && x.el.contains(anc) && !anc.classList.contains(`hl-${k}`)) { onBeforeMutate(); anc.className = `hl hl-${k}`; dirty.add(x.el); flush(); onAfterMutate(); return true; }
       return wrap(tag('mark', `hl hl-${k}`), n => n.tagName === 'MARK' && n.classList.contains(`hl-${k}`)) || true;
     }
-    if (d.ins === 'list') { const x = selIn(); if (!x) return true; document.execCommand('insertUnorderedList'); dirty.add(x.el); flush(); return true; }
+    if (d.ins === 'list' || d.ins === 'olist') {
+      const x = selIn();
+      if (!x) return true;
+      onBeforeMutate();
+      document.execCommand(d.ins === 'olist' ? 'insertOrderedList' : 'insertUnorderedList');
+      dirty.add(x.el);
+      flush();
+      onAfterMutate();
+      return true;
+    }
     if (d.indent) {
       const res = wyIndent(+d.indent);
       if (res === 'not-li') toast('Il rientro vale per le voci di un elenco');
@@ -8195,6 +9280,7 @@ function setupWysiwyg(box, ta, tools) {
       const el = x.el;
       askPnote().then(note => {
         if (!note) return;
+        onBeforeMutate();
         const sp = document.createElement('span');
         sp.className = 'pnote';
         sp.setAttribute('role', 'button');
@@ -8204,6 +9290,7 @@ function setupWysiwyg(box, ta, tools) {
         range.insertNode(sp);
         dirty.add(el);
         flush();
+        onAfterMutate();
       });
       return true;
     }
@@ -8213,26 +9300,30 @@ function setupWysiwyg(box, ta, tools) {
       if (!m) { toast('Metti il cursore dentro un cloze, oppure trasforma prima il testo in cloze'); return true; }
       modal({ title: 'Suggerimento', text: `Per “${m.textContent}”: una domanda o un indizio che compare come “?” accanto al termine nascosto. Lascia vuoto per toglierlo.`, input: true, value: m.dataset.hint || '', placeholder: 'Es. ormone che abbassa la glicemia', confirm: 'Salva', allowEmpty: true }).then(v => {
         if (v === null) return;
+        onBeforeMutate();
         const c = cleanHint(v);
         if (c) m.dataset.hint = c; else delete m.dataset.hint;
         dirty.add(x.el);
         flush();
+        onAfterMutate();
       });
       return true;
     }
     // inserimenti (tabella, immagine, link…): vanno nel codice subito dopo il blocco dove sei
     const x = selIn();
-    if (x && x.el.dataset.b !== 'new') {
+    const targetIdx = x && x.el.dataset.b !== 'new' ? +x.el.dataset.b : curIdx;
+    if (targetIdx >= 0 && raws[targetIdx] !== undefined) {
       flush();
-      const i = +x.el.dataset.b;
       const st = starts();
-      const end = (st[i] ?? ta.value.length) + (raws[i] || '').length;
+      const end = (st[targetIdx] ?? ta.value.length) + (raws[targetIdx] || '').length;
       ta.setSelectionRange(end, end);
       ta.dataset.touched = '1';
     }
     return false;
   };
-  if (tools) tools.addEventListener('click', e => { if (handle(e)) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+  const bindBar = bar => { if (bar) bar.addEventListener('click', e => { if (handle(e)) { e.stopImmediatePropagation(); e.preventDefault(); } }, true); };
+  bindBar(tools);
+  extraBars.forEach(bindBar);
 
   // “Modifica qui”: porto il cursore sul testo scelto, dentro l’anteprima
   const jump = jmp => {
@@ -8256,6 +9347,7 @@ function setupWysiwyg(box, ta, tools) {
       const r = document.createRange();
       r.setStart(...pick(at));
       r.setEnd(...pick(at + want.length));
+      notifyActive(+el.dataset.b);
       el.focus({ preventScroll: true });
       const s = getSelection();
       s.removeAllRanges();
@@ -8268,7 +9360,7 @@ function setupWysiwyg(box, ta, tools) {
     if (jmp.start >= 0) jumpInTextarea(ta, jmp);
   };
   render();
-  return { render, flush, jump, lastFocus: () => lastFocus };
+  return { render, flush, jump, lastFocus: () => lastFocus, setBlockType, moveBlock, insertBlockAfter, deleteBlock, focusCharOffset };
 }
 
 /* ---------- Pagina “Da completare” ---------- */
