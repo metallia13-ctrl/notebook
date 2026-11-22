@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.23';
+const APP_VERSION = '4.25';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -106,6 +106,7 @@ function fmtDue(dateStr) {
   return new Date(y, m - 1, dd).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
 }
 function fmtInterval(days) {
+  if (days <= 0) return 'Oggi';
   if (days < 30) return `${days} g`;
   if (days < 365) { const m = Math.round(days / 30); return m === 1 ? '1 mese' : `${m} mesi`; }
   const y = Math.round(days / 36.5) / 10;
@@ -516,24 +517,41 @@ const GRADES = [
 
 function nextSrs(srs, q, mode = '') {
   const cur = srs || newSrs();
-  const s = { ...cur, history: [...(cur.history || [])] };
+  const s = { ...newSrs(), ...cur, history: [...(cur.history || [])] };
+  const today = todayStr();
+  const ef0 = Number.isFinite(+s.ef) && +s.ef >= 1.3 ? +s.ef : 2.5;
+  const delay = s.due ? Math.max(0, dayDiff(s.due, today)) : 0;
   let interval;
+  let ef = ef0;
   if (q < 3) {
+    // Di nuovo: resta nei ripassi di oggi (0 g) con penalità EF moderata (-0.20, niente "ease hell")
     s.reps = 0;
-    interval = 1;
+    interval = 0;
+    ef = Math.max(1.3, ef0 - 0.2);
   } else {
-    if (s.reps === 0) interval = q === 5 ? 3 : 1;
-    else if (s.reps === 1) interval = q === 3 ? 3 : q === 5 ? 8 : 6;
-    else {
+    if (s.reps === 0) {
+      interval = q === 3 ? 1 : q === 5 ? 5 : 3;
+    } else if (s.reps === 1) {
       const base = Math.max(1, s.interval || 1);
-      interval = q === 3 ? base * 1.2 : q === 5 ? base * s.ef * 1.3 : base * s.ef;
+      const hardIvl = Math.max(base + 1, Math.round(base * 1.3));
+      const goodIvl = Math.max(hardIvl + 1, 6, Math.round((base + delay / 2) * ef0));
+      const easyIvl = Math.max(goodIvl + 2, Math.round((base + delay) * ef0 * 1.3));
+      interval = q === 3 ? hardIvl : q === 5 ? easyIvl : goodIvl;
+    } else {
+      const base = Math.max(1, s.interval || 1);
+      const hardIvl = Math.max(base + 1, Math.round(base * 1.2));
+      const goodIvl = Math.max(hardIvl + 1, Math.round((base + delay / 2) * ef0));
+      const easyIvl = Math.max(goodIvl + 1, Math.round((base + delay) * ef0 * 1.3));
+      interval = q === 3 ? hardIvl : q === 5 ? easyIvl : goodIvl;
     }
+    if (q === 3) ef = Math.max(1.3, ef0 - 0.15);
+    else if (q === 5) ef = ef0 + 0.15;
     s.reps += 1;
   }
-  s.ef = Math.max(1.3, +(s.ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02))).toFixed(3));
-  s.interval = Math.max(1, Math.round(interval));
-  s.due = addDays(todayStr(), s.interval);
-  s.history.push({ date: todayStr(), q, mode });
+  s.ef = +ef.toFixed(3);
+  s.interval = q < 3 ? 0 : Math.min(36500, Math.max(1, Math.round(interval)));
+  s.due = s.interval > 0 ? addDays(today, s.interval) : today;
+  s.history.push({ date: today, q, mode });
   if (s.history.length > 200) s.history = s.history.slice(-200);
   return s;
 }

@@ -137,14 +137,17 @@ function scheduleCard(prev, grade, now = Date.now(), preview = false) {
     if (grade === 'again') { s.step = 0; s.due = inMin(steps[0]); }
     else if (grade === 'hard') {
       const cur = steps[Math.min(s.step, steps.length - 1)];
-      s.due = inMin(s.step === 0 && steps.length > 1 ? (steps[0] + steps[1]) / 2 : cur);
+      const hardMin = s.step === 0
+        ? (steps.length > 1 ? Math.round((steps[0] + steps[1]) / 2) : Math.max(cur + 1, Math.round(cur * 1.5)))
+        : cur;
+      s.due = inMin(hardMin);
     } else if (grade === 'good') {
       s.step += 1;
-      if (s.step >= steps.length) toReview(relearn ? s.interval : ANKI.gradIvl);
+      if (s.step >= steps.length) toReview(relearn ? Math.max(1, s.interval) : ANKI.gradIvl);
       else s.due = inMin(steps[s.step]);
-    } else toReview(relearn ? s.interval + 1 : ANKI.easyIvl);
+    } else toReview(relearn ? Math.max(1, s.interval) + 1 : Math.max(ANKI.gradIvl + 1, ANKI.easyIvl));
   } else {
-    const delay = Math.max(0, dayDiff(localDateStr(new Date(s.due)), localDateStr(new Date(now))));
+    const delay = s.due ? Math.max(0, dayDiff(localDateStr(new Date(s.due)), localDateStr(new Date(now)))) : 0;
     const ivl = Math.max(1, s.interval);
     const fz = v => (preview ? v : fuzzIvl(v));
     if (grade === 'again') {
@@ -175,7 +178,13 @@ function scheduleCard(prev, grade, now = Date.now(), preview = false) {
 function fmtCardNext(srs, now = Date.now()) {
   if (srs.state === 'review') return fmtInterval(srs.interval);
   const m = Math.round((srs.due - now) / 60000);
-  return m < 1 ? '<1 min' : `${m} min`;
+  if (m < 1) return '<1 min';
+  if (m < 60) return `${m} min`;
+  if (m < 1440) {
+    const h = Math.round((m / 60) * 10) / 10;
+    return `${String(h).replace('.', ',')} h`;
+  }
+  return fmtInterval(Math.round(m / 1440));
 }
 
 const cardById = id => state.cards.find(c => c.id === id);

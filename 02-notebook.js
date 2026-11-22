@@ -646,7 +646,7 @@ function viewSection(id, mode) {
 function gradeBar(sec, slot, { mode, suggested } = {}) {
   slot.innerHTML = `
     <div class="grade">
-      <p class="grade-q">${suggested ? 'Valutazione suggerita evidenziata. Quanto ricordavi?' : 'Quanto ricordavi?'}</p>
+      <p class="grade-q"><span>${suggested ? 'Valutazione suggerita evidenziata. Quanto ricordavi?' : 'Quanto ricordavi?'}</span>${typeof helpBtn === 'function' ? helpBtn('srsAlgo') : ''}</p>
       <div class="grade-btns">
         ${GRADES.map((g, i) => {
           const nx = nextSrs(sec.srs, g.q, mode);
@@ -674,9 +674,9 @@ function gradeBar(sec, slot, { mode, suggested } = {}) {
       });
       toast('Valutazione inviata a StudyHub');
     } else {
-      toast(`Prossimo ripasso ${fmtDue(sec.srs.due)}`);
+      toast(sec.srs.interval === 0 ? 'Resta nei ripassi di oggi' : `Prossimo ripasso ${fmtDue(sec.srs.due)}`);
     }
-    afterGrade(sec);
+    afterGrade(sec, q);
   };
   $$('.gbtn', slot).forEach(b => b.addEventListener('click', () => grade(+b.dataset.q)));
   const onKey = e => {
@@ -691,9 +691,10 @@ function gradeBar(sec, slot, { mode, suggested } = {}) {
   slot.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
 }
 
-function afterGrade(sec) {
+function afterGrade(sec, q = 4) {
   if (state.fromReview) {
-    const next = state.sections.filter(isDue).sort(sortDue)[0];
+    const due = state.sections.filter(isDue).sort(sortDue);
+    const next = due.find(s => s.id !== sec.id) || (q < 3 ? null : due[0]);
     go(next ? `#/sec/${next.id}/${defaultMode(next)}` : '#/review');
   } else {
     go(`#/sec/${sec.id}/read`);
@@ -816,7 +817,17 @@ function modeRead(sec, body) {
         <p>Questa sezione è stata salvata senza formattazione AI.</p>
         <button class="btn" data-act="fmt">Formatta con ${AI.name()}</button>
       </div>` : ''}
-    ${sec.md.trim() ? `<div class="fold-tools"><button class="btn sm ghost ink-btn" data-act="listen" hidden>Ascolta</button><button class="btn sm ghost" data-act="listen-on" hidden title="Legge questa sezione e poi le successive del notebook">Ascolta da qui in poi</button><button class="btn sm ghost ink-btn" data-act="ink" hidden>Scrivi a mano</button><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
+    ${sec.md.trim() ? `
+      <div class="fp-new-banner" id="fpNewBanner" hidden></div>
+      <div class="fp-strip" role="toolbar" aria-label="Prima sessione di studio">
+        <button class="btn sm fp-go" type="button" data-act="fp-start" title="Studia un blocco alla volta: Leggi, Copri e ripeti, Verifica + coda finale">▶ Prima passata</button>
+        <button class="btn sm ghost" type="button" data-act="fp-peek" aria-pressed="false" title="Copre al volo i dettagli negli elenchi e nelle tabelle senza modificare il testo">🙈 Oscura dettagli</button>
+        <button class="btn sm ghost" type="button" data-act="fp-pretest" title="3–5 domande veloci prima di leggere per attivare la memoria">⚡ Pre-test</button>
+        ${typeof helpBtn === 'function' ? helpBtn('firstPass') : ''}
+      </div>
+      <div class="fp-radar" id="fpRadar" hidden></div>
+      <div class="pk-bar" id="pkBar" hidden></div>
+      <div class="fold-tools"><button class="btn sm ghost ink-btn" data-act="listen" hidden>Ascolta</button><button class="btn sm ghost" data-act="listen-on" hidden title="Legge questa sezione e poi le successive del notebook">Ascolta da qui in poi</button><button class="btn sm ghost ink-btn" data-act="ink" hidden>Scrivi a mano</button><button class="btn sm ghost" data-act="imgs" hidden></button><button class="btn sm ghost" data-act="fold-all" hidden></button></div><article class="notes">${renderMd(sec.md)}</article>` : `
       <div class="empty"><p>Sezione vuota.</p><a class="btn primary" href="#/sec/${sec.id}/edit">Scrivi in Modifica</a></div>`}
     ${sec.md.trim() ? '<p class="hint sel-hint">Seleziona del testo per evidenziarlo, sottolinearlo, farne un cloze o una flashcard. Sul PC puoi anche usare il tasto destro.</p>' : ''}
     ${sec.studyhub ? `
@@ -856,6 +867,7 @@ function modeRead(sec, body) {
     linkStamps(notesEl, sec);
     setupNotesInk(notesEl, sec, $('[data-act="ink"]', body));
     setupListen(notesEl, $('[data-act="listen"]', body), readFolds);
+    setupFirstPassControls(sec, body, notesEl);
     const lo = $('[data-act="listen-on"]', body);
     if (lo && (canSpeak || Voice.useGemini())) {
       lo.hidden = false;
@@ -9986,5 +9998,1090 @@ function viewDiscQuiz(kind, id) {
     setSaved: async (k, val) => { const ck = `${kind}:${id}:${selSig()}`; dquizCache[ck] = { ...(dquizCache[ck] || {}), [k]: val }; },
     getConfusions: () => Array.isArray((grp || nb).confusions) ? (grp || nb).confusions : [],
     setConfusions: async list => { (grp || nb).confusions = list; await saveNotebook(nb); }
+  });
+}
+
+
+/* =====================================================================
+   v4.25: Prima sessione di studio completa (Active Recall immediato)
+   - Oscura dettagli istantaneo (globale + sul singolo paragrafo ripiegabile)
+   - Prima passata a micro-blocchi (Metodo 3R + Coda Criterio = 1)
+   - Cloze al volo (==termine==) + Indice blocchi + Punto ostico
+   - Interrogazione elaborativa (domande fisse + AI sul blocco + verifica AI)
+   - Pre-test rapido di 60s + Radar di lettura + Banner sezioni nuove
+   ===================================================================== */
+
+const FP_ELAB_PROMPTS = [
+  'Qual è il meccanismo o il “perché” di ciò che hai appena letto?',
+  'Cosa succede se questa struttura, via o meccanismo è alterato o leso?',
+  'In cosa si distingue dal blocco precedente o da concetti simili?',
+  'Qual è il dato chiave o il collegamento clinico che il docente potrebbe chiedere?',
+  'Come lo riassumeresti in 2 frasi chiare se dovessi dirlo ora all’orale?'
+];
+
+/* ---------- 1. Oscura dettagli istantaneo (globale o sul singolo paragrafo) ---------- */
+function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
+  let on = false;
+
+  const wrapNodes = (parent, nodes) => {
+    if (!nodes.length) return false;
+    const text = nodes.map(n => n.textContent || '').join('').trim();
+    if (text.length < 2) return false;
+    const sp = document.createElement('span');
+    sp.className = 'pk-mask';
+    sp.setAttribute('role', 'button');
+    sp.setAttribute('tabindex', '0');
+    sp.setAttribute('aria-expanded', 'false');
+    sp.title = 'Tocca per scoprire o coprire';
+    parent.insertBefore(sp, nodes[0]);
+    nodes.forEach(n => sp.appendChild(n));
+    return true;
+  };
+
+  const maskElementCueTail = (el, stopTags = new Set()) => {
+    const kids = [];
+    for (const c of [...el.childNodes]) {
+      if (c.nodeType === 1 && stopTags.has(c.tagName)) break;
+      kids.push(c);
+    }
+    const meaningful = kids.filter(n => n.nodeType === 1 || (n.nodeType === 3 && n.nodeValue.trim()));
+    if (!meaningful.length) return false;
+    if (meaningful.some(n => n.nodeType === 1 && (n.matches('.pk-mask, .img-box, .html-embed, mark.cz') || n.querySelector?.('.pk-mask, .img-box, .html-embed, mark.cz')))) return false;
+
+    const first = meaningful[0];
+    const firstIdx = kids.indexOf(first);
+
+    // Caso 1: inizia con **Termine** seguito da spiegazione
+    if (first.nodeType === 1 && (first.tagName === 'STRONG' || first.tagName === 'B')) {
+      const rest = kids.slice(firstIdx + 1);
+      if (rest.length && rest[0].nodeType === 3) {
+        const m = rest[0].nodeValue.match(/^(\s*[:–—-]\s*)([\s\S]*)$/);
+        if (m && m[2].trim()) {
+          const tail = rest[0].splitText(m[1].length);
+          return wrapNodes(el, [tail, ...rest.slice(1)]);
+        }
+      }
+      if (rest.map(n => n.textContent || '').join('').trim().length >= 2) {
+        return wrapNodes(el, rest);
+      }
+      if (el.tagName === 'LI' && !el.querySelector(':scope > ul, :scope > ol')) {
+        return wrapNodes(el, kids);
+      }
+      return false;
+    }
+
+    // Caso 2: inizia con "Etichetta: spiegazione" oppure "Etichetta — spiegazione"
+    if (first.nodeType === 3) {
+      const m = first.nodeValue.match(/^(\s*[^:\n–—]{2,60}?(?::|\s+[–—]\s+)\s*)([\s\S]*)$/);
+      if (m) {
+        const tailNodes = [];
+        if (m[2].length) {
+          const tail = first.splitText(m[1].length);
+          tailNodes.push(tail);
+        }
+        tailNodes.push(...kids.slice(firstIdx + 1));
+        if (tailNodes.map(n => n.textContent || '').join('').trim().length >= 2) {
+          return wrapNodes(el, tailNodes);
+        }
+      }
+    }
+
+    // Caso 3: parole chiave in grassetto o evidenziate all'interno
+    const highlights = kids.filter(n => n.nodeType === 1 && (n.tagName === 'STRONG' || n.tagName === 'B' || (n.tagName === 'MARK' && n.classList.contains('hl'))));
+    if (highlights.length) {
+      let any = false;
+      highlights.forEach(h => {
+        if (wrapNodes(h, [...h.childNodes])) any = true;
+      });
+      return any;
+    }
+
+    // Caso 4: voce di elenco semplice (senza sottolista)
+    if (el.tagName === 'LI' && !el.querySelector(':scope > ul, :scope > ol')) {
+      return wrapNodes(el, kids);
+    }
+    return false;
+  };
+
+  const applyMasksIn = scope => {
+    let count = 0;
+    const stopList = new Set(['UL', 'OL', 'TABLE', 'PRE', 'BLOCKQUOTE']);
+    $$('li', scope).forEach(li => {
+      if (li.closest('.html-embed, .img-box, pre')) return;
+      const pChild = li.querySelector(':scope > p');
+      if (pChild) {
+        if (maskElementCueTail(pChild, stopList)) count++;
+      } else if (maskElementCueTail(li, stopList)) count++;
+    });
+    $$('table', scope).forEach(tbl => {
+      if (tbl.closest('.html-embed')) return;
+      $$('tbody tr, :scope > tr', tbl).forEach(tr => {
+        const cells = [...tr.children].filter(c => c.tagName === 'TD');
+        cells.slice(1).forEach(td => {
+          if (td.querySelector('.pk-mask, .img-box, mark.cz')) return;
+          if (wrapNodes(td, [...td.childNodes])) count++;
+        });
+      });
+    });
+    $$('p', scope).forEach(p => {
+      if (p.closest('li, td, th, .html-embed, .img-box, .callout, blockquote')) return;
+      if (maskElementCueTail(p)) count++;
+    });
+    return count;
+  };
+
+  const clearMasksIn = scope => {
+    $$('.pk-mask', scope).forEach(sp => {
+      const p = sp.parentNode;
+      if (!p) return;
+      while (sp.firstChild) p.insertBefore(sp.firstChild, sp);
+      sp.remove();
+      p.normalize();
+    });
+  };
+
+  const syncFoldBtns = () => {
+    $$('.fold-pk-btn', article).forEach(b => {
+      const fold = b.closest('.fold');
+      const active = !!(fold && fold.classList.contains('pk-fold-on'));
+      b.setAttribute('aria-pressed', String(active));
+      b.classList.toggle('on', active);
+      b.textContent = active ? '👁' : '🙈';
+      b.title = active ? 'Mostra i dettagli di questo paragrafo' : 'Oscura i dettagli solo in questo paragrafo';
+    });
+  };
+
+  const updateBar = () => {
+    if (!barEl) return;
+    const all = $$('.pk-mask', article);
+    if (!on && !all.length) { barEl.hidden = true; barEl.innerHTML = ''; return; }
+    const open = all.filter(x => x.classList.contains('open')).length;
+    barEl.hidden = false;
+    barEl.innerHTML = `
+      <span class="pk-stat">🙈 <strong>Oscura dettagli</strong> · ${open} / ${all.length} scoperti</span>
+      <span class="pk-acts">
+        <button type="button" class="btn sm ghost" data-pk="all-open">Scopri tutti</button>
+        <button type="button" class="btn sm ghost" data-pk="all-hide">Copri tutti</button>
+        <button type="button" class="btn sm ghost" data-pk="off">Esci</button>
+      </span>`;
+  };
+
+  const setOn = next => {
+    if (next === on && !(!next && $$('.pk-mask', article).length)) return;
+    if (next) {
+      clearMasksIn(article);
+      $$('.fold.pk-fold-on', article).forEach(f => f.classList.remove('pk-fold-on'));
+      const n = applyMasksIn(article);
+      if (!n) {
+        toast('Non ci sono dettagli da oscurare in questo blocco (aggiungi elenchi, grassetti o tabelle)');
+        return;
+      }
+      on = true;
+      article.classList.add('pk-on');
+      $$('.fold:not(.fold-empty)', article).forEach(f => {
+        if (f.querySelector('.pk-mask')) f.classList.add('pk-fold-on');
+      });
+    } else {
+      clearMasksIn(article);
+      $$('.fold.pk-fold-on', article).forEach(f => f.classList.remove('pk-fold-on'));
+      on = false;
+      article.classList.remove('pk-on');
+    }
+    if (btnEl) {
+      btnEl.setAttribute('aria-pressed', String(on));
+      btnEl.classList.toggle('on', on);
+      btnEl.textContent = on ? '👁 Mostra tutto' : '🙈 Oscura dettagli';
+    }
+    syncFoldBtns();
+    updateBar();
+  };
+
+  const toggleFoldPeek = fold => {
+    const body = fold.querySelector(':scope > .fold-body');
+    if (!body) return;
+    if (fold.classList.contains('pk-fold-on')) {
+      clearMasksIn(body);
+      fold.classList.remove('pk-fold-on');
+      if (!$$('.pk-mask', article).length) {
+        on = false;
+        article.classList.remove('pk-on');
+        if (btnEl) { btnEl.setAttribute('aria-pressed', 'false'); btnEl.classList.remove('on'); btnEl.textContent = '🙈 Oscura dettagli'; }
+      }
+    } else {
+      // Se il paragrafo era chiuso, aprilo così puoi esercitarti subito
+      if (fold.classList.contains('closed')) setFold(fold, false);
+      const n = applyMasksIn(body);
+      if (!n) { toast('Nessun dettaglio da oscurare in questo paragrafo'); return; }
+      fold.classList.add('pk-fold-on');
+      article.classList.add('pk-on');
+    }
+    syncFoldBtns();
+    updateBar();
+  };
+
+  // Aggiungi il pulsante occhio discreto su ogni paragrafo ripiegabile (solo in Leggi)
+  const attachFoldButtons = () => {
+    $$('.fold:not(.fold-empty) > .fold-h', article).forEach(h => {
+      if (h.querySelector('.fold-pk-btn')) return;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'fold-pk-btn';
+      b.textContent = '🙈';
+      b.setAttribute('aria-pressed', 'false');
+      b.setAttribute('aria-label', 'Oscura i dettagli solo in questo paragrafo');
+      b.title = 'Oscura i dettagli solo in questo paragrafo';
+      b.addEventListener('click', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const fold = h.parentElement;
+        if (fold) toggleFoldPeek(fold);
+      });
+      h.appendChild(b);
+    });
+  };
+  attachFoldButtons();
+
+  const onClick = e => {
+    const m = e.target.closest('.pk-mask');
+    if (!m || !article.contains(m)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const isOpen = m.classList.toggle('open');
+    m.setAttribute('aria-expanded', String(isOpen));
+    updateBar();
+  };
+  const onKey = e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const m = e.target.closest('.pk-mask');
+    if (!m || !article.contains(m)) return;
+    e.preventDefault();
+    const isOpen = m.classList.toggle('open');
+    m.setAttribute('aria-expanded', String(isOpen));
+    updateBar();
+  };
+  article.addEventListener('click', onClick);
+  article.addEventListener('keydown', onKey);
+
+  if (barEl) {
+    barEl.addEventListener('click', e => {
+      const a = e.target.closest('[data-pk]')?.dataset.pk;
+      if (!a) return;
+      if (a === 'off') { setOn(false); return; }
+      const open = a === 'all-open';
+      $$('.pk-mask', article).forEach(m => { m.classList.toggle('open', open); m.setAttribute('aria-expanded', String(open)); });
+      updateBar();
+    });
+  }
+
+  return {
+    isOn: () => on || $$('.pk-mask', article).length > 0,
+    setOn,
+    toggle: () => setOn(!on),
+    destroy() {
+      if (on || $$('.pk-mask', article).length) setOn(false);
+      $$('.fold-pk-btn', article).forEach(b => b.remove());
+      article.removeEventListener('click', onClick);
+      article.removeEventListener('keydown', onKey);
+    }
+  };
+}
+
+/* ---------- 2. Suddivisione automatica in micro-blocchi per Prima passata ---------- */
+function splitMdUnits(md) {
+  const lines = String(md || '').replace(/\r\n?/g, '\n').split('\n');
+  const units = [];
+  let cur = [];
+  let inFence = false;
+  let inTable = false;
+  const flush = () => {
+    const t = cur.join('\n').trim();
+    if (t) units.push(t);
+    cur = [];
+  };
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      cur.push(line);
+      if (!inFence) flush();
+      continue;
+    }
+    if (inFence) { cur.push(line); continue; }
+    if (/^\s*\|/.test(line)) {
+      if (!inTable && cur.length) flush();
+      inTable = true;
+      cur.push(line);
+      continue;
+    } else if (inTable) {
+      inTable = false;
+      flush();
+    }
+    if (!line.trim()) { flush(); continue; }
+    if (/^([-*+]|\d+[.)])\s+/.test(line)) {
+      if (cur.length) flush();
+      cur.push(line);
+    } else if (cur.length && /^([-*+]|\d+[.)])\s+/.test(cur[0]) && /^\s+/.test(line)) {
+      cur.push(line);
+    } else {
+      cur.push(line);
+    }
+  }
+  flush();
+  return units;
+}
+
+function splitFirstPassChunks(sec) {
+  const md = String(sec.md || '').replace(/\r\n?/g, '\n').trim();
+  if (!md) return [];
+  const lines = md.split('\n');
+  const rawSections = [];
+  const stack = [];
+  let curTitle = sec.title || 'Appunti';
+  let curPath = [];
+  let buf = [];
+  let inFence = false;
+
+  const pushRaw = () => {
+    const body = buf.join('\n').trim();
+    if (body) rawSections.push({ title: curTitle, path: [...curPath], md: body });
+    buf = [];
+  };
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) { inFence = !inFence; buf.push(line); continue; }
+    const hm = !inFence && line.match(/^(#{1,4})\s+(.+?)\s*#*$/);
+    if (hm) {
+      pushRaw();
+      const lvl = hm[1].length;
+      const title = stripMarks(stripCloze(hm[2])).replace(/\*\*|__|`/g, '').trim();
+      while (stack.length && stack[stack.length - 1].lvl >= lvl) stack.pop();
+      curPath = stack.map(x => x.title);
+      curTitle = title || sec.title || 'Blocco';
+      stack.push({ lvl, title: curTitle });
+    } else {
+      buf.push(line);
+    }
+  }
+  pushRaw();
+
+  const chunks = [];
+  const countHint = text => {
+    const bullets = (text.match(/^([-*+]|\d+[.)])\s+/gm) || []).length;
+    const hasTbl = /^\s*\|.+\|/m.test(text);
+    if (hasTbl && bullets) return `${bullets} punti + tabella`;
+    if (hasTbl) return 'tabella da richiamare';
+    if (bullets >= 2) return `${bullets} punti chiave`;
+    const paras = text.split(/\n{2,}/).filter(Boolean).length;
+    return paras > 1 ? `${paras} concetti` : 'concetto chiave';
+  };
+
+  rawSections.forEach(rs => {
+    const units = splitMdUnits(rs.md);
+    if (rs.md.length <= 780 && units.length <= 6) {
+      chunks.push({ id: chunks.length, title: rs.title, path: rs.path, md: rs.md, hint: countHint(rs.md) });
+      return;
+    }
+    const groups = [];
+    let g = [];
+    let gLen = 0;
+    for (const u of units) {
+      const nextLen = gLen + u.length;
+      if (g.length && (g.length >= 4 || nextLen > 680)) {
+        groups.push(g.join('\n\n'));
+        g = [u];
+        gLen = u.length;
+      } else {
+        g.push(u);
+        gLen = nextLen;
+      }
+    }
+    if (g.length) groups.push(g.join('\n\n'));
+    groups.forEach((partMd, k) => {
+      const title = groups.length > 1 ? `${rs.title} (${k + 1}/${groups.length})` : rs.title;
+      chunks.push({ id: chunks.length, title, path: rs.path, md: partMd, hint: countHint(partMd) });
+    });
+  });
+
+  return chunks;
+}
+
+/* ---------- 3. Radar di lettura e Pre-test rapido (60s) ---------- */
+function radarKey(secId) { return `nb-radar:${secId}`; }
+function loadRadar(secId) {
+  try {
+    const d = JSON.parse(sessionStorage.getItem(radarKey(secId)) || 'null');
+    return d && Array.isArray(d.items) && d.items.length ? d : null;
+  } catch { return null; }
+}
+function saveRadar(secId, data) {
+  try {
+    if (!data || !data.items?.length) sessionStorage.removeItem(radarKey(secId));
+    else sessionStorage.setItem(radarKey(secId), JSON.stringify(data));
+  } catch { /* niente */ }
+}
+
+function derivePretestQuestions(sec) {
+  const qs = [];
+  const seen = new Set();
+  const pushQ = q => {
+    const clean = String(q || '').replace(/\s+/g, ' ').trim();
+    const k = clean.toLowerCase();
+    if (!clean || seen.has(k)) return;
+    seen.add(k);
+    qs.push(clean);
+  };
+  (sec.questions || []).slice(0, 5).forEach(q => { if (q && q.q) pushQ(q.q); });
+  if (qs.length >= 3) return qs.slice(0, 5);
+
+  const md = String(sec.md || '');
+  const headings = [...md.matchAll(/^#{1,4}\s+(.+?)\s*#*$/gm)]
+    .map(m => stripMarks(stripCloze(m[1])).replace(/\*\*|__|`/g, '').trim())
+    .filter(h => h.length >= 3 && h.length <= 90 && !/^altro$/i.test(h));
+  headings.slice(0, 5 - qs.length).forEach(h => pushQ(`Cosa sai dire su: ${h}?`));
+  if (qs.length >= 3) return qs.slice(0, 5);
+
+  const bolds = [...md.matchAll(/\*\*([^*\n]{3,55})\*\*/g)]
+    .map(m => stripMarks(stripCloze(m[1])).replace(/:$/, '').trim())
+    .filter(t => t.length >= 3);
+  bolds.slice(0, 5 - qs.length).forEach(t => pushQ(`Che ruolo o significato ha: ${t}?`));
+
+  if (!qs.length) pushQ(`Quali sono i 3 punti fondamentali di “${sec.title}”?`);
+  return qs.slice(0, 5);
+}
+
+function renderRadarBox(boxEl, sec, { compact = false, onChange = () => {} } = {}) {
+  if (!boxEl) return;
+  const r = loadRadar(sec.id);
+  if (!r) { boxEl.hidden = true; boxEl.innerHTML = ''; return; }
+  const done = r.items.filter(x => x.done).length;
+  boxEl.hidden = false;
+  boxEl.innerHTML = `
+    <details class="fp-radar-det" ${r.open !== false && !compact ? 'open' : ''}>
+      <summary class="fp-radar-sum">
+        <span>⚡ <strong>Radar di lettura</strong> · ${done}/${r.items.length} risposte trovate</span>
+        <button type="button" class="btn sm ghost fp-radar-x" data-rd="clear" title="Chiudi radar" aria-label="Chiudi radar">✕</button>
+      </summary>
+      <ul class="fp-radar-list">
+        ${r.items.map((it, i) => `
+          <li class="${it.done ? 'done' : ''}">
+            <label>
+              <input type="checkbox" data-rd-i="${i}" ${it.done ? 'checked' : ''}>
+              <span>${esc(it.q)}${it.guess ? `<small class="fp-radar-g">Ipotesi: ${esc(it.guess)}</small>` : ''}</span>
+            </label>
+          </li>`).join('')}
+      </ul>
+    </details>`;
+  const det = $('.fp-radar-det', boxEl);
+  if (det) det.addEventListener('toggle', () => { r.open = det.open; saveRadar(sec.id, r); });
+  boxEl.onclick = e => {
+    if (e.target.closest('[data-rd="clear"]')) {
+      e.preventDefault();
+      e.stopPropagation();
+      saveRadar(sec.id, null);
+      renderRadarBox(boxEl, sec, { compact, onChange });
+      onChange();
+    }
+  };
+  boxEl.onchange = e => {
+    const cb = e.target.closest('[data-rd-i]');
+    if (!cb) return;
+    const i = +cb.dataset.rdI;
+    if (r.items[i]) {
+      r.items[i].done = cb.checked;
+      saveRadar(sec.id, r);
+      renderRadarBox(boxEl, sec, { compact, onChange });
+      onChange();
+    }
+  };
+}
+
+function openPreTest(sec, { onRadarSaved = () => {}, onStartFirstPass = null } = {}) {
+  const existing = loadRadar(sec.id);
+  let items = existing
+    ? existing.items.map(x => ({ ...x }))
+    : derivePretestQuestions(sec).map(q => ({ q, guess: '', done: false }));
+  let left = 60;
+  let timer = 0;
+
+  const sh = openSheet(`
+    <div class="fp-sh-head">
+      <h2>⚡ Pre-test rapido (60s)</h2>
+      ${typeof helpBtn === 'function' ? helpBtn('preTest') : ''}
+      <span class="fp-timer" id="ptTimer">01:00</span>
+    </div>
+    <p class="sheet-sub">Prova a rispondere a mente o in 2 parole <strong>prima</strong> di leggere: sbagliare va benissimo, serve ad attivare la memoria. Poi le domande restano come radar in cima a Leggi.</p>
+    ${AI.ready() ? `<div class="fp-pt-ai"><button type="button" class="btn sm ghost" data-pt="ai">✨ Genera 4 pre-domande con ${AI.name()}</button></div>` : ''}
+    <ol class="fp-pt-list" id="ptList"></ol>
+    <div class="modal-actions fp-pt-acts">
+      <button type="button" class="btn ghost" data-pt="cancel">Chiudi</button>
+      <button type="button" class="btn" data-pt="radar">Fissa radar in Leggi</button>
+      ${onStartFirstPass ? '<button type="button" class="btn primary" data-pt="fp">Avvia Prima passata</button>' : ''}
+    </div>`, { label: 'Pre-test rapido', onClose: () => { clearInterval(timer); } });
+
+  const drawList = () => {
+    $('#ptList', sh.el).innerHTML = items.map((it, i) => `
+      <li class="fp-pt-item">
+        <div class="fp-pt-q">${esc(it.q)}</div>
+        <input class="input fp-pt-in" data-pt-g="${i}" value="${esc(it.guess || '')}" placeholder="Ipotesi al volo (facoltativa)…" autocomplete="off">
+      </li>`).join('');
+  };
+  drawList();
+
+  const timerEl = $('#ptTimer', sh.el);
+  timer = setInterval(() => {
+    if (!sh.el.isConnected) { clearInterval(timer); return; }
+    left = Math.max(0, left - 1);
+    const m = Math.floor(left / 60), s = left % 60;
+    timerEl.textContent = left ? `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : 'Pronta!';
+    if (!left) { timerEl.classList.add('done'); clearInterval(timer); }
+  }, 1000);
+
+  const collectGuesses = () => {
+    $$('[data-pt-g]', sh.el).forEach(inp => {
+      const i = +inp.dataset.ptG;
+      if (items[i]) items[i].guess = inp.value.trim();
+    });
+  };
+
+  sh.el.addEventListener('click', async e => {
+    const act = e.target.closest('[data-pt]')?.dataset.pt;
+    if (!act) return;
+    if (act === 'cancel') { sh.close(null); return; }
+    if (act === 'ai') {
+      const btn = e.target.closest('[data-pt="ai"]');
+      btn.disabled = true;
+      btn.textContent = 'Preparo le domande…';
+      try {
+        const r = await AI.generate({
+          system: 'Crea esattamente 4 brevi domande di pre-test (una per riga, senza risposte e senza numerazione) basate SOLO sul testo fornito. Devono stimolare curiosità sui concetti principali e sui meccanismi chiave della sezione.',
+          text: aiText(sec.md).slice(0, 12000),
+          maxTokens: 600
+        });
+        const qs = String(r.text || '').split('\n')
+          .map(l => l.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
+          .filter(l => l.length >= 8)
+          .slice(0, 5);
+        if (!qs.length) throw new Error('Nessuna domanda generata.');
+        items = qs.map(q => ({ q, guess: '', done: false }));
+        drawList();
+        toast(`${qs.length} pre-domande pronte`);
+      } catch (err) {
+        toast(err.message || 'Non riesco a generare le domande', 'err');
+      }
+      if (btn.isConnected) { btn.disabled = false; btn.textContent = `✨ Genera 4 pre-domande con ${AI.name()}`; }
+      return;
+    }
+    collectGuesses();
+    saveRadar(sec.id, { items, open: true, created: Date.now() });
+    onRadarSaved();
+    sh.close(true);
+    if (act === 'fp' && onStartFirstPass) onStartFirstPass();
+    else toast('Radar fissato in cima a Leggi');
+  });
+}
+
+/* ---------- 4. Prima passata (Metodo 3R + Coda Criterio = 1 + Cloze al volo + Collega AI) ---------- */
+function fpStateKey(secId) { return `nb-fp:${secId}`; }
+
+function openFirstPass(sec, { onDone = () => {} } = {}) {
+  let chunks = splitFirstPassChunks(sec);
+  if (!chunks.length) { toast('La sezione è vuota: scrivi o importa prima gli appunti'); return; }
+
+  const makeSig = () => `${chunks.length}:${(sec.md || '').length}`;
+  let st = {
+    sig: makeSig(), phase: 'pass', idx: 0, step: 'read',
+    queue: [], fixedFirst: [], fixedQueue: [], misses: {},
+    startedAt: Date.now()
+  };
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(fpStateKey(sec.id)) || 'null');
+    if (saved && saved.sig === st.sig && saved.phase !== 'done') {
+      st = { ...st, ...saved, misses: saved.misses || {} };
+    }
+  } catch { /* riparto da capo */ }
+
+  let recallText = '';
+  let elabQuestion = '';
+  let elabAnswer = '';
+  let elabFeedback = '';
+  let elabBusy = false;
+  let promptIdx = -1;
+  let tocOpen = false;
+  let peekApi = null;
+  let mdChanged = false;
+
+  const resetBlockDraft = () => {
+    recallText = '';
+    elabQuestion = '';
+    elabAnswer = '';
+    elabFeedback = '';
+    elabBusy = false;
+    promptIdx = -1;
+  };
+
+  const saveSt = () => {
+    try {
+      if (st.phase === 'done') sessionStorage.removeItem(fpStateKey(sec.id));
+      else sessionStorage.setItem(fpStateKey(sec.id), JSON.stringify(st));
+    } catch { /* niente */ }
+  };
+
+  const ov = document.createElement('div');
+  ov.className = 'fp-overlay';
+  ov.setAttribute('role', 'dialog');
+  ov.setAttribute('aria-modal', 'true');
+  ov.setAttribute('aria-label', `Prima passata: ${sec.title}`);
+  document.body.appendChild(ov);
+
+  const curChunkIdx = () => (st.phase === 'queue' ? st.queue[0] : st.idx);
+  const curChunk = () => chunks[curChunkIdx()] || chunks[0];
+
+  const close = (refresh = false) => {
+    if (peekApi) { peekApi.destroy(); peekApi = null; }
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('hashchange', onHash);
+    ov.remove();
+    onDone(refresh || mdChanged);
+  };
+  const onHash = () => close(false);
+  window.addEventListener('hashchange', onHash);
+
+  // Trasforma al volo il testo selezionato nel blocco in ==cloze== dentro sec.md
+  const clozeSelectedInChunk = async () => {
+    const notesBox = $('#fpNotes', ov);
+    if (!notesBox) return;
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) {
+      toast('Seleziona prima una parola o frase nel blocco, poi tocca == Cloze');
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (!notesBox.contains(range.commonAncestorContainer)) {
+      toast('Seleziona il testo dentro il blocco qui sopra');
+      return;
+    }
+    const txt = sel.toString().replace(/[\s\u00a0]+/g, ' ').trim();
+    if (!txt || txt.length > 300) { toast('Seleziona un termine o una breve frase'); return; }
+    const pre = document.createRange();
+    pre.selectNodeContents(notesBox);
+    pre.setEnd(range.startContainer, range.startOffset);
+    const occInChunk = countOccurrences(pre.toString().replace(/[\s\u00a0]+/g, ' '), txt);
+    const ch = curChunk();
+    const rChunk = findSourceRange(ch.md, txt, occInChunk);
+    if (!rChunk) { toast('Non riesco a individuare quel testo nel Markdown'); return; }
+    const chunkPos = sec.md.indexOf(ch.md);
+    let nextSecMd = null;
+    if (chunkPos >= 0) {
+      const absRange = { start: chunkPos + rChunk.start, end: chunkPos + rChunk.end };
+      nextSecMd = applyMarkToMd(sec.md, absRange, 'cloze');
+    } else {
+      const rSec = findSourceRange(sec.md, txt, occInChunk);
+      if (rSec) nextSecMd = applyMarkToMd(sec.md, rSec, 'cloze');
+    }
+    if (!nextSecMd || nextSecMd === sec.md) { toast('Nessuna modifica applicata'); return; }
+    const nextChunkMd = applyMarkToMd(ch.md, rChunk, 'cloze');
+    const added = nextSecMd.length > sec.md.length;
+    sec.md = nextSecMd;
+    ch.md = nextChunkMd;
+    st.sig = makeSig();
+    mdChanged = true;
+    sel.removeAllRanges();
+    await saveSection(sec);
+    toast(added ? 'Aggiunto al Cloze per i prossimi ripassi' : 'Cloze rimosso');
+    render();
+  };
+
+  const askAiElabQuestion = async () => {
+    if (!AI.ready() || elabBusy) return;
+    const ch = curChunk();
+    elabBusy = true;
+    render();
+    try {
+      const r = await AI.generate({
+        system: 'Formula UNA sola domanda breve di interrogazione elaborativa ("Perché…?", "Come fa…?", "Cosa succede se…?") basata SOLO sul blocco di appunti fornito, utile per capire il meccanismo o il collegamento clinico. Rispondi solo con la domanda, senza prefissi né risposta.',
+        text: `Titolo: ${ch.title}\n\n${aiText(ch.md).slice(0, 3500)}`,
+        maxTokens: 160
+      });
+      const q = String(r.text || '').replace(/^["«*\-\d.)\s]+|["»\s]+$/g, '').trim();
+      if (!q) throw new Error('Nessuna domanda generata');
+      elabQuestion = q;
+      elabFeedback = '';
+    } catch (err) {
+      toast(err.message || 'Non riesco a generare la domanda', 'err');
+    }
+    elabBusy = false;
+    render();
+  };
+
+  const checkAiElabAnswer = async () => {
+    if (!AI.ready() || elabBusy || !elabAnswer.trim()) return;
+    const ch = curChunk();
+    elabBusy = true;
+    render();
+    try {
+      const r = await AI.generate({
+        system: 'Valuta in 2–3 righe chiare e dirette la risposta dello studente rispetto al blocco di appunti. Conferma cosa è giusto e integra brevemente solo ciò che manca o è impreciso, senza inventare dettagli fuori dal testo.',
+        text: `Domanda: ${elabQuestion}\nRisposta dello studente: ${elabAnswer}\n\nAppunti di riferimento (${ch.title}):\n${aiText(ch.md).slice(0, 3500)}`,
+        maxTokens: 280
+      });
+      elabFeedback = String(r.text || '').trim();
+    } catch (err) {
+      toast(err.message || 'Non riesco a verificare la risposta', 'err');
+    }
+    elabBusy = false;
+    render();
+  };
+
+  const render = () => {
+    if (peekApi) { peekApi.destroy(); peekApi = null; }
+    saveSt();
+
+    if (st.phase === 'done') {
+      const mins = Math.max(1, Math.round((Date.now() - (st.startedAt || Date.now())) / 60000));
+      const nFirst = st.fixedFirst.length;
+      const nQueue = st.fixedQueue.length;
+      const hasCloze = countCloze(sec.md) + ioMaskCount(sec) > 0;
+      const canPlan = !sec.studyhub && !sec.srs?.due;
+      ov.innerHTML = `
+        <div class="fp-shell">
+          <header class="fp-head">
+            <div class="fp-htitle">
+              <span class="fp-badge done">✓ Prima passata completata</span>
+              <h2>${esc(sec.title)}</h2>
+            </div>
+            <div class="fp-hacts">
+              ${typeof helpBtn === 'function' ? helpBtn('firstPass3R') : ''}
+              <button type="button" class="btn sm ghost" data-fp="close" aria-label="Chiudi">✕</button>
+            </div>
+          </header>
+          <div class="fp-main">
+            <div class="fp-done-card">
+              <div class="fp-done-ic" aria-hidden="true">🎯</div>
+              <h3>Tutti i ${chunks.length} blocchi fissati almeno 1 volta</h3>
+              <p class="hint">Hai completato sia la lettura attiva 3R sia la coda di chiusura (Criterio = 1) in circa ${mins} ${mins === 1 ? 'minuto' : 'minuti'}.</p>
+              <div class="fp-stats">
+                <div class="fp-stat"><strong>${nFirst}</strong><span>Fissati al 1° colpo</span></div>
+                <div class="fp-stat"><strong>${nQueue}</strong><span>Recuperati in coda</span></div>
+                <div class="fp-stat"><strong>${chunks.length}</strong><span>Blocchi totali</span></div>
+              </div>
+              <div class="fp-done-acts">
+                ${canPlan ? '<button type="button" class="btn primary" data-fp="studied">Segna come studiata in StudyHub</button><button type="button" class="btn" data-fp="plan">Ripassa nel Notebook</button>' : ''}
+                ${hasCloze ? '<button type="button" class="btn" data-fp="cloze">Passa al Cloze</button>' : ''}
+                <button type="button" class="btn ghost" data-fp="restart">Rifai da capo</button>
+                <button type="button" class="btn ${canPlan ? 'ghost' : 'primary'}" data-fp="close">Torna a Leggi</button>
+              </div>
+            </div>
+          </div>
+        </div>`;
+      return;
+    }
+
+    const ci = curChunkIdx();
+    const ch = curChunk();
+    const isQueue = st.phase === 'queue';
+    const doneCount = st.fixedFirst.length + st.fixedQueue.length;
+    const pct = Math.min(100, Math.round((doneCount / chunks.length) * 100));
+    const radar = loadRadar(sec.id);
+    const missCount = st.misses[ci] || 0;
+
+    ov.innerHTML = `
+      <div class="fp-shell">
+        <header class="fp-head">
+          <div class="fp-htitle">
+            <button type="button" class="fp-badge ${isQueue ? 'queue' : ''}" data-fp="toc" title="Mostra elenco blocchi e salta">
+              ${isQueue ? `↻ Coda di chiusura · ${st.queue.length} ${st.queue.length === 1 ? 'rimasto' : 'rimasti'}` : `Blocco ${st.idx + 1} di ${chunks.length}`} ▾
+            </button>
+            <h2>${esc(sec.title)}</h2>
+          </div>
+          <div class="fp-hacts">
+            ${typeof helpBtn === 'function' ? helpBtn('firstPass3R') : ''}
+            <button type="button" class="btn sm ghost" data-fp="restart" title="Ricomincia dal primo blocco">↺</button>
+            <button type="button" class="btn sm ghost" data-fp="close" aria-label="Chiudi">✕</button>
+          </div>
+        </header>
+        <div class="fp-prog"><span style="width:${pct}%"></span></div>
+        ${tocOpen ? `
+          <div class="fp-toc" role="region" aria-label="Elenco dei blocchi">
+            ${chunks.map((c, i) => {
+              const isDone = st.fixedFirst.includes(i) || st.fixedQueue.includes(i);
+              const inQ = st.queue.includes(i);
+              const curMark = i === ci ? ' on' : '';
+              return `<button type="button" class="fp-toc-row${curMark}" data-fp-jump="${i}">
+                <span class="fp-toc-ic">${isDone ? '✓' : inQ ? '↻' : `${i + 1}.`}</span>
+                <span class="fp-toc-t">${esc(c.title)}</span>
+              </button>`;
+            }).join('')}
+          </div>` : ''}
+        <div class="fp-steps" aria-label="Fasi del metodo 3R">
+          <span class="fp-step ${st.step === 'read' ? 'on' : 'past'}">1. Leggi</span>
+          <span class="fp-step ${st.step === 'recall' ? 'on' : st.step === 'verify' ? 'past' : ''}">2. Copri e ripeti</span>
+          <span class="fp-step ${st.step === 'verify' ? 'on' : ''}">3. Verifica</span>
+          ${st.queue.length && !isQueue ? `<span class="fp-qpill" title="Blocchi in coda per il giro finale">↻ ${st.queue.length} in coda</span>` : ''}
+        </div>
+        ${radar ? '<div class="fp-radar fp-radar-in" id="fpInRadar"></div>' : ''}
+        <div class="fp-main">
+          ${isQueue && st.step === 'recall' ? '<div class="fp-qbanner"><strong>Coda di chiusura (Criterio = 1):</strong> richiama questo blocco senza guardare per fissarlo prima di finire.</div>' : ''}
+          ${missCount >= 2 && st.step === 'verify' ? `<div class="fp-hard-nudge">⚠ <strong>Punto ostico</strong> (mancato ${missCount} volte): seleziona qui sotto i termini che ti sfuggono e premi <strong>== Cloze</strong>, oppure crea una <strong>＋ Flashcard</strong>.</div>` : ''}
+          <article class="fp-card">
+            ${ch.path.length ? `<div class="fp-crumb">${esc(ch.path.join(' › '))}</div>` : ''}
+            <div class="fp-chead">
+              <h3>${esc(ch.title)}</h3>
+              <div class="fp-chead-acts">
+                ${st.step !== 'recall' ? '<button type="button" class="btn sm ghost" data-fp="cloze-sel" title="Seleziona un termine qui sotto e trasformalo subito in ==cloze==">== Cloze</button>' : ''}
+                ${st.step === 'read' ? '<button type="button" class="btn sm ghost" data-fp="peek" aria-pressed="false" title="Copri i dettagli di questo blocco">🙈 Oscura</button>' : ''}
+              </div>
+            </div>
+            <div class="pk-bar" id="fpPkBar" hidden></div>
+            ${st.step === 'recall' ? `
+              <div class="fp-curtain">
+                <p class="fp-curtain-t">Chiudi gli occhi o guarda solo il titolo e richiama questo blocco <strong>(${esc(ch.hint)})</strong>.</p>
+                <textarea class="input fp-recall-ta" id="fpRecallTa" rows="3" placeholder="Facoltativo: scrivi 2–3 parole chiave o punti richiamati per confrontarli subito…">${esc(recallText)}</textarea>
+                <div class="fp-elab-row">
+                  <div class="fp-elab-btns">
+                    <button type="button" class="btn sm ghost" data-fp="elab">❓ Collega (Perché?)</button>
+                    ${AI.ready() ? `<button type="button" class="btn sm ghost" data-fp="elab-ai" ${elabBusy ? 'disabled' : ''}>${elabBusy ? 'Preparo domanda…' : `✨ Domanda ${AI.name()} sul blocco`}</button>` : ''}
+                  </div>
+                  ${elabQuestion ? `
+                    <div class="fp-elab-box">
+                      <div class="fp-elab-q">${esc(elabQuestion)}</div>
+                      <textarea class="input fp-elab-ta" id="fpElabTa" rows="2" placeholder="Rispondi in 1 frase (collegamento causa-effetto o clinico)…">${esc(elabAnswer)}</textarea>
+                    </div>` : ''}
+                </div>
+              </div>` : `
+              ${st.step === 'verify' && (recallText.trim() || elabAnswer.trim()) ? `
+                <div class="fp-your">
+                  ${recallText.trim() ? `<span class="fp-your-lbl">Quello che hai richiamato</span><div class="fp-your-txt">${esc(recallText)}</div>` : ''}
+                  ${elabAnswer.trim() ? `
+                    <div class="fp-your-elab">
+                      <span class="fp-your-lbl">Collegamento · ${esc(elabQuestion)}</span>
+                      <div class="fp-your-txt">${esc(elabAnswer)}</div>
+                      ${AI.ready() ? `<button type="button" class="btn sm ghost fp-elab-chk" data-fp="elab-check" ${elabBusy ? 'disabled' : ''}>${elabBusy ? 'Controllo…' : `✨ Controlla con ${AI.name()}`}</button>` : ''}
+                      ${elabFeedback ? `<div class="fp-elab-fb">${esc(elabFeedback)}</div>` : ''}
+                    </div>` : ''}
+                </div>` : ''}
+              <div class="notes fp-notes" id="fpNotes">${renderMd(ch.md)}</div>`}
+          </article>
+        </div>
+        <footer class="fp-foot">
+          ${st.step === 'read' ? `
+            ${!isQueue && st.idx > 0 ? '<button type="button" class="btn ghost" data-fp="prev">← Precedente</button>' : '<span></span>'}
+            <button type="button" class="btn primary" data-fp="to-recall">Copri e ripeti subito →</button>` : ''}
+          ${st.step === 'recall' ? `
+            <button type="button" class="btn ghost" data-fp="to-read">👁 Rileggi un attimo</button>
+            <button type="button" class="btn primary" data-fp="to-verify">Mostra e confronta →</button>` : ''}
+          ${st.step === 'verify' ? `
+            <div class="fp-foot-left">
+              <button type="button" class="btn sm ghost" data-fp="cloze-sel" title="Seleziona un termine nel blocco e aggiungilo al Cloze">== Cloze</button>
+              <button type="button" class="btn sm ghost" data-fp="card" title="Crea una flashcard da questo blocco">＋ Flashcard</button>
+            </div>
+            <div class="fp-ver-btns">
+              <button type="button" class="btn fp-miss" data-fp="miss">↻ Da riprendere</button>
+              <button type="button" class="btn fp-ok" data-fp="ok">✓ Fissato</button>
+            </div>` : ''}
+        </footer>
+      </div>`;
+
+    // Evita che il pulsante == Cloze tolga la selezione del testo prima del click
+    $$('[data-fp="cloze-sel"]', ov).forEach(b => b.addEventListener('pointerdown', e => e.preventDefault()));
+
+    if (radar) renderRadarBox($('#fpInRadar', ov), sec, { compact: true });
+
+    const notesBox = $('#fpNotes', ov);
+    if (notesBox) {
+      hydrateImages(notesBox);
+      hydrateHtmlBlocks(notesBox);
+      if (typeof attachInlineAtlasAnn === 'function') attachInlineAtlasAnn(notesBox, sec);
+      if (st.step === 'read') {
+        peekApi = setupPeekDetails(notesBox, { barEl: $('#fpPkBar', ov), btnEl: $('[data-fp="peek"]', ov) });
+      }
+    }
+    const ta = $('#fpRecallTa', ov);
+    if (ta) ta.addEventListener('input', () => { recallText = ta.value; });
+    const eta = $('#fpElabTa', ov);
+    if (eta) eta.addEventListener('input', () => { elabAnswer = eta.value; });
+
+    const main = $('.fp-main', ov);
+    if (main) main.scrollTop = 0;
+  };
+
+  const advance = ok => {
+    const ci = curChunkIdx();
+    resetBlockDraft();
+    tocOpen = false;
+    if (st.phase === 'pass') {
+      if (ok) {
+        if (!st.fixedFirst.includes(ci)) st.fixedFirst.push(ci);
+      } else {
+        st.misses[ci] = (st.misses[ci] || 0) + 1;
+        if (!st.queue.includes(ci)) st.queue.push(ci);
+      }
+      st.idx++;
+      if (st.idx < chunks.length) {
+        st.step = 'read';
+      } else if (st.queue.length) {
+        st.phase = 'queue';
+        st.step = 'recall';
+        toast(`Giro di chiusura: ${st.queue.length} ${st.queue.length === 1 ? 'blocco' : 'blocchi'} da fissare`);
+      } else {
+        st.phase = 'done';
+      }
+    } else if (st.phase === 'queue') {
+      st.queue.shift();
+      if (ok) {
+        if (!st.fixedQueue.includes(ci)) st.fixedQueue.push(ci);
+      } else {
+        st.misses[ci] = (st.misses[ci] || 0) + 1;
+        st.queue.push(ci);
+      }
+      if (st.queue.length) st.step = 'recall';
+      else st.phase = 'done';
+    }
+    render();
+  };
+
+  ov.addEventListener('click', async e => {
+    const jmp = e.target.closest('[data-fp-jump]');
+    if (jmp) {
+      const target = +jmp.dataset.fpJump;
+      if (target >= 0 && target < chunks.length) {
+        st.phase = 'pass';
+        st.idx = target;
+        st.step = 'read';
+        tocOpen = false;
+        resetBlockDraft();
+        render();
+      }
+      return;
+    }
+    const act = e.target.closest('[data-fp]')?.dataset.fp;
+    if (!act) return;
+    if (act === 'close') { close(false); return; }
+    if (act === 'toc') { tocOpen = !tocOpen; render(); return; }
+    if (act === 'restart') {
+      chunks = splitFirstPassChunks(sec);
+      st = { sig: makeSig(), phase: 'pass', idx: 0, step: 'read', queue: [], fixedFirst: [], fixedQueue: [], misses: {}, startedAt: Date.now() };
+      tocOpen = false;
+      resetBlockDraft();
+      render();
+      return;
+    }
+    if (act === 'peek') { peekApi?.toggle(); return; }
+    if (act === 'cloze-sel') { await clozeSelectedInChunk(); return; }
+    if (act === 'prev' && st.phase === 'pass' && st.idx > 0) { st.idx--; st.step = 'read'; resetBlockDraft(); render(); return; }
+    if (act === 'to-recall') { st.step = 'recall'; tocOpen = false; render(); return; }
+    if (act === 'to-read') { st.step = 'read'; render(); return; }
+    if (act === 'to-verify') { st.step = 'verify'; render(); return; }
+    if (act === 'elab') {
+      promptIdx = (promptIdx + 1) % FP_ELAB_PROMPTS.length;
+      elabQuestion = FP_ELAB_PROMPTS[promptIdx];
+      elabFeedback = '';
+      render();
+      return;
+    }
+    if (act === 'elab-ai') { await askAiElabQuestion(); return; }
+    if (act === 'elab-check') { await checkAiElabAnswer(); return; }
+    if (act === 'ok') { advance(true); return; }
+    if (act === 'miss') { advance(false); return; }
+    if (act === 'card') {
+      const ch = curChunk();
+      await openCardSheet({ front: ch.title, back: ch.md, sectionId: sec.id, notebookId: sec.notebookId });
+      return;
+    }
+    if (act === 'studied') {
+      if (await markStudiedInStudyHub(sec)) close(true);
+      return;
+    }
+    if (act === 'plan') {
+      sec.srs = { ...(sec.srs || newSrs()), due: addDays(todayStr(), 1), interval: 1 };
+      await saveSection(sec);
+      toast('Primo ripasso nel Notebook domani');
+      close(true);
+      return;
+    }
+    if (act === 'cloze') {
+      close(false);
+      Nav.replace(`#/sec/${sec.id}/cloze`);
+    }
+  });
+
+  const onKey = e => {
+    if ($('#modalRoot').children.length) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (tocOpen) { tocOpen = false; render(); } else close(false); return; }
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    if (st.phase === 'done') return;
+    if (e.key === ' ' || e.key === 'Enter') {
+      if (st.step === 'read') { e.preventDefault(); st.step = 'recall'; render(); }
+      else if (st.step === 'recall') { e.preventDefault(); st.step = 'verify'; render(); }
+    } else if (st.step === 'verify') {
+      if (e.key === '1') { e.preventDefault(); advance(false); }
+      else if (e.key === '2') { e.preventDefault(); advance(true); }
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+
+  render();
+}
+
+function setupFirstPassControls(sec, body, notesEl) {
+  const peekBtn = $('[data-act="fp-peek"]', body);
+  const peekBar = $('#pkBar', body);
+  const radarBox = $('#fpRadar', body);
+  const ptBtn = $('[data-act="fp-pretest"]', body);
+  const startBtn = $('[data-act="fp-start"]', body);
+  const newBanner = $('#fpNewBanner', body);
+
+  const peek = setupPeekDetails(notesEl, { barEl: peekBar, btnEl: peekBtn });
+  addCleanup(() => peek.destroy());
+
+  const launchFirstPass = () => {
+    if (peek.isOn()) peek.setOn(false);
+    openFirstPass(sec, { onDone: refresh => { if (refresh) route(); else syncPretestBtn(); } });
+  };
+
+  const syncPretestBtn = () => {
+    const r = loadRadar(sec.id);
+    if (ptBtn) {
+      const done = r ? r.items.filter(x => x.done).length : 0;
+      ptBtn.textContent = r ? `⚡ Pre-test (${done}/${r.items.length})` : '⚡ Pre-test';
+      ptBtn.classList.toggle('on', !!r);
+    }
+    renderRadarBox(radarBox, sec, { onChange: syncPretestBtn });
+  };
+  syncPretestBtn();
+
+  // Banner opzionale sulle sezioni nuove (non ancora pianificate né studiate)
+  const isFresh = !sec.studyhub && !sec.srs?.due && !(sec.srs?.history?.length);
+  const dismissedKey = `nb-fp-dismiss:${sec.id}`;
+  if (newBanner && isFresh && !loadRadar(sec.id) && !sessionStorage.getItem(dismissedKey)) {
+    newBanner.hidden = false;
+    newBanner.innerHTML = `
+      <div class="fp-nb-txt"><strong>Sezione nuova:</strong> prima di leggere tutto di fila, attiva la memoria con 60s di Pre-test o studia un blocco alla volta.</div>
+      <div class="fp-nb-acts">
+        <button type="button" class="btn sm" data-fpnb="pretest">⚡ Pre-test (60s)</button>
+        <button type="button" class="btn sm primary" data-fpnb="start">▶ Prima passata</button>
+        <button type="button" class="btn sm ghost" data-fpnb="hide" aria-label="Chiudi suggerimento" title="Chiudi">✕</button>
+      </div>`;
+    newBanner.addEventListener('click', e => {
+      const a = e.target.closest('[data-fpnb]')?.dataset.fpnb;
+      if (!a) return;
+      if (a === 'hide') { try { sessionStorage.setItem(dismissedKey, '1'); } catch {} newBanner.hidden = true; return; }
+      if (a === 'start') { newBanner.hidden = true; launchFirstPass(); return; }
+      if (a === 'pretest') {
+        newBanner.hidden = true;
+        openPreTest(sec, { onRadarSaved: syncPretestBtn, onStartFirstPass: launchFirstPass });
+      }
+    });
+  }
+
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(fpStateKey(sec.id)) || 'null');
+    if (saved && saved.phase && saved.phase !== 'done' && startBtn) {
+      startBtn.textContent = saved.phase === 'queue' ? `▶ Riprendi coda (${saved.queue?.length || 0})` : '▶ Riprendi passata';
+    }
+  } catch { /* niente */ }
+
+  if (peekBtn) peekBtn.addEventListener('click', () => peek.toggle());
+  if (startBtn) startBtn.addEventListener('click', launchFirstPass);
+  if (ptBtn) ptBtn.addEventListener('click', () => {
+    openPreTest(sec, { onRadarSaved: syncPretestBtn, onStartFirstPass: launchFirstPass });
   });
 }
