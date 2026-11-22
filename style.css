@@ -256,10 +256,18 @@ a { color: var(--accent); }
     letter-spacing: -0.02em;
     color: var(--text);
   }
-  .brand-mark { width: 30px; height: 30px; flex: none; }
-  .brand-mark .bm-bg { fill: var(--accent); }
-  .brand-mark .bm-hl { fill: var(--accent-ink); opacity: 0.22; }
-  .brand-mark .bm-ln { fill: none; stroke: var(--accent-ink); stroke-width: 2.2; stroke-linecap: round; }
+  .brand-mark { width: 34px; height: 34px; flex: none; filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.22)); }
+  .brand-mark .bm-bg { fill: #0c2432; stroke: color-mix(in srgb, var(--accent) 42%, transparent); stroke-width: 1.1; }
+  .brand-mark .bm-card { fill: var(--accent); opacity: 0.24; }
+  .brand-mark .bm-page { fill: #eef9fc; }
+  .brand-mark .bm-spine { fill: var(--accent); }
+  .brand-mark .bm-rib { fill: #fce06c; }
+  .brand-mark .bm-hl { fill: #fce883; }
+  .brand-mark .bm-ln { fill: none; stroke: #124052; stroke-width: 1.55; stroke-linecap: round; }
+  .brand-mark .bm-halo { fill: #0c2432; }
+  .brand-mark .bm-badge { fill: var(--accent); }
+  .brand-mark .bm-cross { fill: none; stroke: #ffffff; stroke-width: 2.1; stroke-linecap: round; }
+  :root[data-theme="sepia"] .brand-mark .bm-bg, :root[data-theme="sepia"] .brand-mark .bm-halo { fill: #153c4a; }
   .nav a {
     flex: none;
     flex-direction: row;
@@ -4341,7 +4349,7 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
 @media (min-width: 900px) {
   :root[data-look="vetrino"] .nav { border-radius: 0; background: var(--surface); padding: 24px 0 24px 0; gap: 0; }
   :root[data-look="vetrino"] .brand { padding: 0 14px 22px 22px; gap: 8px; font-family: var(--title-font); font-size: 1.4rem; letter-spacing: 0; }
-  :root[data-look="vetrino"] .brand-mark .bm-bg { fill: var(--accent); }
+  :root[data-look="vetrino"] .brand-mark .bm-bg { fill: #0c2432; }
   :root[data-look="vetrino"] .nav a { padding: 8px 22px; border-radius: 0; font-size: 1.02rem; border-left: 3px solid transparent; }
   :root[data-look="vetrino"] .nav a:hover { background: var(--surface-2); }
   :root[data-look="vetrino"] .nav a.on { background: var(--accent-soft); border-left-color: var(--accent); color: var(--text); }

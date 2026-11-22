@@ -1468,6 +1468,10 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.27", title: "nuovo logo e set completo di icone PWA", html: `      <ul>
+        <li><strong>Nuovo logo dell’app</strong>: quaderno medico in stile <em>vetrino</em> (sfondo ottanio scuro, dorso turchese, segnalibro ed evidenziatore giallo crema pastello, scheda retrostante e badge croce medica), aggiornato sia nella barra laterale sia come favicon vettoriale (<code>icon.svg</code>).</li>
+        <li><strong>Icone PWA e scorciatoie rigenerate</strong>: aggiornate <code>icon-192</code>, <code>icon-512</code>, <code>icon-maskable-512</code> (per la schermata Home Android), <code>icon-monochrome-512</code> (icone a tema Android) e le 4 icone delle scorciatoie rapide.</li>
+      </ul>` },
   { v: "4.26", title: "Prima passata: dividi/unisci blocchi, fix 🙈 Oscura con cloze e == Cloze su tablet", html: `      <ul>
         <li><strong>Modifica la suddivisione dei blocchi (✂️ Dividi e 🔗 Unisci)</strong>: in <em>Prima passata</em> tocca <strong>✂️ Dividi</strong> sul blocco per separare con un tocco singole voci principali (es. <em>Psalterium</em> e <em>Corpo del Fornice</em>) o unirle ai blocchi vicini; dal menu <em>Blocco ▾</em> in alto puoi anche cambiare al volo il preset (<em>Per titoli · Standard · Ogni voce</em>). La suddivisione si salva sulla sezione.</li>
         <li><strong>Fix 🙈 Oscura</strong>: risolto il bug per cui i blocchi che avevano già termini <code>==cloze==</code> dicevano “Non ci sono dettagli da oscurare”. Ora oscura regolarmente sottopunti e spiegazioni (lasciando visibili i titoli-guida) e permette di passare con un clic tra <strong>Dettagli</strong> e <strong>Solo Cloze</strong>.</li>

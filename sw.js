@@ -2,12 +2,12 @@
    - file dell'app: prima la rete (così vedi subito gli aggiornamenti), poi la copia salvata se sei offline
    - librerie e font dai CDN: prima la copia salvata (hanno versioni fisse)
    - chiamate all'AI e a Drive: mai toccate */
-const VERSION = 'nb-4.26';
+const VERSION = 'nb-4.27';
 const APP_CACHE = `${VERSION}-app`;
 const CDN_CACHE = 'nb-cdn-1';
 const SHARE_CACHE = 'nb-share';
 // v3.74: le librerie sono nella cartella lib; quelle del PDF (grandi) si salvano al primo uso
-const APP_FILES = ['./', './index.html', './01-base.js', './02-notebook.js', './03-flashcard.js', './04-pdf.js', './05-clinica.js', './06-app.js', './style.css', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './lib/marked.umd.js', './lib/purify.min.js'];
+const APP_FILES = ['./', './index.html', './01-base.js', './02-notebook.js', './03-flashcard.js', './04-pdf.js', './05-clinica.js', './06-app.js', './style.css', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './lib/marked.umd.js', './lib/purify.min.js'];
 const PDF_FILES = ['./lib/pdf.min.mjs', './lib/pdf.worker.min.mjs'];
 const CDN_FILES = [];
 const CDN_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
