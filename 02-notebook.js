@@ -10003,11 +10003,12 @@ function viewDiscQuiz(kind, id) {
 
 
 /* =====================================================================
-   v4.25: Prima sessione di studio completa (Active Recall immediato)
-   - Oscura dettagli istantaneo (globale + sul singolo paragrafo ripiegabile)
+   v4.26: Prima sessione di studio completa (Active Recall immediato)
+   - Oscura dettagli istantaneo (Dettagli + Solo Cloze; funziona anche con ==cloze== già presenti)
    - Prima passata a micro-blocchi (Metodo 3R + Coda Criterio = 1)
-   - Cloze al volo (==termine==) + Indice blocchi + Punto ostico
-   - Interrogazione elaborativa (domande fisse + AI sul blocco + verifica AI)
+   - Suddivisione blocchi personalizzabile (✂️ Dividi qui, 🔗 Unisci, preset salvati sulla sezione)
+   - == Cloze al volo affidabile su tablet (memoria selezione + toggle Solo Cloze)
+   - Interrogazione elaborativa (fissa + AI sul blocco + verifica AI)
    - Pre-test rapido di 60s + Radar di lettura + Banner sezioni nuove
    ===================================================================== */
 
@@ -10019,9 +10020,10 @@ const FP_ELAB_PROMPTS = [
   'Come lo riassumeresti in 2 frasi chiare se dovessi dirlo ora all’orale?'
 ];
 
-/* ---------- 1. Oscura dettagli istantaneo (globale o sul singolo paragrafo) ---------- */
+/* ---------- 1. Oscura dettagli istantaneo (Dettagli / Solo Cloze) ---------- */
 function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
   let on = false;
+  let peekMode = 'details'; // 'details' | 'cloze'
 
   const wrapNodes = (parent, nodes) => {
     if (!nodes.length) return false;
@@ -10038,7 +10040,7 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
     return true;
   };
 
-  const maskElementCueTail = (el, stopTags = new Set()) => {
+  const maskElementCueTail = (el, stopTags = new Set(), hasSubList = false) => {
     const kids = [];
     for (const c of [...el.childNodes]) {
       if (c.nodeType === 1 && stopTags.has(c.tagName)) break;
@@ -10046,10 +10048,12 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
     }
     const meaningful = kids.filter(n => n.nodeType === 1 || (n.nodeType === 3 && n.nodeValue.trim()));
     if (!meaningful.length) return false;
-    if (meaningful.some(n => n.nodeType === 1 && (n.matches('.pk-mask, .img-box, .html-embed, mark.cz') || n.querySelector?.('.pk-mask, .img-box, .html-embed, mark.cz')))) return false;
+    // Salta solo maschere già applicate o elementi multimediali (NON saltare mark.cz!)
+    if (meaningful.some(n => n.nodeType === 1 && (n.matches('.pk-mask, .img-box, .html-embed') || n.querySelector?.('.pk-mask, .img-box, .html-embed')))) return false;
 
     const first = meaningful[0];
     const firstIdx = kids.indexOf(first);
+    const fullText = kids.map(n => n.textContent || '').join('').replace(/\s+/g, ' ').trim();
 
     // Caso 1: inizia con **Termine** seguito da spiegazione
     if (first.nodeType === 1 && (first.tagName === 'STRONG' || first.tagName === 'B')) {
@@ -10064,9 +10068,9 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
       if (rest.map(n => n.textContent || '').join('').trim().length >= 2) {
         return wrapNodes(el, rest);
       }
-      if (el.tagName === 'LI' && !el.querySelector(':scope > ul, :scope > ol')) {
-        return wrapNodes(el, kids);
-      }
+      // Se è un titolo/etichetta in grassetto con sottolista (es. "**Psalterium:**"), resta visibile come guida!
+      if (hasSubList) return false;
+      if (el.tagName === 'LI') return wrapNodes(el, kids);
       return false;
     }
 
@@ -10086,39 +10090,52 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
       }
     }
 
-    // Caso 3: parole chiave in grassetto o evidenziate all'interno
-    const highlights = kids.filter(n => n.nodeType === 1 && (n.tagName === 'STRONG' || n.tagName === 'B' || (n.tagName === 'MARK' && n.classList.contains('hl'))));
-    if (highlights.length) {
-      let any = false;
-      highlights.forEach(h => {
-        if (wrapNodes(h, [...h.childNodes])) any = true;
-      });
-      return any;
-    }
+    // Se ha una sottolista ed è un'etichetta breve che finisce con ":" (es. "situata:"), resta visibile come guida
+    if (hasSubList && /:\s*$/.test(fullText) && fullText.length <= 80) return false;
 
-    // Caso 4: voce di elenco semplice (senza sottolista)
-    if (el.tagName === 'LI' && !el.querySelector(':scope > ul, :scope > ol')) {
+    // Caso 3: per le voci di elenco (fogliari o frasi descrittive prima di un sottopunto) oscura l'intero testo della voce
+    if (el.tagName === 'LI' || el.closest('li')) {
       return wrapNodes(el, kids);
     }
+
+    // Caso 4: paragrafo normale -> oscura parole chiave (cloze, grassetti, evidenziature) oppure l'intero paragrafo
+    const keyMarks = kids.filter(n => n.nodeType === 1 && (n.tagName === 'STRONG' || n.tagName === 'B' || n.tagName === 'MARK'));
+    if (keyMarks.length) {
+      let any = false;
+      keyMarks.forEach(h => { if (wrapNodes(h, [...h.childNodes])) any = true; });
+      return any;
+    }
+    if (fullText.length >= 12) return wrapNodes(el, kids);
     return false;
   };
 
-  const applyMasksIn = scope => {
+  const applyClozeOnlyIn = scope => {
+    let count = 0;
+    $$('mark.cz', scope).forEach(m => {
+      if (m.closest('.html-embed, .img-box, .pk-mask') || m.querySelector('.pk-mask')) return;
+      if (wrapNodes(m, [...m.childNodes])) count++;
+    });
+    return count;
+  };
+
+  const applyMasksIn = (scope, mode = peekMode) => {
+    if (mode === 'cloze') return applyClozeOnlyIn(scope);
     let count = 0;
     const stopList = new Set(['UL', 'OL', 'TABLE', 'PRE', 'BLOCKQUOTE']);
     $$('li', scope).forEach(li => {
       if (li.closest('.html-embed, .img-box, pre')) return;
+      const hasSub = !!li.querySelector(':scope > ul, :scope > ol');
       const pChild = li.querySelector(':scope > p');
       if (pChild) {
-        if (maskElementCueTail(pChild, stopList)) count++;
-      } else if (maskElementCueTail(li, stopList)) count++;
+        if (maskElementCueTail(pChild, stopList, hasSub)) count++;
+      } else if (maskElementCueTail(li, stopList, hasSub)) count++;
     });
     $$('table', scope).forEach(tbl => {
       if (tbl.closest('.html-embed')) return;
       $$('tbody tr, :scope > tr', tbl).forEach(tr => {
         const cells = [...tr.children].filter(c => c.tagName === 'TD');
         cells.slice(1).forEach(td => {
-          if (td.querySelector('.pk-mask, .img-box, mark.cz')) return;
+          if (td.querySelector('.pk-mask, .img-box')) return;
           if (wrapNodes(td, [...td.childNodes])) count++;
         });
       });
@@ -10156,24 +10173,32 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
     const all = $$('.pk-mask', article);
     if (!on && !all.length) { barEl.hidden = true; barEl.innerHTML = ''; return; }
     const open = all.filter(x => x.classList.contains('open')).length;
+    const hasCloze = $$('mark.cz', article).length > 0;
     barEl.hidden = false;
     barEl.innerHTML = `
-      <span class="pk-stat">🙈 <strong>Oscura dettagli</strong> · ${open} / ${all.length} scoperti</span>
+      <span class="pk-stat">🙈 <strong>${peekMode === 'cloze' ? 'Solo Cloze' : 'Oscura dettagli'}</strong> · ${open} / ${all.length} scoperti</span>
       <span class="pk-acts">
+        ${hasCloze ? `<button type="button" class="btn sm ghost ${peekMode === 'details' ? 'on' : ''}" data-pk="mode-details" title="Oscura tutte le spiegazioni e sottopunti">Dettagli</button><button type="button" class="btn sm ghost ${peekMode === 'cloze' ? 'on' : ''}" data-pk="mode-cloze" title="Oscura solo i termini ==cloze==">Solo Cloze</button>` : ''}
         <button type="button" class="btn sm ghost" data-pk="all-open">Scopri tutti</button>
         <button type="button" class="btn sm ghost" data-pk="all-hide">Copri tutti</button>
         <button type="button" class="btn sm ghost" data-pk="off">Esci</button>
       </span>`;
   };
 
-  const setOn = next => {
-    if (next === on && !(!next && $$('.pk-mask', article).length)) return;
+  const setOn = (next, mode = peekMode) => {
+    const modeChanged = mode !== peekMode;
+    peekMode = mode;
+    if (next === on && !modeChanged && !(!next && $$('.pk-mask', article).length)) return;
     if (next) {
       clearMasksIn(article);
       $$('.fold.pk-fold-on', article).forEach(f => f.classList.remove('pk-fold-on'));
-      const n = applyMasksIn(article);
+      const n = applyMasksIn(article, peekMode);
       if (!n) {
-        toast('Non ci sono dettagli da oscurare in questo blocco (aggiungi elenchi, grassetti o tabelle)');
+        on = false;
+        article.classList.remove('pk-on');
+        toast(peekMode === 'cloze' ? 'Non ci sono termini ==cloze== in questo blocco' : 'Non ci sono dettagli da oscurare in questo blocco');
+        if (btnEl) { btnEl.setAttribute('aria-pressed', 'false'); btnEl.classList.remove('on'); btnEl.textContent = '🙈 Oscura'; }
+        updateBar();
         return;
       }
       on = true;
@@ -10190,7 +10215,7 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
     if (btnEl) {
       btnEl.setAttribute('aria-pressed', String(on));
       btnEl.classList.toggle('on', on);
-      btnEl.textContent = on ? '👁 Mostra tutto' : '🙈 Oscura dettagli';
+      btnEl.textContent = on ? '👁 Mostra tutto' : (btnEl.dataset.labelOff || '🙈 Oscura dettagli');
     }
     syncFoldBtns();
     updateBar();
@@ -10205,12 +10230,11 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
       if (!$$('.pk-mask', article).length) {
         on = false;
         article.classList.remove('pk-on');
-        if (btnEl) { btnEl.setAttribute('aria-pressed', 'false'); btnEl.classList.remove('on'); btnEl.textContent = '🙈 Oscura dettagli'; }
+        if (btnEl) { btnEl.setAttribute('aria-pressed', 'false'); btnEl.classList.remove('on'); btnEl.textContent = btnEl.dataset.labelOff || '🙈 Oscura dettagli'; }
       }
     } else {
-      // Se il paragrafo era chiuso, aprilo così puoi esercitarti subito
       if (fold.classList.contains('closed')) setFold(fold, false);
-      const n = applyMasksIn(body);
+      const n = applyMasksIn(body, peekMode);
       if (!n) { toast('Nessun dettaglio da oscurare in questo paragrafo'); return; }
       fold.classList.add('pk-fold-on');
       article.classList.add('pk-on');
@@ -10219,7 +10243,6 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
     updateBar();
   };
 
-  // Aggiungi il pulsante occhio discreto su ogni paragrafo ripiegabile (solo in Leggi)
   const attachFoldButtons = () => {
     $$('.fold:not(.fold-empty) > .fold-h', article).forEach(h => {
       if (h.querySelector('.fold-pk-btn')) return;
@@ -10267,6 +10290,8 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
       const a = e.target.closest('[data-pk]')?.dataset.pk;
       if (!a) return;
       if (a === 'off') { setOn(false); return; }
+      if (a === 'mode-details') { setOn(true, 'details'); return; }
+      if (a === 'mode-cloze') { setOn(true, 'cloze'); return; }
       const open = a === 'all-open';
       $$('.pk-mask', article).forEach(m => { m.classList.toggle('open', open); m.setAttribute('aria-expanded', String(open)); });
       updateBar();
@@ -10275,8 +10300,13 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
 
   return {
     isOn: () => on || $$('.pk-mask', article).length > 0,
+    mode: () => peekMode,
     setOn,
-    toggle: () => setOn(!on),
+    toggle: () => setOn(!on, peekMode),
+    toggleCloze: () => {
+      if (on && peekMode === 'cloze') setOn(false);
+      else setOn(true, 'cloze');
+    },
     destroy() {
       if (on || $$('.pk-mask', article).length) setOn(false);
       $$('.fold-pk-btn', article).forEach(b => b.remove());
@@ -10286,30 +10316,94 @@ function setupPeekDetails(article, { barEl = null, btnEl = null } = {}) {
   };
 }
 
-/* ---------- 2. Suddivisione automatica in micro-blocchi per Prima passata ---------- */
-function splitMdUnits(md) {
-  const lines = String(md || '').replace(/\r\n?/g, '\n').split('\n');
-  const units = [];
-  let cur = [];
+/* ---------- 2. Atomi e suddivisione personalizzabile per Prima passata ---------- */
+function atomPreviewLabel(md) {
+  const first = String(md || '').split('\n').find(l => l.trim()) || '';
+  const cleaned = stripMarks(stripCloze(first))
+    .replace(/^\s*(?:[-*+]|\d+[.)]|#{1,6}|>)\s+/, '')
+    .replace(/\*\*|__|`/g, '')
+    .trim();
+  // Se è una voce "Titolo: resto", prendi il titolo se breve
+  const m = cleaned.match(/^([^:]{3,75}):(?:\s*$|\s+)/);
+  const out = m ? m[1].trim() : cleaned;
+  return out.length > 72 ? out.slice(0, 69).trimEnd() + '…' : out;
+}
+
+function buildFirstPassAtoms(sec) {
+  const src = String(sec.md || '');
+  if (!src.trim()) return [];
+  const lineObjs = [];
+  const re = /[^\n]*\n?/g;
+  let m;
+  while ((m = re.exec(src))) {
+    if (!m[0]) break;
+    const raw = m[0];
+    const text = raw.replace(/\r?\n$/, '');
+    lineObjs.push({ text, start: m.index, end: m.index + text.length });
+    if (m.index + raw.length >= src.length) break;
+  }
+
+  const atoms = [];
+  const stack = [];
+  let secIdx = 0;
+  let curHeading = sec.title || 'Appunti';
+  let curPath = [];
   let inFence = false;
   let inTable = false;
+  let cur = [];
+
   const flush = () => {
-    const t = cur.join('\n').trim();
-    if (t) units.push(t);
+    while (cur.length && !cur[0].text.trim()) cur.shift();
+    while (cur.length && !cur[cur.length - 1].text.trim()) cur.pop();
+    if (!cur.length) return;
+    const start = cur[0].start;
+    const end = cur[cur.length - 1].end;
+    const md = src.slice(start, end);
+    const firstLine = cur[0].text;
+    const isListItem = /^([-*+]|\d+[.)])\s+/.test(firstLine);
+    const hasSub = isListItem && cur.slice(1).some(x => /^\s+([-*+]|\d+[.)])\s+/.test(x.text));
+    const isBoldLead = /^([-*+]|\d+[.)])\s+\*\*[^*\n]+\*\*/.test(firstLine);
+    atoms.push({
+      secIdx,
+      heading: curHeading,
+      path: [...curPath],
+      start,
+      end,
+      md,
+      isListItem,
+      hasSub,
+      isBoldLead,
+      label: atomPreviewLabel(md)
+    });
     cur = [];
   };
-  for (const line of lines) {
+
+  for (const lo of lineObjs) {
+    const line = lo.text;
     if (/^\s*```/.test(line)) {
       inFence = !inFence;
-      cur.push(line);
+      cur.push(lo);
       if (!inFence) flush();
       continue;
     }
-    if (inFence) { cur.push(line); continue; }
+    if (inFence) { cur.push(lo); continue; }
+    const hm = line.match(/^(#{1,4})\s+(.+?)\s*#*$/);
+    if (hm) {
+      inTable = false;
+      flush();
+      secIdx++;
+      const lvl = hm[1].length;
+      const title = stripMarks(stripCloze(hm[2])).replace(/\*\*|__|`/g, '').trim();
+      while (stack.length && stack[stack.length - 1].lvl >= lvl) stack.pop();
+      curPath = stack.map(x => x.title);
+      curHeading = title || sec.title || 'Blocco';
+      stack.push({ lvl, title: curHeading });
+      continue;
+    }
     if (/^\s*\|/.test(line)) {
       if (!inTable && cur.length) flush();
       inTable = true;
-      cur.push(line);
+      cur.push(lo);
       continue;
     } else if (inTable) {
       inTable = false;
@@ -10318,90 +10412,124 @@ function splitMdUnits(md) {
     if (!line.trim()) { flush(); continue; }
     if (/^([-*+]|\d+[.)])\s+/.test(line)) {
       if (cur.length) flush();
-      cur.push(line);
-    } else if (cur.length && /^([-*+]|\d+[.)])\s+/.test(cur[0]) && /^\s+/.test(line)) {
-      cur.push(line);
+      cur.push(lo);
+    } else if (cur.length && /^([-*+]|\d+[.)])\s+/.test(cur[0].text) && /^\s+/.test(line)) {
+      cur.push(lo);
     } else {
-      cur.push(line);
+      cur.push(lo);
     }
   }
   flush();
-  return units;
+  return atoms;
 }
 
-function splitFirstPassChunks(sec) {
-  const md = String(sec.md || '').replace(/\r\n?/g, '\n').trim();
-  if (!md) return [];
-  const lines = md.split('\n');
-  const rawSections = [];
-  const stack = [];
-  let curTitle = sec.title || 'Appunti';
-  let curPath = [];
-  let buf = [];
-  let inFence = false;
-
-  const pushRaw = () => {
-    const body = buf.join('\n').trim();
-    if (body) rawSections.push({ title: curTitle, path: [...curPath], md: body });
-    buf = [];
-  };
-
-  for (const line of lines) {
-    if (/^\s*```/.test(line)) { inFence = !inFence; buf.push(line); continue; }
-    const hm = !inFence && line.match(/^(#{1,4})\s+(.+?)\s*#*$/);
-    if (hm) {
-      pushRaw();
-      const lvl = hm[1].length;
-      const title = stripMarks(stripCloze(hm[2])).replace(/\*\*|__|`/g, '').trim();
-      while (stack.length && stack[stack.length - 1].lvl >= lvl) stack.pop();
-      curPath = stack.map(x => x.title);
-      curTitle = title || sec.title || 'Blocco';
-      stack.push({ lvl, title: curTitle });
+function computePresetCuts(atoms, preset = 'auto') {
+  const cuts = [];
+  if (atoms.length <= 1) return cuts;
+  if (preset === 'headings') {
+    for (let i = 1; i < atoms.length; i++) {
+      if (atoms[i].secIdx !== atoms[i - 1].secIdx) cuts.push(i);
+    }
+    return cuts;
+  }
+  if (preset === 'items') {
+    for (let i = 1; i < atoms.length; i++) {
+      const prev = atoms[i - 1], cur = atoms[i];
+      if (cur.secIdx !== prev.secIdx || cur.isListItem || prev.isListItem || cur.md.length > 260 || prev.md.length > 260) {
+        cuts.push(i);
+      }
+    }
+    return cuts;
+  }
+  // 'auto': per titoli, spezzando blocchi lunghi in 3-4 punti / ~680 caratteri
+  let gStart = 0;
+  let gLen = atoms[0].md.length;
+  for (let i = 1; i < atoms.length; i++) {
+    const sameSec = atoms[i].secIdx === atoms[i - 1].secIdx;
+    const gCount = i - gStart;
+    if (!sameSec || gCount >= 4 || gLen + atoms[i].md.length > 680) {
+      cuts.push(i);
+      gStart = i;
+      gLen = atoms[i].md.length;
     } else {
-      buf.push(line);
+      gLen += atoms[i].md.length;
     }
   }
-  pushRaw();
+  return cuts;
+}
 
-  const chunks = [];
+function normalizeCuts(cuts, atomCount) {
+  return [...new Set((cuts || []).map(Number).filter(n => Number.isInteger(n) && n > 0 && n < atomCount))].sort((a, b) => a - b);
+}
+
+function buildFirstPassModel(sec) {
+  const atoms = buildFirstPassAtoms(sec);
+  if (!atoms.length) return { atoms: [], cuts: [], preset: 'auto', chunks: [] };
+  const saved = sec.fpCustom && sec.fpCustom.atomCount === atoms.length ? sec.fpCustom : null;
+  const preset = saved ? (saved.preset || 'custom') : 'auto';
+  const cuts = saved ? normalizeCuts(saved.cuts, atoms.length) : computePresetCuts(atoms, 'auto');
+
+  const bounds = [0, ...cuts, atoms.length];
+  const rawChunks = [];
+  for (let b = 0; b < bounds.length - 1; b++) {
+    const a0 = bounds[b], a1 = bounds[b + 1] - 1;
+    const slice = atoms.slice(a0, a1 + 1);
+    const sameSec = slice.every(x => x.secIdx === slice[0].secIdx);
+    const start = slice[0].start;
+    const end = slice[slice.length - 1].end;
+    const md = String(sec.md || '').slice(start, end);
+    rawChunks.push({ a0, a1, slice, sameSec, start, end, md });
+  }
+
+  // Conta quanti blocchi condividono lo stesso titolo di sezione (per numerarli (1/3), (2/3)…)
+  const headingTotals = new Map();
+  rawChunks.forEach(rc => {
+    if (rc.sameSec && !(rc.slice.length === 1 && (rc.slice[0].hasSub || rc.slice[0].isBoldLead))) {
+      const k = rc.slice[0].secIdx;
+      headingTotals.set(k, (headingTotals.get(k) || 0) + 1);
+    }
+  });
+  const headingSeen = new Map();
+
   const countHint = text => {
     const bullets = (text.match(/^([-*+]|\d+[.)])\s+/gm) || []).length;
     const hasTbl = /^\s*\|.+\|/m.test(text);
     if (hasTbl && bullets) return `${bullets} punti + tabella`;
     if (hasTbl) return 'tabella da richiamare';
     if (bullets >= 2) return `${bullets} punti chiave`;
+    const subBullets = (text.match(/^\s+([-*+]|\d+[.)])\s+/gm) || []).length;
+    if (subBullets >= 2) return `${subBullets} sottopunti`;
     const paras = text.split(/\n{2,}/).filter(Boolean).length;
     return paras > 1 ? `${paras} concetti` : 'concetto chiave';
   };
 
-  rawSections.forEach(rs => {
-    const units = splitMdUnits(rs.md);
-    if (rs.md.length <= 780 && units.length <= 6) {
-      chunks.push({ id: chunks.length, title: rs.title, path: rs.path, md: rs.md, hint: countHint(rs.md) });
-      return;
-    }
-    const groups = [];
-    let g = [];
-    let gLen = 0;
-    for (const u of units) {
-      const nextLen = gLen + u.length;
-      if (g.length && (g.length >= 4 || nextLen > 680)) {
-        groups.push(g.join('\n\n'));
-        g = [u];
-        gLen = u.length;
-      } else {
-        g.push(u);
-        gLen = nextLen;
+  const chunks = rawChunks.map((rc, id) => {
+    const first = rc.slice[0];
+    let title = first.heading;
+    let path = [...first.path];
+    if (rc.slice.length === 1 && (first.hasSub || first.isBoldLead) && first.label && first.label !== first.heading) {
+      // Singola voce strutturata (es. "Psalterium..." o "Corpo del Fornice") -> usa il suo nome come titolo!
+      title = first.label;
+      if (first.heading && first.heading !== sec.title) path = [...first.path, first.heading];
+    } else if (rc.sameSec) {
+      const tot = headingTotals.get(first.secIdx) || 1;
+      if (tot > 1) {
+        const curN = (headingSeen.get(first.secIdx) || 0) + 1;
+        headingSeen.set(first.secIdx, curN);
+        title = `${first.heading} (${curN}/${tot})`;
       }
+    } else {
+      const heads = [...new Set(rc.slice.map(x => x.heading))];
+      title = heads.slice(0, 2).join(' + ') + (heads.length > 2 ? ` (+${heads.length - 2})` : '');
     }
-    if (g.length) groups.push(g.join('\n\n'));
-    groups.forEach((partMd, k) => {
-      const title = groups.length > 1 ? `${rs.title} (${k + 1}/${groups.length})` : rs.title;
-      chunks.push({ id: chunks.length, title, path: rs.path, md: partMd, hint: countHint(partMd) });
-    });
+    return {
+      id, a0: rc.a0, a1: rc.a1, atoms: rc.slice,
+      title, path, start: rc.start, end: rc.end, md: rc.md,
+      hint: countHint(rc.md)
+    };
   });
 
-  return chunks;
+  return { atoms, cuts, preset, chunks };
 }
 
 /* ---------- 3. Radar di lettura e Pre-test rapido (60s) ---------- */
@@ -10579,14 +10707,14 @@ function openPreTest(sec, { onRadarSaved = () => {}, onStartFirstPass = null } =
   });
 }
 
-/* ---------- 4. Prima passata (Metodo 3R + Coda Criterio = 1 + Cloze al volo + Collega AI) ---------- */
+/* ---------- 4. Prima passata (Metodo 3R + Coda Criterio = 1 + Dividi/Unisci + Cloze) ---------- */
 function fpStateKey(secId) { return `nb-fp:${secId}`; }
 
 function openFirstPass(sec, { onDone = () => {} } = {}) {
-  let chunks = splitFirstPassChunks(sec);
-  if (!chunks.length) { toast('La sezione è vuota: scrivi o importa prima gli appunti'); return; }
+  let model = buildFirstPassModel(sec);
+  if (!model.chunks.length) { toast('La sezione è vuota: scrivi o importa prima gli appunti'); return; }
 
-  const makeSig = () => `${chunks.length}:${(sec.md || '').length}`;
+  const makeSig = () => `${model.atoms.length}:${model.cuts.join(',')}`;
   let st = {
     sig: makeSig(), phase: 'pass', idx: 0, step: 'read',
     queue: [], fixedFirst: [], fixedQueue: [], misses: {},
@@ -10606,8 +10734,10 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
   let elabBusy = false;
   let promptIdx = -1;
   let tocOpen = false;
+  let splitMode = false;
   let peekApi = null;
   let mdChanged = false;
+  let lastSel = null; // { text, occurrence, at } per Android/tablet
 
   const resetBlockDraft = () => {
     recallText = '';
@@ -10616,6 +10746,8 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
     elabFeedback = '';
     elabBusy = false;
     promptIdx = -1;
+    splitMode = false;
+    lastSel = null;
   };
 
   const saveSt = () => {
@@ -10633,10 +10765,36 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
   document.body.appendChild(ov);
 
   const curChunkIdx = () => (st.phase === 'queue' ? st.queue[0] : st.idx);
-  const curChunk = () => chunks[curChunkIdx()] || chunks[0];
+  const curChunk = () => model.chunks[curChunkIdx()] || model.chunks[0];
+
+  const captureChunkSelection = () => {
+    const notesBox = $('#fpNotes', ov);
+    if (!notesBox) return null;
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!notesBox.contains(range.commonAncestorContainer)) return null;
+    const text = sel.toString().replace(/[\s\u00a0]+/g, ' ').trim();
+    if (!text || text.length > 300) return null;
+    const pre = document.createRange();
+    pre.selectNodeContents(notesBox);
+    pre.setEnd(range.startContainer, range.startOffset);
+    const occurrence = countOccurrences(pre.toString().replace(/[\s\u00a0]+/g, ' '), text);
+    return { text, occurrence, at: Date.now() };
+  };
+
+  const onSelChange = () => {
+    const c = captureChunkSelection();
+    if (c) lastSel = c;
+    const hasNow = !!(c || (lastSel && Date.now() - lastSel.at < 4500));
+    $$('[data-fp="cloze-sel"]', ov).forEach(b => b.classList.toggle('has-sel', !!c));
+    if (!hasNow) lastSel = null;
+  };
+  document.addEventListener('selectionchange', onSelChange);
 
   const close = (refresh = false) => {
     if (peekApi) { peekApi.destroy(); peekApi = null; }
+    document.removeEventListener('selectionchange', onSelChange);
     document.removeEventListener('keydown', onKey, true);
     window.removeEventListener('hashchange', onHash);
     ov.remove();
@@ -10645,46 +10803,104 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
   const onHash = () => close(false);
   window.addEventListener('hashchange', onHash);
 
-  // Trasforma al volo il testo selezionato nel blocco in ==cloze== dentro sec.md
+  // Salva una nuova configurazione di tagli (cuts) sulla sezione e aggiorna la sessione
+  const applyCustomCuts = async (newCuts, preset = 'custom', adjust = null) => {
+    const norm = normalizeCuts(newCuts, model.atoms.length);
+    if (preset === 'auto' && norm.join(',') === computePresetCuts(model.atoms, 'auto').join(',')) {
+      delete sec.fpCustom;
+    } else {
+      sec.fpCustom = { atomCount: model.atoms.length, preset, cuts: norm };
+    }
+    model = buildFirstPassModel(sec);
+    if (adjust) adjust();
+    st.idx = Math.max(0, Math.min(model.chunks.length - 1, st.idx));
+    st.sig = makeSig();
+    mdChanged = true;
+    await saveSection(sec);
+    render();
+  };
+
+  const splitAtAtom = async atomIdx => {
+    const ci = curChunkIdx();
+    if (model.cuts.includes(atomIdx)) return;
+    splitMode = false;
+    await applyCustomCuts([...model.cuts, atomIdx], 'custom', () => {
+      const shift = arr => arr.map(x => (x > ci ? x + 1 : x));
+      st.fixedFirst = shift(st.fixedFirst);
+      st.fixedQueue = shift(st.fixedQueue);
+      st.queue = shift(st.queue);
+      const nextMiss = {};
+      Object.entries(st.misses || {}).forEach(([k, v]) => { const n = +k; nextMiss[n > ci ? n + 1 : n] = v; });
+      st.misses = nextMiss;
+      if (st.phase === 'queue' && st.queue[0] === ci) st.queue.splice(1, 0, ci + 1);
+    });
+    toast('Blocco diviso in due (salvato per i prossimi studi)');
+  };
+
+  const mergeWithNext = async chunkIdx => {
+    if (chunkIdx < 0 || chunkIdx >= model.chunks.length - 1) return;
+    const cutAtom = model.chunks[chunkIdx + 1].a0;
+    const nextCuts = model.cuts.filter(c => c !== cutAtom);
+    splitMode = false;
+    await applyCustomCuts(nextCuts, 'custom', () => {
+      const remap = arr => [...new Set(arr.map(x => (x > chunkIdx + 1 ? x - 1 : x === chunkIdx + 1 ? chunkIdx : x)))];
+      st.fixedFirst = remap(st.fixedFirst);
+      st.fixedQueue = remap(st.fixedQueue);
+      st.queue = remap(st.queue);
+      const nextMiss = {};
+      Object.entries(st.misses || {}).forEach(([k, v]) => {
+        const n = +k;
+        const m = n > chunkIdx + 1 ? n - 1 : n === chunkIdx + 1 ? chunkIdx : n;
+        nextMiss[m] = (nextMiss[m] || 0) + v;
+      });
+      st.misses = nextMiss;
+      if (st.idx > chunkIdx) st.idx = Math.max(chunkIdx, st.idx - 1);
+    });
+    toast('Blocchi uniti');
+  };
+
+  const applyPreset = async preset => {
+    const curAtom = curChunk().a0;
+    const newCuts = computePresetCuts(model.atoms, preset);
+    splitMode = false;
+    tocOpen = false;
+    resetBlockDraft();
+    await applyCustomCuts(newCuts, preset, () => {
+      const targetChunk = model.chunks.findIndex(c => c.a0 <= curAtom && curAtom <= c.a1);
+      st = {
+        sig: makeSig(), phase: 'pass', idx: Math.max(0, targetChunk), step: 'read',
+        queue: [], fixedFirst: [], fixedQueue: [], misses: {}, startedAt: st.startedAt
+      };
+    });
+    const names = { headings: 'Per titoli', auto: 'Standard', items: 'Ogni voce principale' };
+    toast(`Suddivisione: ${names[preset] || preset} (${model.chunks.length} blocchi)`);
+  };
+
+  // == Cloze al volo: usa selezione corrente o recente (tablet-friendly); senza selezione su blocco con cloze, nasconde i cloze!
   const clozeSelectedInChunk = async () => {
-    const notesBox = $('#fpNotes', ov);
-    if (!notesBox) return;
-    const sel = document.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) {
+    const picked = captureChunkSelection() || (lastSel && Date.now() - lastSel.at < 5000 ? lastSel : null);
+    const ch = curChunk();
+    if (!picked) {
+      if (countCloze(ch.md) > 0 && peekApi) {
+        peekApi.toggleCloze();
+        if (peekApi.isOn()) toast('Cloze nascosti nel blocco · per crearne uno nuovo, seleziona prima una parola');
+        return;
+      }
       toast('Seleziona prima una parola o frase nel blocco, poi tocca == Cloze');
       return;
     }
-    const range = sel.getRangeAt(0);
-    if (!notesBox.contains(range.commonAncestorContainer)) {
-      toast('Seleziona il testo dentro il blocco qui sopra');
-      return;
-    }
-    const txt = sel.toString().replace(/[\s\u00a0]+/g, ' ').trim();
-    if (!txt || txt.length > 300) { toast('Seleziona un termine o una breve frase'); return; }
-    const pre = document.createRange();
-    pre.selectNodeContents(notesBox);
-    pre.setEnd(range.startContainer, range.startOffset);
-    const occInChunk = countOccurrences(pre.toString().replace(/[\s\u00a0]+/g, ' '), txt);
-    const ch = curChunk();
-    const rChunk = findSourceRange(ch.md, txt, occInChunk);
+    const rChunk = findSourceRange(ch.md, picked.text, picked.occurrence);
     if (!rChunk) { toast('Non riesco a individuare quel testo nel Markdown'); return; }
-    const chunkPos = sec.md.indexOf(ch.md);
-    let nextSecMd = null;
-    if (chunkPos >= 0) {
-      const absRange = { start: chunkPos + rChunk.start, end: chunkPos + rChunk.end };
-      nextSecMd = applyMarkToMd(sec.md, absRange, 'cloze');
-    } else {
-      const rSec = findSourceRange(sec.md, txt, occInChunk);
-      if (rSec) nextSecMd = applyMarkToMd(sec.md, rSec, 'cloze');
-    }
+    const absRange = { start: ch.start + rChunk.start, end: ch.start + rChunk.end };
+    const nextSecMd = applyMarkToMd(sec.md, absRange, 'cloze');
     if (!nextSecMd || nextSecMd === sec.md) { toast('Nessuna modifica applicata'); return; }
-    const nextChunkMd = applyMarkToMd(ch.md, rChunk, 'cloze');
     const added = nextSecMd.length > sec.md.length;
     sec.md = nextSecMd;
-    ch.md = nextChunkMd;
+    model = buildFirstPassModel(sec);
     st.sig = makeSig();
     mdChanged = true;
-    sel.removeAllRanges();
+    lastSel = null;
+    document.getSelection()?.removeAllRanges();
     await saveSection(sec);
     toast(added ? 'Aggiunto al Cloze per i prossimi ripassi' : 'Cloze rimosso');
     render();
@@ -10735,6 +10951,7 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
     if (peekApi) { peekApi.destroy(); peekApi = null; }
     saveSt();
 
+    const chunks = model.chunks;
     if (st.phase === 'done') {
       const mins = Math.max(1, Math.round((Date.now() - (st.startedAt || Date.now())) / 60000));
       const nFirst = st.fixedFirst.length;
@@ -10782,12 +10999,14 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
     const pct = Math.min(100, Math.round((doneCount / chunks.length) * 100));
     const radar = loadRadar(sec.id);
     const missCount = st.misses[ci] || 0;
+    const canSplitOrMerge = ch.atoms.length > 1 || ci > 0 || ci < chunks.length - 1;
+    const hasChunkCloze = countCloze(ch.md) > 0;
 
     ov.innerHTML = `
       <div class="fp-shell">
         <header class="fp-head">
           <div class="fp-htitle">
-            <button type="button" class="fp-badge ${isQueue ? 'queue' : ''}" data-fp="toc" title="Mostra elenco blocchi e salta">
+            <button type="button" class="fp-badge ${isQueue ? 'queue' : ''}" data-fp="toc" title="Mostra elenco blocchi e cambia suddivisione">
               ${isQueue ? `↻ Coda di chiusura · ${st.queue.length} ${st.queue.length === 1 ? 'rimasto' : 'rimasti'}` : `Blocco ${st.idx + 1} di ${chunks.length}`} ▾
             </button>
             <h2>${esc(sec.title)}</h2>
@@ -10800,15 +11019,24 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
         </header>
         <div class="fp-prog"><span style="width:${pct}%"></span></div>
         ${tocOpen ? `
-          <div class="fp-toc" role="region" aria-label="Elenco dei blocchi">
+          <div class="fp-toc" role="region" aria-label="Elenco e suddivisione dei blocchi">
+            <div class="fp-preset-bar">
+              <span class="fp-preset-lbl">Divisione:</span>
+              <button type="button" class="btn sm ghost ${model.preset === 'headings' ? 'on' : ''}" data-fp-preset="headings" title="Un blocco per ogni titolo">Per titoli</button>
+              <button type="button" class="btn sm ghost ${model.preset === 'auto' ? 'on' : ''}" data-fp-preset="auto" title="Gruppi di 3–4 punti">Standard</button>
+              <button type="button" class="btn sm ghost ${model.preset === 'items' ? 'on' : ''}" data-fp-preset="items" title="Separa ogni voce principale (es. Psalterium, Corpo del Fornice…)">Ogni voce</button>
+            </div>
             ${chunks.map((c, i) => {
               const isDone = st.fixedFirst.includes(i) || st.fixedQueue.includes(i);
               const inQ = st.queue.includes(i);
               const curMark = i === ci ? ' on' : '';
-              return `<button type="button" class="fp-toc-row${curMark}" data-fp-jump="${i}">
-                <span class="fp-toc-ic">${isDone ? '✓' : inQ ? '↻' : `${i + 1}.`}</span>
-                <span class="fp-toc-t">${esc(c.title)}</span>
-              </button>`;
+              return `<div class="fp-toc-item">
+                <button type="button" class="fp-toc-row${curMark}" data-fp-jump="${i}">
+                  <span class="fp-toc-ic">${isDone ? '✓' : inQ ? '↻' : `${i + 1}.`}</span>
+                  <span class="fp-toc-t">${esc(c.title)}</span>
+                </button>
+                ${i < chunks.length - 1 ? `<button type="button" class="btn sm ghost fp-toc-merge" data-fp-merge="${i}" title="Unisci con il blocco successivo">🔗</button>` : ''}
+              </div>`;
             }).join('')}
           </div>` : ''}
         <div class="fp-steps" aria-label="Fasi del metodo 3R">
@@ -10826,12 +11054,25 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
             <div class="fp-chead">
               <h3>${esc(ch.title)}</h3>
               <div class="fp-chead-acts">
-                ${st.step !== 'recall' ? '<button type="button" class="btn sm ghost" data-fp="cloze-sel" title="Seleziona un termine qui sotto e trasformalo subito in ==cloze==">== Cloze</button>' : ''}
-                ${st.step === 'read' ? '<button type="button" class="btn sm ghost" data-fp="peek" aria-pressed="false" title="Copri i dettagli di questo blocco">🙈 Oscura</button>' : ''}
+                ${st.step !== 'recall' && canSplitOrMerge ? `<button type="button" class="btn sm ghost ${splitMode ? 'on' : ''}" data-fp="split-mode" aria-pressed="${splitMode}" title="Dividi questo blocco in punti separati o uniscilo ai vicini">✂️ ${splitMode ? 'Fine tagli' : 'Dividi'}</button>` : ''}
+                ${st.step !== 'recall' && !splitMode ? `<button type="button" class="btn sm ghost" data-fp="cloze-sel" title="${hasChunkCloze ? 'Seleziona una parola per farne un cloze, oppure tocca senza selezione per nascondere i cloze del blocco' : 'Seleziona una parola o frase qui sotto e trasformala subito in ==cloze=='}">== Cloze</button>` : ''}
+                ${st.step === 'read' && !splitMode ? '<button type="button" class="btn sm ghost" data-fp="peek" data-label-off="🙈 Oscura" aria-pressed="false" title="Copri i dettagli di questo blocco">🙈 Oscura</button>' : ''}
               </div>
             </div>
             <div class="pk-bar" id="fpPkBar" hidden></div>
-            ${st.step === 'recall' ? `
+            ${splitMode && st.step !== 'recall' ? `
+              <div class="fp-split-ui">
+                <p class="hint fp-split-hint">${ch.atoms.length > 1 ? 'Tocca <strong>✂️ Dividi qui</strong> tra due parti per separarle in blocchi distinti (si salva per i prossimi studi):' : 'Questo blocco è già una singola voce. Puoi unirlo al blocco vicino qui sotto oppure cambiare preset da <em>Blocco ▾</em>.'}</p>
+                ${ch.atoms.map((a, k) => `
+                  ${k > 0 ? `<button type="button" class="fp-cut-btn" data-fp-cut="${ch.a0 + k}"><span>✂️ Dividi qui</span></button>` : ''}
+                  <div class="fp-atom-box notes">${renderMd(a.md)}</div>
+                `).join('')}
+                <div class="fp-split-merge-bar">
+                  ${ci > 0 ? `<button type="button" class="btn sm ghost" data-fp-merge="${ci - 1}">🔗 Unisci col precedente</button>` : ''}
+                  ${ci < chunks.length - 1 ? `<button type="button" class="btn sm ghost" data-fp-merge="${ci}">🔗 Unisci col successivo</button>` : ''}
+                  <button type="button" class="btn sm primary" data-fp="split-mode">Fatto</button>
+                </div>
+              </div>` : st.step === 'recall' ? `
               <div class="fp-curtain">
                 <p class="fp-curtain-t">Chiudi gli occhi o guarda solo il titolo e richiama questo blocco <strong>(${esc(ch.hint)})</strong>.</p>
                 <textarea class="input fp-recall-ta" id="fpRecallTa" rows="3" placeholder="Facoltativo: scrivi 2–3 parole chiave o punti richiamati per confrontarli subito…">${esc(recallText)}</textarea>
@@ -10880,8 +11121,11 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
         </footer>
       </div>`;
 
-    // Evita che il pulsante == Cloze tolga la selezione del testo prima del click
-    $$('[data-fp="cloze-sel"]', ov).forEach(b => b.addEventListener('pointerdown', e => e.preventDefault()));
+    $$('[data-fp="cloze-sel"]', ov).forEach(b => b.addEventListener('pointerdown', e => {
+      const c = captureChunkSelection();
+      if (c) lastSel = c;
+      if (e.pointerType === 'mouse') e.preventDefault();
+    }));
 
     if (radar) renderRadarBox($('#fpInRadar', ov), sec, { compact: true });
 
@@ -10890,10 +11134,13 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
       hydrateImages(notesBox);
       hydrateHtmlBlocks(notesBox);
       if (typeof attachInlineAtlasAnn === 'function') attachInlineAtlasAnn(notesBox, sec);
-      if (st.step === 'read') {
+      if (st.step === 'read' || st.step === 'verify') {
         peekApi = setupPeekDetails(notesBox, { barEl: $('#fpPkBar', ov), btnEl: $('[data-fp="peek"]', ov) });
       }
     }
+    const splitBox = $('.fp-split-ui', ov);
+    if (splitBox) { hydrateImages(splitBox); hydrateHtmlBlocks(splitBox); }
+
     const ta = $('#fpRecallTa', ov);
     if (ta) ta.addEventListener('input', () => { recallText = ta.value; });
     const eta = $('#fpElabTa', ov);
@@ -10905,6 +11152,7 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
 
   const advance = ok => {
     const ci = curChunkIdx();
+    const chunks = model.chunks;
     resetBlockDraft();
     tocOpen = false;
     if (st.phase === 'pass') {
@@ -10939,10 +11187,16 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
   };
 
   ov.addEventListener('click', async e => {
+    const pre = e.target.closest('[data-fp-preset]');
+    if (pre) { await applyPreset(pre.dataset.fpPreset); return; }
+    const cut = e.target.closest('[data-fp-cut]');
+    if (cut) { await splitAtAtom(+cut.dataset.fpCut); return; }
+    const mg = e.target.closest('[data-fp-merge]');
+    if (mg) { await mergeWithNext(+mg.dataset.fpMerge); return; }
     const jmp = e.target.closest('[data-fp-jump]');
     if (jmp) {
       const target = +jmp.dataset.fpJump;
-      if (target >= 0 && target < chunks.length) {
+      if (target >= 0 && target < model.chunks.length) {
         st.phase = 'pass';
         st.idx = target;
         st.step = 'read';
@@ -10956,8 +11210,9 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
     if (!act) return;
     if (act === 'close') { close(false); return; }
     if (act === 'toc') { tocOpen = !tocOpen; render(); return; }
+    if (act === 'split-mode') { splitMode = !splitMode; tocOpen = false; render(); return; }
     if (act === 'restart') {
-      chunks = splitFirstPassChunks(sec);
+      model = buildFirstPassModel(sec);
       st = { sig: makeSig(), phase: 'pass', idx: 0, step: 'read', queue: [], fixedFirst: [], fixedQueue: [], misses: {}, startedAt: Date.now() };
       tocOpen = false;
       resetBlockDraft();
@@ -10967,7 +11222,7 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
     if (act === 'peek') { peekApi?.toggle(); return; }
     if (act === 'cloze-sel') { await clozeSelectedInChunk(); return; }
     if (act === 'prev' && st.phase === 'pass' && st.idx > 0) { st.idx--; st.step = 'read'; resetBlockDraft(); render(); return; }
-    if (act === 'to-recall') { st.step = 'recall'; tocOpen = false; render(); return; }
+    if (act === 'to-recall') { splitMode = false; st.step = 'recall'; tocOpen = false; render(); return; }
     if (act === 'to-read') { st.step = 'read'; render(); return; }
     if (act === 'to-verify') { st.step = 'verify'; render(); return; }
     if (act === 'elab') {
@@ -11005,9 +11260,15 @@ function openFirstPass(sec, { onDone = () => {} } = {}) {
 
   const onKey = e => {
     if ($('#modalRoot').children.length) return;
-    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (tocOpen) { tocOpen = false; render(); } else close(false); return; }
+    if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      if (splitMode) { splitMode = false; render(); }
+      else if (tocOpen) { tocOpen = false; render(); }
+      else close(false);
+      return;
+    }
     if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
-    if (st.phase === 'done') return;
+    if (st.phase === 'done' || splitMode) return;
     if (e.key === ' ' || e.key === 'Enter') {
       if (st.step === 'read') { e.preventDefault(); st.step = 'recall'; render(); }
       else if (st.step === 'recall') { e.preventDefault(); st.step = 'verify'; render(); }
@@ -11029,6 +11290,7 @@ function setupFirstPassControls(sec, body, notesEl) {
   const startBtn = $('[data-act="fp-start"]', body);
   const newBanner = $('#fpNewBanner', body);
 
+  if (peekBtn) peekBtn.dataset.labelOff = '🙈 Oscura dettagli';
   const peek = setupPeekDetails(notesEl, { barEl: peekBar, btnEl: peekBtn });
   addCleanup(() => peek.destroy());
 
@@ -11048,7 +11310,6 @@ function setupFirstPassControls(sec, body, notesEl) {
   };
   syncPretestBtn();
 
-  // Banner opzionale sulle sezioni nuove (non ancora pianificate né studiate)
   const isFresh = !sec.studyhub && !sec.srs?.due && !(sec.srs?.history?.length);
   const dismissedKey = `nb-fp-dismiss:${sec.id}`;
   if (newBanner && isFresh && !loadRadar(sec.id) && !sessionStorage.getItem(dismissedKey)) {
