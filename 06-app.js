@@ -1475,8 +1475,13 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
-  { v: "4.31", title: "blocco note: pulsanti − e + per lo spessore della penna", html: `      <ul>
+  { v: "4.32", title: "blocco note: pulsanti − e + per lo spessore della penna", html: `      <ul>
         <li><strong>Controllo preciso dello spessore nel blocco note</strong>: aggiunti i tasti <strong>−</strong> e <strong>+</strong> affiancati allo slider per regolare la dimensione del tratto a scatti di <code>0,5</code> (da <code>1</code> a <code>20</code>), anche tenendoli premuti.</li>
+      </ul>` },
+  { v: "4.31", title: "pulsante «Non so» in tutti i quiz e ripasso mirato delle lacune", html: `      <ul>
+        <li><strong>? Non so in tutti i quiz</strong>: aggiunto il pulsante <em>Non so</em> nei <strong>Quiz di discriminazione</strong> (Smistamento, A vs B, Sequenza e Trova l’intruso), nella <strong>Diagnosi differenziale</strong> (entrambi gli esercizi), in <strong>Indovina dall’immagine</strong> (Atlanti) e nella <strong>Simulazione d’esame</strong> (tasto <code>1</code>), così non devi mai tirare a indovinare.</li>
+        <li><strong>Lacune conteggiate a parte</strong>: la risposta corretta viene mostrata subito con la spiegazione (e il tasto <code>＋ Flashcard</code> nei quiz di discriminazione), ma i <em>Non so</em> sono separati dagli errori veri (<code>✓ esatte · ✗ sbagliate · ? non so</code>).</li>
+        <li><strong>↻ Ripassa errori e Non so</strong>: alla fine di ogni Quiz di discriminazione puoi ripetere con un tocco solo le domande sbagliate o saltate con <em>Non so</em>.</li>
       </ul>` },
   { v: "4.30", title: "editor potenziato: fusione AI di più fonti, gestione visuale dei paragrafi e vista Anteprima/Codice", html: `      <ul>
         <li><strong>✨ Fondi più fonti e riordina (AI)</strong>: nuova modalità predefinita in <em>Modifica</em> per accorpare testi disordinati da più fonti (libro, slide, NotebookLM) eliminando i duplicati senza perdere dettagli unici; include opzione per mantenere i titoli esistenti, campo per indicazioni extra, riquadro per <strong>incollare una seconda fonte</strong> direttamente da fondere e anteprima <em>Dopo / Prima / Codice</em> con conteggio delle ridondanze rimosse.</li>

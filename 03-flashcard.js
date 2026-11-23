@@ -1476,11 +1476,12 @@ function examStep(sc) {
     </article>
     <div class="exam-acts">
       ${run.revealed ? `
+        <button class="btn idk" data-ex="0" data-idk="1">? Non so</button>
         <button class="btn wrong" data-ex="0">Sbagliata</button>
         <button class="btn" data-ex="0.5">In parte</button>
         <button class="btn right" data-ex="1">Giusta</button>` : '<button class="btn primary big" data-act="ex-show">Mostra la risposta</button>'}
     </div>
-    <p class="hint exam-hint">Spazio mostra la risposta, 1, 2 e 3 per valutarti. <button class="link-btn" data-act="ex-stop">Termina ora</button></p>`);
+    <p class="hint exam-hint">Spazio mostra la risposta, 1 Non so, 2 Sbagliata, 3 In parte, 4 Giusta. <button class="link-btn" data-act="ex-stop">Termina ora</button></p>`);
   let dict = null;
   const qm = $('[data-act="qmic"]');
   if (qm) {
@@ -1495,9 +1496,9 @@ function examStep(sc) {
     qm.addEventListener('click', () => (dict.on ? dict.stop() : dict.start()));
   }
   const show = () => { if (dict) dict.stop(); run.revealed = true; examStep(sc); };
-  const grade = v => { run.res.push({ sid: it.sid, v }); run.i++; run.revealed = false; examStep(sc); };
+  const grade = (v, idk = false) => { run.res.push({ sid: it.sid, v, idk }); run.i++; run.revealed = false; examStep(sc); };
   on('[data-act="ex-show"]', 'click', show);
-  on('[data-ex]', 'click', e => grade(+e.currentTarget.dataset.ex));
+  on('[data-ex]', 'click', e => grade(+e.currentTarget.dataset.ex, e.currentTarget.dataset.idk === '1'));
   on('[data-act="ex-stop"]', 'click', async () => {
     const ok = await modal({ title: 'Terminare la simulazione?', text: 'Le domande a cui non hai risposto non contano nel punteggio.', confirm: 'Termina' });
     if (ok) examFinish(sc);
@@ -1505,7 +1506,7 @@ function examStep(sc) {
   const onKey = e => {
     if ($('#modalRoot').children.length || isTyping()) return;
     if (!run.revealed && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); show(); }
-    else if (run.revealed && ['1', '2', '3'].includes(e.key)) { e.preventDefault(); grade([0, 0.5, 1][+e.key - 1]); }
+    else if (run.revealed && ['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); const idx = +e.key - 1; grade([0, 0, 0.5, 1][idx], idx === 0); }
   };
   document.addEventListener('keydown', onKey);
   clearInterval(examTimer);
@@ -1540,18 +1541,28 @@ function examResults(sc) {
   if (examStepOff) examStepOff();
   const run = examRun;
   const per = new Map();
-  run.res.forEach(r => { const p = per.get(r.sid) || { ok: 0, n: 0 }; p.ok += r.v; p.n++; per.set(r.sid, p); });
-  const rows = [...per.entries()].map(([sid, p]) => ({ s: secById(sid), pct: Math.round(p.ok / p.n * 100), n: p.n })).filter(x => x.s).sort((a, b) => a.pct - b.pct);
+  run.res.forEach(r => { const p = per.get(r.sid) || { ok: 0, n: 0, idk: 0 }; p.ok += r.v; p.n++; if (r.idk) p.idk++; per.set(r.sid, p); });
+  const rows = [...per.entries()].map(([sid, p]) => ({ s: secById(sid), pct: Math.round(p.ok / p.n * 100), n: p.n, idk: p.idk })).filter(x => x.s).sort((a, b) => a.pct - b.pct);
   const mins = Math.max(1, Math.round(((run.end || Date.now()) - run.start) / 60000));
+  const nOk = run.res.filter(r => r.v === 1).length;
+  const nPart = run.res.filter(r => r.v === 0.5).length;
+  const nWrong = run.res.filter(r => r.v === 0 && !r.idk).length;
+  const nIdk = run.res.filter(r => r.idk).length;
   setView(`
     <a class="back" href="#/nb/${sc.nb.id}">${esc(sc.nb.name)}</a>
     <header class="page-head"><div><h1>Risultato</h1><p class="lede">${esc(sc.name)}: ${run.res.length} di ${run.items.length} domande in ${mins} min.</p></div></header>
     <div class="exam-score ${run.score >= 80 ? 'good' : run.score >= 60 ? 'mid' : 'low'}"><b>${run.score}%</b><span>${run.score >= 80 ? 'Pronta per l’esame su questa parte' : run.score >= 60 ? 'Buona base, qualche punto da rinforzare' : 'Da ripassare prima dell’esame'}</span></div>
+    ${run.res.length ? `<div class="dq-stats exam-stats" aria-label="Riepilogo risposte">
+      <span class="dq-stat ok">✓ ${nOk} ${nOk === 1 ? 'giusta' : 'giuste'}</span>
+      ${nPart ? `<span class="dq-stat mid">~ ${nPart} in parte</span>` : ''}
+      <span class="dq-stat ko">✗ ${nWrong} ${nWrong === 1 ? 'sbagliata' : 'sbagliate'}</span>
+      <span class="dq-stat idk">? ${nIdk} non so</span>
+    </div>` : ''}
     ${rows.length ? `
       <h2 class="sub">Sezione per sezione</h2>
       <ul class="exam-rows">${rows.map(x => `
         <li><label class="check"><input type="checkbox" data-boost="${x.s.id}" ${x.pct < 60 && !x.s.studyhub ? 'checked' : ''} ${x.s.studyhub ? 'disabled' : ''}>
-          <span class="exam-row-t"><a href="#/sec/${x.s.id}">${esc(x.s.title)}</a><small>${x.n} ${x.n === 1 ? 'domanda' : 'domande'}${x.s.studyhub ? ', pianificata da StudyHub' : ''}</small></span></label>
+          <span class="exam-row-t"><a href="#/sec/${x.s.id}">${esc(x.s.title)}</a><small>${x.n} ${x.n === 1 ? 'domanda' : 'domande'}${x.idk ? ` · ${x.idk} non so` : ''}${x.s.studyhub ? ', pianificata da StudyHub' : ''}</small></span></label>
           <span class="exam-row-bar ${x.pct >= 80 ? 'good' : x.pct >= 60 ? 'mid' : 'low'}" style="--v:${x.pct / 100}"><i></i></span><b>${x.pct}%</b></li>`).join('')}</ul>
       <button class="btn" data-act="ex-boost">Metti da ripassare oggi le sezioni selezionate</button>` : ''}
     <div class="row-actions exam-end">

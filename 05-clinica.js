@@ -558,7 +558,7 @@ function viewClinic(p1) {
 /* ---------- Allenamento di diagnosi differenziale ----------
    Dai sintomi alla malattia, con distrattori scelti tra le note che hanno
    sintomi in comune; dopo la risposta vedi cosa distingue le opzioni. */
-const ddxState = { mode: 'guess', spec: '', ok: 0, done: 0 };
+const ddxState = { mode: 'guess', spec: '', ok: 0, wrong: 0, idk: 0, done: 0 };
 const shuffle = a => { const b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
 function viewClinicQuiz() {
   const notes = clinicalNotes().filter(n => (n.symptoms || []).length >= 2);
@@ -580,7 +580,8 @@ function viewClinicQuiz() {
   $('#dxSpec')?.addEventListener('change', e => { ddxState.spec = e.target.value; next(); });
   const box = $('#dxBox');
   const pool = () => notes.filter(n => !ddxState.spec || n.specialty === ddxState.spec);
-  const score = () => (ddxState.done ? `<p class="hint">Finora: ${ddxState.ok} su ${ddxState.done}.</p>` : '');
+  const scoreHtml = () => (ddxState.done ? `Finora (${ddxState.done}): <span class="dq-st-ok">✓ ${ddxState.ok} ${ddxState.ok === 1 ? 'esatta' : 'esatte'}</span> · <span class="dq-st-ko">✗ ${ddxState.wrong} ${ddxState.wrong === 1 ? 'sbagliata' : 'sbagliate'}</span> · <span class="dq-st-idk">? ${ddxState.idk} non so</span>` : '');
+  const paintScore = () => { const el = $('#dxScore', box); if (el) { el.innerHTML = scoreHtml(); el.hidden = !ddxState.done; } };
   const next = () => {
     if (ddxState.mode === 'ddx') return nextDdx();
     const p = pool();
@@ -612,17 +613,23 @@ function viewClinicQuiz() {
         <div class="tags dx-syms">${shown.map(s => `<span class="tag sym on">${esc(s)}</span>`).join('')}</div>
         <p class="lab-q-t">Qual è la diagnosi più probabile?</p>
         <div class="dx-opts">${opts.map(o => `<button type="button" class="btn dx-opt" data-dxo="${o.id}">${esc(o.title)}</button>`).join('')}</div>
+        <div class="dq-idk-row"><button type="button" class="btn sm ghost dq-idk-btn" data-dxidk>? Non so</button></div>
         <div id="dxWhy"></div>
-        ${score()}
+        <p class="hint dq-inline-stats" id="dxScore" ${ddxState.done ? '' : 'hidden'}>${scoreHtml()}</p>
       </div>`;
-    box.querySelector('.dx-opts').addEventListener('click', e => {
-      const b = e.target.closest('[data-dxo]');
-      if (!b || box.querySelector('.dx-opts').dataset.done) return;
-      box.querySelector('.dx-opts').dataset.done = '1';
-      const right = b.dataset.dxo === target.id;
+    const resolve = pickedId => {
+      const optsEl = box.querySelector('.dx-opts');
+      if (!optsEl || optsEl.dataset.done) return;
+      optsEl.dataset.done = '1';
+      const isIdk = pickedId === null;
+      const right = !isIdk && pickedId === target.id;
       ddxState.done++;
       if (right) ddxState.ok++;
-      $$('[data-dxo]', box).forEach(x => { x.disabled = true; x.classList.toggle('ok', x.dataset.dxo === target.id); x.classList.toggle('ko', x === b && !right); });
+      else if (isIdk) ddxState.idk++;
+      else ddxState.wrong++;
+      $$('[data-dxo]', box).forEach(x => { x.disabled = true; x.classList.toggle('ok', x.dataset.dxo === target.id); x.classList.toggle('ko', !isIdk && x.dataset.dxo === pickedId && !right); });
+      const idkRow = $('.dq-idk-row', box);
+      if (idkRow) idkRow.hidden = true;
       const why = opts.map(o => {
         const os = new Set((o.symptoms || []).map(foldAccents));
         const fits = shown.filter(s => os.has(foldAccents(s)));
@@ -630,11 +637,19 @@ function viewClinicQuiz() {
         return `<li><button type="button" class="link-btn" data-cnopen="${o.id}">${esc(o.title)}</button>${o.id === target.id ? ' ✓' : ''}: ${fits.length ? `spiega ${esc(fits.join(', '))}` : 'non spiega nessuno dei sintomi'}${miss.length ? `; non spiega ${esc(miss.join(', '))}` : ''}.</li>`;
       }).join('');
       const rest = target.symptoms.filter(s => !fs.has(foldAccents(s)));
-      $('#dxWhy', box).innerHTML = `<p class="dx-res ${right ? 'ok' : 'ko'}">${right ? 'Giusto!' : `No: era ${esc(target.title)}.`}${rest.length ? ` Altri suoi segni: ${esc(rest.join(', '))}.` : ''}</p><ul class="cn-ddx">${why}</ul>
+      const cls = right ? 'ok' : isIdk ? 'idk' : 'ko';
+      const lead = right ? 'Giusto!' : isIdk ? `Non la sapevi — Era ${esc(target.title)}.` : `No: era ${esc(target.title)}.`;
+      $('#dxWhy', box).innerHTML = `<p class="dx-res ${cls}">${lead}${rest.length ? ` Altri suoi segni: ${esc(rest.join(', '))}.` : ''}</p><ul class="cn-ddx">${why}</ul>
         <div class="inline"><button class="btn primary" type="button" data-dxn>Un altro</button><button class="btn ghost" type="button" data-cnopen="${target.id}">Apri la nota</button></div>`;
+      paintScore();
       $('[data-dxn]', box).onclick = next;
       $$('[data-cnopen]', box).forEach(x => { x.onclick = () => showClinicNote(x.dataset.cnopen); });
+    };
+    box.querySelector('.dx-opts').addEventListener('click', e => {
+      const b = e.target.closest('[data-dxo]');
+      if (b) resolve(b.dataset.dxo);
     });
+    $('[data-dxidk]', box).onclick = () => resolve(null);
   };
   const nextDdx = () => {
     const all = clinicalNotes();
@@ -651,9 +666,9 @@ function viewClinicQuiz() {
         ${(target.symptoms || []).length ? `<div class="tags dx-syms">${target.symptoms.map(s => `<span class="tag sym">${esc(s)}</span>`).join('')}</div>` : ''}
         <p class="hint">Scegline una o più, poi controlla.</p>
         <div class="dx-opts">${opts.map(o => `<button type="button" class="btn dx-opt" data-dxp="${o.id}" aria-pressed="false">${esc(o.title)}</button>`).join('')}</div>
-        <div class="inline"><button class="btn primary" type="button" data-dxc>Controlla</button></div>
+        <div class="inline" id="dxActs"><button class="btn primary" type="button" data-dxc>Controlla</button><button class="btn ghost dq-idk-btn" type="button" data-dxidk>? Non so</button></div>
         <div id="dxWhy"></div>
-        ${score()}
+        <p class="hint dq-inline-stats" id="dxScore" ${ddxState.done ? '' : 'hidden'}>${scoreHtml()}</p>
       </div>`;
     box.querySelector('.dx-opts').addEventListener('click', e => {
       const b = e.target.closest('[data-dxp]');
@@ -661,20 +676,27 @@ function viewClinicQuiz() {
       if (picked.has(b.dataset.dxp)) picked.delete(b.dataset.dxp); else picked.add(b.dataset.dxp);
       b.setAttribute('aria-pressed', String(picked.has(b.dataset.dxp)));
     });
-    $('[data-dxc]', box).onclick = () => {
+    const finishDdx = isIdk => {
       const ids = new Set(right.map(o => o.id));
       const good = [...picked].filter(x => ids.has(x)).length, bad = [...picked].filter(x => !ids.has(x)).length;
-      const full = good === ids.size && !bad;
+      const full = !isIdk && good === ids.size && !bad;
       ddxState.done++;
       if (full) ddxState.ok++;
-      $$('[data-dxp]', box).forEach(x => { x.disabled = true; x.classList.toggle('ok', ids.has(x.dataset.dxp)); x.classList.toggle('ko', picked.has(x.dataset.dxp) && !ids.has(x.dataset.dxp)); });
-      $('[data-dxc]', box).remove();
-      $('#dxWhy', box).innerHTML = `<p class="dx-res ${full ? 'ok' : 'ko'}">${full ? 'Tutte giuste!' : `Ne hai prese ${good} su ${ids.size}${bad ? `, più ${bad} che non ${bad === 1 ? 'c’entra' : 'c’entrano'}` : ''}.`}</p>
+      else if (isIdk) ddxState.idk++;
+      else ddxState.wrong++;
+      $$('[data-dxp]', box).forEach(x => { x.disabled = true; x.classList.toggle('ok', ids.has(x.dataset.dxp)); x.classList.toggle('ko', !isIdk && picked.has(x.dataset.dxp) && !ids.has(x.dataset.dxp)); });
+      $('#dxActs', box)?.remove();
+      const cls = full ? 'ok' : isIdk ? 'idk' : 'ko';
+      const lead = full ? 'Tutte giuste!' : isIdk ? `Non la sapevi — In diagnosi differenziale: ${right.map(o => esc(o.title)).join(', ')}.` : `Ne hai prese ${good} su ${ids.size}${bad ? `, più ${bad} che non ${bad === 1 ? 'c’entra' : 'c’entrano'}` : ''}.`;
+      $('#dxWhy', box).innerHTML = `<p class="dx-res ${cls}">${lead}</p>
         ${cnVal(target, 'ddxText') ? `<div class="notes">${renderMd(target.ddxText)}</div>` : ''}
         <div class="inline"><button class="btn primary" type="button" data-dxn>Un altro</button><button class="btn ghost" type="button" data-cnopen="${target.id}">Apri la nota</button></div>`;
+      paintScore();
       $('[data-dxn]', box).onclick = next;
       $$('[data-cnopen]', box).forEach(x => { x.onclick = () => showClinicNote(x.dataset.cnopen); });
     };
+    $('[data-dxc]', box).onclick = () => finishDdx(false);
+    $('[data-dxidk]', box).onclick = () => finishDdx(true);
   };
   next();
 }
@@ -5835,7 +5857,7 @@ function vivaSummary() {
 }
 
 /* ---------- Indovina dall’immagine (atlanti) ---------- */
-const imgQuiz = { ok: 0, done: 0 };
+const imgQuiz = { ok: 0, wrong: 0, idk: 0, done: 0 };
 function viewImageQuiz(kind) {
   const cfg = SPECIALS[kind];
   const nb = specialNb(kind);
@@ -5845,6 +5867,7 @@ function viewImageQuiz(kind) {
     <nav class="tabs" aria-label="${esc(cfg.name)}"><a href="#/${cfg.route}" class="tab">Schede</a><a href="#/${cfg.route}/quiz" class="tab on" aria-current="page">Indovina dall’immagine</a></nav>
     <div id="iqBox"></div>`);
   const box = $('#iqBox');
+  const iqScoreHtml = () => (imgQuiz.done ? `Finora (${imgQuiz.done}): <span class="dq-st-ok">✓ ${imgQuiz.ok} ${imgQuiz.ok === 1 ? 'esatta' : 'esatte'}</span> · <span class="dq-st-ko">✗ ${imgQuiz.wrong} ${imgQuiz.wrong === 1 ? 'sbagliata' : 'sbagliate'}</span> · <span class="dq-st-idk">? ${imgQuiz.idk} non so</span>` : '');
   const next = () => {
     if (all.length < 4) { box.innerHTML = `<div class="empty"><p>Servono almeno 4 schede con un’immagine (ora ${all.length}). Aggiungi le immagini con ＋ Foto nelle schede.</p></div>`; return; }
     const target = all[Math.floor(Math.random() * all.length)];
@@ -5859,22 +5882,37 @@ function viewImageQuiz(kind) {
         <div class="iq-img"><img class="nb-img" data-img="${im}" alt="Immagine da riconoscere"></div>
         <p class="lab-q-t">Che cos’è?</p>
         <div class="dx-opts">${opts.map(o => `<button type="button" class="btn dx-opt" data-iq="${o.id}">${esc(o.title)}</button>`).join('')}</div>
+        <div class="dq-idk-row"><button type="button" class="btn sm ghost dq-idk-btn" data-iqidk>? Non so</button></div>
         <div id="iqWhy"></div>
-        ${imgQuiz.done ? `<p class="hint">Finora: ${imgQuiz.ok} su ${imgQuiz.done}.</p>` : ''}
+        <p class="hint dq-inline-stats" id="iqScore" ${imgQuiz.done ? '' : 'hidden'}>${iqScoreHtml()}</p>
       </div>`;
-    box.querySelector('.dx-opts').addEventListener('click', e => {
-      const b = e.target.closest('[data-iq]');
-      if (!b || box.querySelector('.dx-opts').dataset.done) return;
-      box.querySelector('.dx-opts').dataset.done = '1';
-      const right = b.dataset.iq === target.id;
+    const resolve = pickedId => {
+      const optsEl = box.querySelector('.dx-opts');
+      if (!optsEl || optsEl.dataset.done) return;
+      optsEl.dataset.done = '1';
+      const isIdk = pickedId === null;
+      const right = !isIdk && pickedId === target.id;
       imgQuiz.done++;
       if (right) imgQuiz.ok++;
-      $$('[data-iq]', box).forEach(x => { x.disabled = true; x.classList.toggle('ok', x.dataset.iq === target.id); x.classList.toggle('ko', x === b && !right); });
+      else if (isIdk) imgQuiz.idk++;
+      else imgQuiz.wrong++;
+      $$('[data-iq]', box).forEach(x => { x.disabled = true; x.classList.toggle('ok', x.dataset.iq === target.id); x.classList.toggle('ko', !isIdk && x.dataset.iq === pickedId && !right); });
+      const idkRow = $('.dq-idk-row', box);
+      if (idkRow) idkRow.hidden = true;
       const bits = specialMetaBits(target);
-      $('#iqWhy', box).innerHTML = `<p class="dx-res ${right ? 'ok' : 'ko'}">${right ? 'Giusto!' : `No: è ${esc(target.title)}.`}${bits.length ? ` <span class="muted-inline">${esc(bits.join(' · '))}</span>` : ''}</p>
+      const cls = right ? 'ok' : isIdk ? 'idk' : 'ko';
+      const lead = right ? 'Giusto!' : isIdk ? `Non la sapevi — È ${esc(target.title)}.` : `No: è ${esc(target.title)}.`;
+      $('#iqWhy', box).innerHTML = `<p class="dx-res ${cls}">${lead}${bits.length ? ` <span class="muted-inline">${esc(bits.join(' · '))}</span>` : ''}</p>
         <div class="inline"><button class="btn primary" type="button" data-iqn>Un’altra</button><a class="btn ghost" href="#/sec/${target.id}/read">Apri la scheda</a></div>`;
+      const scEl = $('#iqScore', box);
+      if (scEl) { scEl.innerHTML = iqScoreHtml(); scEl.hidden = false; }
       $('[data-iqn]', box).onclick = next;
+    };
+    box.querySelector('.dx-opts').addEventListener('click', e => {
+      const b = e.target.closest('[data-iq]');
+      if (b) resolve(b.dataset.iq);
     });
+    $('[data-iqidk]', box).onclick = () => resolve(null);
   };
   next();
 }

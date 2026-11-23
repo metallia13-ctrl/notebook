@@ -10658,113 +10658,150 @@ function renderDiscQuizHost(body, { title, md, getMd, getTitle, nbId, secId, get
     else runOdd(stage, saved);
   };
 
-  const showDone = (stage, right, total, onAgain) => {
+  const showDone = (stage, { right, wrong, idk, total, missed, isRetry, onAgain, onRetryMissed }) => {
     const pct = total ? right / total : 0;
     const suggested = pct < 0.5 ? 'again' : pct < 0.7 ? 'hard' : pct < 0.9 ? 'good' : 'easy';
     stage.innerHTML = `
       <div class="qcard done">
         <p class="score">${right} su ${total}</p>
-        <p class="hint">risposte esatte</p>
-        <button class="btn primary" type="button" data-dq="again">Rifai il quiz</button>
+        <p class="hint">${isRetry ? 'ripasso completato' : 'risposte esatte'}</p>
+        <div class="dq-stats" aria-label="Riepilogo risposte">
+          <span class="dq-stat ok">✓ ${right} ${right === 1 ? 'esatta' : 'esatte'}</span>
+          <span class="dq-stat ko">✗ ${wrong} ${wrong === 1 ? 'sbagliata' : 'sbagliate'}</span>
+          <span class="dq-stat idk">? ${idk} non so</span>
+        </div>
+        <div class="inline dq-done-acts">
+          ${missed.length ? `<button class="btn primary" type="button" data-dq="retry-missed">↻ Ripassa errori e Non so (${missed.length})</button>` : ''}
+          <button class="btn ${missed.length ? 'ghost' : 'primary'}" type="button" data-dq="again">${isRetry ? 'Rifai tutto il quiz' : 'Rifai il quiz'}</button>
+        </div>
       </div>`;
     $('[data-dq="again"]', stage).onclick = onAgain;
+    const rm = $('[data-dq="retry-missed"]', stage);
+    if (rm && onRetryMissed) rm.onclick = onRetryMissed;
     if (onFinishGrade) onFinishGrade($('#dqGrade', body), suggested);
   };
 
-  const runSort = (stage, data) => {
-    const order = dqShuffleIdx(data.domande.length);
-    let pos = 0, right = 0;
+  const runSort = (stage, data, subset = null) => {
+    const gradeEl = $('#dqGrade', body);
+    if (gradeEl) gradeEl.innerHTML = '';
+    const order = subset ? dqShuffleIdx(subset.length).map(i => subset[i]) : dqShuffleIdx(data.domande.length);
+    let pos = 0, right = 0, wrong = 0, idk = 0;
+    const missed = [];
     const draw = () => {
-      if (pos >= order.length) return showDone(stage, right, order.length, () => runSort(stage, data));
+      if (pos >= order.length) return showDone(stage, { right, wrong, idk, total: order.length, missed, isRetry: !!subset, onAgain: () => runSort(stage, data), onRetryMissed: () => runSort(stage, data, missed) });
       const q = data.domande[order[pos]];
       stage.innerHTML = `
         <div class="qcard dq-card">
-          <p class="qnum">${esc(data.titolo || 'Smistamento')} · ${pos + 1} di ${order.length}</p>
+          <p class="qnum">${esc(data.titolo || 'Smistamento')}${subset ? ' · ripasso' : ''} · ${pos + 1} di ${order.length}</p>
           <p class="q">${esc(q.elemento)}</p>
           <div class="dq-opts">${data.categorie.map((c, i) => `<button type="button" class="btn dq-opt" data-ci="${i}">${esc(c)}</button>`).join('')}</div>
+          <div class="dq-idk-row"><button type="button" class="btn sm ghost dq-idk-btn" data-dq="idk">? Non so</button></div>
           <div class="dq-fb" hidden></div>
         </div>`;
       let locked = false;
-      $$('[data-ci]', stage).forEach(b => b.addEventListener('click', () => {
+      const resolve = pick => {
         if (locked) return;
         locked = true;
-        const pick = +b.dataset.ci;
-        const ok = pick === +q.cat;
+        const isIdk = pick === null;
+        const ok = !isIdk && pick === +q.cat;
         if (ok) right++;
+        else { if (isIdk) idk++; else wrong++; missed.push(order[pos]); }
         $$('[data-ci]', stage).forEach(x => {
           const idx = +x.dataset.ci;
           x.disabled = true;
           if (idx === +q.cat) x.classList.add('right');
-          else if (idx === pick) x.classList.add('wrong');
+          else if (!isIdk && idx === pick) x.classList.add('wrong');
         });
+        const idkRow = $('.dq-idk-row', stage);
+        if (idkRow) idkRow.hidden = true;
         const fb = $('.dq-fb', stage);
         fb.hidden = false;
-        fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Esatto!' : `No: appartiene a ${esc(data.categorie[+q.cat])}.`}</strong> ${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
+        const cls = ok ? 'dq-ok' : isIdk ? 'dq-idk' : 'dq-ko';
+        const lead = ok ? 'Esatto!' : isIdk ? `Non la sapevi — Appartiene a ${esc(data.categorie[+q.cat])}.` : `No: appartiene a ${esc(data.categorie[+q.cat])}.`;
+        fb.innerHTML = `<p class="${cls}"><strong>${lead}</strong> ${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
         $('.dq-fb-acts', fb).prepend(makeCardBtn(`A quale categoria appartiene: ${q.elemento}?`, `**${data.categorie[+q.cat]}**${q.spiegazione ? `\n\n${q.spiegazione}` : ''}`));
         $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
         $('[data-dq="next"]', fb).focus();
-      }));
+      };
+      $$('[data-ci]', stage).forEach(b => b.addEventListener('click', () => resolve(+b.dataset.ci)));
+      $('[data-dq="idk"]', stage).onclick = () => resolve(null);
     };
     draw();
   };
 
-  const runAB = (stage, data) => {
-    const order = dqShuffleIdx(data.domande.length);
-    let pos = 0, right = 0;
+  const runAB = (stage, data, subset = null) => {
+    const gradeEl = $('#dqGrade', body);
+    if (gradeEl) gradeEl.innerHTML = '';
+    const order = subset ? dqShuffleIdx(subset.length).map(i => subset[i]) : dqShuffleIdx(data.domande.length);
+    let pos = 0, right = 0, wrong = 0, idk = 0;
+    const missed = [];
     const labels = { A: `Solo ${data.a}`, B: `Solo ${data.b}`, AB: 'Entrambi', N: 'Nessuno' };
     const draw = () => {
-      if (pos >= order.length) return showDone(stage, right, order.length, () => runAB(stage, data));
+      if (pos >= order.length) return showDone(stage, { right, wrong, idk, total: order.length, missed, isRetry: !!subset, onAgain: () => runAB(stage, data), onRetryMissed: () => runAB(stage, data, missed) });
       const q = data.domande[order[pos]];
       const ans = String(q.risposta || '').toUpperCase();
       stage.innerHTML = `
         <div class="qcard dq-card">
-          <p class="qnum">Confronto · ${pos + 1} di ${order.length}</p>
+          <p class="qnum">Confronto${subset ? ' · ripasso' : ''} · ${pos + 1} di ${order.length}</p>
           <div class="dq-ab-head"><span class="dq-ab-tag"><b>A</b> ${esc(data.a)}</span><span class="dq-ab-vs">vs</span><span class="dq-ab-tag"><b>B</b> ${esc(data.b)}</span></div>
           <p class="q">${esc(q.testo)}</p>
           <div class="dq-opts dq-ab-opts">
             ${['A', 'B', 'AB', 'N'].map(k => `<button type="button" class="btn dq-opt" data-ab="${k}">${esc(labels[k])}</button>`).join('')}
           </div>
+          <div class="dq-idk-row"><button type="button" class="btn sm ghost dq-idk-btn" data-dq="idk">? Non so</button></div>
           <div class="dq-fb" hidden></div>
         </div>`;
       let locked = false;
-      $$('[data-ab]', stage).forEach(b => b.addEventListener('click', () => {
+      const resolve = pick => {
         if (locked) return;
         locked = true;
-        const pick = b.dataset.ab;
-        const ok = pick === ans;
+        const isIdk = pick === null;
+        const ok = !isIdk && pick === ans;
         if (ok) right++;
+        else { if (isIdk) idk++; else wrong++; missed.push(order[pos]); }
         $$('[data-ab]', stage).forEach(x => {
           x.disabled = true;
           if (x.dataset.ab === ans) x.classList.add('right');
-          else if (x.dataset.ab === pick) x.classList.add('wrong');
+          else if (!isIdk && x.dataset.ab === pick) x.classList.add('wrong');
         });
+        const idkRow = $('.dq-idk-row', stage);
+        if (idkRow) idkRow.hidden = true;
         const fb = $('.dq-fb', stage);
         fb.hidden = false;
-        fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Esatto!' : `Risposta corretta: ${esc(labels[ans] || ans)}.`}</strong> ${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
+        const cls = ok ? 'dq-ok' : isIdk ? 'dq-idk' : 'dq-ko';
+        const lead = ok ? 'Esatto!' : isIdk ? `Non la sapevi — Risposta corretta: ${esc(labels[ans] || ans)}.` : `Risposta corretta: ${esc(labels[ans] || ans)}.`;
+        fb.innerHTML = `<p class="${cls}"><strong>${lead}</strong> ${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
         $('.dq-fb-acts', fb).prepend(makeCardBtn(`${data.a} vs ${data.b}: ${q.testo}`, `**${labels[ans] || ans}**${q.spiegazione ? `\n\n${q.spiegazione}` : ''}`));
         $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
         $('[data-dq="next"]', fb).focus();
-      }));
+      };
+      $$('[data-ab]', stage).forEach(b => b.addEventListener('click', () => resolve(b.dataset.ab)));
+      $('[data-dq="idk"]', stage).onclick = () => resolve(null);
     };
     draw();
   };
 
-  const runOrder = (stage, data) => {
-    let pos = 0, right = 0;
+  const runOrder = (stage, data, subset = null) => {
+    const gradeEl = $('#dqGrade', body);
+    if (gradeEl) gradeEl.innerHTML = '';
+    const order = subset ? [...subset] : data.sequenze.map((_, i) => i);
+    let pos = 0, right = 0, wrong = 0, idk = 0;
+    const missed = [];
     const draw = () => {
-      if (pos >= data.sequenze.length) return showDone(stage, right, data.sequenze.length, () => runOrder(stage, data));
-      const seq = data.sequenze[pos];
+      if (pos >= order.length) return showDone(stage, { right, wrong, idk, total: order.length, missed, isRetry: !!subset, onAgain: () => runOrder(stage, data), onRetryMissed: () => runOrder(stage, data, missed) });
+      const seqIdx = order[pos];
+      const seq = data.sequenze[seqIdx];
       const steps = seq.passi || [];
       let cur = dqShuffleIdx(steps.length);
       if (steps.length > 1 && cur.every((v, i) => v === i)) [cur[0], cur[1]] = [cur[1], cur[0]];
-      let checked = false;
+      let checked = false, gaveUp = false;
       const paintSeq = () => {
         stage.innerHTML = `
           <div class="qcard dq-card">
-            <p class="qnum">Sequenza ${pos + 1} di ${data.sequenze.length}</p>
+            <p class="qnum">Sequenza${subset ? ' · ripasso' : ''} ${pos + 1} di ${order.length}</p>
             <p class="q">${esc(seq.titolo)}</p>
             <ol class="dq-seq">${cur.map((si, i) => `
-              <li class="dq-seq-item${checked ? (si === i ? ' ok' : ' ko') : ''}">
+              <li class="dq-seq-item${checked ? (gaveUp ? ' idk' : (si === i ? ' ok' : ' ko')) : ''}">
                 <span class="dq-seq-n">${i + 1}</span>
                 <span class="dq-seq-t">${esc(steps[si])}</span>
                 ${checked ? '' : `<span class="dq-seq-mv"><button type="button" class="btn sm ghost" data-mv="-1" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Sposta su">↑</button><button type="button" class="btn sm ghost" data-mv="1" data-i="${i}" ${i === cur.length - 1 ? 'disabled' : ''} aria-label="Sposta giù">↓</button></span>`}
@@ -10778,19 +10815,30 @@ function renderDiscQuizHost(body, { title, md, getMd, getTitle, nbId, secId, get
             [cur[i], cur[j]] = [cur[j], cur[i]];
             paintSeq();
           }));
-          $('.dq-fb', stage).innerHTML = '<button type="button" class="btn primary" data-dq="check">Controlla l’ordine</button>';
+          $('.dq-fb', stage).innerHTML = '<div class="inline dq-fb-acts"><button type="button" class="btn primary" data-dq="check">Controlla l’ordine</button><button type="button" class="btn ghost dq-idk-btn" data-dq="idk">? Non so</button></div>';
           $('[data-dq="check"]', stage).onclick = () => {
             checked = true;
             const ok = cur.every((v, i) => v === i);
             if (ok) right++;
+            else { wrong++; missed.push(seqIdx); }
+            paintSeq();
+          };
+          $('[data-dq="idk"]', stage).onclick = () => {
+            checked = true;
+            gaveUp = true;
+            idk++;
+            missed.push(seqIdx);
+            cur = steps.map((_, i) => i);
             paintSeq();
           };
         } else {
-          const ok = cur.every((v, i) => v === i);
+          const ok = !gaveUp && cur.every((v, i) => v === i);
           const fb = $('.dq-fb', stage);
-          fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Ordine perfetto!' : 'Qualche passaggio non era al posto giusto.'}</strong> ${esc(seq.spiegazione || '')}</p>
-            ${ok ? '' : `<p class="hint"><strong>Ordine esatto:</strong> ${steps.map((s, i) => `${i + 1}. ${esc(s)}`).join(' → ')}</p>`}
-            <div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= data.sequenze.length ? 'Vedi risultato' : 'Prossima sequenza'}</button></div>`;
+          const cls = ok ? 'dq-ok' : gaveUp ? 'dq-idk' : 'dq-ko';
+          const lead = ok ? 'Ordine perfetto!' : gaveUp ? 'Non la sapevi — Ecco la sequenza esatta.' : 'Qualche passaggio non era al posto giusto.';
+          fb.innerHTML = `<p class="${cls}"><strong>${lead}</strong> ${esc(seq.spiegazione || '')}</p>
+            ${ok || gaveUp ? '' : `<p class="hint"><strong>Ordine esatto:</strong> ${steps.map((s, i) => `${i + 1}. ${esc(s)}`).join(' → ')}</p>`}
+            <div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Prossima sequenza'}</button></div>`;
           $('.dq-fb-acts', fb).prepend(makeCardBtn(seq.titolo, steps.map((s, i) => `${i + 1}. ${s}`).join('\n')));
           $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
           $('[data-dq="next"]', fb).focus();
@@ -10801,39 +10849,50 @@ function renderDiscQuizHost(body, { title, md, getMd, getTitle, nbId, secId, get
     draw();
   };
 
-  const runOdd = (stage, data) => {
-    const order = dqShuffleIdx(data.domande.length);
-    let pos = 0, right = 0;
+  const runOdd = (stage, data, subset = null) => {
+    const gradeEl = $('#dqGrade', body);
+    if (gradeEl) gradeEl.innerHTML = '';
+    const order = subset ? dqShuffleIdx(subset.length).map(i => subset[i]) : dqShuffleIdx(data.domande.length);
+    let pos = 0, right = 0, wrong = 0, idk = 0;
+    const missed = [];
     const draw = () => {
-      if (pos >= order.length) return showDone(stage, right, order.length, () => runOdd(stage, data));
+      if (pos >= order.length) return showDone(stage, { right, wrong, idk, total: order.length, missed, isRetry: !!subset, onAgain: () => runOdd(stage, data), onRetryMissed: () => runOdd(stage, data, missed) });
       const q = data.domande[order[pos]];
       stage.innerHTML = `
         <div class="qcard dq-card">
-          <p class="qnum">Trova l’intruso · ${pos + 1} di ${order.length}</p>
+          <p class="qnum">Trova l’intruso${subset ? ' · ripasso' : ''} · ${pos + 1} di ${order.length}</p>
           <p class="q">Quale di questi 4 non appartiene allo stesso gruppo?</p>
           <div class="dq-opts">${(q.opzioni || []).map((o, i) => `<button type="button" class="btn dq-opt" data-oi="${i}">${esc(o)}</button>`).join('')}</div>
+          <div class="dq-idk-row"><button type="button" class="btn sm ghost dq-idk-btn" data-dq="idk">? Non so</button></div>
           <div class="dq-fb" hidden></div>
         </div>`;
       let locked = false;
-      $$('[data-oi]', stage).forEach(b => b.addEventListener('click', () => {
+      const resolve = pick => {
         if (locked) return;
         locked = true;
-        const pick = +b.dataset.oi;
-        const ok = pick === +q.intruso;
+        const isIdk = pick === null;
+        const ok = !isIdk && pick === +q.intruso;
         if (ok) right++;
+        else { if (isIdk) idk++; else wrong++; missed.push(order[pos]); }
         $$('[data-oi]', stage).forEach(x => {
           const idx = +x.dataset.oi;
           x.disabled = true;
           if (idx === +q.intruso) x.classList.add('right');
-          else if (idx === pick) x.classList.add('wrong');
+          else if (!isIdk && idx === pick) x.classList.add('wrong');
         });
+        const idkRow = $('.dq-idk-row', stage);
+        if (idkRow) idkRow.hidden = true;
         const fb = $('.dq-fb', stage);
         fb.hidden = false;
-        fb.innerHTML = `<p class="${ok ? 'dq-ok' : 'dq-ko'}"><strong>${ok ? 'Preso!' : `L’intruso era: ${esc((q.opzioni || [])[+q.intruso] || '')}.`}</strong> ${q.criterio ? `<em>Criterio:</em> ${esc(q.criterio)}. ` : ''}${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
+        const cls = ok ? 'dq-ok' : isIdk ? 'dq-idk' : 'dq-ko';
+        const lead = ok ? 'Preso!' : isIdk ? `Non la sapevi — L’intruso era: ${esc((q.opzioni || [])[+q.intruso] || '')}.` : `L’intruso era: ${esc((q.opzioni || [])[+q.intruso] || '')}.`;
+        fb.innerHTML = `<p class="${cls}"><strong>${lead}</strong> ${q.criterio ? `<em>Criterio:</em> ${esc(q.criterio)}. ` : ''}${esc(q.spiegazione || '')}</p><div class="inline dq-fb-acts"><button type="button" class="btn primary sm" data-dq="next">${pos + 1 >= order.length ? 'Vedi risultato' : 'Avanti'}</button></div>`;
         $('.dq-fb-acts', fb).prepend(makeCardBtn(`Tra ${(q.opzioni || []).join(', ')}, qual è l’intruso e perché?`, `**${(q.opzioni || [])[+q.intruso] || ''}**\n\n${q.criterio ? `Criterio: ${q.criterio}. ` : ''}${q.spiegazione || ''}`));
         $('[data-dq="next"]', fb).onclick = () => { pos++; draw(); };
         $('[data-dq="next"]', fb).focus();
-      }));
+      };
+      $$('[data-oi]', stage).forEach(b => b.addEventListener('click', () => resolve(+b.dataset.oi)));
+      $('[data-dq="idk"]', stage).onclick = () => resolve(null);
     };
     draw();
   };

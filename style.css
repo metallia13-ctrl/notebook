@@ -4963,7 +4963,7 @@ td.tbl-cell-hide.shown * { visibility: visible; }
 .dq-seq-t { flex: 1; min-width: 0; }
 .dq-seq-mv { display: inline-flex; gap: 2px; flex-shrink: 0; }
 
-/* === v4.12 + v4.31: slider spessore penna con tasti - e + nel blocco note === */
+/* === v4.12 + v4.32: slider spessore penna con tasti - e + nel blocco note === */
 .pad-size-ctl {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 6px; border-radius: var(--r-md); background: var(--surface-2);
@@ -5846,3 +5846,32 @@ td.tbl-cell-hide.shown * { visibility: visible; }
   margin: 0; padding: 8px 4px; white-space: pre-wrap; word-break: break-word;
   font: 0.82rem/1.45 var(--mono-font);
 }
+
+/* === v4.31: pulsante Non so e conteggio separato in tutti i quiz === */
+.btn.idk { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
+.btn.idk:hover { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 22%, var(--surface)); }
+.dq-idk-row { display: flex; justify-content: flex-end; margin: 4px 0 4px; }
+.dq-idk-btn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.dq-idk-btn:hover { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.dq-idk { color: var(--warn); margin: 0 0 10px; }
+.dx-res.idk { color: var(--warn); }
+.dq-seq-item.idk { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
+.dq-stats {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;
+  margin: 12px 0 16px;
+}
+.dq-stat {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 11px; border-radius: 999px; font-size: 0.86rem; font-weight: 650;
+  border: 1px solid var(--line); background: var(--surface-2);
+}
+.dq-stat.ok { color: var(--good, #22c55e); border-color: color-mix(in srgb, var(--good, #22c55e) 40%, var(--line)); background: color-mix(in srgb, var(--good, #22c55e) 12%, var(--surface)); }
+.dq-stat.mid { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--accent-soft); }
+.dq-stat.ko { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: color-mix(in srgb, var(--danger) 12%, var(--surface)); }
+.dq-stat.idk { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: var(--warn-soft); }
+.dq-done-acts { justify-content: center; gap: 8px; }
+.dq-inline-stats { margin-top: 12px; }
+.dq-st-ok { color: var(--good, #22c55e); font-weight: 650; }
+.dq-st-ko { color: var(--danger); font-weight: 650; }
+.dq-st-idk { color: var(--warn); font-weight: 650; }
+.exam-stats { justify-content: flex-start; margin: 10px 0 18px; }
