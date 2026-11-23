@@ -1475,6 +1475,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.34", title: "Rimetti le etichette senza indizi geometrici", html: `      <ul>
+        <li><strong>🙈 Senza indizi (attivo di default)</strong>: nel vassoio in basso tutte le etichette stanno dentro <strong>tessere di dimensioni identiche</strong>, senza rivelare quali ritagli sono corti, larghi o su più righe.</li>
+        <li><strong>Maschere mimetizzate e bersagli standardizzati</strong>: sull’immagine il testo nascosto viene coperto automaticamente con il colore di sfondo della pagina intorno al ritaglio, mentre al centro compare un <strong>bersaglio numerato identico per tutti</strong> (e anche da occupato mantiene una misura uniforme finché non controlli).</li>
+        <li><strong>Passa a 📐 Riquadri reali con un tocco</strong>: il pulsante in alto permette di tornare alla vista classica quando serve; le etichette confermate giuste con <em>Controlla</em> o <em>Soluzione</em> si incastrano subito nella loro posizione originale sullo schema.</li>
+      </ul>` },
   { v: "4.33", title: "blocco note molto più fluido su tablet e S Pen", html: `      <ul>
         <li><strong>Scrittura fluida senza blocchi</strong>: rimosso il conflitto tra tela <code>desynchronized</code> e <strong>Filtro luce blu</strong> (<code>mix-blend-mode: multiply</code>) che su Android bloccava l’aggiornamento del tratto per 1–2 secondi durante la scrittura.</li>
         <li><strong>Cache dei colori e rendering a batch</strong>: eliminato il ricalcolo dello stile (<code>getComputedStyle</code>) a ogni punto della penna, raggruppati i segmenti curvi e le righe/quadretti dello sfondo in un unico passaggio grafico e sincronizzato il disegno con il refresh dello schermo (<code>requestAnimationFrame</code>).</li>

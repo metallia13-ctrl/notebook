@@ -9765,24 +9765,35 @@ function openLabelQuiz(sec, imageId) {
   const shuffle = a => { const b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
   let order = shuffle(masks.map(m => m.id));
   if (masks.length > 1 && order.every((id, i) => id === masks[i].id)) order.push(order.shift());
+  // Numerazione visiva dall'alto in basso e da sinistra a destra (slegata dall'ordine del vassoio)
+  const visualOrder = masks.slice().sort((a, b) => (Math.abs((a.y + a.h / 2) - (b.y + b.h / 2)) > 0.025 ? (a.y + a.h / 2) - (b.y + b.h / 2) : (a.x + a.w / 2) - (b.x + b.w / 2)));
+  const slotNum = new Map(visualOrder.map((m, i) => [m.id, i + 1]));
   const placed = {};          // slot -> piece
+  const locked = new Set();   // riquadri già confermati giusti
   let picked = null;          // etichetta toccata, in attesa del riquadro
   let checked = false;
   let firstScore = null;
   let zoom = 1;
+  let blind = S().labelsBlind !== false;   // v4.34: Senza indizi attivo di default
+  const crops = new Map();                 // mask.id -> dataURL nitido ritagliato
+  const covers = new Map();                // mask.id -> colore di sfondo campionato attorno al ritaglio
   const started = Date.now();
   const root = $('#modalRoot');
   root.innerHTML = `
     <div class="overlay full">
-      <div class="io-editor lq" role="dialog" aria-modal="true" aria-labelledby="lqTitle">
+      <div class="io-editor lq ${blind ? 'lq-blind' : ''}" role="dialog" aria-modal="true" aria-labelledby="lqTitle">
         <header class="io-head">
-          <h2 id="lqTitle">Rimetti le etichette</h2>
-          <p class="hint">Trascina ogni etichetta nel riquadro giusto, oppure toccala e poi tocca il riquadro. Quando hai finito, controlla.</p>
+          <div class="lq-head-row">
+            <h2 id="lqTitle">Rimetti le etichette</h2>
+            <button class="btn sm ${blind ? 'primary' : 'ghost'}" type="button" data-q="blind" aria-pressed="${blind}" title="Tessere tutte uguali e bersagli standardizzati per non dare indizi dalla forma">🙈 Senza indizi</button>
+          </div>
+          <p class="hint" id="lqHint"></p>
         </header>
         <div class="io-body lq-body" id="lqBody">
           <div class="io lq-stage" id="lqStage" style="aspect-ratio:${im.w}/${im.h}">
             <img class="nb-img" data-img="${im.id}" alt="Schema con le etichette tolte" draggable="false">
-            ${masks.map((m, i) => `<button type="button" class="lq-slot" data-s="${m.id}" style="${posStyle(m)}" aria-label="Riquadro ${i + 1}, vuoto"></button>`).join('')}
+            ${masks.map(m => `<span class="lq-cover" data-c="${m.id}" style="${posStyle(m)}" aria-hidden="true"></span>`).join('')}
+            ${masks.map(m => `<button type="button" class="lq-slot" data-s="${m.id}" aria-label="Riquadro ${slotNum.get(m.id)}, vuoto"></button>`).join('')}
           </div>
         </div>
         <div class="lq-tray" id="lqTray" aria-label="Etichette da sistemare"></div>
@@ -9797,19 +9808,109 @@ function openLabelQuiz(sec, imageId) {
         </footer>
       </div>
     </div>`;
+  const win = root.firstElementChild;
+  const dialog = $('.lq', root);
   const stage = $('#lqStage', root);
   const tray = $('#lqTray', root);
   const bodyEl = $('#lqBody', root);
   const msg = $('#lqMsg', root);
+  const hintEl = $('#lqHint', root);
   const byId = id => masks.find(m => m.id === id);
-  // nel riquadro l’etichetta resta della sua misura, centrata: niente deformazioni che suggeriscano la risposta
+
+  const centerStyle = m => `left:${((m.x + m.w / 2) * 100).toFixed(3)}%;top:${((m.y + m.h / 2) * 100).toFixed(3)}%`;
+
+  // Prepara ritagli nitidi su canvas e campiona il colore carta intorno a ogni etichetta
+  let alive = true;
+  (async () => {
+    try {
+      let src = null;
+      let sw = im.w, sh = im.h;
+      if (im.blob && typeof createImageBitmap === 'function') {
+        try { src = await createImageBitmap(im.blob); sw = src.width; sh = src.height; } catch { src = null; }
+      }
+      if (!src && url) {
+        src = await new Promise((res, rej) => { const g = new Image(); g.onload = () => res(g); g.onerror = rej; g.src = url; });
+        sw = src.naturalWidth || im.w; sh = src.naturalHeight || im.h;
+      }
+      if (!src || !alive) return;
+      const scale = Math.min(1, 2000 / Math.max(sw, sh, 1));
+      const W = Math.max(1, Math.round(sw * scale));
+      const H = Math.max(1, Math.round(sh * scale));
+      const full = document.createElement('canvas');
+      full.width = W; full.height = H;
+      const fctx = full.getContext('2d', { willReadFrequently: true });
+      fctx.fillStyle = '#ffffff';
+      fctx.fillRect(0, 0, W, H);
+      fctx.drawImage(src, 0, 0, W, H);
+      if (src.close) try { src.close(); } catch { /* ignora */ }
+      const imgData = fctx.getImageData(0, 0, W, H).data;
+      const med = arr => { arr.sort((a, b) => a - b); return arr[arr.length >> 1] ?? 244; };
+      const sampleBg = (rx, ry, rw, rh) => {
+        const rs = [], gs = [], bs = [];
+        const add = (px, py) => {
+          const x = Math.max(0, Math.min(W - 1, Math.round(px)));
+          const y = Math.max(0, Math.min(H - 1, Math.round(py)));
+          const o = (y * W + x) * 4;
+          rs.push(imgData[o]); gs.push(imgData[o + 1]); bs.push(imgData[o + 2]);
+        };
+        const pad = 3;
+        for (let k = 0; k <= 5; k++) {
+          const t = k / 5;
+          add(rx + rw * t, ry - pad);
+          add(rx + rw * t, ry + rh + pad);
+        }
+        for (let k = 1; k <= 3; k++) {
+          const t = k / 4;
+          add(rx - pad, ry + rh * t);
+          add(rx + rw + pad, ry + rh * t);
+        }
+        return `rgb(${med(rs)}, ${med(gs)}, ${med(bs)})`;
+      };
+      const cropCv = document.createElement('canvas');
+      const cctx = cropCv.getContext('2d');
+      for (const m of masks) {
+        const rx = Math.max(0, Math.floor(m.x * W));
+        const ry = Math.max(0, Math.floor(m.y * H));
+        const rw = Math.max(2, Math.min(W - rx, Math.ceil(m.w * W)));
+        const rh = Math.max(2, Math.min(H - ry, Math.ceil(m.h * H)));
+        covers.set(m.id, sampleBg(rx, ry, rw, rh));
+        cropCv.width = rw; cropCv.height = rh;
+        cctx.clearRect(0, 0, rw, rh);
+        cctx.drawImage(full, rx, ry, rw, rh, 0, 0, rw, rh);
+        let dataUrl = '';
+        try { dataUrl = cropCv.toDataURL('image/webp', 0.92); } catch { /* fallback */ }
+        if (!dataUrl || !dataUrl.startsWith('data:image/webp')) dataUrl = cropCv.toDataURL('image/png');
+        crops.set(m.id, dataUrl);
+      }
+      if (!alive) return;
+      $$('.lq-cover', stage).forEach(el => {
+        const bg = covers.get(el.dataset.c);
+        if (bg) el.style.setProperty('--cov-bg', bg);
+      });
+      draw();
+    } catch { /* fallback CSS */ }
+  })();
+
   const pieceHtml = (id, where, slotId) => {
     const m = byId(id);
-    const sl = slotId ? byId(slotId) : null;
-    const fit = sl ? ` style="width:${((m.w / sl.w) * 100).toFixed(2)}%;height:${((m.h / sl.h) * 100).toFixed(2)}%"` : '';
-    return `<span class="lq-piece ${picked === id ? 'picked' : ''}" data-p="${id}" data-where="${where}"${fit} role="button" tabindex="0" aria-label="Etichetta${where === 'tray' ? '' : ' nel riquadro'}"><span class="lq-crop" style="background-image:url('${url}');${cropStyle(m)}"></span></span>`;
+    const cropUrl = crops.get(id);
+    const isOkSlot = where === 'slot' && slotId && placed[slotId] === slotId && (checked || locked.has(slotId));
+    let fit = '';
+    if (!blind && where === 'slot' && slotId) {
+      const sl = byId(slotId);
+      if (sl) fit = ` style="width:${((m.w / sl.w) * 100).toFixed(2)}%;height:${((m.h / sl.h) * 100).toFixed(2)}%"`;
+    }
+    const inner = cropUrl
+      ? `<img class="lq-crop-img ${isOkSlot ? 'exact' : ''}" src="${cropUrl}" alt="" draggable="false">`
+      : `<span class="lq-crop" style="background-image:url('${url}');${cropStyle(m)}"></span>`;
+    return `<span class="lq-piece ${picked === id ? 'picked' : ''}" data-p="${id}" data-where="${where}"${fit} role="button" tabindex="0" aria-label="Etichetta${where === 'tray' ? '' : ' nel riquadro'}">${inner}</span>`;
   };
+
   const sizeTray = () => {
+    if (blind) {
+      $$('.lq-piece', tray).forEach(p => { p.style.width = ''; p.style.height = ''; });
+      return;
+    }
     const w = stage.getBoundingClientRect().width;
     $$('.lq-piece', tray).forEach(p => {
       const m = byId(p.dataset.p);
@@ -9817,41 +9918,77 @@ function openLabelQuiz(sec, imageId) {
       p.style.height = `${Math.max(18, m.h * w * (im.h / im.w))}px`;
     });
   };
+
   const draw = () => {
+    dialog.classList.toggle('lq-blind', blind);
+    const bBtn = $('[data-q="blind"]', root);
+    if (bBtn) {
+      bBtn.classList.toggle('primary', blind);
+      bBtn.classList.toggle('ghost', !blind);
+      bBtn.setAttribute('aria-pressed', String(blind));
+      bBtn.textContent = blind ? '🙈 Senza indizi' : '📐 Riquadri reali';
+    }
+    hintEl.textContent = blind
+      ? 'Tessere tutte uguali e bersagli standardizzati: niente indizi dalla forma. Trascina un’etichetta sul bersaglio (o toccala e poi tocca il numero).'
+      : 'Trascina ogni etichetta nel riquadro giusto, oppure toccala e poi tocca il riquadro. Quando hai finito, controlla.';
+
     const inSlots = new Set(Object.values(placed));
     tray.innerHTML = order.filter(id => !inSlots.has(id)).map(id => pieceHtml(id, 'tray')).join('') || '<p class="hint lq-done">Tutte le etichette sono al loro posto.</p>';
-    $$('.lq-slot', stage).forEach((s, i) => {
-      const p = placed[s.dataset.s];
-      s.innerHTML = p ? pieceHtml(p, 'slot', s.dataset.s) : '';
+
+    $$('.lq-slot', stage).forEach(s => {
+      const sid = s.dataset.s;
+      const m = byId(sid);
+      const p = placed[sid];
+      const num = slotNum.get(sid);
+      const isOk = !!(p && p === sid && (checked || locked.has(sid)));
+      const isBad = !!(checked && p && p !== sid);
+      const cov = $(`.lq-cover[data-c="${sid}"]`, stage);
+      if (cov) cov.classList.toggle('revealed', isOk);
+
+      if (blind && !isOk) {
+        s.setAttribute('style', centerStyle(m));
+      } else {
+        s.setAttribute('style', posStyle(m));
+      }
+      s.innerHTML = p ? pieceHtml(p, 'slot', sid) : (blind ? `<span class="lq-num" aria-hidden="true">${num}</span>` : '');
       s.classList.toggle('filled', !!p);
       s.classList.toggle('target', !!picked && !p);
-      s.classList.remove('ok', 'bad');
-      if (checked && p) s.classList.add(p === s.dataset.s ? 'ok' : 'bad');
-      s.setAttribute('aria-label', `Riquadro ${i + 1}${p ? (checked ? (p === s.dataset.s ? ', giusto' : ', sbagliato') : ', occupato') : ', vuoto'}`);
+      s.classList.toggle('ok', isOk);
+      s.classList.toggle('bad', isBad);
+      s.setAttribute('aria-label', `Riquadro ${num}${p ? (isOk ? ', giusto' : isBad ? ', sbagliato' : ', occupato') : ', vuoto'}`);
     });
     sizeTray();
     const n = Object.keys(placed).length;
     if (!checked) msg.textContent = `${n} di ${masks.length} sistemate`;
   };
+
   const place = (pid, sid) => {
+    if (sid && locked.has(sid)) return;
     checked = false;
-    for (const k of Object.keys(placed)) if (placed[k] === pid) delete placed[k];
-    if (sid) placed[sid] = pid;   // chi c’era torna tra le etichette
+    let prevSlot = null;
+    for (const k of Object.keys(placed)) if (placed[k] === pid) { if (locked.has(k)) return; prevSlot = k; delete placed[k]; }
+    if (sid) {
+      const displaced = placed[sid];
+      placed[sid] = pid;
+      // se stavi spostando da un altro riquadro a uno occupato, li scambia
+      if (displaced && displaced !== pid && prevSlot) placed[prevSlot] = displaced;
+    }
     picked = null;
     draw();
   };
-  const unplace = pid => { for (const k of Object.keys(placed)) if (placed[k] === pid) delete placed[k]; checked = false; };
+  const unplace = pid => { for (const k of Object.keys(placed)) if (placed[k] === pid && !locked.has(k)) delete placed[k]; checked = false; };
 
   /* trascinamento con dito o mouse; un tocco senza movimento seleziona */
   let drag = null;
-  // v3.90: gli ascolti stanno sulla finestra del quiz, non sul contenitore che resta (se no si sommavano a ogni apertura)
-  const win = root.firstElementChild;
+  let suppressClick = false;
   win.addEventListener('pointerdown', e => {
     const p = e.target.closest('.lq-piece');
     if (!p || e.button > 0) return;
+    const slEl = p.closest('.lq-slot');
+    if (slEl && locked.has(slEl.dataset.s)) return;
     e.preventDefault();
     const r = p.getBoundingClientRect();
-    drag = { id: e.pointerId, pid: p.dataset.p, el: p, x0: e.clientX, y0: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height, ghost: null };
+    drag = { id: e.pointerId, pid: p.dataset.p, where: p.dataset.where, el: p, x0: e.clientX, y0: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height, ghost: null };
     try { p.setPointerCapture(e.pointerId); } catch { /* va bene lo stesso */ }
   });
   win.addEventListener('pointermove', e => {
@@ -9859,7 +9996,7 @@ function openLabelQuiz(sec, imageId) {
     if (!drag.ghost) {
       if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
       const g = drag.el.cloneNode(true);
-      g.className = 'lq-piece lq-ghost';
+      g.className = `lq-piece lq-ghost ${blind ? 'lq-ghost-blind' : ''}`;
       g.style.width = `${drag.w}px`;
       g.style.height = `${drag.h}px`;
       document.body.append(g);
@@ -9870,7 +10007,6 @@ function openLabelQuiz(sec, imageId) {
     const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('.lq-slot');
     $$('.lq-slot.hover', stage).forEach(s => { if (s !== over) s.classList.remove('hover'); });
     if (over) over.classList.add('hover');
-    // vicino ai bordi lo schema scorre da solo
     const br = bodyEl.getBoundingClientRect();
     if (e.clientY < br.top + 40) bodyEl.scrollBy(0, -14);
     else if (e.clientY > br.bottom - 40 && e.clientY < br.bottom + 10) bodyEl.scrollBy(0, 14);
@@ -9882,11 +10018,21 @@ function openLabelQuiz(sec, imageId) {
     const d = drag;
     drag = null;
     $$('.lq-slot.hover', stage).forEach(s => s.classList.remove('hover'));
-    if (!d.ghost) {   // tocco: seleziona o deseleziona
+    if (!d.ghost) {
+      suppressClick = true;
+      setTimeout(() => { suppressClick = false; }, 0);
+      // se hai già scelto un'etichetta e tocchi un riquadro occupato, la metti lì
+      const slot = d.el.closest('.lq-slot');
+      if (picked && picked !== d.pid && slot) {
+        place(picked, slot.dataset.s);
+        return;
+      }
       picked = picked === d.pid ? null : d.pid;
       draw();
       return;
     }
+    suppressClick = true;
+    setTimeout(() => { suppressClick = false; }, 0);
     d.ghost.remove();
     d.el.classList.remove('lifting');
     const over = document.elementFromPoint(e.clientX, e.clientY)?.closest('.lq-slot');
@@ -9896,8 +10042,15 @@ function openLabelQuiz(sec, imageId) {
   win.addEventListener('pointerup', endDrag);
   win.addEventListener('pointercancel', e => { if (drag && drag.ghost) drag.ghost.remove(); if (drag) drag.el.classList.remove('lifting'); drag = null; draw(); });
   win.addEventListener('click', e => {
+    if (suppressClick) return;
     const s = e.target.closest('.lq-slot');
     if (s && picked && !e.target.closest('.lq-piece')) { place(picked, s.dataset.s); return; }
+    // tocco nello spazio del vassoio con un'etichetta già posizionata selezionata -> la riporta nel vassoio
+    if (picked && e.target.closest('#lqTray') && !e.target.closest('.lq-piece')) {
+      unplace(picked);
+      picked = null;
+      draw();
+    }
   });
   win.addEventListener('keydown', e => {
     const p = e.target.closest('.lq-piece');
@@ -9917,7 +10070,7 @@ function openLabelQuiz(sec, imageId) {
     st.best = Math.max(st.best || 0, firstScore / masks.length);
     await saveSection(sec);
   };
-  const close = () => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', sizeTray); route(); };
+  const close = () => { alive = false; root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', sizeTray); route(); };
   const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', sizeTray);
@@ -9926,7 +10079,12 @@ function openLabelQuiz(sec, imageId) {
     if (!b) return;
     const q = b.dataset.q;
     if (q === 'close') close();
-    else if (q === 'edit') { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', sizeTray); openLabelEditor(sec, imageId); }
+    else if (q === 'blind') {
+      blind = !blind;
+      S().labelsBlind = blind;
+      Settings.save();
+      draw();
+    } else if (q === 'edit') { alive = false; root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); window.removeEventListener('resize', sizeTray); openLabelEditor(sec, imageId); }
     else if (q === 'zoom') {
       zoom = zoom === 1 ? 1.5 : zoom === 1.5 ? 2 : 1;
       stage.style.width = `${zoom * 100}%`;
@@ -9935,6 +10093,7 @@ function openLabelQuiz(sec, imageId) {
       requestAnimationFrame(sizeTray);
     } else if (q === 'again') {
       Object.keys(placed).forEach(k => delete placed[k]);
+      locked.clear();
       order = shuffle(masks.map(m => m.id));
       checked = false;
       picked = null;
@@ -9963,8 +10122,11 @@ function openLabelQuiz(sec, imageId) {
       if (firstScore === null && n === masks.length) firstScore = ok;
       msg.textContent = `${ok} giuste su ${masks.length}${n < masks.length ? ` (${masks.length - n} ancora da sistemare)` : ''}. Le rosse tornano tra le etichette.`;
       setTimeout(() => {
-        if (!checked) return;
-        for (const k of Object.keys(placed)) if (placed[k] !== k) delete placed[k];
+        if (!checked || !alive) return;
+        for (const k of Object.keys(placed)) {
+          if (placed[k] === k) locked.add(k);
+          else delete placed[k];
+        }
         checked = false;
         draw();
         msg.textContent = `${ok} giuste su ${masks.length}: sistema le altre.`;
@@ -9973,7 +10135,6 @@ function openLabelQuiz(sec, imageId) {
   });
   hydrateImages(root);
   draw();
-  // la prima misura arriva quando l’immagine ha preso posto
   requestAnimationFrame(sizeTray);
 }
 
