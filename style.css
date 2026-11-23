@@ -2452,15 +2452,17 @@ html.kb-open .view { padding-bottom: 24px; }
 html.kb-open .save-bar { bottom: 8px; }
 html.kb-open .sel-bar, html.kb-open .ink-bar { bottom: 8px; }
 
-/* filtro luce blu */
+/* filtro luce blu (senza mix-blend-mode: evita il readback GPU a tutto schermo che rallentava la scrittura su tablet) */
 html.bluelight::after {
   content: "";
   position: fixed;
   inset: 0;
   z-index: 2147483000;
   pointer-events: none;
-  background: rgba(255, 150, 40, var(--blue-level, 0.35));
-  mix-blend-mode: multiply;
+  background: rgba(255, 145, 25, calc(var(--blue-level, 0.35) * 0.52));
+}
+html[data-theme="dark"].bluelight::after {
+  background: rgba(255, 130, 15, calc(var(--blue-level, 0.35) * 0.32));
 }
 .blue-quick { margin-left: auto; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; }
 

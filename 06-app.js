@@ -1475,6 +1475,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.33", title: "blocco note molto più fluido su tablet e S Pen", html: `      <ul>
+        <li><strong>Scrittura fluida senza blocchi</strong>: rimosso il conflitto tra tela <code>desynchronized</code> e <strong>Filtro luce blu</strong> (<code>mix-blend-mode: multiply</code>) che su Android bloccava l’aggiornamento del tratto per 1–2 secondi durante la scrittura.</li>
+        <li><strong>Cache dei colori e rendering a batch</strong>: eliminato il ricalcolo dello stile (<code>getComputedStyle</code>) a ogni punto della penna, raggruppati i segmenti curvi e le righe/quadretti dello sfondo in un unico passaggio grafico e sincronizzato il disegno con il refresh dello schermo (<code>requestAnimationFrame</code>).</li>
+        <li><strong>Salvataggio intelligente</strong>: il salvataggio in archivio ora attende una pausa di 2 secondi e non parte mai mentre la penna è appoggiata sullo schermo, evitando micro-scatti tra una parola e l’altra.</li>
+      </ul>` },
   { v: "4.32", title: "blocco note: pulsanti − e + per lo spessore della penna", html: `      <ul>
         <li><strong>Controllo preciso dello spessore nel blocco note</strong>: aggiunti i tasti <strong>−</strong> e <strong>+</strong> affiancati allo slider per regolare la dimensione del tratto a scatti di <code>0,5</code> (da <code>1</code> a <code>20</code>), anche tenendoli premuti.</li>
       </ul>` },
@@ -3163,43 +3168,47 @@ function padLineWidth(w, W, p) {
   const pr = typeof p === 'number' && p >= 0 ? Math.min(1, p) : 0.5;
   return Math.max(0.4, w * W * (0.55 + Math.pow(pr, 0.75) * 0.75));
 }
-// v4.07: tratti a penna con curve quadratiche sui punti medi (fluidi sia a schermo che in esportazione)
+// v4.07 + v4.33: tratti a penna con curve quadratiche sui punti medi, raggruppati per spessore per ridurre le chiamate GPU
 function padDrawPenStroke(c, s, W, col, from = 1, finish = true) {
   const pts = s.p;
-  if (!pts.length) return;
+  const n = pts.length;
+  if (!n) return;
   c.strokeStyle = c.fillStyle = col;
   c.lineCap = 'round';
   c.lineJoin = 'round';
-  if (pts.length === 1) {
+  if (n === 1) {
     c.beginPath(); c.arc(pts[0][0] * W, pts[0][1] * W, padLineWidth(s.w, W, pts[0][2]) / 2, 0, Math.PI * 2); c.fill();
     return;
   }
-  const n = pts.length;
   const start = Math.max(1, from);
+  let open = false, curLw = -1;
+  const seg = (x, y, lw) => {
+    if (!open || Math.abs(lw - curLw) >= 0.15) {
+      if (open) c.stroke();
+      c.beginPath();
+      c.lineWidth = curLw = lw;
+      c.moveTo(x, y);
+      open = true;
+    }
+  };
   for (let i = start; i < n; i++) {
     const a = pts[i - 1], b = pts[i];
-    const mx = ((a[0] + b[0]) / 2) * W, my = ((a[1] + b[1]) / 2) * W;
-    c.beginPath();
+    const mx = ((a[0] + b[0]) * 0.5) * W, my = ((a[1] + b[1]) * 0.5) * W;
     if (i === 1) {
-      c.lineWidth = padLineWidth(s.w, W, (a[2] + b[2]) / 2);
-      c.moveTo(a[0] * W, a[1] * W);
+      seg(a[0] * W, a[1] * W, padLineWidth(s.w, W, (a[2] + b[2]) * 0.5));
       c.lineTo(mx, my);
     } else {
       const p0 = pts[i - 2];
-      c.lineWidth = padLineWidth(s.w, W, a[2]);
-      c.moveTo(((p0[0] + a[0]) / 2) * W, ((p0[1] + a[1]) / 2) * W);
+      seg(((p0[0] + a[0]) * 0.5) * W, ((p0[1] + a[1]) * 0.5) * W, padLineWidth(s.w, W, a[2]));
       c.quadraticCurveTo(a[0] * W, a[1] * W, mx, my);
     }
-    c.stroke();
   }
   if (finish) {
     const a = pts[n - 2], b = pts[n - 1];
-    c.lineWidth = padLineWidth(s.w, W, b[2]);
-    c.beginPath();
-    c.moveTo(((a[0] + b[0]) / 2) * W, ((a[1] + b[1]) / 2) * W);
+    seg(((a[0] + b[0]) * 0.5) * W, ((a[1] + b[1]) * 0.5) * W, padLineWidth(s.w, W, b[2]));
     c.lineTo(b[0] * W, b[1] * W);
-    c.stroke();
   }
+  if (open) c.stroke();
 }
 // v4.07: esporta solo i tratti selezionati dal lazo, ritagliati su fondo bianco
 function padExportSelection(sel) {
@@ -3241,14 +3250,21 @@ function padPaper(c, W, H, kind, color, alpha, vis = null, bounds = null) {
   const step = Math.max(26, W * 0.06);
   const sq = kind === 'grid' || kind === 'dots' ? step * 0.6 : step;
   const from = (a, lo) => (lo === 0 ? Math.max(1, Math.floor(a / sq)) : Math.floor(Math.max(a, lo) / sq)) * sq;
+  const xA = Math.max(bx0, vx0), xB = Math.min(bx1, vx1);
+  const yA = Math.max(by0, vy0), yB = Math.min(by1, vy1);
   if (kind === 'dots') {
     c.fillStyle = color;
-    for (let y = from(vy0, by0); y < Math.min(by1, vy1 + sq); y += sq) for (let x = from(vx0, bx0); x < Math.min(bx1, vx1 + sq); x += sq) { c.beginPath(); c.arc(x, y, Math.max(1, W / 500), 0, Math.PI * 2); c.fill(); }
+    const r = Math.max(1, W / 500);
+    c.beginPath();
+    for (let y = from(vy0, by0); y < Math.min(by1, vy1 + sq); y += sq) for (let x = from(vx0, bx0); x < Math.min(bx1, vx1 + sq); x += sq) { c.moveTo(x + r, y); c.arc(x, y, r, 0, Math.PI * 2); }
+    c.fill();
     c.restore();
     return;
   }
-  for (let y = from(vy0, by0); y < Math.min(by1, vy1 + sq); y += sq) { c.beginPath(); c.moveTo(Math.max(bx0, vx0), Math.round(y) + 0.5); c.lineTo(Math.min(bx1, vx1), Math.round(y) + 0.5); c.stroke(); }
-  if (kind === 'grid') for (let x = from(vx0, bx0); x < Math.min(bx1, vx1 + sq); x += sq) { c.beginPath(); c.moveTo(Math.round(x) + 0.5, Math.max(by0, vy0)); c.lineTo(Math.round(x) + 0.5, Math.min(by1, vy1)); c.stroke(); }
+  c.beginPath();
+  for (let y = from(vy0, by0); y < Math.min(by1, vy1 + sq); y += sq) { const yy = Math.round(y) + 0.5; c.moveTo(xA, yy); c.lineTo(xB, yy); }
+  if (kind === 'grid') for (let x = from(vx0, bx0); x < Math.min(bx1, vx1 + sq); x += sq) { const xx = Math.round(x) + 0.5; c.moveTo(xx, yA); c.lineTo(xx, yB); }
+  c.stroke();
   c.restore();
 }
 // l’evidenziatore: un solo tracciato trasparente, così le sovrapposizioni non fanno chiazze
@@ -3814,10 +3830,13 @@ const Pad = {
     document.body.append(el);
     this.el = el;
     FullScreen.paint();
+    this.bodyEl = $('.pad-body', el);
+    this.viewEl = $('.pad-view', el);
+    this.sheetEl = $('.pad-sheet', el);
+    this.dupBtn = $('[data-pa="dup"]', el);
     this.canvas = $('.pad-canvas', el);
-    // v3.64: tela “a bassa latenza” (Chrome la usa per le app di scrittura a mano: l’inchiostro
-    // compare più vicino alla punta della penna); dove non c’è, è una tela normale
-    this.ctx = this.canvas.getContext('2d', { desynchronized: true, alpha: false }) || this.canvas.getContext('2d');
+    // v4.33: alpha:false senza desynchronized evita gli stalli del compositore Android/Mali con sticky e overlay
+    this.ctx = this.canvas.getContext('2d', { alpha: false }) || this.canvas.getContext('2d');
     this.live = $('.pad-live', el);
     this.live.hidden = true;
     this.lctx = this.live.getContext('2d');
@@ -3874,7 +3893,7 @@ const Pad = {
       if (this.rafS || !this.data) return;
       this.rafS = requestAnimationFrame(() => { this.rafS = 0; this.clearLive(); this.growInf(); this.redraw(); });
     }, { passive: true });
-    new MutationObserver(() => { this.paperBg = ''; this.lineCol = ''; if (this.isOpen() && this.data) this.redraw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
+    new MutationObserver(() => { this.paperBg = ''; this.lineCol = ''; this.inkCol = ''; this.accentCol = ''; if (this.isOpen() && this.data) this.redraw(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
     new ResizeObserver(() => { if (this.isOpen()) this.layout(); }).observe($('.pad-body', el));
     el.addEventListener('keydown', e => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && (e.key === 'z' || e.key === 'Z')))) { e.preventDefault(); this.act('redo'); return; }
@@ -4048,13 +4067,21 @@ const Pad = {
     this.home();
   },
   flush() {
-    if (!this.saveT || !this.key || !this.data) return;
+    if ((!this.saveT && !this.dirty) || !this.key || !this.data) return;
     clearTimeout(this.saveT);
     this.saveT = 0;
+    this.dirty = false;
     const empty = this.data.pages.every(pg => !pg.strokes.length && !pg.inf);
     if (empty) PadDB.del(this.key); else PadDB.put(this.key, { ...this.data, page: this.page, title: this.title, t: Date.now() });
   },
-  saveSoon() { clearTimeout(this.saveT); this.saveT = setTimeout(() => { this.saveT = 1; this.flush(); }, 500); },
+  saveSoon() {
+    this.dirty = true;
+    clearTimeout(this.saveT);
+    this.saveT = setTimeout(() => {
+      if (this.drawing) { this.saveSoon(); return; }
+      this.flush();
+    }, 2000);
+  },
   pg() { return this.data.pages[this.page]; },
   layout() {
     if (!this.el || !this.data) return;
@@ -4076,7 +4103,7 @@ const Pad = {
     // il foglio intero è uno spazio vuoto che dà la misura dello scorrimento. Così la tela
     // resta piccola anche con fogli lunghi e zoom, e il tablet la disegna con la scheda grafica.
     const vw = w0, vh = minH;
-    const dpr = Math.min(3, window.devicePixelRatio || 1, Math.sqrt(6e6 / Math.max(1, vw * vh)));
+    const dpr = Math.min(2, window.devicePixelRatio || 1, Math.sqrt(3e6 / Math.max(1, vw * vh)));
     this.W = w; this.H = h; this.dpr = dpr; this.VW = vw; this.VH = vh;
     const view = $('.pad-view', this.el);
     view.style.width = `${vw}px`; view.style.height = `${vh}px`;
@@ -4092,12 +4119,12 @@ const Pad = {
   },
   // lo spazio da scorrere: largo e alto quanto il foglio intero
   sizeSheet() {
-    const sh = $('.pad-sheet', this.el);
+    const sh = this.sheetEl || $('.pad-sheet', this.el);
     sh.style.width = `${this.SW || this.W}px`;
     sh.style.height = `${this.H}px`;
     sh.style.marginTop = `${-this.VH}px`;
   },
-  scroll() { const b = $('.pad-body', this.el); return [b.scrollLeft, b.scrollTop]; },
+  scroll() { const b = this.bodyEl || $('.pad-body', this.el); return [b.scrollLeft, b.scrollTop]; },
   // riquadro dei tratti (in proporzione alla larghezza), ricordato finché il tratto non cambia
   bbOf(s) {
     const m = this.bbs || (this.bbs = new WeakMap());
@@ -4126,7 +4153,8 @@ const Pad = {
     const next = dir > 0 ? PAD_ZOOMS.find(v => v > z + 0.01) : [...PAD_ZOOMS].reverse().find(v => v < z - 0.01);
     if (next) this.setZoom(next);
   },
-  inkColor(c) { return c === 'ink' ? getComputedStyle(document.body).getPropertyValue('--text').trim() || '#111' : c; },
+  inkColor(c) { return c === 'ink' ? (this.inkCol || (this.inkCol = getComputedStyle(document.body).getPropertyValue('--text').trim() || '#111')) : c; },
+  accentColor() { return this.accentCol || (this.accentCol = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#7dd3fc'); },
   redraw() {
     const c = this.ctx, dpr = this.dpr || 1;
     const [sl, st] = this.scroll();
@@ -4183,7 +4211,7 @@ const Pad = {
     const c = this.ctx;
     c.save();
     c.setLineDash([6, 4]);
-    c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#7dd3fc';
+    c.strokeStyle = this.accentColor();
     c.lineWidth = 1.5;
     c.strokeRect(...this.selBox);
     // maniglia per ridimensionare, nell’angolo in basso a destra
@@ -4244,7 +4272,25 @@ const Pad = {
         this.saveSoon();
       }
     };
-    const body = () => $('.pad-body', this.el);
+    const body = () => this.bodyEl || $('.pad-body', this.el);
+    const rnd4 = v => Math.round(v * 10000) / 10000;
+    const flushDraw = () => {
+      this.rafDraw = 0;
+      const d = this.drawing;
+      if (!d || !d.s) return;
+      const n = d.s.p.length;
+      if (d.drawn >= n) return;
+      if (d.s.k === 'hl') {
+        this.liveHl(d.s, d.drawn);
+      } else {
+        const dpr = this.dpr || 1;
+        this.ctx.setTransform(dpr, 0, 0, dpr, ((this.OX || 0) - this.sl) * dpr, ((this.OY || 0) - this.st) * dpr);
+        if (n === 1) this.drawStroke(d.s, 1, true);
+        else this.drawStroke(d.s, Math.max(1, d.drawn), false);
+      }
+      d.drawn = n;
+    };
+    const scheduleDraw = () => { if (!this.rafDraw) this.rafDraw = requestAnimationFrame(flushDraw); };
     // due dita: pizzico per lo zoom (mentre pizzichi il foglio si ingrandisce subito, poi si ridisegna nitido)
     const fingers = new Map();
     let pinch = null;
@@ -4253,6 +4299,7 @@ const Pad = {
       const r = body().getBoundingClientRect();
       const d = this.drawing;
       // il dito che stava scrivendo non lascia il segno
+      if (this.rafDraw) { cancelAnimationFrame(this.rafDraw); this.rafDraw = 0; }
       if (d && d.s) { const pg = this.pg(); pg.strokes = pg.strokes.filter(x => x !== d.s); this.clearLive(); this.redraw(); }
       if (d && d.hold) clearTimeout(d.hold);
       this.drawing = null;
@@ -4285,6 +4332,7 @@ const Pad = {
     cv.addEventListener('pointerdown', e => {
       if (e.button > 0 && !penErases(e)) return;
       if (e.pointerType === 'pen') this.penSeen = true;
+      if (this.saveT) { clearTimeout(this.saveT); this.saveT = 0; }
       e.preventDefault();
       { const r = cv.getBoundingClientRect(); const [sl, st] = this.scroll(); rect = { left: r.left, top: r.top, sl, st }; }
       try { cv.setPointerCapture(e.pointerId); } catch { /* niente */ }
@@ -4342,12 +4390,13 @@ const Pad = {
       }
       this.sel = null;
       this.selBox = null;
-      $('[data-pa="dup"]', this.el).hidden = true;
+      if (this.dupBtn && !this.dupBtn.hidden) this.dupBtn.hidden = true;
       const hl = this.tool === 'hl';
-      const s = hl ? { c: this.hlColor, w: +(this.sizeNow() * 3.2).toFixed(5), k: 'hl', p: [pt.map(v => +v.toFixed(4))] } : { c: this.color, w: this.sizeNow(), p: [pt.map(v => +v.toFixed(4))] };
-      this.drawing = { id: e.pointerId, s, x: e.clientX, y: e.clientY };
+      const p0 = [rnd4(pt[0]), rnd4(pt[1]), rnd4(pt[2])];
+      const s = hl ? { c: this.hlColor, w: +(this.sizeNow() * 3.2).toFixed(5), k: 'hl', p: [p0] } : { c: this.color, w: this.sizeNow(), p: [p0] };
+      this.drawing = { id: e.pointerId, s, x: e.clientX, y: e.clientY, drawn: 0, minX: p0[0], maxX: p0[0], minY: p0[1], maxY: p0[1] };
       this.pg().strokes.push(s);
-      if (hl) this.liveHl(s); else this.drawStroke(s);
+      scheduleDraw();
     });
     cv.addEventListener('pointermove', e => {
       if (e.pointerType === 'touch' && fingers.has(e.pointerId)) { fingers.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pinch) { e.preventDefault(); movePinch(); return; } }
@@ -4396,7 +4445,7 @@ const Pad = {
         const c = this.ctx, W = this.W;
         c.save();
         c.setLineDash([5, 4]);
-        c.strokeStyle = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#7dd3fc';
+        c.strokeStyle = this.accentColor();
         c.lineWidth = 1.5;
         const a = d.lasso[d.lasso.length - 2];
         c.beginPath(); c.moveTo(a[0] * W, a[1] * W); c.lineTo(pt[0] * W, pt[1] * W); c.stroke();
@@ -4404,15 +4453,22 @@ const Pad = {
         return;
       }
       const evs = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
+      let added = false;
+      const minStepSq = (1.2 / this.W) ** 2;
       for (const ev of evs) {
         const pt = pos(ev);
         if (d.erase) { erase(pt); continue; }
         const last = d.s.p[d.s.p.length - 1];
-        if (Math.hypot(pt[0] - last[0], pt[1] - last[1]) * this.W < 1.2) continue;
+        const dx = pt[0] - last[0], dy = pt[1] - last[1];
+        if (dx * dx + dy * dy < minStepSq) continue;
         if (e.pointerType === 'pen') pt[2] = last[2] * 0.65 + pt[2] * 0.35;
-        d.s.p.push(pt.map(v => +v.toFixed(4)));
-        if (d.s.k === 'hl') this.liveHl(d.s, d.s.p.length - 1); else this.drawStroke(d.s, d.s.p.length - 1, false);
+        const q = [rnd4(pt[0]), rnd4(pt[1]), rnd4(pt[2])];
+        d.s.p.push(q);
+        if (q[0] < d.minX) d.minX = q[0]; else if (q[0] > d.maxX) d.maxX = q[0];
+        if (q[1] < d.minY) d.minY = q[1]; else if (q[1] > d.maxY) d.maxY = q[1];
+        added = true;
       }
+      if (added) scheduleDraw();
       // tieni ferma la penna alla fine del tratto: diventa una linea dritta (come in Samsung Notes)
       if (d.s && !d.line) {
         if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 6) {
@@ -4421,11 +4477,11 @@ const Pad = {
           const p0 = d.s.p[0], pn = d.s.p[d.s.p.length - 1];
           const far = Math.hypot(pn[0] - p0[0], pn[1] - p0[1]) * this.W;
           // un giro chiuso (la fine vicino all’inizio) tenuto fermo diventa una forma pulita
-          const bbs = d.s.p.length > 12 && d.s.k !== 'hl' ? d.s.p.reduce((m, q) => [Math.min(m[0], q[0]), Math.min(m[1], q[1]), Math.max(m[2], q[0]), Math.max(m[3], q[1])], [Infinity, Infinity, -Infinity, -Infinity]) : null;
-          const closedLoop = !!bbs && far < 34 && (bbs[2] - bbs[0]) * this.W > 40 && (bbs[3] - bbs[1]) * this.W > 26;
+          const closedLoop = d.s.p.length > 12 && d.s.k !== 'hl' && far < 34 && (d.maxX - d.minX) * this.W > 40 && (d.maxY - d.minY) * this.W > 26;
           if (far > 30 || closedLoop) {
             d.hold = setTimeout(() => {
               if (this.drawing !== d) return;
+              if (this.rafDraw) { cancelAnimationFrame(this.rafDraw); this.rafDraw = 0; }
               if (closedLoop) {
                 d.line = true; d.shaped = true;
                 this.shapeFrom(d.s);
@@ -4436,6 +4492,7 @@ const Pad = {
               }
               d.line = true;
               d.s.p = [d.s.p[0], d.s.p[d.s.p.length - 1]];
+              d.drawn = d.s.p.length;
               if (d.s.k === 'hl') { this.clearLive(); this.liveHl(d.s); } else this.redraw();
               try { navigator.vibrate && navigator.vibrate(12); } catch { /* niente */ }
             }, 650);
@@ -4445,7 +4502,11 @@ const Pad = {
       // scrivendo in fondo il foglio si allunga
       const pg = this.pg();
       const lastY = d.s ? d.s.p[d.s.p.length - 1][1] * this.W : 0;
-      if (d.s && !pg.inf && lastY > this.H - 60) { pg.h = padA4Up(this.H / this.W + 0.01); this.H = Math.round(pg.h * this.W); this.sizeSheet(); this.redraw(); }
+      if (d.s && !pg.inf && lastY > this.H - 60) {
+        if (this.rafDraw) { cancelAnimationFrame(this.rafDraw); this.rafDraw = 0; }
+        pg.h = padA4Up(this.H / this.W + 0.01); this.H = Math.round(pg.h * this.W); this.sizeSheet(); this.redraw();
+        if (d.s) d.drawn = d.s.p.length;
+      }
     });
     const inPoly = (x, y, poly) => { let inside = false; for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi) inside = !inside; } return inside; };
     const end = e => {
@@ -4458,16 +4519,23 @@ const Pad = {
       this.drawing = null;
       rect = null;
       if (d.hold) clearTimeout(d.hold);
+      if (this.rafDraw) { cancelAnimationFrame(this.rafDraw); this.rafDraw = 0; }
       if (d.s) {
         this.pushUndo({ type: 'add', page: this.page, s: d.s });
         if (d.s.k === 'hl') { this.clearLive(); this.redraw(); }
-        else if (d.s.p.length >= 2) this.drawStroke(d.s, d.s.p.length, true);
+        else {
+          const dpr = this.dpr || 1;
+          this.ctx.setTransform(dpr, 0, 0, dpr, ((this.OX || 0) - this.sl) * dpr, ((this.OY || 0) - this.st) * dpr);
+          if (d.s.p.length === 1) { if (!d.drawn) this.drawStroke(d.s, 1, true); }
+          else this.drawStroke(d.s, Math.max(1, d.drawn), true);
+        }
         this.saveSoon();
       }
       if (d.move || d.resize) { this.relink(); this.saveSoon(); this.redraw(); }
       if (d.shape) { this.endShape(d); this.growInf(); return; }
       if (d.textTap) { this.textAt(d.textTap); return; }
       if (d.s) this.growInf();
+      if (this.dirty && !this.saveT) this.saveSoon();
       if (d.lasso) {
         // un tocco (senza giro): seleziona quello che c’è sotto; un nodo porta con sé il suo contenuto
         const ext = d.lasso.reduce((m, q) => Math.max(m, Math.hypot(q[0] - d.lasso[0][0], q[1] - d.lasso[0][1])), 0) * this.W;
