@@ -4963,18 +4963,27 @@ td.tbl-cell-hide.shown * { visibility: visible; }
 .dq-seq-t { flex: 1; min-width: 0; }
 .dq-seq-mv { display: inline-flex; gap: 2px; flex-shrink: 0; }
 
-/* === v4.12: slider spessore penna nel blocco note === */
+/* === v4.12 + v4.31: slider spessore penna con tasti - e + nel blocco note === */
 .pad-size-ctl {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 2px 8px; border-radius: var(--r-md); background: var(--surface-2);
-  height: 34px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px; border-radius: var(--r-md); background: var(--surface-2);
+  height: 36px; flex-shrink: 0;
+}
+.pad-sbtn {
+  min-width: 28px; height: 28px; padding: 0;
+  border-radius: 7px; font-size: 1rem; line-height: 1;
 }
 .pad-srange {
-  width: 78px; accent-color: var(--accent); cursor: pointer; margin: 0;
+  width: 74px; accent-color: var(--accent); cursor: pointer; margin: 0;
 }
 .pad-sval {
-  min-width: 24px; text-align: right; font-size: 0.8rem; font-weight: 700;
+  min-width: 26px; text-align: right; font-size: 0.8rem; font-weight: 700;
   font-variant-numeric: tabular-nums; color: var(--text);
+}
+@media (max-width: 899px) {
+  .pad-size-ctl { height: 34px; padding: 2px 4px; gap: 2px; }
+  .pad-sbtn { min-width: 28px; height: 28px; }
+  .pad-srange { width: 66px; }
 }
 
 /* === v4.13: selettore sezioni e paragrafi per i quiz multi-sezione === */

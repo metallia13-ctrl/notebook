@@ -1475,6 +1475,9 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.31", title: "blocco note: pulsanti − e + per lo spessore della penna", html: `      <ul>
+        <li><strong>Controllo preciso dello spessore nel blocco note</strong>: aggiunti i tasti <strong>−</strong> e <strong>+</strong> affiancati allo slider per regolare la dimensione del tratto a scatti di <code>0,5</code> (da <code>1</code> a <code>20</code>), anche tenendoli premuti.</li>
+      </ul>` },
   { v: "4.30", title: "editor potenziato: fusione AI di più fonti, gestione visuale dei paragrafi e vista Anteprima/Codice", html: `      <ul>
         <li><strong>✨ Fondi più fonti e riordina (AI)</strong>: nuova modalità predefinita in <em>Modifica</em> per accorpare testi disordinati da più fonti (libro, slide, NotebookLM) eliminando i duplicati senza perdere dettagli unici; include opzione per mantenere i titoli esistenti, campo per indicazioni extra, riquadro per <strong>incollare una seconda fonte</strong> direttamente da fondere e anteprima <em>Dopo / Prima / Codice</em> con conteggio delle ridondanze rimosse.</li>
         <li><strong>📑 Gestione visuale dei paragrafi</strong>: pannello <em>Paragrafi</em> con elenco di tutti i titoli <code>H2/H3/H4</code> per saltare subito, spostare interi paragrafi con <code>↑ ↓</code>, cambiare livello (<code>← →</code>), rinominare (<code>✎</code>), unire due paragrafi (<code>🔗</code>) o aggiungerli al volo.</li>
@@ -3774,7 +3777,7 @@ const Pad = {
           <span class="pad-hls" hidden>${PAD_HL.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="Evidenziatore ${l.toLowerCase()}" title="${l}" style="--c:${c}"></button>`).join('')}</span>
           <label class="pad-c pad-custom" title="Un colore a scelta"><input type="color" data-pcustom aria-label="Un colore a scelta"><span aria-hidden="true">+</span></label>
           <span class="pad-sep"></span>
-          <span class="pad-size-ctl" title="Spessore del tratto (da 1 a 20)"><input type="range" class="pad-srange" data-ps-range min="1" max="20" step="0.5" value="2.5" aria-label="Spessore del tratto"><span class="pad-sval" data-ps-val>2.5</span></span>
+          <span class="pad-size-ctl" role="group" aria-label="Spessore del tratto" title="Spessore del tratto (da 1 a 20)"><button type="button" class="pad-b pad-sbtn" data-ps-step="-0.5" aria-label="Riduci spessore di 0,5" title="Riduci spessore (−0,5)">−</button><input type="range" class="pad-srange" data-ps-range min="1" max="20" step="0.5" value="2.5" aria-label="Spessore del tratto"><button type="button" class="pad-b pad-sbtn" data-ps-step="0.5" aria-label="Aumenta spessore di 0,5" title="Aumenta spessore (+0,5)">+</button><span class="pad-sval" data-ps-val>2,5</span></span>
           <span class="pad-sep"></span>
           <button type="button" class="pad-b" data-pa="undo" aria-label="Annulla l’ultimo tratto" title="Annulla (Ctrl+Z; con le dita: tocco con due dita)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
           <button type="button" class="pad-b" data-pa="redo" aria-label="Ripeti" title="Ripeti (Ctrl+Y)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
@@ -3814,13 +3817,37 @@ const Pad = {
     this.live.hidden = true;
     this.lctx = this.live.getContext('2d');
     $('[data-pcustom]', el).addEventListener('input', e => this.pickColor(e.target.value));
-    $('[data-ps-range]', el).addEventListener('input', e => {
-      const v = Math.max(1, Math.min(20, +e.target.value || 2.5));
-      this.size = +(v / 1000).toFixed(5);
-      const sv = $('[data-ps-val]', el); if (sv) sv.textContent = String(v).replace('.', ',');
-      if (this.sel && this.sel.length) { this.restyleSel({ w: this.sizeNow() }); return; }
-      if (!['hl', 'shape', 'text'].includes(this.tool)) this.tool = 'pen';
-      this.paintTools();
+    $('[data-ps-range]', el).addEventListener('input', e => this.setSizeVal(+e.target.value || 2.5));
+    $$('[data-ps-step]', el).forEach(btn => {
+      const delta = +btn.dataset.psStep;
+      let holdT = 0, repI = 0, held = false, x0 = 0, y0 = 0, skipClickAt = 0;
+      const stop = () => { clearTimeout(holdT); clearInterval(repI); holdT = 0; repI = 0; };
+      btn.addEventListener('pointerdown', e => {
+        if (e.button > 0 || btn.disabled) return;
+        held = false; x0 = e.clientX; y0 = e.clientY;
+        stop();
+        holdT = setTimeout(() => {
+          held = true;
+          this.stepSize(delta);
+          if (btn.disabled) { stop(); skipClickAt = Date.now(); return; }
+          repI = setInterval(() => {
+            this.stepSize(delta);
+            if (btn.disabled) { stop(); skipClickAt = Date.now(); }
+          }, 110);
+        }, 380);
+      });
+      btn.addEventListener('pointermove', e => {
+        if (holdT && !held && Math.hypot(e.clientX - x0, e.clientY - y0) > 8) stop();
+      });
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => btn.addEventListener(ev, () => {
+        stop();
+        if (held) skipClickAt = Date.now();
+        held = false;
+      }));
+      btn.addEventListener('click', () => {
+        if (Date.now() - skipClickAt < 400) return;
+        this.stepSize(delta);
+      });
     });
     el.addEventListener('click', e => {
       const b = e.target.closest('button');
@@ -3865,6 +3892,27 @@ const Pad = {
   // allargando il blocco note o spostandolo da accanto a sotto.
   // v4.11: spessore costante sul foglio, indipendente dallo zoom mentre scrivi
   sizeNow() { return this.size; },
+  setSizeVal(val) {
+    const v = Math.max(1, Math.min(20, Math.round(val * 2) / 2));
+    this.size = +(v / 1000).toFixed(5);
+    const sr = $('[data-ps-range]', this.el), sv = $('[data-ps-val]', this.el);
+    const sm = $('[data-ps-step="-0.5"]', this.el), sp = $('[data-ps-step="0.5"]', this.el);
+    if (sr) sr.value = String(v);
+    if (sv) sv.textContent = String(v).replace('.', ',');
+    if (sm) sm.disabled = v <= 1;
+    if (sp) sp.disabled = v >= 20;
+    if (this.sel && this.sel.length) {
+      this.restyleSel({ w: this.sizeNow() });
+      this.setPrefs({ size: this.size });
+      return;
+    }
+    if (!['hl', 'shape', 'text'].includes(this.tool)) this.tool = 'pen';
+    this.paintTools();
+  },
+  stepSize(delta) {
+    const cur = Math.round(this.size * 2000) / 2;
+    this.setSizeVal(cur + delta);
+  },
   restyleSel(ch) {
     const pg = this.pg();
     this.pushUndo({ type: 'clear', page: this.page, strokes: pg.strokes.map(s => ({ ...s, p: s.p.map(q => q.slice()) })) });
@@ -3890,7 +3938,14 @@ const Pad = {
     $('[data-pt="eraser"]', this.el).classList.toggle('area', this.eraseMode === 'area');
     $('[data-pa="dup"]', this.el).hidden = !(this.sel && this.sel.length);
     const sr = $('[data-ps-range]', this.el), sv = $('[data-ps-val]', this.el);
-    if (sr && sv) { const v = Math.max(1, Math.min(20, Math.round(this.size * 2000) / 2)); sr.value = String(v); sv.textContent = String(v).replace('.', ','); }
+    const sm = $('[data-ps-step="-0.5"]', this.el), sp = $('[data-ps-step="0.5"]', this.el);
+    if (sr && sv) {
+      const v = Math.max(1, Math.min(20, Math.round(this.size * 2000) / 2));
+      sr.value = String(v);
+      sv.textContent = String(v).replace('.', ',');
+      if (sm) sm.disabled = v <= 1;
+      if (sp) sp.disabled = v >= 20;
+    }
     $('[data-pa="penonly"]', this.el).setAttribute('aria-pressed', String(this.penOnly));
     this.canvas.style.touchAction = 'none';
     this.canvas.style.cursor = this.tool === 'hand' ? 'grab' : this.tool === 'eraser' ? 'cell' : this.tool === 'lasso' ? 'default' : this.tool === 'text' ? 'text' : 'crosshair';
