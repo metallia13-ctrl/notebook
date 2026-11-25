@@ -2219,17 +2219,24 @@ function pdfTargetSheet(title = 'Dove metto il PDF?', preset = null) {
     const sh = openSheet(`
       <h2>${esc(title)}</h2>
       <label class="field"><span>Notebook</span><select class="input" id="ptNb">${nbs.map(n => `<option value="${n.id}" ${n.id === nbId ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></label>
+      <input type="search" class="input search" id="ptQ" placeholder="Cerca una sezione per titolo o cartella…" aria-label="Cerca una sezione">
       <ul class="list pick-list" id="ptList"></ul>
       <div class="modal-actions"><button class="btn ghost" type="button" data-pt="no">Annulla</button></div>`, { label: title, onClose: resolve });
+    const qEl = $('#ptQ', sh.el);
     const draw = () => {
       const nb = nbById(nbId);
-      const secs = secsOf(nbId).sort((a, b) => (groupPathText(a) + a.title).localeCompare(groupPathText(b) + b.title));
-      $('#ptList', sh.el).innerHTML = `
-        <li><button type="button" class="row pt-all" data-pt-sec=""><span class="row-main"><span class="row-title">Tutto il notebook</span><span class="row-sub">Per i PDF che riguardano tutta la materia di ${esc(nb.name)}</span></span></button></li>
-        ${secs.map(s => `<li><button type="button" class="row" data-pt-sec="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span>${groupPathText(s) ? `<span class="row-sub">${esc(groupPathText(s))}</span>` : ''}</span></button></li>`).join('')}`;
+      const q = qEl.value;
+      const secs = secsOf(nbId)
+        .filter(s => matchTokens(`${s.title} ${groupPathText(s)}`, q))
+        .sort((a, b) => (groupPathText(a) + a.title).localeCompare(groupPathText(b) + b.title));
+      const showAll = !q.trim() || matchTokens(`Tutto il notebook ${nb.name}`, q);
+      const allRow = showAll ? `<li><button type="button" class="row pt-all" data-pt-sec=""><span class="row-main"><span class="row-title">Tutto il notebook</span><span class="row-sub">Per i PDF che riguardano tutta la materia di ${esc(nb.name)}</span></span></button></li>` : '';
+      $('#ptList', sh.el).innerHTML = allRow + (secs.map(s => `<li><button type="button" class="row" data-pt-sec="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span>${groupPathText(s) ? `<span class="row-sub">${esc(groupPathText(s))}</span>` : ''}</span></button></li>`).join('') || (!showAll ? '<li class="hint">Nessuna sezione trovata.</li>' : ''));
     };
     draw();
-    $('#ptNb', sh.el).addEventListener('change', e => { nbId = e.target.value; draw(); });
+    qEl.addEventListener('input', draw);
+    $('#ptNb', sh.el).addEventListener('change', e => { nbId = e.target.value; qEl.value = ''; draw(); });
+    setTimeout(() => qEl.focus(), 40);
     $('#ptList', sh.el).addEventListener('click', e => {
       const b = e.target.closest('[data-pt-sec]');
       if (!b) return;

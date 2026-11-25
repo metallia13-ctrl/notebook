@@ -826,9 +826,10 @@ function specialSheet(cfg, sec = null) {
     };
     drawLinks();
     $('#spLinkQ', sh.el)?.addEventListener('input', e => {
-      const f = foldAccents(e.target.value.trim());
+      const q = e.target.value;
+      const f = q.trim();
       const where = x => [nbById(x.notebookId)?.name, groupPathText(x)].filter(Boolean).join(' › ');
-      const hits = f ? state.sections.filter(x => x.id !== sec?.id && !links.includes(x.id) && !SPECIALS[nbById(x.notebookId)?.kind] && foldAccents(`${x.title} ${where(x)}`).includes(f)).slice(0, 8) : [];
+      const hits = f ? state.sections.filter(x => x.id !== sec?.id && !links.includes(x.id) && !SPECIALS[nbById(x.notebookId)?.kind] && matchTokens(`${x.title} ${where(x)}`, q)).slice(0, 20) : [];
       $('#spLinkRes', sh.el).innerHTML = hits.map(x => `<li><button type="button" class="row" data-linkto="${x.id}"><span class="row-main"><span class="row-title">${esc(x.title)}</span><span class="row-sub">${esc(where(x))}</span></span></button></li>`).join('') || (f ? '<li class="hint">Nessuna sezione con questo titolo.</li>' : '');
     });
     // il titolo proposto segue la data finché non lo cambi tu
@@ -2961,8 +2962,9 @@ function eqSheet(x, preset = {}) {
         <label class="field"><span>Macro-categoria (parte del programma)</span><input class="input" id="eqCatI" value="${esc(r.cat || '')}" list="eqCatList" placeholder="Es. Tronco encefalico e nervi cranici"><datalist id="eqCatList">${catsAll.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
       </div>
       <label class="field"><span>Tag</span><input class="input" id="eqTags" value="${esc((r.tags || []).join(', '))}" placeholder="Es. orale, scritto"></label>
-      <div class="field"><span class="lbl">Sezioni collegate</span><div class="tags" id="eqSecs"></div>
-        <select class="input" id="eqSecAdd" aria-label="Collega una sezione"></select></div>
+      <div class="field sec-combo" id="eqSecBox"><span class="lbl">Sezioni collegate</span><div class="tags" id="eqSecs"></div>
+        <input type="search" class="input" id="eqSecQ" placeholder="＋ Collega una sezione: cerca per titolo o cartella…" aria-label="Cerca una sezione da collegare" autocomplete="off">
+        <ul class="list pick-list sp-link-res sec-combo-res" id="eqSecRes" hidden></ul></div>
       <details class="eq-occ-box" ${isNew ? 'open' : ''}><summary>Quando è uscita (${occ.filter(o => o.date || o.year || o.src).length || 0})</summary><div id="eqOcc"></div><button class="btn sm ghost" type="button" data-eqx="occ">+ È uscita un’altra volta</button></details>
       ${!isNew && (r.stats?.ok || r.stats?.ko) ? `<p class="hint">Nell’allenamento: la sapevi ${r.stats.ok || 0} volte, non la sapevi ${r.stats.ko || 0}.</p>` : ''}
       <div class="modal-actions">
@@ -2971,10 +2973,25 @@ function eqSheet(x, preset = {}) {
         <button class="btn ghost" type="button" data-eqx="no">Annulla</button>
         <button class="btn primary" type="button" data-eqx="ok">Salva</button>
       </div>`, { label: 'Domanda d’esame', onClose: v => resolve(!!v) });
+    const eqSecQ = $('#eqSecQ', sh.el);
+    const eqSecRes = $('#eqSecRes', sh.el);
+    const eqSecBox = $('#eqSecBox', sh.el);
+    const drawSecRes = () => {
+      const nbId = $('#eqNbS', sh.el).value;
+      const pool = nbId
+        ? secsOfNb(nbId)
+        : state.sections.filter(s => nbById(s.notebookId) && !nbById(s.notebookId).kind).sort((a, b) => a.title.localeCompare(b.title, 'it'));
+      const subOf = s => (nbId ? groupPathText(s) : [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › '));
+      const q = eqSecQ.value;
+      const hits = pool.filter(s => !secIds.includes(s.id) && matchTokens(`${s.title} ${subOf(s)}`, q)).slice(0, 40);
+      eqSecRes.innerHTML = hits.map(s => `<li><button type="button" class="row" data-eqadd="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span>${subOf(s) ? `<span class="row-sub">${esc(subOf(s))}</span>` : ''}</span></button></li>`).join('')
+        || `<li class="hint">${pool.length ? 'Nessuna sezione trovata.' : 'Nessuna sezione disponibile.'}</li>`;
+    };
     const drawSecs = () => {
       const nbId = $('#eqNbS', sh.el).value;
       $('#eqSecs', sh.el).innerHTML = secIds.map(id => secById(id)).filter(Boolean).map(s => `<span class="tag">${esc(s.title)} <button type="button" class="tag-x" data-eqsec="${s.id}" aria-label="Scollega ${esc(s.title)}">×</button></span>`).join('') || '<span class="hint">Nessuna</span>';
-      $('#eqSecAdd', sh.el).innerHTML = `<option value="">${nbId ? '+ Collega una sezione' : 'Scegli prima la materia'}</option>${nbId ? secsOfNb(nbId).filter(s => !secIds.includes(s.id)).map(s => `<option value="${s.id}">${esc(s.title)}${groupPathText(s) ? ` · ${esc(groupPathText(s))}` : ''}</option>`).join('') : ''}`;
+      eqSecQ.placeholder = nbId ? '＋ Collega una sezione: cerca per titolo o cartella…' : '＋ Cerca una sezione in tutte le materie…';
+      if (!eqSecRes.hidden) drawSecRes();
     };
     const drawOcc = () => {
       $('#eqOcc', sh.el).innerHTML = occ.map((o, i) => `<div class="eq-occ" data-oi="${i}">
@@ -2992,8 +3009,20 @@ function eqSheet(x, preset = {}) {
     });
     drawSecs(); drawOcc();
     $('#eqNbS', sh.el).addEventListener('change', drawSecs);
-    $('#eqSecAdd', sh.el).addEventListener('change', e => { if (e.target.value) { secIds.push(e.target.value); drawSecs(); } });
+    eqSecQ.addEventListener('focus', () => { drawSecRes(); eqSecRes.hidden = false; });
+    eqSecQ.addEventListener('input', () => { drawSecRes(); eqSecRes.hidden = false; });
     sh.el.addEventListener('click', async e => {
+      if (!e.target.closest('#eqSecBox')) eqSecRes.hidden = true;
+      const add = e.target.closest('[data-eqadd]');
+      if (add) {
+        const sid = add.dataset.eqadd;
+        if (sid && !secIds.includes(sid)) secIds.push(sid);
+        eqSecQ.value = '';
+        drawSecs();
+        drawSecRes();
+        eqSecQ.focus();
+        return;
+      }
       const sx = e.target.closest('[data-eqsec]');
       if (sx) { secIds = secIds.filter(id => id !== sx.dataset.eqsec); drawSecs(); return; }
       const od = e.target.closest('[data-odel]');
@@ -7069,8 +7098,7 @@ function compareFlow(nb, pre = []) {
       <div class="modal-actions"><button class="btn ghost" type="button" data-cmp="no">Annulla</button><button class="btn primary" type="button" data-cmp="go" disabled>Crea la tabella</button></div>`, { label: 'Tabella di confronto', onClose: () => { if (!done) { done = true; ctl.abort(); resolve(null); } } });
     const list = $('#cmpList', sh.el), q = $('#cmpQ', sh.el), go2 = $('[data-cmp="go"]', sh.el);
     const draw = () => {
-      const f = foldAccents(q.value.trim());
-      const vis = secs.filter(s => picked.has(s.id) || !f || foldAccents(s.title).includes(f) || foldAccents(groupPathText(s)).includes(f)).slice(0, 80);
+      const vis = secs.filter(s => picked.has(s.id) || matchTokens(`${s.title} ${groupPathText(s)}`, q.value)).slice(0, 80);
       list.innerHTML = vis.map(s => `<li><label class="check cmp-opt"><input type="checkbox" value="${s.id}" ${picked.has(s.id) ? 'checked' : ''} ${!picked.has(s.id) && picked.size >= 4 ? 'disabled' : ''}><span>${esc(s.title)}${groupPathText(s) ? ` <small class="muted-inline">${esc(groupPathText(s))}</small>` : ''}</span></label></li>`).join('') || '<li class="hint">Nessuna sezione</li>';
       go2.disabled = picked.size < 2;
       go2.textContent = picked.size >= 2 ? `Crea la tabella (${picked.size})` : 'Crea la tabella';
@@ -7370,13 +7398,12 @@ function pickSection({ title = 'Scegli la sezione', pre = '' } = {}) {
     const all = state.sections.filter(s => nbById(s.notebookId) && !nbById(s.notebookId).kind);
     const sh = openSheet(`
       <h2>${esc(title)}</h2>
-      <input type="search" class="input" id="psQ" placeholder="Cerca per titolo" aria-label="Cerca una sezione">
-      <ul class="list ps-list" id="psL"></ul>
+      <input type="search" class="input search" id="psQ" placeholder="Cerca per titolo o cartella…" aria-label="Cerca una sezione">
+      <ul class="list pick-list ps-list" id="psL"></ul>
       <div class="modal-actions"><button class="btn ghost" type="button" data-ps="no">Annulla</button></div>`, { label: title, onClose: v => resolve(v || null) });
     const q = $('#psQ', sh.el), list = $('#psL', sh.el);
     const draw = () => {
-      const f = foldAccents(q.value.trim());
-      const pick = all.filter(s => !f || foldAccents(s.title).includes(f)).sort((a, b) => (b.id === pre) - (a.id === pre) || (b.updated || 0) - (a.updated || 0)).slice(0, 40);
+      const pick = all.filter(s => matchTokens(`${s.title} ${nbById(s.notebookId)?.name || ''} ${groupPathText(s)}`, q.value)).sort((a, b) => (b.id === pre) - (a.id === pre) || (b.updated || 0) - (a.updated || 0)).slice(0, 50);
       list.innerHTML = pick.map(s => `<li><button type="button" class="row" data-ps="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc([nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › '))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione</li>';
     };
     q.addEventListener('input', draw);

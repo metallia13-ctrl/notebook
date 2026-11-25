@@ -1500,6 +1500,16 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.38", title: "pagine più ampie, cartelle ordinate e azioni divise per scopo", html: `      <ul>
+        <li><strong>Spazio molto più ampio su PC e tablet</strong>: la larghezza massima di sezioni, cartelle e appunti passa da <code>820px</code> a <strong>1220px</strong> (e il testo delle sezioni sfrutta tutto lo spazio disponibile, ideale per tabelle e schemi larghi) mantenendo il centraggio perfetto anche con Blocco note, StudyHub o Affianca aperti.</li>
+        <li><strong>Card delle cartelle ridisegnate</strong>: icona, badge dei ripassi e menu <code>⋯</code> stanno ordinati nella riga in alto, così il titolo occupa tutta la larghezza della card senza mai spezzarsi a metà parola e tutte le cartelle hanno altezza uniforme.</li>
+        <li><strong>Intestazione di notebook e cartelle più pulita</strong>: pulsanti divisi in due gruppi visivi (<em>Crea / Importa</em> a sinistra, <em>Studia / Opzioni</em> a destra) e titoli di sezione <em>Cartelle</em> / <em>Sezioni</em> con contatore.</li>
+      </ul>` },
+  { v: "4.37", title: "barra di ricerca in tutte le schermate di selezione delle sezioni", html: `      <ul>
+        <li><strong>Ricerca rapida nelle Domande d’esame, Flashcard, Cartelle, PDF e Lezioni</strong>: sostituiti i lunghi menu a tendina e gli elenchi senza filtro con barre di ricerca istantanee (anche su più parole staccate tra titolo e cartella, es. <code>cerv ped</code> o <code>telenc aree</code>).</li>
+        <li><strong>Elenco compatto e scorrevole</strong>: i risultati restano dentro un riquadro ordinato senza coprire i pulsanti di salvataggio; nelle cartelle il conteggio delle sezioni spuntate resta salvato mentre filtri.</li>
+        <li><strong>Collegamento segnalibri PDF e Lezioni audio più veloce</strong>: ogni segnalibro e ogni lezione apre un selettore con ricerca immediata invece di un menu infinito.</li>
+      </ul>` },
   { v: "4.36", title: "tabelle copiate da Gemini Notebook / NotebookLM sempre integre", html: `      <ul>
         <li><strong>Riparazione automatica delle tabelle</strong>: le tabelle copiate da <strong>Gemini Notebook / NotebookLM</strong> (spesso spezzate su più righe con righe vuote tra una cella e l’altra o con <code>| |</code> tra una riga e la successiva) vengono ricostruite automaticamente in tabelle pulite, sia quando le incolli/importi sia nelle sezioni già salvate.</li>
         <li><strong>Incolla anche tabelle selezionate dalla pagina</strong>: se selezioni una tabella direttamente dallo schermo e la incolli in <em>Importa</em> o in <em>Modifica</em>, viene convertita subito in tabella Markdown.</li>
@@ -2477,20 +2487,20 @@ const Split = {
       bindNewSecForm(sh.el, s => { const it = { kind: tab === 'map' ? 'map' : 'edit', id: s.id }; sh.close(it); this.show(it); });
       const list = $('#spList', sh.el);
       const draw = () => {
-        const f = foldAccents($('#spQ', sh.el).value.trim());
+        const q = $('#spQ', sh.el).value;
         $('.sp-new', sh.el).hidden = tab === 'pdf';
         if (tab === 'map') {
           // prima la sezione che stai leggendo (o quella del PDF), poi quelle con mappe
           const cands = [...(here ? [here] : []), ...state.sections.filter(s => s !== here).sort((a, b) => mapsOf(b).length - mapsOf(a).length || (b.updated || 0) - (a.updated || 0))];
-          const hits = cands.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60);
+          const hits = cands.filter(s => matchTokens(`${s.title} ${where(s)}`, q)).slice(0, 60);
           list.innerHTML = hits.map(s => { const n = mapsOf(s).length; return `<li><button type="button" class="row" data-spi="map:${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))} · ${n ? `${n} ${n === 1 ? 'mappa' : 'mappe'}` : 'nessuna mappa: la crei lì'}${s === here ? ' · quella che stai leggendo' : ''}</span></span></button></li>`; }).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
           return;
         }
         if (tab === 'sec') {
-          const hits = secs.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60);
+          const hits = secs.filter(s => matchTokens(`${s.title} ${where(s)}`, q)).slice(0, 60);
           list.innerHTML = hits.map(s => `<li><button type="button" class="row" data-spi="sec:${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
         } else {
-          const hits = pdfs.filter(p => !f || foldAccents(p.name).includes(f)).slice(0, 60);
+          const hits = pdfs.filter(p => matchTokens(p.name, q)).slice(0, 60);
           list.innerHTML = hits.map(p => `<li><button type="button" class="row" data-spi="pdf:${p.id}:${refPage(p.id)}"><span class="row-main"><span class="row-title">${esc(p.name)}</span><span class="row-sub">${p.pages || '?'} pagine${refPage(p.id) ? ` · pagine di questa sezione da ${refPage(p.id)}` : ''}${here && p.sectionId === here.id ? ' · di questa sezione' : ''}</span></span></button></li>`).join('') || '<li class="hint">Nessun PDF trovato.</li>';
         }
       };

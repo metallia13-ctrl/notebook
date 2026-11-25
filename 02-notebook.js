@@ -138,10 +138,17 @@ function viewNotebook(id, folderId = '') {
     const gd = all.filter(isDue).length;
     const meta = [all.length ? nWord(all.length, 'sezione', 'sezioni') : (subs.length ? '' : 'Vuota'), subs.length ? nWord(subs.length, 'cartella', 'cartelle') : ''].filter(Boolean).join(' · ');
     return `<div class="folder-card" role="link" tabindex="0" data-open="${g.id}" aria-label="Apri la cartella ${esc(g.name)}">
-      ${FOLDER_SVG}
-      <span class="fc-main"><span class="fc-name">${esc(g.name)}</span><span class="fc-meta">${meta}</span></span>
-      ${gd ? `<span class="pill due">${gd}</span>` : ''}
-      <button class="btn ghost sm grp-more" type="button" data-gmenu="${g.id}" aria-label="Opzioni per ${esc(g.name)}">⋯</button>
+      <div class="fc-top">
+        ${FOLDER_SVG}
+        <span class="fc-right">
+          ${gd ? `<span class="pill due" title="${gd === 1 ? '1 sezione da ripassare oggi' : `${gd} sezioni da ripassare oggi`}">${gd}</span>` : ''}
+          <button class="btn ghost sm grp-more" type="button" data-gmenu="${g.id}" aria-label="Opzioni per ${esc(g.name)}">⋯</button>
+        </span>
+      </div>
+      <div class="fc-main">
+        <span class="fc-name">${esc(g.name)}</span>
+        <span class="fc-meta">${meta}</span>
+      </div>
     </div>`;
   };
   if (folder) {
@@ -155,26 +162,30 @@ function viewNotebook(id, folderId = '') {
     const crumbs = [`<a href="#/nb/${id}">${esc(nb.name)}</a>`, ...anc.map(a => `<a href="#/nb/${id}/${a.id}">${esc(a.name)}</a>`)].join('<span class="fp-sep" aria-hidden="true">›</span>');
     setView(`
       <nav class="back folder-path" aria-label="Percorso">${crumbs}</nav>
-      <header class="page-head">
-        <div>
+      <header class="page-head nb-head">
+        <div class="nb-head-info">
           <h1 class="folder-h1">${FOLDER_SVG}<span>${esc(folder.name)}</span></h1>
-          <p class="lede">${[nWord(fsecs.length, 'sezione', 'sezioni'), subs.length ? nWord(subs.length, 'cartella', 'cartelle') : '', fdue ? `${fdue} da ripassare oggi` : ''].filter(Boolean).join(', ')}</p>
+          <p class="lede">${[nWord(fsecs.length, 'sezione', 'sezioni'), subs.length ? nWord(subs.length, 'cartella', 'cartelle') : '', fdue ? `${fdue} da ripassare oggi` : ''].filter(Boolean).join(' · ')}</p>
         </div>
-        <div class="actions">
-          <button class="btn primary" data-act="new-sec-here">Scrivi una sezione qui</button>
-          <button class="btn" data-act="new-sub-here">Nuova cartella</button>
-          <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
-          <a class="btn" href="#/import/${id}/${folder.id}">Importa qui</a>
-          ${fsecs.length ? `<a class="btn" href="#/viva/grp/${folder.id}">Interrogami</a><a class="btn" href="#/dquiz/grp/${folder.id}" title="Quiz di discriminazione su tutte le sezioni della cartella">Quiz</a>` : ''}
-          ${clipsForGroup(folder).length ? `<a class="btn" href="#/raccolta/g/${folder.id}">📌 Raccolta (${clipsForGroup(folder).length})</a>` : ''}
-          <button class="btn ghost" type="button" data-gmenu="${folder.id}">Opzioni</button>
+        <div class="nb-actbar">
+          <div class="nb-actgrp">
+            <button class="btn primary" data-act="new-sec-here">＋ Nuova sezione</button>
+            <button class="btn" data-act="new-sub-here">＋ Cartella</button>
+            <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
+            <a class="btn" href="#/import/${id}/${folder.id}">Importa</a>
+          </div>
+          <div class="nb-actgrp is-study">
+            ${fsecs.length ? `<a class="btn" href="#/viva/grp/${folder.id}">Interrogami</a><a class="btn" href="#/dquiz/grp/${folder.id}" title="Quiz di discriminazione su tutte le sezioni della cartella">Quiz</a>` : ''}
+            ${clipsForGroup(folder).length ? `<a class="btn" href="#/raccolta/g/${folder.id}">📌 Raccolta (${clipsForGroup(folder).length})</a>` : ''}
+            <button class="btn ghost" type="button" data-gmenu="${folder.id}">Opzioni ⋯</button>
+          </div>
         </div>
       </header>
-      ${fsecs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca in questa cartella" aria-label="Cerca in questa cartella">' : ''}
+      ${fsecs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca in questa cartella…" aria-label="Cerca in questa cartella">' : ''}
       <div id="nbFound" hidden></div>
       <div id="nbBody">
-        ${subs.length ? `<div class="folder-grid">${subs.map(folderCard).join('')}</div>` : ''}
-        ${own.length ? `<section class="grp-loose">${subs.length ? '<h2 class="sub">Sezioni</h2>' : ''}<ul class="list sec-list">${own.map(s => sectionRow(s)).join('')}</ul></section>` : ''}
+        ${subs.length ? `<section class="nb-blk"><h2 class="sub nb-sub">Cartelle <span class="muted-inline">(${subs.length})</span></h2><div class="folder-grid">${subs.map(folderCard).join('')}</div></section>` : ''}
+        ${own.length ? `<section class="grp-loose nb-blk">${subs.length ? `<h2 class="sub nb-sub">Sezioni <span class="muted-inline">(${own.length})</span></h2>` : ''}<ul class="list sec-list">${own.map(s => sectionRow(s)).join('')}</ul></section>` : ''}
         ${own.length || subs.length ? '' : `
           <div class="empty">
             <p>Cartella vuota. Scrivi una sezione, carica una mappa HTML, importa qui un testo o un PDF, crea un’altra cartella dentro, oppure sposta qui sezioni che hai già.</p>
@@ -185,32 +196,36 @@ function viewNotebook(id, folderId = '') {
     `);
   } else setView(`
     <a class="back" href="#/notebooks">Tutti i notebook</a>
-    <header class="page-head">
-      <div>
+    <header class="page-head nb-head">
+      <div class="nb-head-info">
         <h1>${esc(nb.name)}</h1>
         <p class="lede">${lede}</p>
       </div>
-      <div class="actions">
-        <a class="btn primary" href="#/import/${nb.id}">Importa</a>
-        ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
-        <button class="btn" data-act="new-sec">Scrivi una sezione</button>
-        <button class="btn" data-act="new-grp">Nuova cartella</button>
-        <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
-        <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
-        <a class="btn" href="#/lezioni/${nb.id}">Lezioni${(nb.audios || []).length ? ` (${nb.audios.length})` : ''}</a>
-        ${clipsForNb(nb).length ? `<a class="btn" href="#/raccolta/nb/${nb.id}">📌 Raccolta (${clipsForNb(nb).length})</a>` : ''}
-        ${secs.length ? `<a class="btn" href="#/dquiz/nb/${nb.id}" title="Quiz di discriminazione scegliendo sezioni e paragrafi">Quiz</a><a class="btn" href="#/exam/${nb.id}">Simulazione d’esame</a>` : ''}
-        <button class="btn ghost" data-act="nb-more">Altro</button>
+      <div class="nb-actbar">
+        <div class="nb-actgrp">
+          <a class="btn primary" href="#/import/${nb.id}">Importa</a>
+          <button class="btn" data-act="new-sec">＋ Nuova sezione</button>
+          <button class="btn" data-act="new-grp">＋ Cartella</button>
+          <button class="btn" data-act="html-here" title="Carica uno o più file HTML: ognuno diventa una sezione">＋ Mappa HTML</button>
+        </div>
+        <div class="nb-actgrp is-study">
+          ${nbCards.length ? `<a class="btn" href="#/deck/${nb.id}">Flashcard</a>` : ''}
+          <a class="btn" href="#/pdfs/nb/${nb.id}">PDF${state.pdfs.some(p => p.notebookId === nb.id) ? ` (${state.pdfs.filter(p => p.notebookId === nb.id).length})` : ''}</a>
+          <a class="btn" href="#/lezioni/${nb.id}">Lezioni${(nb.audios || []).length ? ` (${nb.audios.length})` : ''}</a>
+          ${clipsForNb(nb).length ? `<a class="btn" href="#/raccolta/nb/${nb.id}">📌 Raccolta (${clipsForNb(nb).length})</a>` : ''}
+          ${secs.length ? `<a class="btn" href="#/dquiz/nb/${nb.id}" title="Quiz di discriminazione scegliendo sezioni e paragrafi">Quiz</a><a class="btn" href="#/exam/${nb.id}">Simulazione</a>` : ''}
+          <button class="btn ghost" data-act="nb-more">Altro ⋯</button>
+        </div>
       </div>
     </header>
     ${typeof eqPrepBanner === 'function' ? eqPrepBanner(nb.id) : ''}
-    ${secs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca nel notebook" aria-label="Cerca nel notebook">' : ''}
+    ${secs.length > 3 ? '<input type="search" class="input search" id="secSearch" placeholder="Cerca nel notebook…" aria-label="Cerca nel notebook">' : ''}
     <div id="nbFound" hidden></div>
     <div id="nbBody">
-      ${topGroups(nb).length ? `<div class="folder-grid">${topGroups(nb).map(folderCard).join('')}</div>` : ''}
+      ${topGroups(nb).length ? `<section class="nb-blk"><h2 class="sub nb-sub">Cartelle <span class="muted-inline">(${topGroups(nb).length})</span></h2><div class="folder-grid">${topGroups(nb).map(folderCard).join('')}</div></section>` : ''}
       ${loose.length ? `
-        <section class="grp-loose">
-          ${groups.length ? '<h2 class="sub">Sezioni</h2>' : ''}
+        <section class="grp-loose nb-blk">
+          ${groups.length ? `<h2 class="sub nb-sub">Sezioni <span class="muted-inline">(${loose.length})</span></h2>` : ''}
           <ul class="list sec-list">${loose.map(s => sectionRow(s)).join('')}</ul>
         </section>` : ''}
       ${!secs.length && !groups.length ? `
@@ -422,9 +437,8 @@ function viewNotebook(id, folderId = '') {
       box.hidden = !!q;
       found.hidden = !q;
       if (!q) { $('#noMatch').hidden = true; return; }
-      const fq = foldAccents(q);
-      const gHits = gPool.filter(g => foldAccents(g.name.toLowerCase()).includes(fq));
-      const hits = pool.filter(s => (s.title + '\n' + stripCloze(s.md) + '\n' + htmlsOf(s).map(h => h.name).join('\n')).toLowerCase().includes(q));
+      const gHits = gPool.filter(g => matchTokens(g.name, q));
+      const hits = pool.filter(s => matchTokens(`${s.title}\n${groupPathText(s)}\n${stripCloze(s.md)}\n${htmlsOf(s).map(h => h.name).join('\n')}`, q));
       found.innerHTML = (gHits.length ? `<div class="folder-grid">${gHits.slice(0, 60).map(g => folderCard(g).replace(/<button[\s\S]*?<\/button>/, '')).join('')}</div>` : '')
         + (hits.length ? `<ul class="list sec-list">${hits.slice(0, 200).map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : '');
       $('#noMatch').hidden = hits.length + gHits.length > 0;
@@ -488,22 +502,21 @@ function actionSheet(title, items) {
   });
 }
 
-// Scelta delle sezioni da mettere in un macro-argomento
+// Scelta delle sezioni da mettere in un macro-argomento (con barra di ricerca)
 function pickSectionsSheet(nb, g) {
   return new Promise(resolve => {
     const root = $('#modalRoot');
     const others = secsOf(nb.id).filter(s => s.groupId !== g.id);
     const where = s => groupPathText(s);
+    const picked = new Set();
     root.innerHTML = `
       <div class="overlay">
         <div class="modal sheet" role="dialog" aria-modal="true" aria-labelledby="psTitle">
           <h2 id="psTitle">Aggiungi a ${esc(g.name)}</h2>
           ${others.length ? `
             <p class="sheet-sub">Scegli le sezioni da spostare qui.</p>
-            <ul class="cand">${others.map(s => `
-              <li><label class="check"><input type="checkbox" value="${s.id}">
-                <span><span class="cand-f">${esc(s.title)}</span>${where(s) ? `<span class="cand-b">Ora in ${esc(where(s))}</span>` : ''}</span></label></li>`).join('')}
-            </ul>` : '<p>Tutte le sezioni del notebook sono già qui.</p>'}
+            <input type="search" class="input search" id="psFilterQ" placeholder="Cerca per titolo o cartella…" aria-label="Cerca tra le sezioni">
+            <ul class="cand pick-list" id="psCandList"></ul>` : '<p>Tutte le sezioni del notebook sono già qui.</p>'}
           <div class="modal-actions">
             <button class="btn ghost" type="button" data-ps="no">Annulla</button>
             ${others.length ? '<button class="btn primary" type="button" data-ps="ok">Aggiungi</button>' : ''}
@@ -516,8 +529,32 @@ function pickSectionsSheet(nb, g) {
     $('.overlay', root).addEventListener('click', e => { if (e.target.classList.contains('overlay')) close(null); });
     $('[data-ps="no"]', root).onclick = () => close(null);
     const okBtn = $('[data-ps="ok"]', root);
+    const listEl = $('#psCandList', root);
+    const qEl = $('#psFilterQ', root);
+    const updateBtn = () => { if (okBtn) okBtn.textContent = picked.size ? `Aggiungi (${picked.size})` : 'Aggiungi'; };
+    const draw = () => {
+      if (!listEl) return;
+      const q = qEl ? qEl.value : '';
+      const vis = others.filter(s => matchTokens(`${s.title} ${where(s)}`, q));
+      listEl.innerHTML = vis.map(s => `
+        <li><label class="check"><input type="checkbox" value="${s.id}" ${picked.has(s.id) ? 'checked' : ''}>
+          <span><span class="cand-f">${esc(s.title)}</span>${where(s) ? `<span class="cand-b">Ora in ${esc(where(s))}</span>` : ''}</span></label></li>`).join('')
+        || '<li class="hint">Nessuna sezione trovata.</li>';
+      updateBtn();
+    };
+    if (others.length) {
+      draw();
+      qEl?.addEventListener('input', draw);
+      listEl.addEventListener('change', e => {
+        const inp = e.target.closest('input[type="checkbox"]');
+        if (!inp) return;
+        if (inp.checked) picked.add(inp.value); else picked.delete(inp.value);
+        updateBtn();
+      });
+      setTimeout(() => qEl?.focus(), 40);
+    }
     if (okBtn) okBtn.onclick = () => {
-      const ids = $$('input:checked', root).map(i => i.value);
+      const ids = [...picked];
       if (!ids.length) { toast('Scegli almeno una sezione'); return; }
       close(ids);
     };
@@ -3630,8 +3667,8 @@ async function moveBlockFlow(sec, selText, occurrence) {
         <button class="btn primary" type="button" data-mv="ok" hidden>Sposta</button>
       </div>`, { label: 'Sposta in un’altra sezione', onClose: v => resolve(!!v) });
     const draw = () => {
-      const f = foldAccents($('#mvQ', sh.el).value.trim());
-      $('#mvList', sh.el).innerHTML = others.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60)
+      const q = $('#mvQ', sh.el).value;
+      $('#mvList', sh.el).innerHTML = others.filter(s => matchTokens(`${s.title} ${where(s)}`, q)).slice(0, 60)
         .map(s => `<li><button type="button" class="row" data-mvs="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
     };
     draw();
@@ -6613,8 +6650,7 @@ function pdfBmLinkSheet(meta, b) {
     let mode = 'old';
     const list = $('#blList', sh.el);
     const draw = q => {
-      const f = foldAccents(q.trim());
-      const hits = all.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60);
+      const hits = all.filter(s => matchTokens(`${s.title} ${where(s)}`, q)).slice(0, 60);
       list.innerHTML = hits.map(s => `<li><button type="button" class="row ${pick && pick.id === s.id ? 'on' : ''}" data-blpick="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('') || '<li class="row muted">Nessuna sezione trovata.</li>';
     };
     draw(pick ? pick.title : '');
@@ -6679,19 +6715,51 @@ function pdfBmBulkSheet(meta) {
         <button class="btn primary" type="button" data-bb2="ok">Collega</button>
       </div>`, { label: 'Collega i segnalibri', onClose: v => resolve(v || 0) });
     const rows = $('#bbRows', sh.el);
+    let secs = [];
+    const labelForVal = (bm, v) => {
+      if (!v) return 'Nessuna';
+      if (v === '__new') return `＋ Nuova sezione “${bm.title.slice(0, 40)}”`;
+      const s = secById(v);
+      return s ? `${s.title}${groupPathText(s) ? ` · ${groupPathText(s)}` : ''}` : 'Nessuna';
+    };
+    const setRowVal = (row, v) => {
+      const bm = bms.find(x => x.id === row.dataset.bm);
+      row.dataset.val = v;
+      const btn = $('.bb-pick-btn', row);
+      if (btn && bm) {
+        btn.textContent = labelForVal(bm, v);
+        btn.classList.toggle('is-empty', !v);
+      }
+    };
+    const closePop = () => { $$('.bb-pick-pop', rows).forEach(p => { p.hidden = true; }); };
+    const fillPop = (row, q = '') => {
+      const bm = bms.find(x => x.id === row.dataset.bm);
+      const list = $('.bb-pick-list', row);
+      if (!list || !bm) return;
+      const cur = row.dataset.val || '';
+      const hits = secs.filter(s => matchTokens(`${s.title} ${groupPathText(s)}`, q)).slice(0, 40);
+      const specials = !q.trim() ? [
+        `<li><button type="button" class="row ${cur === '' ? 'on' : ''}" data-bbpick=""><span class="row-main"><span class="row-title">Nessuna</span></span></button></li>`,
+        `<li><button type="button" class="row ${cur === '__new' ? 'on' : ''}" data-bbpick="__new"><span class="row-main"><span class="row-title">＋ Nuova sezione “${esc(bm.title.slice(0, 40))}”</span></span></button></li>`
+      ] : [];
+      list.innerHTML = specials.join('') + (hits.map(s => `<li><button type="button" class="row ${cur === s.id ? 'on' : ''}" data-bbpick="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span>${groupPathText(s) ? `<span class="row-sub">${esc(groupPathText(s))}</span>` : ''}</span></button></li>`).join('') || (!specials.length ? '<li class="hint">Nessuna sezione trovata.</li>' : ''));
+    };
     const draw = () => {
-      const secs = state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.title.localeCompare(b.title, 'it'));
+      secs = state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.title.localeCompare(b.title, 'it'));
       rows.innerHTML = bms.map(b => {
         const rg = bmRange(meta, b);
         const linked = refsOfBookmark(meta.id, b.id).find(s => s.notebookId === nbId);
         const sel = linked || guessSection(b.title, nbId);
-        return `<div class="bb-row" data-bm="${b.id}">
+        const val = sel ? sel.id : '';
+        return `<div class="bb-row" data-bm="${b.id}" data-val="${esc(val)}">
           <div class="bb-t"><strong>${esc(b.title)}</strong><span class="muted-inline">${pagesTxt(rg.from, rg.to)}</span></div>
-          <select class="input" aria-label="Sezione per ${esc(b.title)}">
-            <option value="">Nessuna</option>
-            <option value="__new">＋ Nuova sezione “${esc(b.title.slice(0, 40))}”</option>
-            ${secs.map(s => `<option value="${s.id}" ${sel && sel.id === s.id ? 'selected' : ''}>${esc(s.title)}${groupPathText(s) ? ` · ${esc(groupPathText(s))}` : ''}</option>`).join('')}
-          </select>
+          <div class="bb-pick">
+            <button type="button" class="input bb-pick-btn ${val ? '' : 'is-empty'}" data-bbopen aria-label="Scegli la sezione per ${esc(b.title)}">${esc(labelForVal(b, val))}</button>
+            <div class="bb-pick-pop" hidden>
+              <input type="search" class="input bb-pick-q" placeholder="Cerca sezione per titolo o cartella…" aria-label="Cerca sezione">
+              <ul class="list pick-list bb-pick-list"></ul>
+            </div>
+          </div>
         </div>`;
       }).join('');
       const g = $('#bbGroup', sh.el);
@@ -6700,20 +6768,48 @@ function pdfBmBulkSheet(meta) {
     };
     draw();
     $('#bbNb', sh.el).addEventListener('change', e => { nbId = e.target.value; draw(); });
+    rows.addEventListener('input', e => {
+      const inp = e.target.closest('.bb-pick-q');
+      if (inp) fillPop(inp.closest('.bb-row'), inp.value);
+    });
+    rows.addEventListener('click', e => {
+      const pickBtn = e.target.closest('[data-bbpick]');
+      if (pickBtn) {
+        const row = pickBtn.closest('.bb-row');
+        setRowVal(row, pickBtn.dataset.bbpick);
+        closePop();
+        return;
+      }
+      const openBtn = e.target.closest('[data-bbopen]');
+      if (openBtn) {
+        const row = openBtn.closest('.bb-row');
+        const pop = $('.bb-pick-pop', row);
+        const wasOpen = !pop.hidden;
+        closePop();
+        if (!wasOpen) {
+          pop.hidden = false;
+          const inp = $('.bb-pick-q', pop);
+          inp.value = '';
+          fillPop(row, '');
+          setTimeout(() => inp.focus(), 20);
+        }
+      }
+    });
     sh.el.addEventListener('click', async e => {
+      if (!e.target.closest('.bb-pick')) closePop();
       const b = e.target.closest('[data-bb2]');
       if (!b) return;
       const k = b.dataset.bb2;
       if (k === 'no') { sh.close(0); return; }
-      if (k === 'allnew') { $$('.bb-row select', rows).forEach(s => { if (!s.value) s.value = '__new'; }); return; }
-      if (k === 'none') { $$('.bb-row select', rows).forEach(s => { s.value = ''; }); return; }
+      if (k === 'allnew') { $$('.bb-row', rows).forEach(row => { if (!row.dataset.val) setRowVal(row, '__new'); }); closePop(); return; }
+      if (k === 'none') { $$('.bb-row', rows).forEach(row => setRowVal(row, '')); closePop(); return; }
       if (k === 'ok') {
         b.disabled = true;
         const gv = $('#bbGroup', sh.el).value;
         const groupId = gv && gv !== '__new' ? gv : null;
         let n = 0;
         for (const row of $$('.bb-row', rows)) {
-          const v = $('select', row).value;
+          const v = row.dataset.val || '';
           if (!v) continue;
           const bm = bms.find(x => x.id === row.dataset.bm);
           const rg = bmRange(meta, bm);
@@ -8281,11 +8377,30 @@ function modeAudio(sec, body) {
 /* ---------- v3.76: Lezioni del notebook ----------
    Audio di lezioni che parlano di più argomenti: stanno nel notebook (nb.audios),
    con segnalibri e sezioni collegate (alla lezione intera o a ogni segnalibro). */
-function secOptionsHtml(nb, exclude = []) {
-  const secs = secsOf(nb.id).filter(s => !exclude.includes(s.id));
-  const by = new Map();
-  secs.forEach(s => { const g = groupPathText(s) || 'Senza cartella'; if (!by.has(g)) by.set(g, []); by.get(g).push(s); });
-  return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0], 'it')).map(([g, list]) => `<optgroup label="${esc(g)}">${list.sort((a, b) => a.title.localeCompare(b.title, 'it')).map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('')}</optgroup>`).join('');
+function pickNbSectionSheet(nb, { title = 'Collega una sezione', exclude = [] } = {}) {
+  return new Promise(resolve => {
+    const ex = new Set(exclude);
+    const secs = secsOf(nb.id).filter(s => !ex.has(s.id)).sort((a, b) => a.title.localeCompare(b.title, 'it'));
+    if (!secs.length) { toast('Tutte le sezioni di questo notebook sono già collegate'); resolve(null); return; }
+    const sh = openSheet(`
+      <h2>${esc(title)}</h2>
+      <input type="search" class="input search" id="nbSecQ" placeholder="Cerca per titolo o cartella…" aria-label="Cerca una sezione">
+      <ul class="list pick-list" id="nbSecL"></ul>
+      <div class="modal-actions"><button class="btn ghost" type="button" data-nbs="no">Annulla</button></div>`, { label: title, onClose: v => resolve(v || null) });
+    const qEl = $('#nbSecQ', sh.el), listEl = $('#nbSecL', sh.el);
+    const draw = () => {
+      const hits = secs.filter(s => matchTokens(`${s.title} ${groupPathText(s)}`, qEl.value)).slice(0, 80);
+      listEl.innerHTML = hits.map(s => `<li><button type="button" class="row" data-nbs="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span>${groupPathText(s) ? `<span class="row-sub">${esc(groupPathText(s))}</span>` : ''}</span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
+    };
+    draw();
+    qEl.addEventListener('input', draw);
+    sh.el.addEventListener('click', e => {
+      const b = e.target.closest('[data-nbs]');
+      if (!b) return;
+      sh.close(b.dataset.nbs === 'no' ? null : b.dataset.nbs);
+    });
+    setTimeout(() => qEl.focus(), 40);
+  });
 }
 const lzState = { q: '' };
 function viewLessons(nbId) {
@@ -8317,12 +8432,12 @@ function viewLessons(nbId) {
           <button type="button" class="btn sm ghost" data-a="menu" aria-label="Altro">⋯</button>
         </div>
         <div class="lz-secs"><span class="lbl">Sezioni della lezione:</span> <span class="tags" data-scope="lesson">${chips(a.secIds) || '<span class="hint">nessuna</span>'}</span>
-          <select class="input lz-add" data-addto="lesson" aria-label="Collega la lezione a una sezione"><option value="">＋ Collega una sezione</option>${secOptionsHtml(nb, a.secIds || [])}</select></div>
+          <button type="button" class="btn sm ghost lz-add-btn" data-addto="lesson" aria-label="Collega la lezione a una sezione">＋ Collega una sezione</button></div>
         ${(a.marks || []).length ? `<ol class="au-marks lz-marks">${a.marks.map(m => `<li data-mid="${m.id}">
           <div class="lz-mrow"><button type="button" class="link-btn" data-mt="${m.t}">${fmtT(m.t)}</button> <span class="au-ml">${esc(m.label || 'Senza nome')}</span>
           <button type="button" class="btn sm ghost" data-mr="${m.id}" aria-label="Rinomina">✎</button><button type="button" class="btn sm ghost" data-md="${m.id}" aria-label="Elimina il segnalibro">✕</button></div>
           <div class="lz-mlink"><span class="tags" data-scope="mark">${chips(m.secIds)}</span>
-          <select class="input lz-add sm" data-addto="mark" aria-label="Collega il segnalibro a una sezione"><option value="">＋ Sezione</option>${secOptionsHtml(nb, m.secIds || [])}</select></div></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti, oppure <button type="button" class="link-btn" data-a="ai-marks">✨ falli proporre a Gemini</button>.</p>'}
+          <button type="button" class="btn sm ghost lz-add-btn" data-addto="mark" aria-label="Collega il segnalibro a una sezione">＋ Sezione</button></div></li>`).join('')}</ol>` : '<p class="hint">Nessun segnalibro: aggiungili mentre ascolti, oppure <button type="button" class="link-btn" data-a="ai-marks">✨ falli proporre a Gemini</button>.</p>'}
       </section>`).join('') : '<div class="empty"><p>Nessuna lezione. Carica la registrazione di una lezione (anche lunga e su più argomenti), oppure registrala adesso. Poi segni i punti e li colleghi alle sezioni.</p></div>'}
     </div>`);
   // dov’è il file di ogni lezione; in cima, quante sono da scaricare o da caricare su Drive
@@ -8377,13 +8492,21 @@ function viewLessons(nbId) {
   on('[data-act="lz-rec"]', 'click', () => AudioRec.begin(nb));
   const box = $('#lzList');
   const find = it => list.find(x => x.id === it?.dataset.aid);
-  box.addEventListener('change', async e => {
-    const s = e.target.closest('[data-addto]');
-    if (!s || !s.value) return;
-    const a = find(e.target.closest('.au-item'));
+  box.addEventListener('click', async e => {
+    const addBtn = e.target.closest('[data-addto]');
+    if (!addBtn) return;
+    const a = find(addBtn.closest('.au-item'));
     if (!a) return;
-    if (s.dataset.addto === 'lesson') a.secIds = [...new Set([...(a.secIds || []), s.value])];
-    else { const m = a.marks.find(x => x.id === e.target.closest('[data-mid]').dataset.mid); if (m) m.secIds = [...new Set([...(m.secIds || []), s.value])]; }
+    const isLesson = addBtn.dataset.addto === 'lesson';
+    const mark = isLesson ? null : a.marks.find(x => x.id === addBtn.closest('[data-mid]')?.dataset.mid);
+    if (!isLesson && !mark) return;
+    const pickedId = await pickNbSectionSheet(nb, {
+      title: isLesson ? `Collega sezione a “${a.name}”` : `Collega sezione a “${mark.label || fmtT(mark.t)}”`,
+      exclude: isLesson ? (a.secIds || []) : (mark.secIds || [])
+    });
+    if (!pickedId) return;
+    if (isLesson) a.secIds = [...new Set([...(a.secIds || []), pickedId])];
+    else mark.secIds = [...new Set([...(mark.secIds || []), pickedId])];
     await saveNotebook(nb);
     AudioMode.refresh();
   });
@@ -8741,8 +8864,8 @@ function pickSectionSheet(title, preferId = '') {
       <div class="modal-actions"><button class="btn ghost" type="button" data-psx>Annulla</button></div>`, { label: title, onClose: v => resolve(v || null) });
     bindNewSecForm(sh.el, s => sh.close(s));
     const draw = () => {
-      const f = foldAccents($('#psQ', sh.el).value.trim());
-      $('#psList', sh.el).innerHTML = all.filter(s => !f || foldAccents(`${s.title} ${where(s)}`).includes(f)).slice(0, 60)
+      const q = $('#psQ', sh.el).value;
+      $('#psList', sh.el).innerHTML = all.filter(s => matchTokens(`${s.title} ${where(s)}`, q)).slice(0, 60)
         .map(s => `<li><button type="button" class="row" data-ps="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}${s.id === preferId ? ' · sezione del PDF' : ''}</span></span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
     };
     draw();

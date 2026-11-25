@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.36';
+const APP_VERSION = '4.38';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -3754,6 +3754,12 @@ const ICONS = {
 };
 const hueOf = str => { let h = 0; for (const ch of String(str)) h = (h * 31 + ch.codePointAt(0)) % 360; return h; };
 const foldAccents = s => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const matchTokens = (hay, q) => {
+  const f = foldAccents(String(q || '').trim());
+  if (!f) return true;
+  const h = foldAccents(hay);
+  return f.split(/\s+/).every(t => h.includes(t));
+};
 const fmtMin = sec => {
   const m = Math.round((sec || 0) / 60);
   if (m < 60) return `${m} min`;
@@ -3931,8 +3937,7 @@ function sectionPickerSheet(title = 'Collega una pagina', exceptId = null) {
       <div class="modal-actions"><button class="btn ghost" type="button" data-sp="no">Annulla</button></div>`, { label: title, onClose: resolve });
     const list = $('#spList', sh.el);
     const draw = q => {
-      const f = foldAccents(q.trim());
-      const hits = all.filter(s => !f || foldAccents(s.title + ' ' + where(s)).includes(f)).slice(0, 80);
+      const hits = all.filter(s => matchTokens(`${s.title} ${where(s)}`, q)).slice(0, 80);
       list.innerHTML = hits.map(s => `<li><button type="button" class="row" data-pick="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(where(s))}</span></span></button></li>`).join('')
         || '<li class="row muted">Nessuna sezione trovata.</li>';
     };

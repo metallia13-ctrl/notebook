@@ -578,11 +578,12 @@ function viewCardEditor(id) {
       <label class="field"><span>Nota sull’errore, compare dopo la risposta</span>
         <input class="input" id="ceNote" value="${esc(c.note || '')}" placeholder="Es. confondo beta1 e beta2"></label>
       ${tagFieldHtml('ceTags', tagsOf(c))}
-      <label class="field"><span>Sezione collegata</span>
-        <select class="input" id="ceSec">
-          <option value="">Nessuna</option>
-          ${secs.map(s => `<option value="${s.id}" ${s.id === c.sectionId ? 'selected' : ''}>${esc(s.title)}</option>`).join('')}
-        </select></label>
+      <div class="field sec-combo" id="ceSecBox">
+        <span class="lbl">Sezione collegata</span>
+        <div class="tags" id="ceSecChip"></div>
+        <input type="search" class="input" id="ceSecQ" placeholder="Cerca e collega una sezione (titolo o cartella)…" aria-label="Cerca una sezione collegata" autocomplete="off">
+        <ul class="list pick-list sp-link-res sec-combo-res" id="ceSecRes" hidden></ul>
+      </div>
       ${isIo ? '' : `<details class="preview" id="cePrevBox"><summary>Anteprima</summary>
         <div class="fcard"><div class="notes" id="cePrevF"></div><hr class="fsep"><div class="notes" id="cePrevB"></div></div></details>`}
       <div class="save-bar">
@@ -604,6 +605,36 @@ function viewCardEditor(id) {
     bEl.addEventListener('input', prev);
   }
   bindTagField($('#view'), 'ceTags');
+  let linkedSecId = c.sectionId || '';
+  const ceSecSorted = [...secs].sort((a, b) => a.title.localeCompare(b.title, 'it'));
+  const ceSecBox = $('#ceSecBox'), ceSecChip = $('#ceSecChip'), ceSecQ = $('#ceSecQ'), ceSecRes = $('#ceSecRes');
+  const drawCeSecChip = () => {
+    const cur = linkedSecId ? secById(linkedSecId) : null;
+    ceSecChip.innerHTML = cur
+      ? `<span class="tag">${esc(cur.title)}${groupPathText(cur) ? ` <small class="muted-inline">· ${esc(groupPathText(cur))}</small>` : ''} <button type="button" class="tag-x" data-cesec-clear aria-label="Scollega sezione">×</button></span>`
+      : '<span class="hint">Nessuna</span>';
+  };
+  const drawCeSecRes = () => {
+    const q = ceSecQ.value;
+    const hits = ceSecSorted.filter(s => matchTokens(`${s.title} ${groupPathText(s)}`, q)).slice(0, 40);
+    const noneRow = !q.trim() && linkedSecId ? `<li><button type="button" class="row" data-cesec=""><span class="row-main"><span class="row-title">Nessuna (scollega)</span></span></button></li>` : '';
+    ceSecRes.innerHTML = noneRow + (hits.map(s => `<li><button type="button" class="row ${s.id === linkedSecId ? 'on' : ''}" data-cesec="${s.id}"><span class="row-main"><span class="row-title">${esc(s.title)}</span>${groupPathText(s) ? `<span class="row-sub">${esc(groupPathText(s))}</span>` : ''}</span></button></li>`).join('') || '<li class="hint">Nessuna sezione trovata.</li>');
+  };
+  drawCeSecChip();
+  ceSecQ.addEventListener('focus', () => { drawCeSecRes(); ceSecRes.hidden = false; });
+  ceSecQ.addEventListener('input', () => { drawCeSecRes(); ceSecRes.hidden = false; });
+  ceSecBox.addEventListener('click', e => {
+    if (e.target.closest('[data-cesec-clear]')) { linkedSecId = ''; drawCeSecChip(); if (!ceSecRes.hidden) drawCeSecRes(); return; }
+    const b = e.target.closest('[data-cesec]');
+    if (!b) return;
+    linkedSecId = b.dataset.cesec || '';
+    ceSecQ.value = '';
+    ceSecRes.hidden = true;
+    drawCeSecChip();
+  });
+  const closeCeSecOutside = e => { if (!ceSecBox.contains(e.target)) ceSecRes.hidden = true; };
+  document.addEventListener('click', closeCeSecOutside);
+  addCleanup(() => document.removeEventListener('click', closeCeSecOutside));
   on('[data-act="io-edit"]', 'click', () => openOcclusionEditor({ imageId: c.io.imageId, notebookId: c.notebookId, sectionId: c.sectionId, group: c.io.group }));
   on('[data-act="save"]', 'click', async () => {
     if (!isIo && !fEl.value.trim()) { toast('Il fronte non può essere vuoto'); fEl.focus(); return; }
@@ -612,7 +643,7 @@ function viewCardEditor(id) {
     c.back = bEl.value.trim();
     c.note = $('#ceNote').value.trim();
     c.tags = parseTags($('#ceTags').value);
-    c.sectionId = $('#ceSec').value || null;
+    c.sectionId = linkedSecId || null;
     await saveCard(c);
     await removeOrphanImages(before);
     toast('Flashcard salvata');
