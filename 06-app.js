@@ -1196,6 +1196,7 @@ function takeSharedText() {
 /* ---------- Pagina "Altro" ---------- */
 const MORE_ITEMS = [
   ['resume', 'Riprendi', 'Torna all’ultima sezione che stavi studiando, nella stessa scheda e allo stesso punto'],
+  ['quiz', 'Allenamento', 'Tutti i quiz, Occludi, Etichette, Cloze, Mappe e simulazioni in un unico posto'],
   ['pad', 'Blocco note', 'Tutte le pagine scritte a mano (blocco note e fogli nei PDF), divise per cartelle'],
   ['fs', 'Schermo intero', 'Nasconde le barre del tablet, in alto e in basso'],
   ['split', 'Affianca', 'Una sezione o un PDF di fianco, per confrontare due cose'],
@@ -1500,6 +1501,12 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.39", title: "nuova sezione Allenamento: tutti i quiz, Occludi, Etichette e strumenti interattivi insieme", html: `      <ul>
+        <li><strong>Nuova sezione 🎯 Allenamento (menu Strumenti e Altro)</strong>: raccoglie in un unico posto tutti gli esercizi interattivi di tutta l’app, filtrabili per <strong>materia</strong> e con barra di ricerca live multi-parola.</li>
+        <li><strong>Visivo & Occludi</strong>: accesso diretto a tutti gli schemi con <em>Etichette</em> (con anteprima dell’immagine), alle <em>Flashcard a occlusione</em> (sessione dedicata solo occlusioni), ai <em>PDF con riquadri Occludi</em> (si aprono già sulla pagina giusta in modalità ripasso occlusioni), ai <em>Quiz visivi degli Atlanti</em> e alle <em>Mappe mentali in modalità quiz</em>.</li>
+        <li><strong>Quiz & Esame · Richiamo & Orale · Clinica & Lab</strong>: <em>Quiz di discriminazione</em> (per materia, cartella o sezione), <em>Simulazioni d’esame</em>, <em>Domande delle sezioni</em>, <em>Banca domande d’esame</em>, <em>Cloze</em> (con punti deboli in cima), <em>Interrogazione AI</em>, <em>Pagina bianca / Orale</em>, <em>Diagnosi differenziale</em>, <em>Laboratorio</em>, <em>Casi clinici</em> e <em>Confronto farmaci</em>.</li>
+        <li><strong>🎯 Proponimi un esercizio</strong>: pesca in automatico un esercizio mirato dando priorità alle sezioni in scadenza, ai punti deboli al semaforo e alle occlusioni pronte.</li>
+      </ul>` },
   { v: "4.38", title: "pagine più ampie, cartelle ordinate e azioni divise per scopo", html: `      <ul>
         <li><strong>Spazio molto più ampio su PC e tablet</strong>: la larghezza massima di sezioni, cartelle e appunti passa da <code>820px</code> a <strong>1220px</strong> (e il testo delle sezioni sfrutta tutto lo spazio disponibile, ideale per tabelle e schemi larghi) mantenendo il centraggio perfetto anche con Blocco note, StudyHub o Affianca aperti.</li>
         <li><strong>Card delle cartelle ridisegnate</strong>: icona, badge dei ripassi e menu <code>⋯</code> stanno ordinati nella riga in alto, così il titolo occupa tutta la larghezza della card senza mai spezzarsi a metà parola e tutte le cartelle hanno altezza uniforme.</li>
@@ -2626,7 +2633,7 @@ const CmdPalette = {
       [...state.sections].sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 6).forEach(s => {
         out.push({ kind: 'Recente', title: s.title, sub: [nbById(s.notebookId)?.name, groupPathText(s)].filter(Boolean).join(' › '), href: `#/sec/${s.id}/${openMode(s)}` });
       });
-      ['pad', 'split', 'examq', 'clinic', 'lab', 'viva'].forEach(k => {
+      ['quiz', 'pad', 'split', 'examq', 'clinic', 'lab', 'viva'].forEach(k => {
         const t = navTools.find(x => x[0] === k);
         if (t) out.push({ kind: 'Strumento', title: t[1], sub: t[2], href: t[3] });
       });
@@ -2810,11 +2817,11 @@ const NavPins = {
 /* ---------- v4.14: Voci attivabili/disattivabili e Tema rapido nella barra laterale ---------- */
 const NavVis = {
   GROUPS: [
-    ['Strumenti', [['studyhub', 'StudyHub'], ['pad', 'Blocco note'], ['split', 'Affianca'], ['calendar', 'Calendario']]],
+    ['Strumenti', [['quiz', 'Allenamento'], ['studyhub', 'StudyHub'], ['pad', 'Blocco note'], ['split', 'Affianca'], ['calendar', 'Calendario']]],
     ['Clinica', [['clinic', 'Note cliniche'], ['examq', 'Domande d’esame'], ['cases', 'Casi clinici'], ['lab', 'Laboratorio'], ['semei', 'Semeiotica'], ['papers', 'Articoli'], ['raccolta', 'Raccolta'], ['viva', 'Interrogazione'], ['scores', 'Score clinici'], ['micro', 'Microbiologia'], ['pharma', 'Farmacologia'], ['anat', 'Atlante di anatomia'], ['atlas', 'Atlante diagnostico'], ['diary', 'Diario di tirocinio']]],
     ['Altro', [['glossary', 'Glossario'], ['incomplete', 'Da completare'], ['links', 'Link utili'], ['guide', 'Guida']]]
   ],
-  ESSENTIAL: new Set(['studyhub', 'pad', 'split', 'calendar', 'examq', 'viva', 'incomplete']),
+  ESSENTIAL: new Set(['quiz', 'studyhub', 'pad', 'split', 'calendar', 'examq', 'viva', 'incomplete']),
   hiddenSet() { return new Set(Array.isArray(S().navHidden) ? S().navHidden : []); },
   setHidden(key, hide) {
     const set = this.hiddenSet();
@@ -5797,6 +5804,579 @@ const ShDock = {
     if (this.prefs().open && this.wide()) this.open();
   }
 };
+
+
+/* =====================================================================
+   v4.39: Sezione Allenamento (#/quiz) — tutti i quiz, Occludi, Etichette
+   e gli strumenti interattivi dell'app in un'unica centrale.
+   ===================================================================== */
+const quizHubState = { nb: '', tab: 'all', q: '' };
+
+function viewQuizHub(tabParam = '') {
+  const VALID_TABS = ['all', 'visual', 'quiz', 'recall', 'clinic'];
+  if (tabParam && VALID_TABS.includes(tabParam)) quizHubState.tab = tabParam;
+  const studyNbs = state.notebooks.filter(n => !n.kind).sort((a, b) => a.name.localeCompare(b.name, 'it'));
+  if (quizHubState.nb && !studyNbs.some(n => n.id === quizHubState.nb)) quizHubState.nb = '';
+
+  const whereOf = s => {
+    const nb = nbById(s.notebookId);
+    const gp = groupPathText(s);
+    const nbLabel = nb ? (SPECIALS[nb.kind]?.name || (nb.kind === 'cases' ? 'Casi clinici' : nb.name)) : '';
+    return [nbLabel, gp].filter(Boolean).join(' › ');
+  };
+
+  // Calcola tutti gli esercizi disponibili dato il filtro materia e ricerca
+  const collect = (nbFilter, qRaw) => {
+    const matchSec = s => {
+      if (nbFilter && s.notebookId !== nbFilter) return false;
+      return matchTokens(`${s.title} ${whereOf(s)} ${tagsOf(s).join(' ')}`, qRaw);
+    };
+    const matchStudySec = s => {
+      const nb = nbById(s.notebookId);
+      if (!nb || nb.kind) return false;
+      return matchSec(s);
+    };
+
+    // 1. Etichette sugli schemi (anche da Atlanti quando filtro = tutte le materie)
+    const labelItems = [];
+    for (const s of state.sections) {
+      if (nbFilter && s.notebookId !== nbFilter) continue;
+      const imgs = labelImages(s);
+      if (!imgs.length) continue;
+      if (!matchTokens(`${s.title} ${whereOf(s)} etichette schemi`, qRaw)) continue;
+      const sets = labelSets(s);
+      imgs.forEach((imgId, idx) => {
+        const masks = (sets[imgId]?.masks || []).length;
+        labelItems.push({ sec: s, imgId, masks, idx, due: isDue(s) });
+      });
+    }
+    labelItems.sort((a, b) => (b.due - a.due) || ((b.sec.updated || 0) - (a.sec.updated || 0)));
+
+    // 2. Flashcard a occlusione
+    const ioScope = nbFilter ? `io-${nbFilter}` : 'io-all';
+    const ioCards = state.cards.filter(c => !c.suspended && c.type === 'occlusion' && (!nbFilter || c.notebookId === nbFilter));
+    const ioCnt = cardCounts(ioCards);
+    const ioBySecMap = new Map();
+    ioCards.forEach(c => {
+      const sid = c.sectionId || `nb:${c.notebookId}`;
+      const sec = c.sectionId ? secById(c.sectionId) : null;
+      const title = sec ? sec.title : (nbById(c.notebookId)?.name || 'Flashcard');
+      const sub = sec ? whereOf(sec) : 'Senza sezione collegata';
+      if (!matchTokens(`${title} ${sub} occlusione immagini`, qRaw)) return;
+      if (!ioBySecMap.has(sid)) ioBySecMap.set(sid, { sid, sec, title, sub, cards: [] });
+      ioBySecMap.get(sid).cards.push(c);
+    });
+    const ioGroups = [...ioBySecMap.values()].sort((a, b) => b.cards.length - a.cards.length);
+
+    // 3. PDF con riquadri Occludi
+    const pdfOccs = (state.pdfs || []).map(p => {
+      if (nbFilter && p.notebookId !== nbFilter) return null;
+      const occs = (p.annots || []).filter(a => a.type === 'occ');
+      if (!occs.length) return null;
+      const sec = p.sectionId ? secById(p.sectionId) : null;
+      const sub = sec ? whereOf(sec) : (nbById(p.notebookId)?.name || '');
+      if (!matchTokens(`${p.name} ${sec?.title || ''} ${sub} pdf occludi occlusioni`, qRaw)) return null;
+      const pages = [...new Set(occs.map(a => a.page))].sort((a, b) => a - b);
+      return { pdf: p, sec, sub, count: occs.length, pages, firstPage: pages[0] || 1 };
+    }).filter(Boolean).sort((a, b) => (b.pdf.updated || 0) - (a.pdf.updated || 0));
+
+    // 4. Mappe mentali (quiz)
+    const mapSecs = state.sections.filter(s => matchStudySec(s) && mapsOf(s).length > 0)
+      .sort((a, b) => (isDue(b) - isDue(a)) || ((b.updated || 0) - (a.updated || 0)));
+
+    // 5. Quiz di discriminazione (per materia / cartelle / sezioni)
+    const dqNbs = studyNbs.filter(n => (!nbFilter || n.id === nbFilter) && secsOf(n.id).some(s => aiText(s.md || '').trim().length > 40) && matchTokens(`${n.name} quiz discriminazione`, qRaw));
+    const dqFolders = [];
+    (nbFilter ? [nbById(nbFilter)].filter(Boolean) : studyNbs).forEach(nb => {
+      groupsOf(nb).forEach(g => {
+        const tree = groupTreeIds(nb, g);
+        const usable = secsOf(nb.id).filter(s => tree.has(s.groupId) && aiText(s.md || '').trim().length > 40);
+        if (usable.length < 2) return;
+        const path = [...groupAncestors(nb, g).map(x => x.name), g.name].join(' › ');
+        if (!matchTokens(`${nb.name} ${path} quiz discriminazione`, qRaw)) return;
+        dqFolders.push({ nb, g, path, count: usable.length });
+      });
+    });
+    const dqSecs = state.sections.filter(s => matchStudySec(s) && aiText(s.md || '').trim().length > 60)
+      .sort((a, b) => (isDue(b) - isDue(a)) || ((b.updated || 0) - (a.updated || 0)));
+
+    // 6. Domande per il richiamo nelle sezioni
+    const qSecs = state.sections.filter(s => matchStudySec(s) && (s.questions || []).length > 0)
+      .sort((a, b) => (isDue(b) - isDue(a)) || ((b.questions || []).length - (a.questions || []).length));
+
+    // 7. Banca domande d'esame
+    const allEq = examQs().filter(x => !nbFilter || x.notebookId === nbFilter);
+
+    // 8. Cloze + Punti deboli
+    const clozeSecs = state.sections.filter(s => matchStudySec(s) && clozeOf(s) > 0)
+      .map(s => ({ sec: s, n: clozeOf(s), weak: czWeakOf(s).length, due: isDue(s) }))
+      .sort((a, b) => (b.due - a.due) || (b.weak - a.weak) || ((b.sec.updated || 0) - (a.sec.updated || 0)));
+
+    const weakSecs = state.sections.filter(s => matchStudySec(s) && czWeakOf(s).length > 0)
+      .map(s => ({ sec: s, weak: czWeakOf(s).length, due: isDue(s) }))
+      .sort((a, b) => (b.due - a.due) || (b.weak - a.weak));
+
+    // 9. Flashcard generali (ambito scelto)
+    const cardScope = nbFilter || 'all';
+    const allCards = state.cards.filter(c => !c.suspended && (!nbFilter || c.notebookId === nbFilter));
+    const allCardsCnt = cardCounts(allCards);
+
+    // 10. Clinica, Atlanti, Laboratorio, Casi, Farmaci
+    const anatNb = specialNb('anat');
+    const atlasNb = specialNb('atlas');
+    const pharmaNb = specialNb('pharma');
+    const anatCount = anatNb ? secsOf(anatNb.id).filter(s => imageRefs(s.md).length).length : 0;
+    const atlasCount = atlasNb ? secsOf(atlasNb.id).filter(s => imageRefs(s.md).length).length : 0;
+    const pharmaCount = pharmaNb ? secsOf(pharmaNb.id).length : 0;
+    const cnAll = clinicalNotes().filter(n => !nbFilter || n.nbId === nbFilter);
+    const cnQuizReady = cnAll.filter(n => (n.symptoms || []).length >= 2).length;
+    const labCount = labExams().length;
+    const cnb = casesNb();
+    const casesList = (cnb ? secsOf(cnb.id) : []).filter(s => {
+      if (nbFilter && s.case?.nbId !== nbFilter) return false;
+      return matchTokens(`${s.title} ${s.case?.spec || ''} ${tagsOf(s).join(' ')} casi clinici`, qRaw);
+    }).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+
+    // Sezioni pronte per Orale / Pagina bianca / Interrogazione
+    const recallSecs = state.sections.filter(s => matchStudySec(s) && aiText(s.md || '').trim().length > 80)
+      .sort((a, b) => (isDue(b) - isDue(a)) || ((b.updated || 0) - (a.updated || 0)));
+
+    return {
+      labelItems, ioScope, ioCards, ioCnt, ioGroups, pdfOccs, mapSecs,
+      dqNbs, dqFolders, dqSecs, qSecs, allEq, clozeSecs, weakSecs,
+      cardScope, allCards, allCardsCnt,
+      anatCount, atlasCount, pharmaCount, cnQuizReady, labCount, casesList, recallSecs
+    };
+  };
+
+  // Calcola un esercizio consigliato da lanciare subito
+  const pickSmartExercise = d => {
+    const cands = [];
+    d.weakSecs.slice(0, 6).forEach(w => cands.push({
+      priority: w.due ? 1 : 2,
+      msg: `Punti deboli su “${w.sec.title}” (${w.weak} parti da fissare)`,
+      run: () => go(`#/sec/${w.sec.id}/${clozeOf(w.sec) ? 'cloze' : 'dquiz'}`)
+    }));
+    const ioDue = (d.ioCnt.r || 0) + (d.ioCnt.l || 0);
+    if (ioDue > 0) cands.push({
+      priority: 1,
+      msg: `Ripasso di ${ioDue} flashcard a occlusione`,
+      run: () => go(`#/study/${d.ioScope}/ripassa`)
+    });
+    d.labelItems.filter(x => x.due).slice(0, 5).forEach(x => cands.push({
+      priority: 1,
+      msg: `Etichette sullo schema di “${x.sec.title}”`,
+      run: () => startLabels(x.sec, x.imgId)
+    }));
+    d.clozeSecs.filter(x => x.due).slice(0, 6).forEach(x => cands.push({
+      priority: 2,
+      msg: `Cloze in scadenza: “${x.sec.title}”`,
+      run: () => go(`#/sec/${x.sec.id}/cloze`)
+    }));
+    d.qSecs.filter(s => isDue(s)).slice(0, 6).forEach(s => cands.push({
+      priority: 2,
+      msg: `Domande in scadenza: “${s.title}”`,
+      run: () => go(`#/sec/${s.id}/quiz`)
+    }));
+    d.labelItems.slice(0, 8).forEach(x => cands.push({
+      priority: 3,
+      msg: `Etichette sullo schema di “${x.sec.title}”`,
+      run: () => startLabels(x.sec, x.imgId)
+    }));
+    d.pdfOccs.slice(0, 6).forEach(x => cands.push({
+      priority: 3,
+      msg: `Ripasso occlusioni nel PDF “${x.pdf.name}”`,
+      run: () => go(`#/pdf/${x.pdf.id}/${x.firstPage}/occ`)
+    }));
+    if ((d.allCardsCnt.r || 0) + (d.allCardsCnt.l || 0) + (d.allCardsCnt.n || 0) > 0) cands.push({
+      priority: 3,
+      msg: 'Sessione di flashcard',
+      run: () => go(`#/study/${d.cardScope}`)
+    });
+    d.qSecs.slice(0, 8).forEach(s => cands.push({
+      priority: 4,
+      msg: `Domande su “${s.title}”`,
+      run: () => go(`#/sec/${s.id}/quiz`)
+    }));
+    d.dqSecs.slice(0, 8).forEach(s => cands.push({
+      priority: 4,
+      msg: `Quiz di discriminazione su “${s.title}”`,
+      run: () => go(`#/sec/${s.id}/dquiz`)
+    }));
+    if (d.allEq.length) cands.push({
+      priority: 4,
+      msg: 'Allenamento sulle domande d’esame',
+      run: () => { if (quizHubState.nb) eqState.nb = quizHubState.nb; go('#/examq/quiz'); }
+    });
+    if (!cands.length) return null;
+    const minP = Math.min(...cands.map(c => c.priority));
+    const best = cands.filter(c => c.priority <= minP + 1);
+    return best[Math.floor(Math.random() * best.length)];
+  };
+
+  setView(`
+    <header class="page-head qh-head">
+      <div>
+        <h1>Allenamento</h1>
+        <p class="lede" id="qhLede">Tutti i quiz, Occludi, Etichette, Cloze, Mappe e simulazioni in un unico posto.</p>
+      </div>
+      <div class="actions">
+        <button class="btn primary" type="button" data-qh="smart">🎯 Proponimi un esercizio</button>
+      </div>
+    </header>
+    <div class="qh-filters">
+      <select class="input qh-nb" id="qhNb" aria-label="Filtra per materia">
+        <option value="">Tutte le materie</option>
+        ${studyNbs.map(n => `<option value="${n.id}" ${quizHubState.nb === n.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}
+      </select>
+      <input type="search" class="input search qh-q" id="qhQ" placeholder="Cerca un argomento, schema, PDF o cartella…" aria-label="Cerca tra gli esercizi" value="${esc(quizHubState.q)}">
+    </div>
+    <nav class="tabs qh-tabs" role="tablist" aria-label="Categorie di allenamento" id="qhTabs"></nav>
+    <div id="qhBody"></div>
+  `);
+
+  let curData = null;
+
+  const secSub = s => whereOf(s);
+  const renderSecRow = (s, href, rightHtml, extra = '') => `
+    <li><a class="row" href="${href}">
+      <span class="row-main">
+        <span class="row-title">${esc(s.title)}</span>
+        <span class="row-sub">${esc([secSub(s), extra].filter(Boolean).join(' · '))}</span>
+      </span>
+      ${rightHtml}
+    </a></li>`;
+
+  const renderVisual = (d, compact = false) => {
+    const parts = [];
+
+    // Schemi con Etichette
+    const lblShow = compact ? d.labelItems.slice(0, 8) : d.labelItems;
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead">
+          <h2>Etichette sugli schemi <span class="muted-inline">(${d.labelItems.length})</span></h2>
+          ${compact && d.labelItems.length > lblShow.length ? '<button type="button" class="link-btn" data-qtab="visual">Vedi tutti →</button>' : ''}
+        </div>
+        ${lblShow.length ? `<div class="qh-vis-grid">${lblShow.map(it => `
+          <button type="button" class="qh-vis-card" data-qh-label="${it.sec.id}" data-qh-img="${it.imgId}">
+            <span class="qh-vis-thumb"><img class="nb-img" data-img="${it.imgId}" alt=""><span class="qh-vis-badge">${it.masks} ${it.masks === 1 ? 'etichetta' : 'etichette'}</span></span>
+            <span class="qh-vis-info">
+              <span class="qh-vis-t">${esc(it.sec.title)}</span>
+              <span class="qh-vis-s">${esc(secSub(it.sec))}${it.due ? ' · <b class="qh-due-txt">oggi</b>' : ''}</span>
+            </span>
+          </button>`).join('')}</div>` : '<p class="hint">Nessuno schema con etichette in questa selezione. Aprilo in una sezione con immagini e tocca “Etichette” per crearlo.</p>'}
+      </section>`);
+
+    // Occludi: Flashcard a occlusione + PDF con Occludi
+    const ioTotal = d.ioCards.length;
+    const ioDueAll = (d.ioCnt.r || 0) + (d.ioCnt.l || 0) + (d.ioCnt.n || 0);
+    const pdfShow = compact ? d.pdfOccs.slice(0, 6) : d.pdfOccs;
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead"><h2>Occludi: Immagini & PDF</h2></div>
+        <div class="qh-cards-row">
+          <div class="qh-box">
+            <div class="qh-box-top">
+              <div>
+                <h3>Flashcard a occlusione</h3>
+                <p class="hint">${ioTotal ? `${ioTotal} ${ioTotal === 1 ? 'riquadro attivo' : 'riquadri attivi'}${quizHubState.nb ? ` in ${esc(nbById(quizHubState.nb)?.name || '')}` : ' in tutte le materie'}.` : 'Ancora nessuna flashcard a occlusione qui.'}</p>
+              </div>
+              ${ioTotal ? countsHtml(d.ioCnt) : ''}
+            </div>
+            ${ioTotal ? `<div class="inline">${ioDueAll ? studyBtns(d.ioScope, d.ioCnt, { cls: 'sm' }) : '<span class="pill soft">Tutto ripassato per oggi</span>'}${d.ioGroups.length ? `<a class="btn sm ghost" href="#/${quizHubState.nb ? `deck/${quizHubState.nb}` : 'cards'}">Apri mazzi</a>` : ''}</div>` : ''}
+            ${!compact && d.ioGroups.length ? `<ul class="list qh-mini-list">${d.ioGroups.slice(0, 20).map(g => `
+              <li><a class="row" href="${g.sec ? `#/study/sec-${g.sec.id}` : `#/study/${d.ioScope}`}">
+                <span class="row-main"><span class="row-title">${esc(g.title)}</span><span class="row-sub">${esc(g.sub)}</span></span>
+                <span class="pill soft">${g.cards.length}</span>
+              </a></li>`).join('')}</ul>` : ''}
+          </div>
+          <div class="qh-box">
+            <div class="qh-box-top">
+              <div>
+                <h3>PDF con riquadri Occludi</h3>
+                <p class="hint">${d.pdfOccs.length ? `${d.pdfOccs.length} ${d.pdfOccs.length === 1 ? 'PDF pronto' : 'PDF pronti'}: toccandone uno si apre subito in modalità ripasso occlusioni.` : 'Nessun PDF con occlusioni: nel lettore PDF usa lo strumento “Occludi”.'}</p>
+              </div>
+            </div>
+            ${pdfShow.length ? `<ul class="list qh-mini-list">${pdfShow.map(x => `
+              <li><a class="row" href="#/pdf/${x.pdf.id}/${x.firstPage}/occ">
+                <span class="row-main"><span class="row-title">${esc(x.pdf.name)}</span><span class="row-sub">${esc([x.sub, `${x.count} ${x.count === 1 ? 'riquadro' : 'riquadri'} (${x.pages.length === 1 ? `p. ${x.pages[0]}` : `${x.pages.length} pagine`})`].filter(Boolean).join(' · '))}</span></span>
+                <span class="pill">Ripassa ›</span>
+              </a></li>`).join('')}</ul>` : ''}
+          </div>
+        </div>
+      </section>`);
+
+    // Atlanti visivi + Mappe mentali in modalità quiz
+    const mapShow = compact ? d.mapSecs.slice(0, 6) : d.mapSecs;
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead"><h2>Atlanti visivi & Mappe in quiz</h2></div>
+        <div class="qh-quick-grid">
+          <a class="qh-tool-card" href="#/anat/quiz">
+            <span class="qh-tool-ic" aria-hidden="true">🦴</span>
+            <span class="qh-tool-body"><b>Indovina dall’immagine · Anatomia</b><small>${d.anatCount >= 4 ? `${d.anatCount} tavole pronte per il quiz` : `${d.anatCount} tavole (servono almeno 4)`}</small></span>
+          </a>
+          <a class="qh-tool-card" href="#/atlas/quiz">
+            <span class="qh-tool-ic" aria-hidden="true">🩺</span>
+            <span class="qh-tool-body"><b>Indovina dall’immagine · Diagnostica</b><small>${d.atlasCount >= 4 ? `${d.atlasCount} immagini pronte (ECG, Rx…)` : `${d.atlasCount} immagini (servono almeno 4)`}</small></span>
+          </a>
+        </div>
+        ${mapShow.length ? `
+          <h3 class="sub3 qh-sub3">Mappe mentali in modalità quiz (${d.mapSecs.length})</h3>
+          <ul class="list">${mapShow.map(s => `
+            <li><button type="button" class="row" data-qh-map="${s.id}">
+              <span class="row-main"><span class="row-title">${esc(s.title)}</span><span class="row-sub">${esc(secSub(s))} · ${mapsOf(s).length} ${mapsOf(s).length === 1 ? 'mappa' : 'mappe'}</span></span>
+              ${statusPill(s)}
+            </button></li>`).join('')}</ul>` : ''}
+      </section>`);
+
+    return parts.join('');
+  };
+
+  const renderQuizzes = (d, compact = false) => {
+    const parts = [];
+    const curNb = quizHubState.nb ? nbById(quizHubState.nb) : null;
+
+    // Lanci rapidi: Discriminazione, Simulazione d'esame, Domande d'esame
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead"><h2>Quiz su materie & esami</h2></div>
+        <div class="qh-quick-grid">
+          ${curNb ? `
+            <a class="qh-tool-card" href="#/dquiz/nb/${curNb.id}">
+              <span class="qh-tool-ic" aria-hidden="true">⚡</span>
+              <span class="qh-tool-body"><b>Quiz di discriminazione · ${esc(curNb.name)}</b><small>Mescola più sezioni e paragrafi per allenarti a non confonderli</small></span>
+            </a>
+            <a class="qh-tool-card" href="#/exam/${curNb.id}">
+              <span class="qh-tool-ic" aria-hidden="true">🎓</span>
+              <span class="qh-tool-body"><b>Simulazione d’esame · ${esc(curNb.name)}</b><small>Mix casuale di domande, cloze e flashcard a tempo</small></span>
+            </a>` : ''}
+          <button type="button" class="qh-tool-card" data-qh-eq>
+            <span class="qh-tool-ic" aria-hidden="true">📝</span>
+            <span class="qh-tool-body"><b>Banca domande d’esame</b><small>${d.allEq.length ? `${d.allEq.length} ${d.allEq.length === 1 ? 'domanda pronta' : 'domande pronte'} per l’allenamento` : 'Nessuna domanda d’esame in questa selezione'}</small></span>
+          </button>
+        </div>
+        ${!curNb && d.dqNbs.length ? `
+          <h3 class="sub3 qh-sub3">Quiz di discriminazione e Simulazione per materia</h3>
+          <div class="qh-nb-grid">${d.dqNbs.map(n => `
+            <div class="qh-nb-card">
+              <div class="qh-nb-t"><span class="pad-arch-dot" style="--h:${hueOf(n.id)}"></span><b>${esc(n.name)}</b></div>
+              <div class="inline">
+                <a class="btn sm" href="#/dquiz/nb/${n.id}">Quiz discriminazione</a>
+                <a class="btn sm ghost" href="#/exam/${n.id}">Simulazione</a>
+              </div>
+            </div>`).join('')}</div>` : ''}
+        ${!compact && d.dqFolders.length ? `
+          <h3 class="sub3 qh-sub3">Quiz di discriminazione per cartella (${d.dqFolders.length})</h3>
+          <div class="tag-cloud">${d.dqFolders.slice(0, 40).map(f => `<a class="tag" href="#/dquiz/grp/${f.g.id}">${esc(curNb ? f.path : `${f.nb.name} › ${f.path}`)} (${f.count})</a>`).join('')}</div>` : ''}
+      </section>`);
+
+    // Domande salvate nelle sezioni
+    const qShow = compact ? d.qSecs.slice(0, 8) : d.qSecs.slice(0, 80);
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead">
+          <h2>Domande per il richiamo nelle sezioni <span class="muted-inline">(${d.qSecs.length})</span></h2>
+          ${compact && d.qSecs.length > qShow.length ? '<button type="button" class="link-btn" data-qtab="quiz">Vedi tutte →</button>' : ''}
+        </div>
+        ${qShow.length ? `<ul class="list">${qShow.map(s => renderSecRow(s, `#/sec/${s.id}/quiz`, `<span class="pill soft">${(s.questions || []).length} dom.</span>`)).join('')}</ul>`
+          : '<p class="hint">Nessuna sezione con domande per il richiamo in questa selezione.</p>'}
+      </section>`);
+
+    // Quiz di discriminazione su singola sezione (solo nella scheda dedicata)
+    if (!compact && d.dqSecs.length) {
+      parts.push(`
+        <section class="qh-sec">
+          <div class="qh-sechead"><h2>Quiz su singola sezione <span class="muted-inline">(${d.dqSecs.length})</span></h2></div>
+          <ul class="list">${d.dqSecs.slice(0, 60).map(s => renderSecRow(s, `#/sec/${s.id}/dquiz`, statusPill(s))).join('')}</ul>
+        </section>`);
+    }
+
+    return parts.join('');
+  };
+
+  const renderRecall = (d, compact = false) => {
+    const parts = [];
+    const curNb = quizHubState.nb ? nbById(quizHubState.nb) : null;
+    const cardsDue = (d.allCardsCnt.r || 0) + (d.allCardsCnt.l || 0) + (d.allCardsCnt.n || 0);
+
+    // Flashcard + Interrogazione AI
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead"><h2>Flashcard & Interrogazione orale</h2></div>
+        <div class="qh-cards-row">
+          <div class="qh-box">
+            <div class="qh-box-top">
+              <div><h3>Flashcard${curNb ? ` · ${esc(curNb.name)}` : ''}</h3><p class="hint">${d.allCards.length} carte attive</p></div>
+              ${d.allCards.length ? countsHtml(d.allCardsCnt) : ''}
+            </div>
+            <div class="inline">
+              ${cardsDue ? studyBtns(d.cardScope, d.allCardsCnt, { cls: 'sm' }) : '<span class="pill soft">Nessuna carta da fare ora</span>'}
+              <a class="btn sm ghost" href="#/${curNb ? `deck/${curNb.id}` : 'cards'}">Apri mazzi</a>
+            </div>
+          </div>
+          <div class="qh-box">
+            <div class="qh-box-top">
+              <div><h3>Interrogazione AI</h3><p class="hint">Il professore ti fa domande dai tuoi appunti e valuta le risposte a voce.</p></div>
+            </div>
+            <div class="inline">
+              <a class="btn sm primary" href="#/${curNb ? `viva/nb/${curNb.id}` : 'viva'}">${curNb ? `Interrogami su ${esc(curNb.name)}` : 'Scegli materia'}</a>
+              <a class="btn sm ghost" href="#/review">Coda di ripasso</a>
+            </div>
+          </div>
+        </div>
+      </section>`);
+
+    // Cloze
+    const czShow = compact ? d.clozeSecs.slice(0, 8) : d.clozeSecs.slice(0, 80);
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead">
+          <h2>Cloze <span class="muted-inline">(${d.clozeSecs.length})</span></h2>
+          ${compact && d.clozeSecs.length > czShow.length ? '<button type="button" class="link-btn" data-qtab="recall">Vedi tutte →</button>' : ''}
+        </div>
+        ${czShow.length ? `<ul class="list">${czShow.map(x => renderSecRow(x.sec, `#/sec/${x.sec.id}/cloze`, `${x.weak ? `<span class="pill due" title="Parti deboli al semaforo">● ${x.weak}</span>` : statusPill(x.sec)}`, `${x.n} cloze`)).join('')}</ul>`
+          : '<p class="hint">Nessuna sezione con termini cloze in questa selezione.</p>'}
+      </section>`);
+
+    // Pagina bianca & Orale (nella scheda dedicata)
+    if (!compact && d.recallSecs.length) {
+      parts.push(`
+        <section class="qh-sec">
+          <div class="qh-sechead"><h2>Pagina bianca & Ripetizione orale <span class="muted-inline">(${d.recallSecs.length})</span></h2></div>
+          <ul class="list qh-dual-list">${d.recallSecs.slice(0, 60).map(s => `
+            <li class="qh-dual-row">
+              <div class="qh-dual-main">
+                <a class="qh-dual-t" href="#/sec/${s.id}/read">${esc(s.title)}</a>
+                <span class="row-sub">${esc(secSub(s))}</span>
+              </div>
+              <div class="inline">
+                <a class="btn sm ghost" href="#/sec/${s.id}/blank">Pagina bianca</a>
+                <a class="btn sm ghost" href="#/sec/${s.id}/oral">Orale</a>
+                <a class="btn sm ghost" href="#/viva/sec/${s.id}">AI</a>
+              </div>
+            </li>`).join('')}</ul>
+        </section>`);
+    }
+
+    return parts.join('');
+  };
+
+  const renderClinic = (d, compact = false) => {
+    const parts = [];
+    parts.push(`
+      <section class="qh-sec">
+        <div class="qh-sechead"><h2>Clinica, Laboratorio & Farmaci</h2></div>
+        <div class="qh-quick-grid">
+          <a class="qh-tool-card" href="#/clinic/quiz">
+            <span class="qh-tool-ic" aria-hidden="true">🧠</span>
+            <span class="qh-tool-body"><b>Quiz diagnosi differenziale</b><small>${d.cnQuizReady >= 4 ? `${d.cnQuizReady} quadri clinici pronti` : `${d.cnQuizReady} note con ≥2 sintomi (servono almeno 4)`}</small></span>
+          </a>
+          <a class="qh-tool-card" href="#/lab/quiz">
+            <span class="qh-tool-ic" aria-hidden="true">🧪</span>
+            <span class="qh-tool-body"><b>Allenamento Medicina di laboratorio</b><small>${d.labCount ? `${d.labCount} esami in archivio: range, cause e referti` : 'Aggiungi esami in Laboratorio per allenarti'}</small></span>
+          </a>
+          <a class="qh-tool-card" href="#/pharma/compare">
+            <span class="qh-tool-ic" aria-hidden="true">💊</span>
+            <span class="qh-tool-body"><b>Confronto farmaci (modalità quiz)</b><small>${d.pharmaCount >= 2 ? `${d.pharmaCount} farmaci: attiva “Quiz” nella tabella di confronto` : 'Servono almeno 2 schede di farmaci'}</small></span>
+          </a>
+          <a class="qh-tool-card" href="#/cases">
+            <span class="qh-tool-ic" aria-hidden="true">📋</span>
+            <span class="qh-tool-body"><b>Casi clinici (Risolvi)</b><small>${d.casesList.length ? `${d.casesList.length} ${d.casesList.length === 1 ? 'caso pronto' : 'casi pronti'} da risolvere passo-passo` : 'Nessun caso clinico in questa selezione'}</small></span>
+          </a>
+        </div>
+      </section>`);
+
+    if (d.casesList.length) {
+      const show = compact ? d.casesList.slice(0, 5) : d.casesList.slice(0, 50);
+      parts.push(`
+        <section class="qh-sec">
+          <div class="qh-sechead"><h2>Casi clinici pronti da risolvere <span class="muted-inline">(${d.casesList.length})</span></h2></div>
+          <ul class="list">${show.map(s => renderSecRow(s, `#/sec/${s.id}/case`, '<span class="pill">Risolvi ›</span>', s.case?.spec || '')).join('')}</ul>
+        </section>`);
+    }
+    return parts.join('');
+  };
+
+  const draw = () => {
+    const d = collect(quizHubState.nb, quizHubState.q);
+    curData = d;
+    const visCount = d.labelItems.length + d.ioCards.length + d.pdfOccs.length + d.mapSecs.length;
+    const quizCount = d.qSecs.length + d.allEq.length;
+    const recCount = d.clozeSecs.length + d.allCards.length;
+    const clinCount = d.casesList.length + d.cnQuizReady + d.labCount;
+
+    const nbLabel = quizHubState.nb ? nbById(quizHubState.nb)?.name : 'tutte le materie';
+    $('#qhLede').textContent = `${nbLabel}: ${d.labelItems.length} schemi con etichette · ${d.ioCards.length} flashcard occlusioni · ${d.pdfOccs.length} PDF con occlusioni · ${d.clozeSecs.length} cloze · ${d.qSecs.length} sezioni con domande.`;
+
+    const tabs = [
+      ['all', 'Tutto'],
+      ['visual', `Visivo & Occludi (${visCount})`],
+      ['quiz', `Quiz & Esame (${quizCount})`],
+      ['recall', `Richiamo & Orale (${recCount})`],
+      ['clinic', `Clinica & Lab (${clinCount})`]
+    ];
+    $('#qhTabs').innerHTML = tabs.map(([k, l]) => `<button type="button" role="tab" class="tab ${quizHubState.tab === k ? 'on' : ''}" data-qtab="${k}" aria-selected="${quizHubState.tab === k}">${l}</button>`).join('');
+
+    const body = $('#qhBody');
+    let html = '';
+    if (quizHubState.tab === 'all') {
+      if (d.weakSecs.length) {
+        html += `
+          <section class="qh-weak">
+            <div class="qh-sechead"><h2>⚠ Punti deboli da riprendere <span class="muted-inline">(${d.weakSecs.length})</span></h2></div>
+            <div class="tag-cloud">${d.weakSecs.slice(0, 12).map(w => `<a class="tag on" href="#/sec/${w.sec.id}/${clozeOf(w.sec) ? 'cloze' : 'read'}">${esc(w.sec.title)} · ${w.weak}</a>`).join('')}</div>
+          </section>`;
+      }
+      html += renderVisual(d, true) + renderQuizzes(d, true) + renderRecall(d, true) + renderClinic(d, true);
+    } else if (quizHubState.tab === 'visual') {
+      html = renderVisual(d, false);
+    } else if (quizHubState.tab === 'quiz') {
+      html = renderQuizzes(d, false);
+    } else if (quizHubState.tab === 'recall') {
+      html = renderRecall(d, false);
+    } else if (quizHubState.tab === 'clinic') {
+      html = renderClinic(d, false);
+    }
+    body.innerHTML = html;
+    hydrateImages(body);
+  };
+
+  draw();
+
+  $('#qhNb').addEventListener('change', e => { quizHubState.nb = e.target.value; draw(); });
+  $('#qhQ').addEventListener('input', e => { quizHubState.q = e.target.value; draw(); });
+  $('#view').addEventListener('click', e => {
+    const t = e.target.closest('[data-qtab]');
+    if (t) { quizHubState.tab = t.dataset.qtab; draw(); return; }
+    const smart = e.target.closest('[data-qh="smart"]');
+    if (smart && curData) {
+      const pick = pickSmartExercise(curData);
+      if (!pick) { toast('Nessun esercizio pronto in questa selezione'); return; }
+      toast(pick.msg);
+      pick.run();
+      return;
+    }
+    const lbl = e.target.closest('[data-qh-label]');
+    if (lbl) {
+      const s = secById(lbl.dataset.qhLabel);
+      if (s) startLabels(s, lbl.dataset.qhImg || null);
+      return;
+    }
+    const mp = e.target.closest('[data-qh-map]');
+    if (mp) {
+      window._mapStartQuiz = true;
+      go(`#/sec/${mp.dataset.qhMap}/map`);
+      return;
+    }
+    const eq = e.target.closest('[data-qh-eq]');
+    if (eq) {
+      if (quizHubState.nb) eqState.nb = quizHubState.nb;
+      go('#/examq/quiz');
+    }
+  });
+}
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') init();
 

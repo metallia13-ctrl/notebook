@@ -179,7 +179,7 @@ const inkPath = pts => {
   return `${d}L${l[0]} ${l[1]}`;
 };
 
-function viewPdf(id, pageParam) {
+function viewPdf(id, pageParam, modeParam = '') {
   const meta = pdfById(id);
   if (!meta) return notFound('Questo PDF');
   meta.annots = meta.annots || [];
@@ -2143,6 +2143,7 @@ function viewPdf(id, pageParam) {
       R.cur = 0;
       goTo(start);
       renderAround();
+      if (modeParam === 'occ' && meta.annots.some(a => a.type === 'occ')) setOccQuiz(true);
       if (!panel.hidden) drawPanel();
     } catch (err) {
       pagesEl.innerHTML = `<div class="empty"><p>${esc(err.message || 'Non riesco ad aprire il PDF.')}</p><a class="btn" href="${back}">Torna indietro</a></div>`;

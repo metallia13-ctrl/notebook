@@ -681,6 +681,8 @@ let session = null;
 
 function scopeCards(scope) {
   if (scope === 'all') return state.cards.filter(c => !c.suspended);
+  if (scope === 'io-all') return state.cards.filter(c => !c.suspended && c.type === 'occlusion');
+  if (scope.startsWith('io-')) { const id = scope.slice(3); return state.cards.filter(c => !c.suspended && c.type === 'occlusion' && c.notebookId === id); }
   if (scope.startsWith('sec-')) { const id = scope.slice(4); return state.cards.filter(c => c.sectionId === id && !c.suspended); }
   if (scope.startsWith('tag-')) { const t = scope.slice(4); return state.cards.filter(c => tagsOf(c).includes(t) && !c.suspended); }
   if (scope === 'exam') { const ex = examRec(); return ex ? state.cards.filter(c => !c.suspended && inExam(c, ex)) : []; }
@@ -688,6 +690,8 @@ function scopeCards(scope) {
 }
 function scopeTitle(scope) {
   if (scope === 'all') return 'Tutte le flashcard';
+  if (scope === 'io-all') return 'Tutte le occlusioni';
+  if (scope.startsWith('io-')) return `Occlusioni · ${nbById(scope.slice(3))?.name || ''}`;
   if (scope.startsWith('sec-')) return secById(scope.slice(4))?.title || 'Sezione';
   if (scope.startsWith('tag-')) return `#${scope.slice(4)}`;
   if (scope === 'exam') return `Esame: ${examRec()?.name || ''}`;
@@ -695,6 +699,7 @@ function scopeTitle(scope) {
 }
 function scopeBack(scope) {
   if (scope === 'all') return '#/cards';
+  if (scope.startsWith('io-')) return '#/quiz/visual';
   if (scope.startsWith('sec-')) return `#/sec/${scope.slice(4)}/cards`;
   if (scope.startsWith('tag-')) return `#/tag/${encodeURIComponent(scope.slice(4))}`;
   if (scope === 'exam') return '#/cards';

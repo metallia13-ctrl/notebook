@@ -5375,7 +5375,8 @@ function modeMap(sec, body) {
   const onEscFull = e => { if (e.key === 'Escape' && mapFull && body.isConnected) { mapFull = false; draw(); } };
   document.addEventListener('keydown', onEscFull);
   addCleanup(() => document.removeEventListener('keydown', onEscFull));
-  let quiz = false;
+  let quiz = !!window._mapStartQuiz;
+  window._mapStartQuiz = false;
   // v3.57: semaforo nel ripasso delle mappe; le parti rosse e arancio diventano punti deboli
   let rateFor = null;
   const mpMarks = () => (sec.mpMarks && typeof sec.mpMarks === 'object' ? sec.mpMarks : (sec.mpMarks = {}));

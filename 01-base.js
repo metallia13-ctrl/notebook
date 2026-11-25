@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.38';
+const APP_VERSION = '4.39';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -1948,7 +1948,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers', 'graph', 'formato', 'ask', 'inbox', 'raccolta', 'pad'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers', 'graph', 'formato', 'ask', 'inbox', 'raccolta', 'pad', 'quiz'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1958,7 +1958,7 @@ function route() {
   Pad.onRoute();
   if (Resume.pendingY !== null) setTimeout(() => Resume.restore(), 0);
   const h = decodeURIComponent(location.hash.replace(/^#\/?/, '')) || 'notebooks';
-  const [p0, p1, p2] = h.split('/');
+  const [p0, p1, p2, p3] = h.split('/');
   if (p0 !== 'sec') state.fromReview = false;
   // Un’importazione finita non blocca il modulo quando ci torni
   if (p0 !== 'import' && importJob && !importJob.running) importJob = null;
@@ -1990,7 +1990,8 @@ function route() {
     case 'clinic': return viewClinic(p1);
     case 'glossary': return viewGlossary();
     case 'tag': return viewTag(p1);
-    case 'pdf': return viewPdf(p1, p2);
+    case 'pdf': return viewPdf(p1, p2, p3);
+    case 'quiz': return viewQuizHub(p1);
     case 'pdfs': return viewPdfLibrary(p1, p2);
     case 'exam': return viewExam(p1, p2);
     case 'deck': return viewDeck(p1);
@@ -3750,6 +3751,7 @@ const ICONS = {
   links: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/></svg>',
   guide: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .8-1 1.5v.4"/><path d="M12 16.8v.2"/></svg>',
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
+  quiz: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>',
   search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>'
 };
 const hueOf = str => { let h = 0; for (const ch of String(str)) h = (h * 31 + ch.codePointAt(0)) % 360; return h; };
@@ -4794,7 +4796,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); const g = n && p[2] ? groupsOf(n).find(x => x.id === p[2]) : null; return g ? `Torna a ${g.name}` : n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { pad: 'Blocco note', scores: 'Score clinici', viva: 'Interrogazione', papers: 'Articoli', raccolta: 'Raccolta', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { quiz: 'Allenamento', pad: 'Blocco note', scores: 'Score clinici', viva: 'Interrogazione', papers: 'Articoli', raccolta: 'Raccolta', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {
