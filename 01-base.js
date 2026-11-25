@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.35';
+const APP_VERSION = '4.36';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -480,8 +480,441 @@ function repairClozes(md) {
   }).join('\n');
 }
 
+
+/* ---------------------------------------------------------------------
+   Riparazione tabelle Markdown (NotebookLM / Gemini) e simboli LaTeX semplici
+   --------------------------------------------------------------------- */
+function splitTableCellsRaw(line) {
+  const parts = [];
+  let cur = '';
+  let inCode = false;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '\\' && line[i + 1] === '|') { cur += '\\|'; i++; continue; }
+    if (ch === '`') { inCode = !inCode; cur += ch; continue; }
+    if (!inCode) {
+      if (line.startsWith('{{', i)) { braceDepth++; cur += '{{'; i++; continue; }
+      if (braceDepth > 0 && line.startsWith('}}', i)) { braceDepth--; cur += '}}'; i++; continue; }
+      if (line.startsWith('[[', i)) { bracketDepth++; cur += '[['; i++; continue; }
+      if (bracketDepth > 0 && line.startsWith(']]', i)) { bracketDepth--; cur += ']]'; i++; continue; }
+      if (ch === '|' && braceDepth === 0 && bracketDepth === 0) {
+        parts.push(cur);
+        cur = '';
+        continue;
+      }
+    }
+    cur += ch;
+  }
+  parts.push(cur);
+  return parts;
+}
+const MD_TABLE_SEP_RE = /^\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?$/;
+const isTableSepLine = l => MD_TABLE_SEP_RE.test(String(l || '').trim());
+function parseTableSepCols(l) {
+  let t = String(l || '').trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|')) t = t.slice(0, -1);
+  return t.split('|').map(c => c.trim());
+}
+function tableStartAt(lines, idx) {
+  if (idx >= lines.length) return null;
+  const t = lines[idx].trim();
+  if (!t || t.indexOf('|') < 0 || /^(?:#{1,6}\s|>|```)/.test(t) || isTableSepLine(t)) return null;
+  let j = idx + 1;
+  while (j < lines.length && lines[j].trim() === '') j++;
+  if (j < lines.length && isTableSepLine(lines[j])) return { sepIdx: j, cols: parseTableSepCols(lines[j]).length };
+  return null;
+}
+function parseTableHeaderCells(rawLines, cols) {
+  const joined = rawLines.map(l => l.trim()).filter(Boolean).join(' ');
+  const parts = splitTableCellsRaw(joined);
+  if (parts.length && parts[0].trim() === '') parts.shift();
+  if (parts.length && parts[parts.length - 1].trim() === '') parts.pop();
+  const cells = parts.map(c => c.trim());
+  while (cells.length < cols) cells.push('');
+  return cells.slice(0, cols);
+}
+function repairMarkdownTables(md) {
+  if (!md || md.indexOf('|') < 0) return md;
+  const lines = String(md).replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  let inFence = false;
+  const n = lines.length;
+  while (i < n) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) { inFence = !inFence; out.push(line); i++; continue; }
+    if (inFence) { out.push(line); i++; continue; }
+
+    let start = tableStartAt(lines, i);
+    const hdrStart = i;
+    if (!start && line.trim().startsWith('|') && !isTableSepLine(line)) {
+      let k = i + 1, nonEmpty = 1;
+      while (k < n && nonEmpty <= 5) {
+        const kt = lines[k].trim();
+        if (kt === '') { k++; continue; }
+        if (isTableSepLine(kt)) {
+          const colsTry = parseTableSepCols(kt).length;
+          const hdrTry = parseTableHeaderCells(lines.slice(i, k), colsTry);
+          if (hdrTry.filter(Boolean).length >= 2) start = { sepIdx: k, cols: colsTry };
+          break;
+        }
+        if (!kt.startsWith('|')) break;
+        nonEmpty++;
+        k++;
+      }
+    }
+    if (!start) { out.push(line); i++; continue; }
+
+    const { sepIdx, cols } = start;
+    const sepLine = lines[sepIdx].trim();
+    const hdrLines = lines.slice(hdrStart, sepIdx);
+    let k = sepIdx + 1;
+    const bodyRaw = [];
+    const hadBlankBetweenHdrSep = sepIdx > hdrStart + 1;
+    let hadBlankInBody = false;
+
+    while (k < n) {
+      const cur = lines[k];
+      const ct = cur.trim();
+      if (ct === '') {
+        let m = k + 1;
+        while (m < n && lines[m].trim() === '') m++;
+        if (m >= n) break;
+        const nt = lines[m].trim();
+        if (tableStartAt(lines, m)) break;
+        if (nt.startsWith('|') && !isTableSepLine(nt)) {
+          hadBlankInBody = true;
+          bodyRaw.push('');
+          k = m;
+          continue;
+        }
+        break;
+      }
+      if (/^(?:#{1,6}\s|```|>|(?:[-*_]\s*){3,}$)/.test(ct)) break;
+      if (isTableSepLine(ct)) break;
+      if (k > sepIdx + 1 && tableStartAt(lines, k)) break;
+
+      if (ct.indexOf('|') >= 0) { bodyRaw.push(cur); k++; continue; }
+
+      // Riga senza '|' che continua la cella precedente
+      let prevNonEmpty = '';
+      for (let p = bodyRaw.length - 1; p >= 0; p--) {
+        if (bodyRaw[p].trim()) { prevNonEmpty = bodyRaw[p].trim(); break; }
+      }
+      if (prevNonEmpty && !prevNonEmpty.endsWith('|')) {
+        let hasMorePipe = false;
+        for (let m = k + 1; m < Math.min(n, k + 5); m++) {
+          const mt = lines[m].trim();
+          if (mt === '' || /^(?:#{1,6}\s|```)/.test(mt)) break;
+          if (mt.indexOf('|') >= 0) { hasMorePipe = true; break; }
+        }
+        if (hasMorePipe) { bodyRaw.push(cur); k++; continue; }
+      }
+      break;
+    }
+
+    // Se la tabella è già perfettamente valida, la lasciamo intatta carattere per carattere
+    let alreadyClean = !hadBlankBetweenHdrSep && !hadBlankInBody && hdrLines.length === 1;
+    if (alreadyClean) {
+      for (const bl of bodyRaw) {
+        const bt = bl.trim();
+        if (bt === '|') { alreadyClean = false; break; }
+        const parts = splitTableCellsRaw(bt);
+        if (bt.startsWith('|')) parts.shift();
+        if (bt.endsWith('|')) parts.pop();
+        if (parts.length !== cols) { alreadyClean = false; break; }
+      }
+    }
+    if (alreadyClean) {
+      for (let p = hdrStart; p < k; p++) out.push(lines[p]);
+      i = k;
+      continue;
+    }
+
+    const hdrCells = parseTableHeaderCells(hdrLines, cols);
+    const sepCells = parseTableSepCols(sepLine);
+    const rows = [];
+    let curRow = [];
+    let awaitingClose = false;
+    const flushRow = () => {
+      if (curRow.length) {
+        while (curRow.length < cols) curRow.push('');
+        rows.push(curRow.slice(0, cols));
+        curRow = [];
+      }
+      awaitingClose = false;
+    };
+    const appendCellText = (txt) => {
+      if (!txt) return;
+      const sepJoin = /^[-*•]\s+/.test(txt) ? '<br>' : ' ';
+      curRow[curRow.length - 1] = curRow[curRow.length - 1] ? `${curRow[curRow.length - 1]}${sepJoin}${txt}` : txt;
+    };
+
+    for (const bl of bodyRaw) {
+      let bt = bl.trim();
+      if (!bt) continue;
+
+      if (awaitingClose) {
+        if (bt === '|') { flushRow(); continue; }
+        if (/^\|\s*\|/.test(bt)) {
+          // Il primo '|' chiude la riga precedente, il secondo apre la riga successiva
+          flushRow();
+          bt = bt.slice(1).trimStart();
+        } else if (bt.startsWith('|')) {
+          flushRow();
+        } else {
+          if (bt.indexOf('|') < 0) { appendCellText(bt); continue; }
+          const parts = splitTableCellsRaw(bt);
+          if (parts[0].trim()) appendCellText(parts[0].trim());
+          flushRow();
+          const rest = parts.slice(1).join('|').trim();
+          if (!rest) continue;
+          bt = rest.startsWith('|') ? rest : `|${rest}`;
+        }
+      }
+
+      if (bt === '|') { if (curRow.length) flushRow(); continue; }
+
+      const startsPipe = bt.startsWith('|');
+      const rawParts = splitTableCellsRaw(bt);
+      const endsPipe = rawParts.length > 1 && rawParts[rawParts.length - 1].trim() === '';
+
+      if (!startsPipe) {
+        if (curRow.length) {
+          if (rawParts.length === 1) { appendCellText(bt); continue; }
+          if (rawParts[0].trim()) appendCellText(rawParts[0].trim());
+          const rem = endsPipe ? rawParts.slice(1, -1) : rawParts.slice(1);
+          for (const c of rem) {
+            if (curRow.length === cols) flushRow();
+            curRow.push(c.trim());
+          }
+          if (curRow.length >= cols) {
+            if (endsPipe) flushRow();
+            else awaitingClose = true;
+          }
+          continue;
+        }
+        const cells = (endsPipe ? rawParts.slice(0, -1) : rawParts).map(c => c.trim());
+        if (cells.length >= cols) rows.push(cells.slice(0, cols));
+        else curRow = cells;
+        continue;
+      }
+
+      const cells = (endsPipe ? rawParts.slice(1, -1) : rawParts.slice(1)).map(c => c.trim());
+      if (!curRow.length && endsPipe && cells.length === cols) {
+        rows.push(cells);
+        continue;
+      }
+      for (let idxC = 0; idxC < cells.length; idxC++) {
+        const c = cells[idxC];
+        if (curRow.length === cols) {
+          if (c === '' && idxC === 0) { flushRow(); continue; }
+          flushRow();
+        }
+        curRow.push(c);
+      }
+      if (curRow.length >= cols) {
+        if (endsPipe) flushRow();
+        else awaitingClose = true;
+      }
+    }
+    if (curRow.length) flushRow();
+
+    const fmtRow = arr => `| ${arr.map(c => c.replace(/\n/g, '<br>')).join(' | ')} |`;
+    out.push(fmtRow(hdrCells));
+    out.push(`| ${sepCells.join(' | ')} |`);
+    rows.forEach(r => out.push(fmtRow(r)));
+    i = k;
+  }
+  return out.join('\n');
+}
+
+const TEX_SYM = {
+  rightarrow: '→', to: '→', Rightarrow: '⇒', implies: '⇒',
+  leftarrow: '←', gets: '←', Leftarrow: '⇐',
+  leftrightarrow: '↔', Leftrightarrow: '⇔', iff: '⇔', rightleftharpoons: '⇌',
+  uparrow: '↑', downarrow: '↓', updownarrow: '↕', nearrow: '↗', searrow: '↘',
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', Delta: 'Δ', epsilon: 'ε', varepsilon: 'ε',
+  zeta: 'ζ', eta: 'η', theta: 'θ', iota: 'ι', kappa: 'κ', lambda: 'λ', mu: 'μ', nu: 'ν',
+  xi: 'ξ', pi: 'π', rho: 'ρ', sigma: 'σ', Sigma: 'Σ', tau: 'τ', upsilon: 'υ',
+  phi: 'φ', varphi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω', Omega: 'Ω',
+  pm: '±', mp: '∓', times: '×', cdot: '·', div: '÷',
+  le: '≤', leq: '≤', ge: '≥', geq: '≥', neq: '≠', ne: '≠',
+  approx: '≈', sim: '∼', equiv: '≡', propto: '∝', infty: '∞',
+  circ: '°', degree: '°', bullet: '•', dots: '…', ldots: '…', in: '∈', notin: '∉', lt: '<', gt: '>'
+};
+const SUP_MAP = { '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', n: 'ⁿ', i: 'ⁱ' };
+const SUB_MAP = { '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄', '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉', '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎' };
+function mapUniScript(str, map) {
+  let out = '';
+  for (const ch of str) { if (!map[ch]) return null; out += map[ch]; }
+  return out;
+}
+function cleanSimpleTexLine(line) {
+  if (line.indexOf('$') < 0) return line;
+  // Protegge gli span di codice inline `...`
+  const parts = line.split(/(`[^`]*`)/g);
+  return parts.map((seg, idx) => {
+    if (idx % 2 === 1 || seg.indexOf('$') < 0) return seg;
+    return seg.replace(/(?<!\$)\$(?!\$)([^$\n]{1,120})(?<!\$)\$(?!\$)/g, (m, inner) => {
+      // Non tocca valute come "$5 e $10": richiede un comando \... oppure ^ / _
+      if (!/[\\^_]/.test(inner)) return m;
+      let s = inner.trim();
+      s = s.replace(/\\(?:text|mathrm|mathbf|mathit)\{([^{}]*)\}/g, '$1');
+      let ok = true;
+      s = s.replace(/\\([a-zA-Z]+)\b/g, (mm, cmd) => {
+        if (Object.prototype.hasOwnProperty.call(TEX_SYM, cmd)) return TEX_SYM[cmd];
+        ok = false;
+        return mm;
+      });
+      if (!ok) return m;
+      s = s.replace(/\^\{([^{}]+)\}|\^([0-9+\-ni])/g, (mm, g1, g2) => {
+        const rep = mapUniScript(g1 || g2, SUP_MAP);
+        if (rep === null) { ok = false; return mm; }
+        return rep;
+      });
+      s = s.replace(/_\{([^{}]+)\}|_([0-9+\-])/g, (mm, g1, g2) => {
+        const rep = mapUniScript(g1 || g2, SUB_MAP);
+        if (rep === null) { ok = false; return mm; }
+        return rep;
+      });
+      if (!ok || /[\\{}]/.test(s)) return m;
+      return s.replace(/\s+/g, ' ').trim();
+    });
+  }).join('');
+}
+function cleanSimpleTex(md) {
+  if (!md || md.indexOf('$') < 0) return md;
+  let fence = false;
+  return String(md).split('\n').map(l => {
+    if (/^\s*```/.test(l)) { fence = !fence; return l; }
+    return fence ? l : cleanSimpleTexLine(l);
+  }).join('\n');
+}
+
+function htmlClipboardToMd(html) {
+  if (!html || !/<table\b/i.test(html)) return null;
+  let doc;
+  try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch { return null; }
+  const body = doc && doc.body;
+  if (!body || !body.querySelector('table')) return null;
+
+  const cleanText = s => String(s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ');
+  const inline = node => {
+    let out = '';
+    node.childNodes.forEach(n => {
+      if (n.nodeType === 3) { out += cleanText(n.nodeValue); return; }
+      if (n.nodeType !== 1) return;
+      const tag = n.tagName;
+      if (/^(SCRIPT|STYLE|SVG|BUTTON|NOSCRIPT)$/.test(tag)) return;
+      if (tag === 'BR') { out += '<br>'; return; }
+      const inner = inline(n);
+      if (tag === 'STRONG' || tag === 'B') { const t = inner.trim(); if (t) out += ` **${t}** `; return; }
+      if (tag === 'EM' || tag === 'I') { const t = inner.trim(); if (t) out += ` *${t}* `; return; }
+      if (tag === 'S' || tag === 'DEL' || tag === 'STRIKE') { const t = inner.trim(); if (t) out += ` ~~${t}~~ `; return; }
+      if (tag === 'CODE') { const t = n.textContent.trim(); if (t) out += ` \`${t}\` `; return; }
+      if (tag === 'SUP' || tag === 'SUB') {
+        const t = inner.trim();
+        // Salta eventuali chip di citazione numerici vuoti o puramente di NotebookLM
+        if (!t) return;
+        out += `<${tag.toLowerCase()}>${t}</${tag.toLowerCase()}>`;
+        return;
+      }
+      if (tag === 'A') {
+        const t = inner.trim();
+        const href = (n.getAttribute('href') || '').trim();
+        out += href && /^https?:\/\//i.test(href) && t && t !== href ? `[${t}](${href})` : t;
+        return;
+      }
+      if (tag === 'LI') { const t = inner.trim(); if (t) out += `<br>• ${t}`; return; }
+      if (/^(P|DIV)$/.test(tag)) { const t = inner.trim(); if (t) out += `<br>${t}`; return; }
+      out += inner;
+    });
+    return out;
+  };
+  const cellText = td => inline(td)
+    .replace(/(?:<br>\s*)+/g, '<br>')
+    .replace(/^(?:<br>)+|(?:<br>)+$/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\|/g, '\\|')
+    .trim();
+  const tableToMd = tbl => {
+    const trs = [...tbl.querySelectorAll('tr')];
+    const rows = trs.map(tr => [...tr.children].filter(c => c.tagName === 'TH' || c.tagName === 'TD').map(cellText)).filter(r => r.length);
+    if (!rows.length) return '';
+    const w = Math.max(...rows.map(r => r.length));
+    rows.forEach(r => { while (r.length < w) r.push(''); });
+    const fmt = r => `| ${r.join(' | ')} |`;
+    return [fmt(rows[0]), `|${' --- |'.repeat(w)}`, ...rows.slice(1).map(fmt)].join('\n');
+  };
+  const listToMd = (list, pad = '') => {
+    const ordered = list.tagName === 'OL';
+    let idx = +(list.getAttribute('start') || 1);
+    const out = [];
+    [...list.children].forEach(li => {
+      if (li.tagName !== 'LI') return;
+      const clone = li.cloneNode(true);
+      const subs = [...clone.querySelectorAll(':scope > ul, :scope > ol')];
+      subs.forEach(s => s.remove());
+      const marker = ordered ? `${idx++}. ` : '- ';
+      const txt = inline(clone).replace(/<br>/g, ' ').replace(/\s+/g, ' ').trim();
+      let line = `${pad}${marker}${txt}`;
+      subs.forEach(s => { line += `\n${listToMd(s, pad + ' '.repeat(marker.length))}`; });
+      out.push(line);
+    });
+    return out.join('\n');
+  };
+  const blocks = [];
+  const walk = parent => {
+    let inlineBuf = '';
+    const flushBuf = () => {
+      const t = inlineBuf.replace(/<br>/g, '\n').replace(/[ \t]{2,}/g, ' ').trim();
+      if (t) blocks.push(t);
+      inlineBuf = '';
+    };
+    parent.childNodes.forEach(n => {
+      if (n.nodeType === 3) { inlineBuf += cleanText(n.nodeValue); return; }
+      if (n.nodeType !== 1) return;
+      const tag = n.tagName;
+      if (/^(SCRIPT|STYLE|SVG|BUTTON|NOSCRIPT)$/.test(tag)) return;
+      if (/^(SPAN|STRONG|B|EM|I|U|S|DEL|CODE|A|SUP|SUB|BR)$/.test(tag)) { inlineBuf += inline(n); return; }
+      flushBuf();
+      if (tag === 'TABLE') { const t = tableToMd(n); if (t) blocks.push(t); }
+      else if (/^H[1-6]$/.test(tag)) { const t = inline(n).replace(/<br>/g, ' ').replace(/\s+/g, ' ').trim(); if (t) blocks.push(`${'#'.repeat(+tag[1])} ${t}`); }
+      else if (tag === 'UL' || tag === 'OL') { const t = listToMd(n); if (t) blocks.push(t); }
+      else if (tag === 'BLOCKQUOTE') { const t = inline(n).replace(/<br>/g, '\n').trim(); if (t) blocks.push(t.split('\n').map(l => `> ${l.trim()}`).join('\n')); }
+      else if (tag === 'HR') blocks.push('---');
+      else if (tag === 'PRE') blocks.push(`\`\`\`\n${n.textContent.replace(/\n$/, '')}\n\`\`\``);
+      else if (tag === 'P') { const t = inline(n).replace(/<br>/g, '\n').replace(/[ \t]{2,}/g, ' ').trim(); if (t) blocks.push(t); }
+      else walk(n);
+    });
+    flushBuf();
+  };
+  walk(body);
+  const res = blocks.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+  return res ? cleanSimpleTex(repairMarkdownTables(res)) : null;
+}
+
+function normalizePastedMarkdown(clipboardData) {
+  if (!clipboardData) return null;
+  const plain = clipboardData.getData('text/plain') || '';
+  const html = clipboardData.getData('text/html') || '';
+  // Se l'HTML contiene una tabella e il testo semplice non è già una tabella Markdown con separatore, converti l'HTML
+  const plainHasMdTable = /(?:^|\n)\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?(?:\n|$)/.test(plain);
+  if (html && /<table\b/i.test(html) && !plainHasMdTable) {
+    const converted = htmlClipboardToMd(html);
+    if (converted) return converted;
+  }
+  if (!plain) return null;
+  const fixed = cleanSimpleTex(repairMarkdownTables(plain));
+  return fixed !== plain ? fixed : null;
+}
+
 async function saveSection(sec) {
-  if (typeof sec.md === 'string') sec.md = repairClozes(sec.md);
+  if (typeof sec.md === 'string') sec.md = repairClozes(cleanSimpleTex(repairMarkdownTables(sec.md)));
   sec.updated = Date.now();
   await DB.put('sections', sec);
   const i = state.sections.findIndex(s => s.id === sec.id);
@@ -650,7 +1083,8 @@ function linkPdfCitations(md) {
   });
 }
 function renderMd(md) {
-  const src = renderXrefs(extractHtmlBlocks(linkPdfCitations(md || ''))
+  const pre = cleanSimpleTex(repairMarkdownTables(md || ''));
+  const src = renderXrefs(extractHtmlBlocks(linkPdfCitations(pre))
     .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`));
   const src2 = renderMarks(src).replace(clozeRe(), (m, t) => { const [term, hint] = splitHint(t); return `<mark class="cz"${hint ? ` data-hint="${esc(hint)}"` : ''}>${term}</mark>`; })
     // v3.57: note a comparsa, scritte ^[testo della nota]: una ⓘ che si apre con un tocco
@@ -692,29 +1126,36 @@ function splitText(text, max = CHUNK_CHARS) {
 const BULLET_RE = /^[•▪◦●■□➢➤►\-–*]\s+/;
 const isListLine = l => /^(- |\d+\. )/.test(l);
 
-// Formattazione di base senza AI: elenchi, righe spezzate dal PDF, titoli in maiuscolo.
+// Formattazione di base senza AI: elenchi, righe spezzate dal PDF, titoli in maiuscolo, preservando le tabelle Markdown.
 function basicFormat(text) {
-  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const cleaned = cleanSimpleTex(repairMarkdownTables(String(text || '').replace(/\r\n?/g, '\n')));
+  const lines = cleaned.split('\n');
   const out = [];
-  const push = (line, list) => {
+  const isTbl = l => /^\|/.test(l) || isTableSepLine(l);
+  const push = (line, kind) => {
     const prev = out[out.length - 1];
-    if (prev !== undefined && prev !== '' && !(list && isListLine(prev))) out.push('');
+    const sameGroup = (kind === 'list' && isListLine(prev || '')) || (kind === 'table' && isTbl(prev || ''));
+    if (prev !== undefined && prev !== '' && !sameGroup) out.push('');
     out.push(line);
   };
+  let inFence = false;
   for (const raw of lines) {
     const l = raw.trim();
+    if (/^```/.test(l)) { inFence = !inFence; out.push(raw); continue; }
+    if (inFence) { out.push(raw); continue; }
     if (!l) { if (out.length && out[out.length - 1] !== '') out.push(''); continue; }
-    if (BULLET_RE.test(l)) { push('- ' + l.replace(BULLET_RE, ''), true); continue; }
-    if (/^\d{1,2}[.)]\s+/.test(l)) { push(l.replace(/^(\d{1,2})[.)]\s+/, '$1. '), true); continue; }
-    if (l.length < 80 && l === l.toUpperCase() && /[A-ZÀ-Ý]{3}/.test(l)) { push('### ' + l, false); continue; }
+    if (isTbl(l)) { push(l, 'table'); continue; }
+    if (BULLET_RE.test(l)) { push('- ' + l.replace(BULLET_RE, ''), 'list'); continue; }
+    if (/^\d{1,2}[.)]\s+/.test(l)) { push(l.replace(/^(\d{1,2})[.)]\s+/, '$1. '), 'list'); continue; }
+    if (l.length < 80 && l === l.toUpperCase() && /[A-ZÀ-Ý]{3}/.test(l)) { push('### ' + l, 'block'); continue; }
     const prev = out[out.length - 1];
-    if (prev && !prev.startsWith('#') && !/[.:;!?]$/.test(prev) && /^[a-zà-ÿ(,]/.test(l)) {
+    if (prev && !prev.startsWith('#') && !isTbl(prev) && !/[.:;!?]$/.test(prev) && /^[a-zà-ÿ(,]/.test(l)) {
       out[out.length - 1] = prev.endsWith('-') ? prev.slice(0, -1) + l : `${prev} ${l}`;
       continue;
     }
-    push(l, false);
+    push(l, 'block');
   }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return repairMarkdownTables(out.join('\n').replace(/\n{3,}/g, '\n\n').trim());
 }
 
 function firstLineTitle(text) {
@@ -758,7 +1199,7 @@ function parseAiNotes(raw) {
   let qs = '';
   const di = notes.indexOf('===DOMANDE===');
   if (di >= 0) { qs = notes.slice(di + 13); notes = notes.slice(0, di); }
-  return { title, md: notes.trim(), questions: parseQuestions(qs) };
+  return { title, md: cleanSimpleTex(repairMarkdownTables(notes.trim())), questions: parseQuestions(qs) };
 }
 
 /* ---------------------------------------------------------------------

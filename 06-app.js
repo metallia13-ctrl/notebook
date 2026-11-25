@@ -1500,6 +1500,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.36", title: "tabelle copiate da Gemini Notebook / NotebookLM sempre integre", html: `      <ul>
+        <li><strong>Riparazione automatica delle tabelle</strong>: le tabelle copiate da <strong>Gemini Notebook / NotebookLM</strong> (spesso spezzate su più righe con righe vuote tra una cella e l’altra o con <code>| |</code> tra una riga e la successiva) vengono ricostruite automaticamente in tabelle pulite, sia quando le incolli/importi sia nelle sezioni già salvate.</li>
+        <li><strong>Incolla anche tabelle selezionate dalla pagina</strong>: se selezioni una tabella direttamente dallo schermo e la incolli in <em>Importa</em> o in <em>Modifica</em>, viene convertita subito in tabella Markdown.</li>
+        <li><strong>Simboli scientifici leggibili</strong>: formule inline come <code>$\rightarrow$</code>, frecce, lettere greche e simboli clinici (<code>α, β, γ, Δ, μ, ±, ≤, ≥, ↑, ↓, →</code>) vengono convertiti automaticamente in simboli puliti.</li>
+      </ul>` },
   { v: "4.35", title: "zoom di tutta l’app, annulla/riparti ripasso, archivio blocco note per cartelle", html: `      <ul>
         <li><strong>Zoom di tutta l’app</strong>: interfaccia subito più leggibile (+12% di partenza) e regolabile a piacere dall’<strong>85% al 150%</strong> in <em>Impostazioni → Lettura e aspetto</em> oppure al volo da <strong>Altro</strong> (tasti <strong>A− / A+</strong>). Sistemato anche lo zoom a due dita e con rotellina nei PDF, in Affianca, nelle Mappe e nel Blocco note.</li>
         <li><strong>Gestione del ripasso (↺ Ripasso)</strong>: subito dopo aver votato compare <strong>Annulla</strong> nel messaggio in basso; in cima a ogni sezione pianificata il pulsante <strong>↺ Ripasso</strong> permette di <em>annullare l’ultimo ripasso</em>, <em>rimettere l’argomento in primo apprendimento</em> (ripasso fissato a domani, senza penalità) oppure <em>toglierlo dal ripasso</em> (torna Nuova).</li>

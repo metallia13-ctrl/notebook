@@ -542,10 +542,15 @@ function srsLabel(s) {
 function viewSection(id, mode) {
   const sec = secById(id);
   if (!sec) return notFound('Questa sezione');
-  // appunti già salvati con un cloze rimasto aperto: li sistemo una volta
-  if (mode !== 'edit' && typeof sec.md === 'string' && repairClozes(sec.md) !== sec.md) {
-    saveSection(sec).then(() => { toast('Ho chiuso un cloze rimasto aperto in questa sezione'); route(); });
-    return;
+  // appunti già salvati con un cloze rimasto aperto o tabelle spezzate da NotebookLM: li sistemo una volta
+  if (mode !== 'edit' && typeof sec.md === 'string') {
+    const fixedCloze = repairClozes(sec.md);
+    const fixedTbl = cleanSimpleTex(repairMarkdownTables(fixedCloze));
+    if (fixedTbl !== sec.md) {
+      const msg = fixedCloze !== sec.md ? 'Ho chiuso un cloze rimasto aperto in questa sezione' : 'Ho sistemato automaticamente le tabelle in questa sezione';
+      saveSection(sec).then(() => { toast(msg); route(); });
+      return;
+    }
   }
   const caseSec = isCase(sec);
   const semSec = isSemei(sec);
@@ -2556,19 +2561,30 @@ function modeEdit(sec, body, opts = {}) {
     const list = await openPdfCropper(sec.notebookId, { sec });
     if (list.length) { pushHist(true); insertAtCursor(ta, `\n\n${list.map(r => imageMd(r.id, r.caption)).join('\n\n')}\n\n`); pushHist(true); refresh(); }
   }, body);
-  // Immagini incollate (es. uno screenshot su Windows)
+  // Immagini incollate (es. uno screenshot su Windows) e tabelle da NotebookLM/Gemini
   ta.addEventListener('paste', async e => {
     const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
-    if (!item) return;
-    e.preventDefault();
-    try {
-      const im = await saveImage(await compressImage(item.getAsFile()), sec.notebookId);
+    if (item) {
+      e.preventDefault();
+      try {
+        const im = await saveImage(await compressImage(item.getAsFile()), sec.notebookId);
+        pushHist(true);
+        insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+        pushHist(true);
+        refresh();
+        toast('Immagine incollata');
+      } catch (err) { toast(err.message, 'err'); }
+      return;
+    }
+    const norm = normalizePastedMarkdown(e.clipboardData);
+    if (norm !== null) {
+      e.preventDefault();
       pushHist(true);
-      insertAtCursor(ta, `\n\n${imageMd(im.id)}\n\n`);
+      insertAtCursor(ta, norm);
       pushHist(true);
       refresh();
-      toast('Immagine incollata');
-    } catch (err) { toast(err.message, 'err'); }
+      toast('Tabella sistemata automaticamente');
+    }
   });
 
   on('[data-wrap]', 'click', e => {
@@ -2813,6 +2829,14 @@ function viewImport(nbParam, groupParam) {
     $('#textInfo').textContent = n > 1 ? `Testo lungo: verrà diviso in ${n} sezioni.` : '';
   };
   $('#imText').addEventListener('input', textInfo);
+  $('#imText').addEventListener('paste', e => {
+    const norm = normalizePastedMarkdown(e.clipboardData);
+    if (norm === null) return;
+    e.preventDefault();
+    insertAtCursor(e.currentTarget, norm);
+    textInfo();
+    toast('Tabella sistemata automaticamente');
+  });
   // v3.95: Word, PowerPoint e foto → testo
   $('#ofKeep').addEventListener('change', e => { S().ofKeepPhotos = e.target.checked; Settings.save(); });
   $('#ofFile').addEventListener('change', async e => {
@@ -9003,10 +9027,38 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     if (b) { notifyActive(+b.dataset.b); goToCode(+b.dataset.b); return; }
     if (e.target.closest('a')) e.preventDefault();
   });
-  // incollare: solo testo, niente stili presi da altre pagine
+  // incollare: testo pulito, e se c’è una tabella (da NotebookLM/Gemini o HTML) la inserisce subito come blocco Markdown pulito
   box.addEventListener('paste', e => {
-    const text = e.clipboardData?.getData('text/plain');
-    if (text === undefined || [...(e.clipboardData?.items || [])].some(i => i.type.startsWith('image/'))) return;
+    if ([...(e.clipboardData?.items || [])].some(i => i.type.startsWith('image/'))) return;
+    const norm = normalizePastedMarkdown(e.clipboardData);
+    const plain = e.clipboardData?.getData('text/plain');
+    const candidate = norm !== null ? norm : (plain || '');
+    const hasMdTable = candidate.indexOf('|') >= 0 && /(?:^|\n)\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?(?:\n|$)/.test(candidate);
+    if (hasMdTable) {
+      e.preventDefault();
+      flush();
+      const blk = blockOf(e.target);
+      const idxs = contentIndices();
+      const idx = blk && blk.dataset.b !== 'new' ? +blk.dataset.b
+        : (idxs.includes(curIdx) ? curIdx : (idxs.length ? idxs[idxs.length - 1] : -1));
+      onBeforeMutate();
+      if (idx >= 0 && raws[idx] !== undefined) {
+        const cur = raws[idx];
+        const core = cur.trimEnd();
+        const trail = cur.slice(core.length) || '\n\n';
+        raws[idx] = core ? `${core}\n\n${candidate}${trail}` : `${candidate}${trail}`;
+      } else {
+        raws = [`${candidate}\n`];
+      }
+      ta.value = raws.join('');
+      onContentChange();
+      onAfterMutate();
+      render();
+      toast('Tabella incollata e sistemata');
+      return;
+    }
+    const text = norm !== null ? norm : plain;
+    if (text === undefined) return;
     e.preventDefault();
     document.execCommand('insertText', false, text);
   });
