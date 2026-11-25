@@ -6600,7 +6600,7 @@ function viewPaper(id) {
     </header>
     <div class="row-actions">
       ${pdf ? `<a class="btn primary" href="#/pdf/${pdf.id}">Apri il PDF</a><button class="btn" type="button" data-act="pp-split">⇆ Affianca</button>` : '<button class="btn" type="button" data-act="pp-edit">＋ Carica il PDF</button>'}
-      ${p.url ? `<a class="btn" href="${esc(p.url)}" target="_blank" rel="noopener">Apri online</a>` : ''}
+      ${p.url ? `<a class="btn" href="${esc(safeUrl(p.url))}" target="_blank" rel="noopener">Apri online</a>` : ''}
       <a class="btn ghost" href="${p.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${encodeURIComponent(p.pmid)}/` : `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(p.doi || p.title)}`}" target="_blank" rel="noopener">PubMed</a>
       <button class="btn ${pdf || hasText ? 'ghost' : 'primary'}" type="button" data-act="pp-extract" title="Dal PDF, oppure il testo completo se l’articolo è open access, oppure almeno l’abstract">${hasText ? 'Estrai di nuovo il testo' : 'Estrai il testo'}</button>
       <button class="btn ghost" type="button" data-act="pp-paste">Incolla il testo</button>
@@ -6733,7 +6733,7 @@ function modePapers(sec, body) {
           <div class="row-actions">
             <a class="btn sm" href="#/papers/${p.id}">Scheda</a>
             ${pdf ? `<button class="btn sm" type="button" data-spp="split" data-pdf="${pdf.id}">⇆ PDF accanto</button>` : ''}
-            ${p.url ? `<a class="btn sm ghost" href="${esc(p.url)}" target="_blank" rel="noopener">Apri online</a>` : ''}
+            ${p.url ? `<a class="btn sm ghost" href="${esc(safeUrl(p.url))}" target="_blank" rel="noopener">Apri online</a>` : ''}
             <button class="btn sm ghost" type="button" data-spp="unlink">Scollega</button>
           </div>
         </li>`;

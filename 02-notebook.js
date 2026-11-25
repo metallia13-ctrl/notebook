@@ -589,8 +589,9 @@ function viewSection(id, mode) {
         ${sec.md.trim() ? `<a class="btn sm" href="#/print/sec/${sec.id}" title="Stampa la sezione o salvala in PDF">Stampa</a>` : ''}
         ${sec.md.trim().length > 150 ? `<a class="btn sm" href="#/viva/sec/${sec.id}" title="Il professore (l’AI) ti interroga su questa sezione">Interrogami</a>` : ''}
         ${Focus.on() ? '' : '<button class="btn sm" type="button" data-act="focus" title="Un obiettivo e un timer: il menu sparisce finché non hai finito">🎯 Fuoco</button>'}
+        ${(sec.studyhub || sec.srs?.due || (sec.srs?.history && sec.srs.history.length)) ? '<button class="btn sm" type="button" data-act="srs-manage" title="Annulla l’ultimo ripasso o ricomincia l’argomento da capo">↺ Ripasso</button>' : ''}
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
-        ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
+        ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
     </header>
     ${(() => {
@@ -614,6 +615,7 @@ function viewSection(id, mode) {
         ${nextSec ? `<a class="pg pg-next" href="#/sec/${nextSec.id}" rel="next"><span class="pg-k">Successiva ›</span><span class="pg-t">${esc(nextSec.title)}</span></a>` : '<span></span>'}
       </nav>` : ''}
   `);
+  on('[data-act="srs-manage"]', 'click', () => resetSectionReview(sec));
   on('[data-act="labels"]', 'click', () => startLabels(sec));
   on('[data-act="focus"]', 'click', () => Focus.start(sec.id));
   if (mode !== 'edit') { Resume.save(location.hash || `#/sec/${sec.id}/${mode}`, window.scrollY); Resume.refresh(); }
@@ -643,6 +645,73 @@ function viewSection(id, mode) {
   ({ read: modeRead, map: modeMap, cloze: modeCloze, blank: modeBlank, oral: (s, b) => modeBlank(s, b, { oral: true }), quiz: modeQuiz, dquiz: modeDiscQuiz, cards: modeCards, video: modeVideo, audio: modeAudio, html: modeHtml, papers: modePapers, edit: modeEdit, case: modeCase }[mode])(sec, body);
 }
 
+async function undoSectionReview(secId, snapshot = null) {
+  const sec = secById(secId);
+  if (!sec) return;
+  if (snapshot) {
+    sec.srs = JSON.parse(JSON.stringify(snapshot));
+  } else {
+    const cur = sec.srs || newSrs();
+    const hist = Array.isArray(cur.history) ? cur.history.slice(0, -1) : [];
+    if (cur.prev) {
+      sec.srs = { ...newSrs(), ...cur.prev, history: hist };
+    } else {
+      sec.srs = { ...newSrs(), history: hist };
+    }
+  }
+  await saveSection(sec);
+  toast('Ultimo ripasso annullato');
+  route();
+}
+
+async function resetSectionReview(sec) {
+  const canUndo = !sec.studyhub && !!(sec.srs?.prev || (sec.srs?.history && sec.srs.history.length));
+  const ch = await actionSheet('Gestisci ripasso', [
+    ...(canUndo ? [{ key: 'undo', label: 'Annulla l’ultimo ripasso' }] : []),
+    { key: 'relearn', label: 'Rimetti in primo apprendimento (ripasso domani)' },
+    { key: 'reset', label: 'Togli dal ripasso (torna “Nuova”)', danger: true }
+  ]);
+  if (!ch) return;
+  if (ch === 'undo') {
+    await undoSectionReview(sec.id);
+    return;
+  }
+  if (ch === 'relearn') {
+    const ok = await modal({
+      title: 'Rimettere in primo apprendimento?',
+      text: 'L’argomento riparte da zero con facilità normale (nessuna penalità): l’app fissa il primo ripasso per domani e ricalcola gli intervalli dalle prossime risposte.',
+      confirm: 'Rimetti in apprendimento'
+    });
+    if (!ok) return;
+    if (sec.studyhub) {
+      Bridge.send({ type: 'topic-unlinked', sectionId: sec.id, notebookId: sec.notebookId, subject: nbById(sec.notebookId)?.name || '', topic: sec.title });
+      delete sec.studyhub;
+    }
+    sec.srs = { ef: 2.5, interval: 1, reps: 0, due: addDays(todayStr(), 1), history: [] };
+    await saveSection(sec);
+    toast('Rimessa in primo apprendimento: primo ripasso domani');
+    route();
+    return;
+  }
+  if (ch === 'reset') {
+    const ok = await modal({
+      title: 'Togliere dal ripasso?',
+      text: 'La sezione torna “Nuova” (non pianificata) e lo storico dei ripassi viene azzerato. Potrai pianificarla di nuovo quando vuoi.',
+      confirm: 'Togli dal ripasso',
+      danger: true
+    });
+    if (!ok) return;
+    if (sec.studyhub) {
+      Bridge.send({ type: 'topic-unlinked', sectionId: sec.id, notebookId: sec.notebookId, subject: nbById(sec.notebookId)?.name || '', topic: sec.title });
+      delete sec.studyhub;
+    }
+    sec.srs = newSrs();
+    await saveSection(sec);
+    toast('Sezione tolta dal ripasso (torna Nuova)');
+    route();
+  }
+}
+
 function gradeBar(sec, slot, { mode, suggested } = {}) {
   slot.innerHTML = `
     <div class="grade">
@@ -660,6 +729,7 @@ function gradeBar(sec, slot, { mode, suggested } = {}) {
     if (graded) return;
     graded = true;
     $$('.gbtn', slot).forEach(b => { b.disabled = true; });
+    const prevSrs = sec.srs ? JSON.parse(JSON.stringify(sec.srs)) : newSrs();
     sec.srs = nextSrs(sec.srs, q, mode);
     await saveSection(sec);
     Stats.addReview();
@@ -674,7 +744,10 @@ function gradeBar(sec, slot, { mode, suggested } = {}) {
       });
       toast('Valutazione inviata a StudyHub');
     } else {
-      toast(sec.srs.interval === 0 ? 'Resta nei ripassi di oggi' : `Prossimo ripasso ${fmtDue(sec.srs.due)}`);
+      toast(sec.srs.interval === 0 ? 'Resta nei ripassi di oggi' : `Prossimo ripasso ${fmtDue(sec.srs.due)}`, '', {
+        label: 'Annulla',
+        fn: () => undoSectionReview(sec.id, prevSrs)
+      });
     }
     afterGrade(sec, q);
   };
@@ -5552,19 +5625,27 @@ function modeMap(sec, body) {
       setZoom(b.dataset.mz === '+' ? zoom * 1.2 : b.dataset.mz === '-' ? zoom / 1.2 : 1);
     });
     sc.addEventListener('wheel', e => {
-      if (!e.ctrlKey) return;
+      if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       const r = sc.getBoundingClientRect();
-      setZoom(zoom * Math.exp(-e.deltaY * 0.01), e.clientX - r.left, e.clientY - r.top);
+      const dy = Math.max(-180, Math.min(180, e.deltaY));
+      setZoom(zoom * Math.exp(-dy * 0.0025), e.clientX - r.left, e.clientY - r.top);
     }, { passive: false });
     let pinch = null;
     const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    sc.addEventListener('touchstart', e => { if (e.touches.length === 2) { const r = sc.getBoundingClientRect(); pinch = { d: dist(e.touches[0], e.touches[1]), z: zoom, x: (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top }; } }, { passive: true });
+    sc.addEventListener('touchstart', e => { if (e.touches.length === 2) { const r = sc.getBoundingClientRect(); pinch = { d: Math.max(10, dist(e.touches[0], e.touches[1])), z: zoom, x: (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left, y: (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top }; } }, { passive: true });
     sc.addEventListener('touchmove', e => {
       if (drag && drag.armed) { e.preventDefault(); return; }
-      if (pinch && e.touches.length === 2) { e.preventDefault(); setZoom(pinch.z * dist(e.touches[0], e.touches[1]) / pinch.d, pinch.x, pinch.y); }
+      if (pinch && e.touches.length === 2) {
+        e.preventDefault();
+        const r = sc.getBoundingClientRect();
+        const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left;
+        const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top;
+        setZoom(pinch.z * dist(e.touches[0], e.touches[1]) / pinch.d, cx, cy);
+      }
     }, { passive: false });
-    sc.addEventListener('touchend', () => { pinch = null; });
+    sc.addEventListener('touchend', e => { if (e.touches.length < 2) pinch = null; });
+    sc.addEventListener('touchcancel', () => { pinch = null; });
     if (edit) bindDrag(sc, sheet);
   }
 

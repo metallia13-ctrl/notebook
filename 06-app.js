@@ -186,6 +186,14 @@ function viewSettings() {
             <option value="normal" ${st.readSpacing === 'normal' ? 'selected' : ''}>Normale</option>
             <option value="wide" ${st.readSpacing === 'wide' ? 'selected' : ''}>Ampia</option>
           </select></label>
+        <div class="field"><span class="lbl">Zoom di tutta l’app</span>
+          <div class="ui-zoom-bar">
+            <button class="btn sm ghost" type="button" data-ui-z="-" aria-label="Riduci zoom dell’app">A−</button>
+            <input type="range" min="85" max="150" step="5" value="${Math.round((+st.uiScale || 1.12) * 100)}" data-ui-scale-range aria-label="Zoom di tutta l’app">
+            <button class="btn sm ghost" type="button" data-ui-z="+" aria-label="Aumenta zoom dell’app">A+</button>
+            <button class="btn sm ghost ui-zoom-val" type="button" data-ui-z="0" data-ui-scale-val title="Ripristina zoom predefinito (110%)">${Math.round((+st.uiScale || 1.12) * 100)}%</button>
+          </div>
+        </div>
       </div>
       <article class="notes read-sample"><p>Il <strong>ventricolo sinistro</strong> pompa il sangue nell’aorta. {{y|La gittata}} dipende da precarico, postcarico e contrattilità.</p></article>
       <p class="hint">Il tema “Carta” e l’interlinea ampia affaticano meno la vista nelle sessioni lunghe.</p>
@@ -467,6 +475,11 @@ function viewSettings() {
   [['#stFont', 'readFont'], ['#stSize', 'readSize'], ['#stSpacing', 'readSpacing']].forEach(([sel, key]) => {
     $(sel).addEventListener('change', e => { st[key] = e.target.value; Settings.save(); applyTheme(); });
   });
+  $('[data-ui-scale-range]')?.addEventListener('input', e => setUiScale((+e.target.value || 110) / 100));
+  $$('[data-ui-z]').forEach(b => b.addEventListener('click', () => {
+    const cur = +S().uiScale || 1.12;
+    setUiScale(b.dataset.uiZ === '+' ? cur + 0.05 : b.dataset.uiZ === '-' ? cur - 0.05 : 1.1);
+  }));
   const sample = $('.read-sample p');
   if (sample) sample.innerHTML = renderMarks(sample.innerHTML);
 
@@ -1183,7 +1196,7 @@ function takeSharedText() {
 /* ---------- Pagina "Altro" ---------- */
 const MORE_ITEMS = [
   ['resume', 'Riprendi', 'Torna all’ultima sezione che stavi studiando, nella stessa scheda e allo stesso punto'],
-  ['pad', 'Blocco note', 'Scrivi a mano accanto a qualunque pagina, mentre ripeti'],
+  ['pad', 'Blocco note', 'Tutte le pagine scritte a mano (blocco note e fogli nei PDF), divise per cartelle'],
   ['fs', 'Schermo intero', 'Nasconde le barre del tablet, in alto e in basso'],
   ['split', 'Affianca', 'Una sezione o un PDF di fianco, per confrontare due cose'],
   ['search', 'Cerca ovunque', 'Appunti, flashcard, testo dei PDF, glossario, note cliniche'],
@@ -1216,9 +1229,17 @@ const MORE_ITEMS = [
   ['settings', 'Impostazioni', 'AI, sincronizzazione, lettura, backup']
 ];
 function viewMore() {
+  const zPct = Math.round((+S().uiScale || 1.12) * 100);
   setView(`
     <header class="page-head"><h1>Altro</h1>
-      <label class="check blue-quick"><input type="checkbox" id="blueQuick" ${document.documentElement.classList.contains('bluelight') ? 'checked' : ''}><span>Filtro luce blu</span></label>
+      <div class="more-tools">
+        <span class="ui-zoom-pill" role="group" aria-label="Zoom dell’app">
+          <button class="btn sm ghost" type="button" data-mz-ui="-" aria-label="Riduci testo e interfaccia">A−</button>
+          <button class="btn sm ghost" type="button" data-mz-ui="0" data-ui-scale-val title="Ripristina zoom predefinito">${zPct}%</button>
+          <button class="btn sm ghost" type="button" data-mz-ui="+" aria-label="Ingrandisci testo e interfaccia">A+</button>
+        </span>
+        <label class="check blue-quick"><input type="checkbox" id="blueQuick" ${document.documentElement.classList.contains('bluelight') ? 'checked' : ''}><span>Filtro luce blu</span></label>
+      </div>
     </header>
     <div class="tile-grid wide-grid">
       ${MORE_ITEMS.map(([k, label, sub]) => `
@@ -1228,6 +1249,10 @@ function viewMore() {
         </a>`).join('')}
     </div>`);
   $('#blueQuick').addEventListener('change', e => { S().blueOn = e.target.checked; S().blueAuto = false; Settings.save(); applyBlueLight(); });
+  $$('[data-mz-ui]').forEach(b => b.addEventListener('click', () => {
+    const cur = +S().uiScale || 1.12;
+    setUiScale(b.dataset.mzUi === '+' ? cur + 0.05 : b.dataset.mzUi === '-' ? cur - 0.05 : 1.1);
+  }));
 }
 
 /* ---------- Link utili come icone ---------- */
@@ -1238,7 +1263,7 @@ function linkTile(l) {
   const first = [...(l.title || '?').trim()][0] || '?';
   const fav = faviconUrl(l.url);
   return `
-    <a class="tile" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" data-id="${l.id}" title="${esc(l.note || linkHost(l.url))}">
+    <a class="tile" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer" data-id="${l.id}" title="${esc(l.note || linkHost(l.url))}">
       <span class="tile-ic" style="--h:${hueOf(l.id)}">
         <span class="tile-letter">${esc(first.toUpperCase())}</span>
         ${fav ? `<img class="tile-fav" alt="" referrerpolicy="no-referrer" src="${esc(fav)}">` : ''}
@@ -1475,6 +1500,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.35", title: "zoom di tutta l’app, annulla/riparti ripasso, archivio blocco note per cartelle", html: `      <ul>
+        <li><strong>Zoom di tutta l’app</strong>: interfaccia subito più leggibile (+12% di partenza) e regolabile a piacere dall’<strong>85% al 150%</strong> in <em>Impostazioni → Lettura e aspetto</em> oppure al volo da <strong>Altro</strong> (tasti <strong>A− / A+</strong>). Sistemato anche lo zoom a due dita e con rotellina nei PDF, in Affianca, nelle Mappe e nel Blocco note.</li>
+        <li><strong>Gestione del ripasso (↺ Ripasso)</strong>: subito dopo aver votato compare <strong>Annulla</strong> nel messaggio in basso; in cima a ogni sezione pianificata il pulsante <strong>↺ Ripasso</strong> permette di <em>annullare l’ultimo ripasso</em>, <em>rimettere l’argomento in primo apprendimento</em> (ripasso fissato a domani, senza penalità) oppure <em>toglierlo dal ripasso</em> (torna Nuova).</li>
+        <li><strong>Archivio completo del Blocco note</strong>: aprendo <strong>Blocco note</strong> dal menu (o l’icona <strong>🗂</strong> nel pannello) trovi tutte le pagine scritte a mano in ogni sezione — insieme ai <strong>fogli aggiunti dentro i PDF</strong> — organizzate per <strong>materia, cartelle e sottocartelle</strong> con anteprime reali e ricerca.</li>
+      </ul>` },
   { v: "4.34", title: "Rimetti le etichette senza indizi geometrici", html: `      <ul>
         <li><strong>🙈 Senza indizi (attivo di default)</strong>: nel vassoio in basso tutte le etichette stanno dentro <strong>tessere di dimensioni identiche</strong>, senza rivelare quali ritagli sono corti, larghi o su più righe.</li>
         <li><strong>Maschere mimetizzate e bersagli standardizzati</strong>: sull’immagine il testo nascosto viene coperto automaticamente con il colore di sfondo della pagina intorno al ritaglio, mentre al centro compare un <strong>bersaglio numerato identico per tutti</strong> (e anche da occupato mantiene una misura uniforme finché non controlli).</li>
@@ -2082,10 +2112,20 @@ const Split = {
     // due dita per lo zoom del PDF
     let pinch = null;
     const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    body.addEventListener('touchstart', e => { if (this.item?.kind === 'pdf' && e.touches.length === 2) pinch = { d: dist(e.touches[0], e.touches[1]), z: this.zoom }; }, { passive: true });
+    body.addEventListener('touchstart', e => {
+      if (this.item?.kind === 'pdf' && e.touches.length === 2) {
+        const r = body.getBoundingClientRect();
+        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left;
+        const my = (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top;
+        pinch = { d: Math.max(10, dist(e.touches[0], e.touches[1])), z: this.zoom, ox: body.scrollLeft + mx, oy: body.scrollTop + my };
+        $('.split-pages', this.el)?.style.setProperty('transform-origin', `${pinch.ox}px ${pinch.oy}px`);
+      }
+    }, { passive: true });
     body.addEventListener('touchmove', e => { if (pinch && e.touches.length === 2) { e.preventDefault(); this.preview(pinch.z * dist(e.touches[0], e.touches[1]) / pinch.d); } }, { passive: false });
-    body.addEventListener('touchend', () => { if (pinch) { pinch = null; this.setZoom(this.pending || this.zoom); } });
-    body.addEventListener('wheel', e => { if (this.item?.kind === 'pdf' && e.ctrlKey) { e.preventDefault(); this.setZoom(this.zoom * Math.exp(-e.deltaY * 0.01)); } }, { passive: false });
+    const endSplitPinch = e => { if (pinch && (!e.touches || e.touches.length < 2)) { pinch = null; this.setZoom(this.pending || this.zoom); } };
+    body.addEventListener('touchend', endSplitPinch);
+    body.addEventListener('touchcancel', endSplitPinch);
+    body.addEventListener('wheel', e => { if (this.item?.kind === 'pdf' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const dy = Math.max(-180, Math.min(180, e.deltaY)); this.setZoom(this.zoom * Math.exp(-dy * 0.0025)); } }, { passive: false });
     new ResizeObserver(() => { if (this.isOpen() && this.item?.kind === 'pdf') this.layoutPdf(); }).observe(body);
   },
   bindGrip(grip) {
@@ -2348,12 +2388,15 @@ const Split = {
     $('.split-pages', this.el)?.style.setProperty('transform', `scale(${this.pending / this.zoom})`);
   },
   setZoom(z) {
-    const keep = this.curPage || 1;
+    const body = $('.split-body', this.el);
+    const ratioY = body && body.scrollHeight ? (body.scrollTop + body.clientHeight * 0.35) / body.scrollHeight : null;
     this.zoom = Math.max(0.6, Math.min(3, z));
     this.pending = null;
-    $('.split-pages', this.el)?.style.removeProperty('transform');
+    const sp = $('.split-pages', this.el);
+    if (sp) { sp.style.removeProperty('transform'); sp.style.removeProperty('transform-origin'); }
     this.layoutPdf();
-    this.goPage(keep, true);
+    if (body && ratioY !== null) body.scrollTop = Math.max(0, ratioY * body.scrollHeight - body.clientHeight * 0.35);
+    else this.goPage(this.curPage || 1, true);
   },
   act(a) {
     if (a === 'close') this.close();
@@ -3736,6 +3779,7 @@ const PadX = {
     this.setZoom(Math.max(PAD_ZOOMS[0], Math.min(2, z)));
     body.scrollLeft = Math.max(0, (x0 - 0.05) * this.W + this.OX);
     body.scrollTop = Math.max(0, (y0 - 0.05) * this.W + this.OY);
+    this.redraw();
   }
 };
 const Pad = {
@@ -3765,13 +3809,16 @@ const Pad = {
   maxH() { return Math.max(220, window.innerHeight - (this.wide() ? 24 : 96) - 60); },
   curW(p = this.prefs()) { return Math.round(Math.min(this.maxW(), Math.max(260, +p.w || (this.wide() ? 420 : Math.round(window.innerWidth * 0.5))))); },
   curH(p = this.prefs()) { return Math.round(Math.min(this.maxH(), Math.max(160, (+p.h || 0.45) * this.maxH()))); },
-  // di chi è il blocco: la sezione aperta, oppure la pagina
+  forcedCtx: null,
+  pendingPage: null,
+  // di chi è il blocco: forzato dall'archivio, oppure la sezione aperta, oppure la pagina
   context() {
+    if (this.forcedCtx) return this.forcedCtx;
     const m = location.hash.match(/^#\/sec\/([^/]+)/);
     const sec = m && secById(m[1]);
     if (sec) return { key: `sec:${sec.id}`, title: sec.title };
     const k = Nav.key(location.hash);
-    const names = { notebooks: 'Notebook', review: 'Ripasso', cards: 'Flashcard', lab: 'Laboratorio', cases: 'Casi clinici', semei: 'Semeiotica', clinic: 'Note cliniche' };
+    const names = { notebooks: 'Notebook', review: 'Ripasso', cards: 'Flashcard', lab: 'Laboratorio', cases: 'Casi clinici', semei: 'Semeiotica', clinic: 'Note cliniche', pad: 'Blocco note' };
     return { key: `page:${k.split('/')[0]}`, title: names[k.split('/')[0]] || 'Blocco note' };
   },
   build() {
@@ -3825,6 +3872,7 @@ const Pad = {
           <span class="pad-pn" aria-live="polite"></span>
           <button type="button" class="pad-b" data-pa="next" aria-label="Pagina successiva">›</button>
           <button type="button" class="pad-b" data-pa="add" aria-label="Nuova pagina" title="Nuova pagina">＋</button>
+          <button type="button" class="pad-b" data-pa="archive" aria-label="Tutte le pagine scritte" title="Archivio di tutte le pagine scritte divise per cartelle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
           <button type="button" class="sh-ic" data-pa="pos"></button>
           <button type="button" class="sh-ic" data-pa="fs" data-fs-btn></button>
           <button type="button" class="sh-ic" data-pa="size"></button>
@@ -4046,15 +4094,28 @@ const Pad = {
     this.refreshBtn();
   },
   toggle() { if (this.isOpen()) this.close(); else this.open(); },
+  async openAt(key, title, page = 0) {
+    this.forcedCtx = { key, title };
+    this.pendingPage = { key, page };
+    if (this.isOpen()) await this.load();
+    else await this.open();
+  },
   refreshBtn() {
     const f = $('#padFab');
     if (f) { f.hidden = this.isOpen(); }
-    $$('a[href="#/pad"]').forEach(a => a.classList.toggle('sh-on', this.isOpen()));
   },
   // cambia foglio quando cambi sezione o pagina
   async load() {
     const ctx = this.context();
-    if (this.data && ctx.key === this.key) { this.layout(); return; }
+    if (this.data && ctx.key === this.key) {
+      if (this.pendingPage && this.pendingPage.key === ctx.key) {
+        this.page = Math.max(0, Math.min(this.pendingPage.page || 0, this.data.pages.length - 1));
+        this.pendingPage = null;
+        this.home();
+      }
+      this.layout();
+      return;
+    }
     this.flush();
     this.key = ctx.key;
     this.title = ctx.title;
@@ -4062,7 +4123,12 @@ const Pad = {
     if (this.key !== ctx.key) return;
     this.data = d && Array.isArray(d.pages) && d.pages.length ? d : { pages: [{ strokes: [], h: PAD_A4 }], t: Date.now() };
     this.data.pages.forEach(pg => { pg.strokes = pg.strokes.filter(x => x.k !== 'text' || String(x.t || '').trim()); });
-    this.page = Math.min(this.data.page || 0, this.data.pages.length - 1);
+    let targetPage = this.data.page || 0;
+    if (this.pendingPage && this.pendingPage.key === ctx.key) {
+      targetPage = this.pendingPage.page || 0;
+      this.pendingPage = null;
+    }
+    this.page = Math.max(0, Math.min(targetPage, this.data.pages.length - 1));
     this.undo = [];
     $('.pad-ctx', this.el).textContent = this.title;
     this.sel = null;
@@ -4152,6 +4218,7 @@ const Pad = {
     this.layout();
     body.scrollLeft = Math.max(0, cx * this.W + this.OX - fx);
     body.scrollTop = Math.max(0, cy * this.W + this.OY - fy);
+    this.redraw();
   },
   stepZoom(dir) {
     const z = this.zoom || 1;
@@ -4315,6 +4382,9 @@ const Pad = {
     const movePinch = () => {
       const [a, b] = [...fingers.values()];
       if (!a || !b) return;
+      const r = body().getBoundingClientRect();
+      pinch.fx = (a.x + b.x) / 2 - r.left;
+      pinch.fy = (a.y + b.y) / 2 - r.top;
       pinch.k = Math.max(PAD_ZOOMS[0] / (this.zoom || 1), Math.min(PAD_ZOOMS[PAD_ZOOMS.length - 1] / (this.zoom || 1), Math.hypot(a.x - b.x, a.y - b.y) / pinch.d0));
       if (Math.abs(pinch.k - 1) > 0.04) this.pinchMoved = true;
       // le due dita spostate insieme fanno scorrere il foglio
@@ -4325,14 +4395,17 @@ const Pad = {
     const endPinch = () => {
       const p = pinch;
       pinch = null;
-      $('.pad-view', this.el).style.transform = '';
+      const pv = $('.pad-view', this.el);
+      pv.style.transform = '';
+      pv.style.transformOrigin = '';
       if (p && Math.abs(p.k - 1) > 0.04) this.setZoom((this.zoom || 1) * p.k, p.fx, p.fy);
     };
     body().addEventListener('wheel', e => {
       if (!(e.ctrlKey || e.metaKey) || !this.isOpen()) return;
       e.preventDefault();
       const r = body().getBoundingClientRect();
-      this.setZoom((this.zoom || 1) * Math.exp(-e.deltaY * 0.0025), e.clientX - r.left, e.clientY - r.top);
+      const dy = Math.max(-180, Math.min(180, e.deltaY));
+      this.setZoom((this.zoom || 1) * Math.exp(-dy * 0.0025), e.clientX - r.left, e.clientY - r.top);
     }, { passive: false });
     cv.addEventListener('pointerdown', e => {
       if (e.button > 0 && !penErases(e)) return;
@@ -4594,6 +4667,7 @@ const Pad = {
   async act(a) {
     if (!this.data) return;
     if (a === 'fs') { FullScreen.toggle(); return; }
+    if (a === 'archive') { this.flush(); this.forcedCtx = null; if (!this.wide()) this.close(); go('#/pad'); return; }
     if (a === 'pos') {
       const side = !this.side();
       this.setPrefs({ pos: side ? 'side' : 'bottom' });
@@ -4747,21 +4821,310 @@ const Pad = {
   init() {
     if (!$('#padFab')) document.body.insertAdjacentHTML('beforeend', '<button type="button" class="pad-fab" id="padFab" aria-label="Apri il blocco note per scrivere a mano" title="Blocco note a mano"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/><path d="M13 20h7"/></svg></button>');
     $('#padFab').addEventListener('click', () => this.open());
-    document.addEventListener('click', e => {
-      const a = e.target.closest('a[href="#/pad"]');
-      if (!a || e.ctrlKey || e.metaKey) return;
-      e.preventDefault();
-      this.toggle();
-    });
     window.addEventListener('resize', () => { if (this.isOpen()) { this.applyPos(); this.apply(); } });
     window.addEventListener('pagehide', () => this.flush());
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') this.flush(); });
     if (this.prefs().open && this.wide()) this.open();
   },
   // da route(): cambia foglio se cambia la sezione o la pagina
-  onRoute() { if (this.isOpen()) this.load(); }
+  onRoute() {
+    if (!location.hash.startsWith('#/pad')) this.forcedCtx = null;
+    if (this.isOpen()) this.load();
+  }
 };
 Object.assign(Pad, PadX);
+
+/* ---------- v4.35: Archivio completo del Blocco note (per materie, cartelle e fogli PDF) ---------- */
+function padArchivePdfSheetSvg(pdf, s) {
+  const key = sheetKey(s);
+  const w = s.w || 595, h = s.h || 842;
+  let bg = '';
+  if (s.bg === 'lines') for (let y = 60; y < h - 24; y += 24) bg += `<path d="M28 ${y}H${w - 28}"/>`;
+  if (s.bg === 'grid') {
+    for (let y = 18; y < h; y += 18) bg += `<path d="M0 ${y}H${w}"/>`;
+    for (let x = 18; x < w; x += 18) bg += `<path d="M${x} 0V${h}"/>`;
+  }
+  const anns = (pdf.annots || []).filter(a => a.page === key);
+  const items = anns.map(a => {
+    if (a.type === 'hl') return `<g opacity="0.55">${(a.rects || []).map(r => `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="1.5" fill="${pdfCol(a.color)}"/>`).join('')}</g>`;
+    if (a.type === 'ul') return `<g>${(a.rects || []).map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] - 1.6).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
+    if (a.type === 'st') return `<g>${(a.rects || []).map(r => `<rect x="${r[0]}" y="${(r[1] + r[3] * 0.52 - 0.8).toFixed(2)}" width="${r[2]}" height="1.6" fill="${pdfCol(a.color, 2)}"/>`).join('')}</g>`;
+    if (a.type === 'ink') {
+      const m = inkIsMarker(a);
+      const op = m ? (typeof PDF_PASTEL_INKS !== 'undefined' && PDF_PASTEL_INKS.has((a.color || '').toLowerCase()) ? '0.65' : '0.4') : '1';
+      return `<path d="${inkPath(a.pts || [])}" fill="none" stroke="${esc(a.color)}" stroke-width="${a.w}" stroke-linecap="${m ? 'square' : 'round'}" stroke-linejoin="round" opacity="${op}"/>`;
+    }
+    if (a.type === 'shape') return shapeSvg(a, true);
+    if (a.type === 'text') return `<g>${String(a.text || '').split('\n').map((l, k) => `<text x="${a.x}" y="${(a.y + (k + 1) * a.fs * 1.25).toFixed(2)}" font-size="${a.fs}" fill="${esc(a.color)}">${esc(l)}</text>`).join('')}</g>`;
+    if (a.type === 'occ' && a.rects?.[0]) { const r = a.rects[0]; return `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}" rx="2" fill="#334155" opacity="0.85"/>`; }
+    return '';
+  }).join('');
+  return `<svg class="pad-arch-svg" viewBox="0 0 ${w} ${h}" aria-hidden="true"><rect width="${w}" height="${h}" fill="#fff"/>${bg ? `<g fill="none" stroke="#c8d2e0" stroke-width="1">${bg}</g>` : ''}${items}</svg>`;
+}
+
+async function viewPadArchive() {
+  Pad.flush();
+  setView(`<header class="page-head"><div><h1>Blocco note</h1><p class="lede">Carico le pagine scritte…</p></div></header>`);
+  const allPads = await PadDB.all();
+  const entries = [];
+  const thumbMap = new Map();
+  let tid = 0;
+
+  // 1) Pagine scritte nel Blocco note (IndexedDB nb-pad)
+  Object.entries(allPads || {}).forEach(([key, rec]) => {
+    if (!rec || !Array.isArray(rec.pages)) return;
+    const isSec = key.startsWith('sec:');
+    const sec = isSec ? secById(key.slice(4)) : null;
+    const nb = sec ? nbById(sec.notebookId) : null;
+    const grp = sec ? groupOf(sec) : null;
+    const chain = nb && grp ? [...groupAncestors(nb, grp), grp] : [];
+    const bg = rec.bg || Pad.prefs().bg || 'lines';
+    const total = rec.pages.length;
+    rec.pages.forEach((pg, pi) => {
+      if (!pg || !(pg.strokes && pg.strokes.length)) return;
+      const id = `pt${++tid}`;
+      thumbMap.set(id, { pg, bg });
+      entries.push({
+        id,
+        kind: 'pad',
+        key,
+        page: pi,
+        totalPages: total,
+        inf: !!pg.inf,
+        strokes: pg.strokes.length,
+        updated: rec.t || 0,
+        nbId: nb ? nb.id : '',
+        nbName: nb ? nb.name : '',
+        chain: chain.map(g => ({ id: g.id, name: g.name })),
+        secId: sec ? sec.id : '',
+        secTitle: sec ? sec.title : (rec.title || (key.startsWith('page:') ? 'Appunti liberi' : 'Sezione rimossa')),
+        label: total > 1 ? `Pagina ${pi + 1} di ${total}` : 'Pagina 1',
+        search: foldAccents([nb?.name, ...chain.map(g => g.name), sec?.title || rec.title, 'blocco note'].filter(Boolean).join(' '))
+      });
+    });
+  });
+
+  // 2) Fogli inseriti dentro i PDF
+  (state.pdfs || []).forEach(pdf => {
+    const sheets = Array.isArray(pdf.sheets) ? pdf.sheets : [];
+    if (!sheets.length) return;
+    const sec = pdf.sectionId ? secById(pdf.sectionId) : null;
+    const nb = sec ? nbById(sec.notebookId) : (pdf.notebookId ? nbById(pdf.notebookId) : null);
+    const grp = sec ? groupOf(sec) : null;
+    const chain = nb && grp ? [...groupAncestors(nb, grp), grp] : [];
+    [...sheets].sort((a, b) => sheetKey(a) - sheetKey(b)).forEach(s => {
+      const sk = sheetKey(s);
+      const nAnn = (pdf.annots || []).filter(a => a.page === sk).length;
+      entries.push({
+        id: `ps${++tid}`,
+        kind: 'pdf',
+        pdf,
+        sheet: s,
+        sheetKey: sk,
+        annCount: nAnn,
+        updated: s.created || pdf.updated || 0,
+        nbId: nb ? nb.id : '',
+        nbName: nb ? nb.name : '',
+        chain: chain.map(g => ({ id: g.id, name: g.name })),
+        secId: sec ? sec.id : '',
+        secTitle: sec ? sec.title : pdf.name,
+        pdfName: pdf.name,
+        label: `Foglio dopo p. ${s.after}${s.k > 1 ? ` (#${s.k})` : ''}`,
+        search: foldAccents([nb?.name, ...chain.map(g => g.name), sec?.title, pdf.name, `pagina ${s.after}`, 'pdf foglio'].filter(Boolean).join(' '))
+      });
+    });
+  });
+
+  const padCount = entries.filter(e => e.kind === 'pad').length;
+  const pdfCount = entries.filter(e => e.kind === 'pdf').length;
+  let filter = 'all';
+  let query = '';
+  let io = null;
+
+  const fmtWhen = ts => ts ? new Date(ts).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }) : '';
+
+  const renderCard = it => {
+    const meta = it.kind === 'pdf'
+      ? `${it.annCount ? `${it.annCount} ${it.annCount === 1 ? 'segno' : 'segni'}` : 'Vuoto'}${it.updated ? ` · ${fmtWhen(it.updated)}` : ''}`
+      : `${it.inf ? 'Tela ∞ · ' : ''}${it.strokes} ${it.strokes === 1 ? 'tratto' : 'tratti'}${it.updated ? ` · ${fmtWhen(it.updated)}` : ''}`;
+    const thumb = it.kind === 'pdf'
+      ? padArchivePdfSheetSvg(it.pdf, it.sheet)
+      : `<canvas class="pad-arch-cv" data-pad-thumb="${it.id}" width="240" height="340" aria-hidden="true"></canvas>`;
+    const badge = it.kind === 'pdf' ? '<span class="pad-arch-tag is-pdf">PDF</span>' : (it.inf ? '<span class="pad-arch-tag">Tela ∞</span>' : '<span class="pad-arch-tag">Blocco note</span>');
+    const sub = it.kind === 'pdf' && it.secId ? `<span class="pad-arch-pdfname">${esc(it.pdfName)}</span>` : '';
+    return `<button type="button" class="pad-arch-card" data-arch-open="${it.id}">
+      <span class="pad-arch-thumb">${thumb}${badge}</span>
+      <span class="pad-arch-info">
+        <span class="pad-arch-title">${esc(it.label)}</span>
+        ${sub}
+        <span class="pad-arch-meta">${esc(meta)}</span>
+      </span>
+    </button>`;
+  };
+
+  const renderNode = (node, depth = 0) => {
+    const foldersHtml = [...node.folders.values()].sort((a, b) => a.name.localeCompare(b.name, 'it')).map(f => `
+      <details class="pad-arch-folder" open>
+        <summary><span class="pad-arch-ficon" aria-hidden="true">📁</span><span class="pad-arch-fname">${esc(f.name)}</span><span class="pill soft">${f.count}</span></summary>
+        <div class="pad-arch-fbody">${renderNode(f, depth + 1)}</div>
+      </details>`).join('');
+    const secsHtml = [...node.groups.values()].sort((a, b) => (b.latest || 0) - (a.latest || 0) || a.title.localeCompare(b.title, 'it')).map(g => `
+      <div class="pad-arch-sec">
+        <div class="pad-arch-sechead">
+          ${g.secId ? `<a class="pad-arch-seclink" href="#/sec/${g.secId}/read">${esc(g.title)}</a>` : `<span class="pad-arch-seclabel">${esc(g.title)}</span>`}
+          <span class="muted-inline">${g.items.length} ${g.items.length === 1 ? 'pagina' : 'pagine'}</span>
+        </div>
+        <div class="pad-arch-grid">${g.items.map(renderCard).join('')}</div>
+      </div>`).join('');
+    return foldersHtml + secsHtml;
+  };
+
+  const buildTree = list => {
+    const mkNode = (id, name) => ({ id, name, count: 0, folders: new Map(), groups: new Map() });
+    const nbs = new Map();
+    const loose = mkNode('__loose', 'Appunti liberi e altre pagine');
+    for (const it of list) {
+      let cur;
+      if (it.nbId) {
+        if (!nbs.has(it.nbId)) nbs.set(it.nbId, mkNode(it.nbId, it.nbName || 'Notebook'));
+        cur = nbs.get(it.nbId);
+        cur.count++;
+        for (const f of it.chain) {
+          if (!cur.folders.has(f.id)) cur.folders.set(f.id, mkNode(f.id, f.name));
+          cur = cur.folders.get(f.id);
+          cur.count++;
+        }
+      } else {
+        cur = loose;
+        cur.count++;
+      }
+      const gKey = it.secId ? `sec:${it.secId}` : it.kind === 'pdf' ? `pdf:${it.pdf.id}` : `free:${it.key}`;
+      const gTitle = it.secId ? it.secTitle : it.kind === 'pdf' ? `PDF: ${it.pdfName}` : it.secTitle;
+      if (!cur.groups.has(gKey)) cur.groups.set(gKey, { title: gTitle, secId: it.secId, latest: 0, items: [] });
+      const grp = cur.groups.get(gKey);
+      grp.items.push(it);
+      if (it.updated > grp.latest) grp.latest = it.updated;
+    }
+    return { nbs: [...nbs.values()].sort((a, b) => a.name.localeCompare(b.name, 'it')), loose };
+  };
+
+  const byId = new Map(entries.map(e => [e.id, e]));
+
+  setView(`
+    <header class="page-head">
+      <div>
+        <h1>Blocco note</h1>
+        <p class="lede">${entries.length ? `${entries.length} ${entries.length === 1 ? 'pagina scritta' : 'pagine scritte'} (${padCount} nel blocco note, ${pdfCount} nei PDF), divise per materia e cartelle.` : 'Ancora nessuna pagina scritta a mano.'}</p>
+      </div>
+      <div class="actions">
+        <button class="btn primary" type="button" data-act="pad-quick">✎ Apri foglio rapido</button>
+      </div>
+    </header>
+    ${entries.length ? `
+      <div class="pad-arch-bar">
+        <input class="input search" type="search" id="padArchQ" placeholder="Cerca per materia, cartella, sezione o PDF…" aria-label="Cerca tra le pagine scritte">
+        <div class="pad-arch-filters" role="group" aria-label="Filtra tipo">
+          <button class="btn sm primary" type="button" data-af="all">Tutti (${entries.length})</button>
+          <button class="btn sm ghost" type="button" data-af="pad">Blocco note (${padCount})</button>
+          <button class="btn sm ghost" type="button" data-af="pdf">Fogli PDF (${pdfCount})</button>
+        </div>
+      </div>
+      <div id="padArchTree" class="pad-arch-tree"></div>` : `
+      <div class="empty">
+        <p>Quando scrivi nel blocco note accanto a una sezione (tasto penna in basso a destra) o aggiungi un foglio per appunti in un PDF, tutte le pagine compaiono qui divise per materia e cartelle.</p>
+        <button class="btn primary" type="button" data-act="pad-quick">Apri il blocco note</button>
+      </div>`}
+  `);
+
+  const paintThumbs = rootEl => {
+    if (io) { io.disconnect(); io = null; }
+    const drawOne = cv => {
+      if (cv.dataset.done) return;
+      cv.dataset.done = '1';
+      const info = thumbMap.get(cv.dataset.padThumb);
+      if (!info) return;
+      try {
+        const exp = padExportCanvas(info.pg, info.bg, 260);
+        const w = 240, h = Math.round(w * PAD_A4);
+        cv.width = w; cv.height = h;
+        const c = cv.getContext('2d');
+        c.fillStyle = '#fff';
+        c.fillRect(0, 0, w, h);
+        const scale = info.pg.inf ? Math.min(w / exp.width, h / exp.height) : (w / exp.width);
+        const dw = exp.width * scale, dh = exp.height * scale;
+        const dx = info.pg.inf ? (w - dw) / 2 : 0;
+        const dy = info.pg.inf ? (h - dh) / 2 : 0;
+        c.drawImage(exp, 0, 0, exp.width, exp.height, dx, dy, dw, dh);
+      } catch { /* ignora */ }
+    };
+    const list = $$('canvas[data-pad-thumb]', rootEl);
+    if (!list.length) return;
+    if (typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver(ents => {
+        ents.forEach(en => { if (en.isIntersecting) { drawOne(en.target); io.unobserve(en.target); } });
+      }, { rootMargin: '160px' });
+      list.forEach(cv => io.observe(cv));
+      addCleanup(() => { if (io) { io.disconnect(); io = null; } });
+    } else {
+      list.forEach(drawOne);
+    }
+  };
+
+  const drawTree = () => {
+    const box = $('#padArchTree');
+    if (!box) return;
+    const q = foldAccents(query.trim());
+    const filtered = entries.filter(it => (filter === 'all' || it.kind === filter) && (!q || it.search.includes(q)));
+    if (!filtered.length) {
+      box.innerHTML = '<p class="hint">Nessuna pagina corrisponde al filtro.</p>';
+      return;
+    }
+    const { nbs, loose } = buildTree(filtered);
+    let html = nbs.map(nb => `
+      <details class="pad-arch-nb" open>
+        <summary><span class="pad-arch-dot" style="--h:${hueOf(nb.id)}"></span><span class="pad-arch-nbname">${esc(nb.name)}</span><span class="pill soft">${nb.count}</span></summary>
+        <div class="pad-arch-nbbody">${renderNode(nb)}</div>
+      </details>`).join('');
+    if (loose.count) {
+      html += `
+        <details class="pad-arch-nb" open>
+          <summary><span class="pad-arch-dot is-loose"></span><span class="pad-arch-nbname">${esc(loose.name)}</span><span class="pill soft">${loose.count}</span></summary>
+          <div class="pad-arch-nbbody">${renderNode(loose)}</div>
+        </details>`;
+    }
+    box.innerHTML = html;
+    paintThumbs(box);
+  };
+
+  if (entries.length) {
+    drawTree();
+    $('#padArchQ')?.addEventListener('input', e => { query = e.target.value; drawTree(); });
+    $$('[data-af]').forEach(b => b.addEventListener('click', () => {
+      filter = b.dataset.af;
+      $$('[data-af]').forEach(x => { x.classList.toggle('primary', x === b); x.classList.toggle('ghost', x !== b); });
+      drawTree();
+    }));
+    $('#padArchTree')?.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-arch-open]');
+      if (!btn) return;
+      const it = byId.get(btn.dataset.archOpen);
+      if (!it) return;
+      if (it.kind === 'pdf') {
+        go(`#/pdf/${it.pdf.id}/${it.sheetKey}`);
+        return;
+      }
+      if (it.secId) {
+        Pad.forcedCtx = null;
+        Pad.pendingPage = { key: it.key, page: it.page };
+        go(`#/sec/${it.secId}/read`);
+        setTimeout(() => { if (Pad.isOpen()) Pad.load(); else Pad.open(); }, 60);
+      } else {
+        await Pad.openAt(it.key, it.secTitle, it.page);
+      }
+    });
+  }
+  $$('[data-act="pad-quick"]').forEach(b => b.addEventListener('click', () => { Pad.forcedCtx = null; Pad.open(); }));
+}
 
 /* =====================================================================
    v3.29: tutorial a passi al primo avvio e tasti “?” che spiegano ogni parte

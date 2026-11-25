@@ -1956,19 +1956,26 @@ function viewPdf(id, pageParam) {
   let pinch = null;
   const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
   scroller.addEventListener('touchstart', e => {
-    if (e.touches.length !== 2 || !R.doc || (R.tool !== 'select' && !R.penSeen)) return;
+    if (e.touches.length !== 2 || !R.doc) return;
     const [a, b] = e.touches;
     const r = scroller.getBoundingClientRect();
-    pinch = { d0: tdist(a, b), mx: (a.clientX + b.clientX) / 2 - r.left, my: (a.clientY + b.clientY) / 2 - r.top, z0: R.zoom, sl: scroller.scrollLeft, st: scroller.scrollTop, k: 1 };
+    const mx = (a.clientX + b.clientX) / 2 - r.left;
+    const my = (a.clientY + b.clientY) / 2 - r.top;
+    pinch = { d0: Math.max(10, tdist(a, b)), mx0: mx, my0: my, mx, my, z0: R.zoom, sl: scroller.scrollLeft, st: scroller.scrollTop, k: 1 };
     if (ink) { ink.path?.remove(); ink.occ?.remove(); ink = null; }
   }, { passive: true });
   scroller.addEventListener('touchmove', e => {
     if (!pinch || e.touches.length !== 2) return;
     e.preventDefault();
     const [a, b] = e.touches;
+    const r = scroller.getBoundingClientRect();
+    pinch.mx = (a.clientX + b.clientX) / 2 - r.left;
+    pinch.my = (a.clientY + b.clientY) / 2 - r.top;
     pinch.k = Math.max(0.5 / pinch.z0, Math.min(3 / pinch.z0, tdist(a, b) / pinch.d0));
-    pagesEl.style.transformOrigin = `${pinch.sl + pinch.mx}px ${pinch.st + pinch.my}px`;
-    pagesEl.style.transform = `scale(${pinch.k})`;
+    const dx = pinch.mx - pinch.mx0;
+    const dy = pinch.my - pinch.my0;
+    pagesEl.style.transformOrigin = `${pinch.sl + pinch.mx0}px ${pinch.st + pinch.my0}px`;
+    pagesEl.style.transform = `translate(${dx}px, ${dy}px) scale(${pinch.k})`;
   }, { passive: false });
   const endPinch = e => {
     if (!pinch || e.touches.length >= 2) return;
@@ -1977,18 +1984,21 @@ function viewPdf(id, pageParam) {
     pagesEl.style.transform = '';
     pagesEl.style.transformOrigin = '';
     if (Math.abs(p.k - 1) < 0.03) return;
-    // il punto tra le dita, misurato prima dello zoom
+    // il punto sotto le dita all'inizio del pizzico finisce esattamente dove si trovano le dita al rilascio
     scroller.scrollTop = p.st;
     scroller.scrollLeft = p.sl;
-    zoomTo(p.z0 * p.k, anchorAt(p.mx, p.my));
+    const a = anchorAt(p.mx0, p.my0);
+    if (a) { a.mx = p.mx; a.my = p.my; }
+    zoomTo(p.z0 * p.k, a);
   };
   scroller.addEventListener('touchend', endPinch);
   scroller.addEventListener('touchcancel', endPinch);
   scroller.addEventListener('wheel', e => {
-    if (!e.ctrlKey || !R.doc) return;
+    if (!(e.ctrlKey || e.metaKey) || !R.doc) return;
     e.preventDefault();
     const r = scroller.getBoundingClientRect();
-    zoomTo(R.zoom * Math.exp(-e.deltaY * 0.01), anchorAt(e.clientX - r.left, e.clientY - r.top));
+    const dy = Math.max(-180, Math.min(180, e.deltaY));
+    zoomTo(R.zoom * Math.exp(-dy * 0.0025), anchorAt(e.clientX - r.left, e.clientY - r.top));
   }, { passive: false });
   // v3.45: lo zoom resta ancorato al punto della pagina sotto le dita o il puntatore.
   // Prima moltiplicava lo scorrimento per lo zoom, ma gli spazi tra le pagine non

@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.34';
+const APP_VERSION = '4.35';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -59,6 +59,7 @@ const libUrl = p => new URL(p, document.baseURI).href;
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const safeUrl = u => /^https?:\/\//i.test(String(u || '').trim()) ? String(u).trim() : '#';
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 // Gomma della penna: pulsante laterale tenuto premuto (S Pen) o estremità con la gomma
@@ -264,6 +265,7 @@ const Settings = {
     readFont: 'literata',
     readSize: 'm',
     readSpacing: 'normal',
+    uiScale: 1.12,
     boardOpen: false,
     keepPdfImages: false,
     showImages: true,
@@ -517,6 +519,7 @@ const GRADES = [
 
 function nextSrs(srs, q, mode = '') {
   const cur = srs || newSrs();
+  const prev = srs ? { ef: cur.ef ?? 2.5, interval: cur.interval ?? 0, reps: cur.reps ?? 0, due: cur.due ?? null } : null;
   const s = { ...newSrs(), ...cur, history: [...(cur.history || [])] };
   const today = todayStr();
   const ef0 = Number.isFinite(+s.ef) && +s.ef >= 1.3 ? +s.ef : 2.5;
@@ -553,6 +556,7 @@ function nextSrs(srs, q, mode = '') {
   s.due = s.interval > 0 ? addDays(today, s.interval) : today;
   s.history.push({ date: today, q, mode });
   if (s.history.length > 200) s.history = s.history.slice(-200);
+  s.prev = prev;
   return s;
 }
 
@@ -1428,8 +1432,18 @@ function applyTheme() {
   html.style.setProperty('--read-font', READ_FONTS[S().readFont] || READ_FONTS.literata);
   html.style.setProperty('--read-size', READ_SIZES[S().readSize] || READ_SIZES.m);
   html.style.setProperty('--read-lh', READ_LH[S().readSpacing] || READ_LH.normal);
+  const uiScale = Math.max(0.85, Math.min(1.5, +S().uiScale || 1.12));
+  html.style.setProperty('--ui-scale', String(uiScale));
   const meta = $('meta[name="theme-color"]');
   if (meta) meta.content = (look === 'classic' ? { dark: '#0c1020', light: '#f3f5fb', sepia: '#f2e9d5' } : { dark: '#0b1820', light: '#f1f7f9', sepia: '#eef0ea' })[theme];
+}
+function setUiScale(v) {
+  const s = Math.max(0.85, Math.min(1.5, Math.round(v * 20) / 20));
+  S().uiScale = s;
+  Settings.save();
+  applyTheme();
+  $$('[data-ui-scale-val]').forEach(el => { el.textContent = `${Math.round(s * 100)}%`; });
+  $$('[data-ui-scale-range]').forEach(el => { el.value = String(Math.round(s * 100)); });
 }
 
 function statusPill(s) {
@@ -1493,7 +1507,7 @@ async function createNotebookFlow() {
 /* ---------------------------------------------------------------------
    Router
    --------------------------------------------------------------------- */
-const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers', 'graph', 'formato', 'ask', 'inbox', 'raccolta'];
+const MORE_KEYS = ['search', 'more', 'settings', 'links', 'guide', 'calendar', 'clinic', 'glossary', 'cases', 'incomplete', 'lab', 'semei', 'examq', 'micro', 'atlas', 'anat', 'pharma', 'diary', 'scores', 'viva', 'papers', 'graph', 'formato', 'ask', 'inbox', 'raccolta', 'pad'];
 function route() {
   cleanups.forEach(fn => { try { fn(); } catch { /* ignora */ } });
   cleanups = [];
@@ -1560,7 +1574,7 @@ function route() {
     case 'raccolta': return viewClips(p1, p2);
     case 'fs': { FullScreen.toggle(); if (history.length > 1) history.back(); else location.replace('#/notebooks'); return; }
     case 'resume': location.replace('#/notebooks'); setTimeout(() => Resume.go(), 0); return;
-    case 'pad': location.replace('#/notebooks'); setTimeout(() => Pad.open(), 0); return;
+    case 'pad': return viewPadArchive();
     case 'split': location.replace('#/notebooks'); setTimeout(() => Split.pick(), 0); return;
     case 'incomplete': return viewIncomplete();
     default: return viewNotebooks();
@@ -4334,7 +4348,7 @@ const Nav = {
     const p = String(h || '').replace(/^#\/?/, '').split('/');
     if (p[0] === 'sec') { const s = secById(p[1]); return s ? `Torna a “${s.title}”` : 'Indietro'; }
     if (p[0] === 'nb') { const n = nbById(p[1]); const g = n && p[2] ? groupsOf(n).find(x => x.id === p[2]) : null; return g ? `Torna a ${g.name}` : n ? `Torna a ${n.name}` : 'Indietro'; }
-    const names = { scores: 'Score clinici', viva: 'Interrogazione', papers: 'Articoli', raccolta: 'Raccolta', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
+    const names = { pad: 'Blocco note', scores: 'Score clinici', viva: 'Interrogazione', papers: 'Articoli', raccolta: 'Raccolta', micro: 'Microbiologia', pharma: 'Farmacologia', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico', diary: 'Diario di tirocinio', examq: 'Domande d’esame', semei: 'Semeiotica', lab: 'Medicina di laboratorio', cases: 'Casi clinici', incomplete: 'Da completare', review: 'Ripasso', search: 'Cerca', calendar: 'Calendario', clinic: 'Note cliniche', glossary: 'Glossario', cards: 'Flashcard', pdfs: 'PDF', pdf: 'PDF', notebooks: 'Notebook', tag: p[1] ? `#${p[1]}` : 'Tag', exam: 'Simulazione' };
     return names[p[0]] ? `Torna a ${names[p[0]]}` : 'Indietro';
   },
   init() {

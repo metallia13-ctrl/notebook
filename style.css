@@ -100,7 +100,7 @@
 
 * { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+html { font-size: calc(16px * var(--ui-scale, 1)); -webkit-text-size-adjust: 100%; }
 
 body {
   margin: 0;
@@ -108,7 +108,7 @@ body {
   color: var(--text);
   font-family: var(--ui-font);
   font-optical-sizing: auto;
-  font-size: 16px;
+  font-size: 1rem;
   line-height: 1.5;
   -webkit-tap-highlight-color: transparent;
 }
@@ -4465,7 +4465,7 @@ body.map-full-on .pad-fab, body.map-full-on .au-bar { display: none; }
   --shadow: 0 18px 40px -16px rgba(20, 45, 50, 0.28);
   --elev: none;
 }
-:root[data-look="vetrino"] body { font-size: 16.5px; letter-spacing: 0.005em; }
+:root[data-look="vetrino"] body { font-size: 1.04rem; letter-spacing: 0.005em; }
 :root[data-look="vetrino"] body::before { display: none; }
 
 /* Titoli: stretti e grandi; niente evidenziatore, ma una linea guida con il suo punto */
@@ -6015,3 +6015,47 @@ td.tbl-cell-hide.shown * { visibility: visible; }
 .dq-st-ko { color: var(--danger); font-weight: 650; }
 .dq-st-idk { color: var(--warn); font-weight: 650; }
 .exam-stats { justify-content: flex-start; margin: 10px 0 18px; }
+
+/* =====================================================================
+   v4.35: zoom globale dell'app e archivio del blocco note per cartelle
+   ===================================================================== */
+.ui-zoom-bar { display: flex; align-items: center; gap: 8px; }
+.ui-zoom-bar input[type="range"] { flex: 1; min-width: 90px; accent-color: var(--accent); }
+.ui-zoom-val { min-width: 56px; font-variant-numeric: tabular-nums; }
+.more-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ui-zoom-pill { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.ui-zoom-pill .btn { min-height: 32px; padding: 0 9px; font-variant-numeric: tabular-nums; }
+
+.pad-arch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 14px 0 18px; }
+.pad-arch-bar .search { flex: 1 1 240px; margin: 0; }
+.pad-arch-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.pad-arch-tree { display: flex; flex-direction: column; gap: 14px; }
+.pad-arch-nb { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); overflow: hidden; }
+.pad-arch-nb > summary { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; font-weight: 750; font-size: 1.05rem; list-style: none; user-select: none; }
+.pad-arch-nb > summary::-webkit-details-marker { display: none; }
+.pad-arch-nb > summary::after { content: "▾"; margin-left: auto; color: var(--muted); transition: transform 0.15s; }
+.pad-arch-nb:not([open]) > summary::after { transform: rotate(-90deg); }
+.pad-arch-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; background: hsl(var(--h, 200) 65% 56%); }
+.pad-arch-dot.is-loose { background: var(--muted); }
+.pad-arch-nbname { flex: 1; min-width: 0; }
+.pad-arch-nbbody { padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--line); }
+.pad-arch-folder { border-left: 2px solid var(--line); padding-left: 12px; margin-top: 6px; }
+.pad-arch-folder > summary { display: flex; align-items: center; gap: 8px; padding: 6px 4px; cursor: pointer; font-weight: 700; color: var(--text); list-style: none; user-select: none; }
+.pad-arch-folder > summary::-webkit-details-marker { display: none; }
+.pad-arch-fbody { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; }
+.pad-arch-sec { display: flex; flex-direction: column; gap: 8px; }
+.pad-arch-sechead { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.pad-arch-seclink { font-weight: 700; color: var(--accent); text-decoration: none; font-size: 0.96rem; }
+.pad-arch-seclink:hover { text-decoration: underline; }
+.pad-arch-seclabel { font-weight: 700; color: var(--text); font-size: 0.96rem; }
+.pad-arch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(152px, 1fr)); gap: 12px; }
+.pad-arch-card { display: flex; flex-direction: column; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); color: var(--text); text-align: left; overflow: hidden; cursor: pointer; font: inherit; transition: transform 0.12s, border-color 0.15s; }
+.pad-arch-card:hover, .pad-arch-card:focus-visible { border-color: var(--accent); transform: translateY(-2px); }
+.pad-arch-thumb { position: relative; display: block; width: 100%; aspect-ratio: 1 / 1.32; background: #fff; overflow: hidden; border-bottom: 1px solid var(--line); }
+.pad-arch-cv, .pad-arch-svg { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+.pad-arch-tag { position: absolute; top: 6px; right: 6px; padding: 2px 7px; border-radius: 999px; background: rgba(15, 23, 42, 0.78); color: #fff; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.02em; }
+.pad-arch-tag.is-pdf { background: #b91c1c; }
+.pad-arch-info { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; }
+.pad-arch-title { font-weight: 700; font-size: 0.88rem; line-height: 1.25; }
+.pad-arch-pdfname { font-size: 0.78rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pad-arch-meta { font-size: 0.76rem; color: var(--muted); }
