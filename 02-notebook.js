@@ -295,6 +295,7 @@ function viewNotebook(id, folderId = '') {
       { key: 'sub', label: 'Nuova cartella qui dentro' },
       { key: 'html', label: 'Carica una mappa HTML qui' },
       { key: 'import', label: 'Importa qui' },
+      ...(secs.length >= 2 ? [{ key: 'merge', label: '🔀 Unisci sezioni (con AI o manuale)' }] : []),
       { key: 'exam', label: 'Simulazione d’esame su questa cartella' },
       { key: 'listen', label: 'Ascolta in sequenza' },
       { key: 'rename', label: 'Rinomina' },
@@ -316,6 +317,7 @@ function viewNotebook(id, folderId = '') {
     if (choice === 'write') return newSecIn(g.id);
     if (choice === 'html') return addHtmlSections(nb, g.id);
     if (choice === 'import') return go(`#/import/${id}/${g.id}`);
+    if (choice === 'merge') return mergeSectionsFlow({ nb, folder: g });
     if (choice === 'exam') { examRun = null; return go(`#/exam/${id}/${g.id}`); }
     if (choice === 'listen') {
       const ids = groupTreeIds(nb, g);
@@ -408,6 +410,7 @@ function viewNotebook(id, folderId = '') {
       { key: 'listen', label: 'Ascolta tutto il notebook' },
       { key: 'print', label: 'Stampa o salva in PDF' },
       { key: 'graph', label: 'Mappa dei collegamenti (sezioni, lezioni, domande d’esame)' },
+      ...(secs.length >= 2 ? [{ key: 'merge', label: '🔀 Unisci più sezioni (con AI o manuale)' }] : []),
       { key: 'compare', label: 'Tabella di confronto tra sezioni' },
       { key: 'ask', label: 'Chiedi alle fonti di questo notebook' },
       { key: 'formato', label: 'Controlla il formato degli appunti' },
@@ -417,6 +420,7 @@ function viewNotebook(id, folderId = '') {
     ]);
     if (choice === 'listen') Playlist.start(nbReadingOrder(nb), nb.name);
     if (choice === 'graph') go(`#/graph/${nb.id}`);
+    if (choice === 'merge') mergeSectionsFlow({ nb });
     if (choice === 'compare') compareFlow(nb);
     if (choice === 'ask') go(`#/ask/${nb.id}`);
     if (choice === 'formato') go(`#/formato/${nb.id}`);
@@ -631,7 +635,8 @@ function viewSection(id, mode) {
         ${sec.md.trim() ? `<a class="btn sm" href="#/print/sec/${sec.id}" title="Stampa la sezione o salvala in PDF">Stampa</a>` : ''}
         ${sec.md.trim().length > 150 ? `<a class="btn sm" href="#/viva/sec/${sec.id}" title="Il professore (l’AI) ti interroga su questa sezione">Interrogami</a>` : ''}
         ${Focus.on() ? '' : '<button class="btn sm" type="button" data-act="focus" title="Un obiettivo e un timer: il menu sparisce finché non hai finito">🎯 Fuoco</button>'}
-        ${(sec.studyhub || sec.srs?.due || (sec.srs?.history && sec.srs.history.length)) ? '<button class="btn sm" type="button" data-act="srs-manage" title="Annulla l’ultimo ripasso o ricomincia l’argomento da capo">↺ Ripasso</button>' : ''}
+        ${nb && secsOf(nb.id).length >= 2 ? '<button class="btn sm" type="button" data-act="merge-sec" title="Unisci questa sezione con una o più sezioni doppie o correlate">🔀 Unisci</button>' : ''}
+        ${(sec.studyhub || sec.srs?.due || (sec.srs?.history && sec.srs.history.length) || addReviewsOf(sec).length || sec.md.trim()) ? '<button class="btn sm" type="button" data-act="srs-manage" title="Gestisci il ripasso o crea un ripasso a parte per nuove aggiunte">↺ Ripasso</button>' : ''}
         ${imageRefs(sec.md).some(x => imageById(x)) ? `<button class="btn sm" type="button" data-act="labels" title="Rimetti le etichette sugli schemi">Etichette${labelImages(sec).length ? ` (${labelImages(sec).length})` : ''}</button>` : ''}
         ${secLinksOf(sec).map(l => `<a class="btn sm ghost sec-link" href="${esc(safeUrl(l.url))}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">↗ ${esc(l.title)}</a>`).join('')}
       </div>
@@ -657,6 +662,7 @@ function viewSection(id, mode) {
         ${nextSec ? `<a class="pg pg-next" href="#/sec/${nextSec.id}" rel="next"><span class="pg-k">Successiva ›</span><span class="pg-t">${esc(nextSec.title)}</span></a>` : '<span></span>'}
       </nav>` : ''}
   `);
+  on('[data-act="merge-sec"]', 'click', () => mergeSectionsFlow({ nb, primarySec: sec }));
   on('[data-act="srs-manage"]', 'click', () => resetSectionReview(sec));
   on('[data-act="labels"]', 'click', () => startLabels(sec));
   on('[data-act="focus"]', 'click', () => Focus.start(sec.id));
@@ -708,12 +714,18 @@ async function undoSectionReview(secId, snapshot = null) {
 
 async function resetSectionReview(sec) {
   const canUndo = !sec.studyhub && !!(sec.srs?.prev || (sec.srs?.history && sec.srs.history.length));
+  const hasSrs = !!(sec.studyhub || sec.srs?.due || (sec.srs?.history && sec.srs.history.length));
   const ch = await actionSheet('Gestisci ripasso', [
+    ...(sec.md.trim() ? [{ key: 'addon', label: '✨ Ripasso a parte per nuove aggiunte…' }] : []),
     ...(canUndo ? [{ key: 'undo', label: 'Annulla l’ultimo ripasso' }] : []),
-    { key: 'relearn', label: 'Rimetti in primo apprendimento (ripasso domani)' },
-    { key: 'reset', label: 'Togli dal ripasso (torna “Nuova”)', danger: true }
+    ...(hasSrs ? [{ key: 'relearn', label: 'Rimetti in primo apprendimento (ripasso domani)' }] : []),
+    ...(hasSrs ? [{ key: 'reset', label: 'Togli dal ripasso (torna “Nuova”)', danger: true }] : [])
   ]);
   if (!ch) return;
+  if (ch === 'addon') {
+    if (await openAddonPickerSheet(sec)) route();
+    return;
+  }
   if (ch === 'undo') {
     await undoSectionReview(sec.id);
     return;
@@ -932,6 +944,7 @@ function modeRead(sec, body) {
         <p>Questa sezione è stata salvata senza formattazione AI.</p>
         <button class="btn" data-act="fmt">Formatta con ${AI.name()}</button>
       </div>` : ''}
+    ${addonBannerHtml(sec)}
     ${sec.md.trim() ? `
       <div class="fp-new-banner" id="fpNewBanner" hidden></div>
       <div class="fp-strip" role="toolbar" aria-label="Prima sessione di studio">
@@ -966,6 +979,7 @@ function modeRead(sec, body) {
     ${lessonBlockHtml(sec)}
     ${sourcesBlockHtml(sec)}
   `;
+  bindAddonBanner(body, sec);
   bindLessonBlock(body, sec);
   bindSourcesBlock(body, sec, () => saveSection(sec), isCase(sec) ? 'caso' : 'sezione');
   $$('[data-eqopen]', body).forEach(b => b.addEventListener('click', async () => { const x = examQs().find(r => r.id === b.dataset.eqopen); if (x && await eqSheet(x)) route(); }));
@@ -1588,9 +1602,10 @@ const ED_HL_COLORS = [
   ...HL_COLORS
 ];
 
-function mergeSystem({ keepHeads = false, extra = '', hasSecond = false } = {}) {
+function mergeSystem({ keepHeads = false, extra = '', hasSecond = false, srcCount = 0 } = {}) {
   const extraBlock = extra.trim() ? `\n\nINDICAZIONI SPECIFICHE DELLA STUDENTESSA (seguile con priorità):\n- ${extra.trim()}` : '';
-  return `Riordini e fondi appunti di uno studente di medicina${hasSecond ? ' provenienti da due fonti diverse' : ' (spesso incollati in modo disordinato da più fonti)'}.
+  const srcDesc = srcCount > 2 ? ` provenienti da ${srcCount} sezioni/fonti diverse` : (hasSecond || srcCount === 2 ? ' provenienti da due fonti/sezioni diverse' : ' (spesso incollati in modo disordinato da più fonti)');
+  return `Riordini e fondi appunti di uno studente di medicina${srcDesc}.
 
 OBIETTIVO PRINCIPALE — FUSIONE E DEDUPLICAZIONE SENZA PERDITA DI DETTAGLI:
 - Individua argomenti, strutture, cellule, vie o concetti ripetuti in più punti del testo e accorpali in UN UNICO paragrafo o elenco puntato coerente, eliminando le ripetizioni identiche.
@@ -1947,6 +1962,911 @@ function deleteMdHeading(md, idx) {
   if (!cur) return null;
   lines.splice(cur.line, cur.endLine - cur.line);
   return cleanMdSpacing(lines);
+}
+
+
+/* =====================================================================
+   v4.40: Unione di 2 o più sezioni (con AI o manuale) + Ripasso a parte
+   per le nuove aggiunte (senza toccare il ripasso principale).
+   ===================================================================== */
+function addonStatusPill(a) {
+  if (!a || !a.srs || !a.srs.due) return '<span class="pill">Nuovo</span>';
+  if (isAddonDue(a)) return `<span class="pill due">${a.srs.due < todayStr() ? 'In ritardo' : 'Oggi'}</span>`;
+  return `<span class="pill soft">${esc(fmtDue(a.srs.due))}</span>`;
+}
+
+function addonBannerHtml(sec) {
+  const list = addReviewsOf(sec);
+  if (!list.length) return '';
+  return `
+    <div class="addon-box" id="addonBox">
+      <div class="addon-box-h">
+        <strong>✨ Nuove aggiunte — ripasso a parte</strong>
+        <button type="button" class="btn sm ghost" data-addon-new>＋ Aggiungi</button>
+      </div>
+      <ul class="addon-list">${list.map(a => {
+        const reps = a.srs?.history?.length || 0;
+        const when = a.srs?.due ? (a.srs.due < todayStr() ? `in ritardo (${fmtDue(a.srs.due)})` : a.srs.due === todayStr() ? 'da ripassare oggi' : `prossimo ripasso ${fmtDue(a.srs.due)}`) : 'non pianificato';
+        const pts = Array.isArray(a.parts) && a.parts.length ? a.parts.join(' · ') : '';
+        return `<li class="addon-item" data-aid="${esc(a.id)}">
+          <div class="addon-main">
+            <div class="addon-t">${esc(a.title || 'Nuove aggiunte')} ${addonStatusPill(a)}</div>
+            <div class="addon-s">${esc([pts, when, reps ? `ripassato ${reps} ${reps === 1 ? 'volta' : 'volte'}` : ''].filter(Boolean).join(' · '))}</div>
+          </div>
+          <div class="inline">
+            <a class="btn sm primary" href="#/sec/${sec.id}/addon/${a.id}">▶ Ripassa</a>
+            <button type="button" class="btn sm ghost" data-addon-edit="${esc(a.id)}" title="Scegli quali paragrafi includere">✎</button>
+            <button type="button" class="btn sm ghost" data-addon-done="${esc(a.id)}" title="Segna come integrato nel ripasso principale e rimuovi il ripasso a parte">✓ Integrato</button>
+          </div>
+        </li>`;
+      }).join('')}</ul>
+    </div>`;
+}
+
+function bindAddonBanner(root, sec) {
+  const box = $('#addonBox', root);
+  if (!box) return;
+  box.addEventListener('click', async e => {
+    if (e.target.closest('[data-addon-new]')) {
+      if (await openAddonPickerSheet(sec)) route();
+      return;
+    }
+    const ed = e.target.closest('[data-addon-edit]');
+    if (ed) {
+      const a = addReviewsOf(sec).find(x => x.id === ed.dataset.addonEdit);
+      if (a && await openAddonPickerSheet(sec, { existing: a })) route();
+      return;
+    }
+    const dn = e.target.closest('[data-addon-done]');
+    if (dn) {
+      const a = addReviewsOf(sec).find(x => x.id === dn.dataset.addonDone);
+      if (!a) return;
+      const ok = await modal({
+        title: 'Segnare le nuove aggiunte come integrate?',
+        text: `Il ripasso a parte “${a.title}” viene chiuso; il testo resta normalmente nella sezione e continuerà nel ripasso principale.`,
+        confirm: 'Segna integrato'
+      });
+      if (!ok) return;
+      sec.addReviews = addReviewsOf(sec).filter(x => x.id !== a.id);
+      await saveSection(sec);
+      toast('Nuove aggiunte integrate nel ripasso principale');
+      route();
+    }
+  });
+}
+
+// Calcola quali paragrafi di `mergedMd` contengono novità rispetto a `baseMd`
+function analyzeNewParts(baseMd, mergedMd) {
+  const parts = splitMdParts(mergedMd);
+  const normW = t => (foldAccents(aiText(stripCloze(String(t || '')))).match(/[a-z0-9]{4,}/g) || []).map(w => w.slice(0, 8));
+  const baseWords = new Set(normW(baseMd));
+  const baseHeads = new Set(splitMdParts(baseMd).map(p => foldAccents(p.title)));
+  return parts.map(p => {
+    const ws = normW(p.md);
+    const uniq = [...new Set(ws)];
+    const novel = uniq.filter(w => !baseWords.has(w)).length;
+    const ratio = uniq.length ? novel / uniq.length : 0;
+    const isNewHead = p.level > 0 && !baseHeads.has(foldAccents(p.title));
+    const suggested = baseMd ? (ratio >= 0.28 || (isNewHead && ratio >= 0.16)) : false;
+    return { ...p, novelPct: Math.round(ratio * 100), isNewHead, suggested };
+  });
+}
+
+// Finestra per creare o modificare un ripasso a parte sui paragrafi scelti di una sezione
+function openAddonPickerSheet(sec, { existing = null } = {}) {
+  return new Promise(resolve => {
+    const parts = splitMdParts(sec.md);
+    const preTitles = new Set((existing?.parts || []).map(t => foldAccents(t)));
+    const picked = new Set(existing ? parts.filter(p => preTitles.has(foldAccents(p.title))).map(p => p.idx) : []);
+    if (existing && !picked.size && parts.length) picked.add(parts.length - 1);
+    const sh = openSheet(`
+      <h2>${existing ? 'Modifica ripasso nuove aggiunte' : '✨ Ripasso a parte per nuove aggiunte'}</h2>
+      <p class="sheet-sub">${esc(sec.title)}: scegli i paragrafi nuovi da ripassare con un calendario separato, senza modificare il ripasso della sezione principale.</p>
+      <label class="field"><span>Etichetta del ripasso a parte</span>
+        <input class="input" id="adTitle" value="${esc(existing?.title || `Nuove aggiunte (${new Date().toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })})`)}" placeholder="Es. Nuove aggiunte (da Cervelletto)"></label>
+      ${existing ? '' : `
+      <div class="field"><span class="lbl">Primo ripasso</span>
+        <div class="inline">
+          <label class="check"><input type="radio" name="adWhen" value="tomorrow" checked><span>Domani</span></label>
+          <label class="check"><input type="radio" name="adWhen" value="today"><span>Subito oggi</span></label>
+        </div>
+      </div>`}
+      <div class="inline" style="margin:6px 0">
+        <button type="button" class="btn sm ghost" data-adp="all">Seleziona tutti</button>
+        <button type="button" class="btn sm ghost" data-adp="none">Nessuno</button>
+      </div>
+      <ul class="cand pick-list" id="adPartList">${parts.map(p => `
+        <li><label class="check"><input type="checkbox" value="${p.idx}" ${picked.has(p.idx) ? 'checked' : ''}>
+          <span><span class="cand-f">${esc(p.title)}</span><span class="cand-b">${esc(aiText(p.md).replace(/\s+/g, ' ').trim().slice(0, 120))}</span></span>
+        </label></li>`).join('')}</ul>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-ad="no">Annulla</button>
+        <button type="button" class="btn primary" data-ad="ok">${existing ? 'Salva' : 'Crea ripasso a parte'}</button>
+      </div>`, { label: 'Ripasso nuove aggiunte', onClose: v => resolve(!!v) });
+
+    sh.el.addEventListener('change', e => {
+      const cb = e.target.closest('#adPartList input[type="checkbox"]');
+      if (!cb) return;
+      if (cb.checked) picked.add(+cb.value); else picked.delete(+cb.value);
+    });
+    sh.el.addEventListener('click', async e => {
+      const pb = e.target.closest('[data-adp]');
+      if (pb) {
+        const on = pb.dataset.adp === 'all';
+        picked.clear();
+        $$('#adPartList input[type="checkbox"]', sh.el).forEach(cb => { cb.checked = on; if (on) picked.add(+cb.value); });
+        return;
+      }
+      const b = e.target.closest('[data-ad]');
+      if (!b) return;
+      if (b.dataset.ad === 'no') { sh.close(false); return; }
+      const chosen = parts.filter(p => picked.has(p.idx));
+      if (!chosen.length) { toast('Seleziona almeno un paragrafo'); return; }
+      const title = $('#adTitle', sh.el).value.trim() || 'Nuove aggiunte';
+      const md = chosen.map(p => p.md).join('\n\n');
+      const partTitles = chosen.map(p => p.title);
+      sec.addReviews = addReviewsOf(sec).slice();
+      if (existing) {
+        const cur = sec.addReviews.find(x => x.id === existing.id);
+        if (cur) Object.assign(cur, { title, parts: partTitles, md, updated: Date.now() });
+      } else {
+        const when = $('input[name="adWhen"]:checked', sh.el)?.value === 'today' ? todayStr() : addDays(todayStr(), 1);
+        sec.addReviews.push({
+          id: uid(),
+          title,
+          parts: partTitles,
+          md,
+          created: Date.now(),
+          srs: { ef: 2.5, interval: when === todayStr() ? 0 : 1, reps: 0, due: when, history: [] }
+        });
+      }
+      await saveSection(sec);
+      toast(existing ? 'Ripasso nuove aggiunte aggiornato' : 'Ripasso a parte creato (ripasso principale invariato)');
+      sh.close(true);
+    });
+  });
+}
+
+// Vista dedicata allo studio/ripasso di un pacchetto di nuove aggiunte (#/sec/<secId>/addon/<addonId>)
+function viewAddonReview(secId, addonId) {
+  const sec = secById(secId);
+  if (!sec) return notFound('Questa sezione');
+  const addon = addReviewsOf(sec).find(x => x.id === addonId);
+  if (!addon) return notFound('Questo ripasso delle nuove aggiunte');
+  const nb = nbById(sec.notebookId);
+  const hasCloze = countCloze(addon.md) > 0;
+  let tab = hasCloze ? 'cloze' : 'read';
+
+  const statusTxt = () => {
+    const s = addon.srs;
+    const reps = s?.history?.length || 0;
+    const tail = reps ? ` · ripassato ${reps} ${reps === 1 ? 'volta' : 'volte'}` : '';
+    if (!s || !s.due) return 'Non pianificato';
+    if (s.due < todayStr()) return `In ritardo (${fmtDue(s.due)})${tail}`;
+    if (s.due === todayStr()) return `Da ripassare oggi${tail}`;
+    return `Prossimo ripasso ${fmtDue(s.due)}${tail}`;
+  };
+
+  setView(`
+    <div class="back-row">
+      <a class="back" href="#/sec/${sec.id}/read">Torna a “${esc(sec.title)}”</a>
+      <a class="back" href="#/review">Ripasso</a>
+    </div>
+    <header class="sec-head">
+      <p class="meta">✨ Ripasso a parte · ${esc([nb?.name, groupPathText(sec)].filter(Boolean).join(' › '))}</p>
+      <h1>${esc(addon.title || 'Nuove aggiunte')}</h1>
+      <p class="meta">Sezione: <b>${esc(sec.title)}</b> · ${esc(statusTxt())} <span class="muted-inline">(il ripasso principale resta separato)</span></p>
+      <div class="sec-extra">
+        <button type="button" class="btn sm" data-ar="edit">✎ Modifica paragrafi</button>
+        <button type="button" class="btn sm ghost" data-ar="done">✓ Segna integrato nel ripasso principale</button>
+      </div>
+    </header>
+    <nav class="tabs" aria-label="Modalità di studio nuove aggiunte" id="arTabs">
+      ${hasCloze ? '<button type="button" class="tab on" data-artab="cloze">Cloze</button>' : ''}
+      <button type="button" class="tab ${hasCloze ? '' : 'on'}" data-artab="read">Leggi</button>
+      <button type="button" class="tab" data-artab="blank">Pagina bianca</button>
+      <button type="button" class="tab" data-artab="oral">Orale</button>
+    </nav>
+    <section id="arBody" class="mode-body"></section>
+    <div id="arGradeSlot"></div>
+  `);
+
+  const paintGrade = () => {
+    const slot = $('#arGradeSlot');
+    slot.innerHTML = `
+      <div class="grade">
+        <p class="grade-q"><span>Quanto ricordavi di queste nuove aggiunte?</span></p>
+        <div class="grade-btns">
+          ${GRADES.map((g, i) => {
+            const nx = nextSrs(addon.srs, g.q, `addon:${tab}`);
+            return `<button class="gbtn g-${g.key}" data-aq="${g.q}" aria-keyshortcuts="${i + 1}">
+              <span>${g.label}</span><small>${fmtInterval(nx.interval)}</small></button>`;
+          }).join('')}
+        </div>
+      </div>`;
+    let graded = false;
+    const grade = async q => {
+      if (graded) return;
+      graded = true;
+      $$('.gbtn', slot).forEach(b => { b.disabled = true; });
+      const prev = addon.srs ? JSON.parse(JSON.stringify(addon.srs)) : newSrs();
+      addon.srs = nextSrs(addon.srs, q, `addon:${tab}`);
+      await saveSection(sec);
+      Stats.addReview();
+      toast(addon.srs.interval === 0 ? 'Resta nei ripassi di oggi' : `Prossimo ripasso nuove aggiunte ${fmtDue(addon.srs.due)}`, '', {
+        label: 'Annulla',
+        fn: async () => { addon.srs = prev; await saveSection(sec); toast('Valutazione annullata'); route(); }
+      });
+      go(state.fromReview ? '#/review' : `#/sec/${sec.id}/read`);
+    };
+    $$('.gbtn', slot).forEach(b => b.addEventListener('click', () => grade(+b.dataset.aq)));
+  };
+
+  const renderTab = () => {
+    $$('[data-artab]').forEach(b => b.classList.toggle('on', b.dataset.artab === tab));
+    const body = $('#arBody');
+    if (tab === 'cloze') {
+      body.innerHTML = `
+        <div class="toolbar">
+          <span id="arCzCnt">0 rivelati</span>
+          <button class="btn sm" type="button" data-arcz="all">Rivela tutto</button>
+          <button class="btn sm ghost" type="button" data-arcz="hide">Nascondi di nuovo</button>
+        </div>
+        <article class="notes cloze-mode">${renderMd(addon.md)}</article>`;
+      const art = $('.notes', body);
+      hydrateImages(art);
+      const marks = $$('mark.cz', art);
+      const upd = () => { const r = marks.filter(m => m.classList.contains('rev')).length; $('#arCzCnt', body).textContent = `${r} di ${marks.length} rivelati`; };
+      upd();
+      marks.forEach(m => { m.tabIndex = 0; m.addEventListener('click', () => { m.classList.toggle('rev'); upd(); }); });
+      $('[data-arcz="all"]', body).onclick = () => { marks.forEach(m => m.classList.add('rev')); upd(); };
+      $('[data-arcz="hide"]', body).onclick = () => { marks.forEach(m => m.classList.remove('rev')); upd(); };
+    } else if (tab === 'read') {
+      body.innerHTML = `<article class="notes">${renderMd(addon.md)}</article>`;
+      hydrateImages($('.notes', body));
+    } else if (tab === 'blank') {
+      body.innerHTML = `
+        <p class="hint">Scrivi quello che ricordi delle sole nuove aggiunte, poi confronta con il testo.</p>
+        <textarea class="input" rows="8" id="arBlankTa" placeholder="Scrivi qui tutto ciò che ricordi…"></textarea>
+        <div class="inline" style="margin:10px 0"><button type="button" class="btn primary" data-ar-cmp>Confronta con gli appunti</button></div>
+        <article class="notes" id="arRef" hidden>${renderMd(addon.md)}</article>`;
+      hydrateImages($('#arRef', body));
+      $('[data-ar-cmp]', body).onclick = () => { $('#arRef', body).hidden = false; };
+    } else {
+      body.innerHTML = `
+        <p class="hint">Ripeti a voce alta le nuove aggiunte, poi scopri il testo per verificare.</p>
+        <div class="inline" style="margin:10px 0"><button type="button" class="btn primary" data-ar-show>Mostra gli appunti</button></div>
+        <article class="notes" id="arRef" hidden>${renderMd(addon.md)}</article>`;
+      hydrateImages($('#arRef', body));
+      $('[data-ar-show]', body).onclick = e => { $('#arRef', body).hidden = false; e.currentTarget.hidden = true; };
+    }
+    paintGrade();
+  };
+
+  renderTab();
+  $('#arTabs').addEventListener('click', e => { const b = e.target.closest('[data-artab]'); if (b) { tab = b.dataset.artab; renderTab(); } });
+  on('[data-ar="edit"]', 'click', async () => { if (await openAddonPickerSheet(sec, { existing: addon })) route(); });
+  on('[data-ar="done"]', 'click', async () => {
+    const ok = await modal({
+      title: 'Integrare nel ripasso principale?',
+      text: 'Questo ripasso a parte verrà rimosso. Il testo resta nella sezione e prosegue nel ripasso principale.',
+      confirm: 'Segna integrato'
+    });
+    if (!ok) return;
+    sec.addReviews = addReviewsOf(sec).filter(x => x.id !== addon.id);
+    await saveSection(sec);
+    toast('Nuove aggiunte integrate nel ripasso principale');
+    go(`#/sec/${sec.id}/read`);
+  });
+}
+
+// Rileva coppie di sezioni con titoli molto simili (possibili doppioni)
+function findSimilarSectionPairs(secs) {
+  const stop = new Set(['della', 'dello', 'delle', 'degli', 'nella', 'nelle', 'sugli', 'sulla', 'sul', 'nel', 'nei', 'con', 'per', 'tra', 'fra', 'uno', 'una', 'che', 'del', 'dei', 'dal', 'alla', 'alle', 'agli', 'anatomia', 'fisiologia', 'istologia', 'patologia', 'clinica', 'unita']);
+  const toks = s => new Set((foldAccents(s.title.replace(/^\[unita\]\s*/i, '')).match(/[a-z0-9]{4,}/g) || []).filter(w => !stop.has(w)).map(w => w.slice(0, 7)));
+  const items = secs.filter(s => !/^\[unita\]/i.test(s.title)).map(s => ({ s, t: toks(s), norm: foldAccents(s.title) }));
+  const pairs = [];
+  for (let i = 0; i < items.length; i++) {
+    for (let j = i + 1; j < items.length; j++) {
+      const a = items[i], b = items[j];
+      if (!a.t.size || !b.t.size) continue;
+      let inter = 0;
+      a.t.forEach(w => { if (b.t.has(w)) inter++; });
+      const union = a.t.size + b.t.size - inter;
+      const jac = union ? inter / union : 0;
+      const sub = a.norm.length >= 6 && b.norm.length >= 6 && (a.norm.includes(b.norm) || b.norm.includes(a.norm));
+      if (sub || (inter >= 2 && jac >= 0.42) || jac >= 0.55) {
+        pairs.push({ a: a.s, b: b.s, score: sub ? 1 : jac });
+      }
+    }
+  }
+  return pairs.sort((x, y) => y.score - x.score).slice(0, 6);
+}
+
+// Trasferisce tutti gli allegati e collegamenti dalle sezioni secondarie alla destinazione
+async function transferSectionExtras(target, secondaries, { deleteSecondaries = false } = {}) {
+  const secIdsMoved = new Set(secondaries.map(s => s.id));
+  const stats = { cards: 0, questions: 0, maps: 0, htmls: 0, pdfs: 0, padPages: 0 };
+
+  // 1. Domande di richiamo (deduplicate)
+  const qSeen = new Set((target.questions || []).map(q => foldAccents(q.q)));
+  target.questions = [...(target.questions || [])];
+  for (const s of secondaries) {
+    for (const q of (s.questions || [])) {
+      const k = foldAccents(q.q);
+      if (k && !qSeen.has(k)) { qSeen.add(k); target.questions.push({ ...q }); stats.questions++; }
+    }
+  }
+
+  // 2. Tag
+  target.tags = [...new Set([...tagsOf(target), ...secondaries.flatMap(tagsOf)])];
+
+  // 3. Fonti
+  const srcList = [...sourcesOf(target)];
+  const srcSeen = new Set(srcList.map(x => foldAccents(x)));
+  for (const s of secondaries) {
+    for (const src of sourcesOf(s)) {
+      const k = foldAccents(src);
+      if (k && !srcSeen.has(k)) { srcSeen.add(k); srcList.push(src); }
+    }
+  }
+  if (srcList.length) target.sources = srcList;
+
+  // 4. Link esterni
+  const lnkList = [...secLinksOf(target)];
+  const lnkSeen = new Set(lnkList.map(l => l.url));
+  for (const s of secondaries) {
+    for (const l of secLinksOf(s)) {
+      if (l.url && !lnkSeen.has(l.url)) { lnkSeen.add(l.url); lnkList.push({ ...l }); }
+    }
+  }
+  if (lnkList.length) target.links = lnkList;
+
+  // 5. Video
+  const vidList = [...(Array.isArray(target.videos) ? target.videos : [])];
+  const vidSeen = new Set(vidList.map(v => v.url || v.id));
+  for (const s of secondaries) {
+    for (const v of (Array.isArray(s.videos) ? s.videos : [])) {
+      const k = v.url || v.id;
+      if (k && !vidSeen.has(k)) { vidSeen.add(k); vidList.push({ ...v }); }
+    }
+  }
+  if (vidList.length) target.videos = vidList;
+
+  // 6. Mappe mentali
+  const mapList = [...mapsOf(target)];
+  const mapSeen = new Set(mapList.map(m => m.id));
+  for (const s of secondaries) {
+    for (const m of mapsOf(s)) {
+      if (!mapSeen.has(m.id)) { mapSeen.add(m.id); mapList.push(JSON.parse(JSON.stringify(m))); stats.maps++; }
+    }
+  }
+  if (mapList.length) target.maps = mapList;
+
+  // 7. Mappe HTML
+  const htmlList = [...htmlsOf(target)];
+  const htmlSeen = new Set(htmlList.map(h => h.id));
+  for (const s of secondaries) {
+    for (const h of htmlsOf(s)) {
+      if (!htmlSeen.has(h.id)) { htmlSeen.add(h.id); htmlList.push({ ...h }); stats.htmls++; }
+    }
+  }
+  if (htmlList.length) target.htmls = htmlList;
+
+  // 8. Etichette sugli schemi
+  const tLabels = { ...(target.labels && typeof target.labels === 'object' ? target.labels : {}) };
+  for (const s of secondaries) {
+    if (s.labels && typeof s.labels === 'object') {
+      for (const [imgId, val] of Object.entries(s.labels)) {
+        if (!tLabels[imgId] || ((val?.masks || []).length > (tLabels[imgId]?.masks || []).length)) {
+          tLabels[imgId] = JSON.parse(JSON.stringify(val));
+        }
+      }
+    }
+  }
+  if (Object.keys(tLabels).length) target.labels = tLabels;
+
+  // 9. Riferimenti PDF
+  const refList = [...(Array.isArray(target.pdfRefs) ? target.pdfRefs : [])];
+  const refSeen = new Set(refList.map(r => `${r.pdfId}:${r.from}-${r.to}:${r.bmId || ''}`));
+  for (const s of secondaries) {
+    for (const r of (Array.isArray(s.pdfRefs) ? s.pdfRefs : [])) {
+      const k = `${r.pdfId}:${r.from}-${r.to}:${r.bmId || ''}`;
+      if (!refSeen.has(k)) { refSeen.add(k); refList.push({ ...r }); }
+    }
+  }
+  if (refList.length) target.pdfRefs = refList;
+
+  // 10. Flashcard delle sezioni secondarie → spostate sulla destinazione (storico Anki salvo; eliminare poi [Unita] è sicuro)
+  for (const c of state.cards.filter(x => secIdsMoved.has(x.sectionId))) {
+    c.sectionId = target.id;
+    c.notebookId = target.notebookId;
+    await saveCard(c);
+    stats.cards++;
+  }
+
+  // 11. PDF collegati alle sezioni secondarie
+  for (const p of state.pdfs.filter(x => secIdsMoved.has(x.sectionId))) {
+    p.sectionId = target.id;
+    p.notebookId = target.notebookId;
+    await savePdfMeta(p);
+    stats.pdfs++;
+  }
+
+  // 12. Domande d'esame collegate alle sezioni secondarie
+  if (typeof examQs === 'function') {
+    for (const eq of examQs()) {
+      if (!Array.isArray(eq.secIds) || !eq.secIds.some(id => secIdsMoved.has(id))) continue;
+      const nextIds = deleteSecondaries
+        ? [...new Set(eq.secIds.map(id => (secIdsMoved.has(id) ? target.id : id)))]
+        : [...new Set([...eq.secIds, target.id])];
+      eq.secIds = nextIds;
+      await saveLink(eq);
+    }
+  }
+
+  // 13. Lezioni audio del notebook
+  const nb = nbById(target.notebookId);
+  if (nb && Array.isArray(nb.audios) && nb.audios.length) {
+    let nbDirty = false;
+    const updArr = arr => {
+      if (!Array.isArray(arr) || !arr.some(id => secIdsMoved.has(id))) return arr;
+      nbDirty = true;
+      return deleteSecondaries
+        ? [...new Set(arr.map(id => (secIdsMoved.has(id) ? target.id : id)))]
+        : [...new Set([...arr, target.id])];
+    };
+    nb.audios.forEach(a => {
+      a.secIds = updArr(a.secIds);
+      (a.marks || []).forEach(m => { m.secIds = updArr(m.secIds); });
+    });
+    if (nbDirty) await saveNotebook(nb);
+  }
+
+  // 14. Fogli del Blocco note (PadDB)
+  if (typeof PadDB !== 'undefined') {
+    try {
+      const dstKey = `sec:${target.id}`;
+      let dstPad = await PadDB.get(dstKey);
+      let padChanged = false;
+      for (const s of secondaries) {
+        const srcPad = await PadDB.get(`sec:${s.id}`);
+        const pages = (srcPad?.pages || []).filter(pg => pg && pg.strokes && pg.strokes.length);
+        if (!pages.length) continue;
+        if (!dstPad) dstPad = { pages: [], bg: srcPad.bg || 'lines', title: target.title, t: Date.now() };
+        dstPad.pages = [...(dstPad.pages || []).filter(pg => pg && pg.strokes && pg.strokes.length), ...pages.map(pg => JSON.parse(JSON.stringify(pg)))];
+        stats.padPages += pages.length;
+        padChanged = true;
+        if (deleteSecondaries) await PadDB.del(`sec:${s.id}`);
+      }
+      if (padChanged && dstPad) {
+        dstPad.title = target.title;
+        dstPad.t = Date.now();
+        await PadDB.put(dstKey, dstPad);
+      }
+    } catch { /* ignora eventuali errori PadDB */ }
+  }
+
+  // 15. Ripassi a parte già esistenti sulle secondarie
+  const tAddons = [...addReviewsOf(target)];
+  for (const s of secondaries) {
+    for (const a of addReviewsOf(s)) {
+      if (!tAddons.some(x => x.id === a.id)) tAddons.push(JSON.parse(JSON.stringify(a)));
+    }
+  }
+  if (tAddons.length) target.addReviews = tAddons;
+
+  return stats;
+}
+
+// Flusso completo per unire 2 o più sezioni (AI merge, schema o accoda manuale)
+function mergeSectionsFlow({ nb, folder = null, primarySec = null } = {}) {
+  if (!nb) return;
+  const allSecs = secsOf(nb.id).sort((a, b) => a.title.localeCompare(b.title, 'it'));
+  if (allSecs.length < 2) { toast('Servono almeno due sezioni in questo notebook per unirle'); return; }
+  const folderTree = folder ? groupTreeIds(nb, folder) : null;
+  let scopeOnlyFolder = !!folderTree && allSecs.filter(s => folderTree.has(s.groupId)).length >= 2;
+
+  const picked = new Set(primarySec ? [primarySec.id] : []);
+  let destId = primarySec ? primarySec.id : '';
+  let mergeMode = AI.ready() ? 'merge' : 'manual';
+  let schemaId = '';
+  let keepHeads = !!S().fmtKeepHeads;
+  let extra = '';
+  let deleteSecondaries = false; // disattiva di default per sicurezza
+  let customTitle = primarySec ? primarySec.title : '';
+  let titleTouched = false;
+  let qText = '';
+
+  const wordCount = md => (aiText(stripCloze(md || '')).match(/[A-Za-zÀ-ÿ0-9]+/g) || []).length;
+  const ctl = new AbortController();
+  let done = false;
+
+  const openStep1 = () => {
+    const poolBase = () => scopeOnlyFolder ? allSecs.filter(s => folderTree.has(s.groupId)) : allSecs;
+    const dupPairs = findSimilarSectionPairs(poolBase());
+    const schemas = allSchemas();
+
+    const sh = openSheet(`
+      <h2>🔀 Unisci più sezioni</h2>
+      <p class="sheet-sub">${esc(nb.name)}${folder ? ` › ${esc(folder.name)}` : ''}: seleziona 2 o più sezioni da fondere in un’unica sezione ordinata, trasferendo anche flashcard, domande, mappe, PDF e appunti a mano.</p>
+      ${dupPairs.length ? `
+        <div class="mg-dups">
+          <span class="lbl">Possibili sezioni doppie rilevate (tocca per selezionarle):</span>
+          <div class="tag-cloud">${dupPairs.map((p, i) => `<button type="button" class="tag" data-mgdup="${i}">${esc(p.a.title)} ↔ ${esc(p.b.title)}</button>`).join('')}</div>
+        </div>` : ''}
+      <div class="mg-bar">
+        <input type="search" class="input search" id="mgQ" placeholder="Cerca sezioni per titolo o cartella…" aria-label="Cerca sezioni" value="${esc(qText)}">
+        ${folderTree ? `<label class="check mg-scope"><input type="checkbox" id="mgFolderOnly" ${scopeOnlyFolder ? 'checked' : ''}><span>Solo in “${esc(folder.name)}”</span></label>` : ''}
+      </div>
+      <ul class="cand pick-list mg-list" id="mgList"></ul>
+      <div class="mg-cfg" id="mgCfg">
+        <div class="grid2">
+          <label class="field"><span>Sezione principale (mantiene il suo ripasso)</span>
+            <select class="input" id="mgDest"></select></label>
+          <label class="field"><span>Titolo finale</span>
+            <input class="input" id="mgTitle" value="${esc(customTitle)}" placeholder="Titolo della sezione unita"></label>
+        </div>
+        <div class="field"><span class="lbl">Come unire i testi</span>
+          <div class="sch-list" role="radiogroup" aria-label="Modalità di fusione">
+            <label class="sch-opt ${AI.ready() ? 'sch-opt-hi' : ''}">
+              <input type="radio" name="mgMode" value="merge" ${mergeMode === 'merge' ? 'checked' : ''} ${AI.ready() ? '' : 'disabled'}>
+              <span><b>🔀 Fondi con ${AI.name()} e rimuovi doppioni</b><small>${AI.ready() ? 'Accorpa i concetti ripetuti senza perdere nessun dettaglio unico, conservando cloze, evidenziatori e immagini' : 'Serve una chiave AI in Impostazioni'}</small></span>
+            </label>
+            ${AI.ready() && schemas.length ? `
+            <label class="sch-opt">
+              <input type="radio" name="mgMode" value="schema" ${mergeMode === 'schema' ? 'checked' : ''}>
+              <span><b>📋 Fondi con ${AI.name()} dentro uno schema fisso</b><small>Riordina tutte le sezioni scelte sotto i titoli di uno schema</small></span>
+            </label>` : ''}
+            <label class="sch-opt">
+              <input type="radio" name="mgMode" value="manual" ${mergeMode === 'manual' ? 'checked' : ''}>
+              <span><b>📎 Accoda senza AI (manuale)</b><small>Unisce subito i testi sotto i rispettivi titoli e sposta tutti gli allegati, senza consumare quota AI</small></span>
+            </label>
+          </div>
+        </div>
+        <div id="mgAiOpts" ${mergeMode === 'manual' ? 'hidden' : ''}>
+          ${schemas.length ? `<label class="field" id="mgSchemaWrap" ${mergeMode === 'schema' ? '' : 'hidden'}><span>Schema</span>
+            <select class="input" id="mgSchema">${schemas.map(sc => `<option value="${esc(sc.id)}" ${(schemaId || schemas[0].id) === sc.id ? 'selected' : ''}>${esc(sc.name)}</option>`).join('')}</select></label>` : ''}
+          <label class="check" id="mgKeepWrap" ${mergeMode === 'merge' ? '' : 'hidden'}><input type="checkbox" id="mgKeep" ${keepHeads ? 'checked' : ''}><span>Mantieni il più possibile i titoli esistenti</span></label>
+          <label class="field"><span>Indicazioni extra per l’AI <small class="muted-inline">(facoltativo)</small></span>
+            <input class="input" id="mgExtra" value="${esc(extra)}" placeholder="Es. Dai priorità alle definizioni della prima sezione; metti le vie in tabella"></label>
+        </div>
+        <div class="mg-safe">
+          <label class="check"><input type="checkbox" id="mgDelSec" ${deleteSecondaries ? 'checked' : ''}><span>Elimina subito le sezioni secondarie dopo l’unione</span></label>
+          <p class="hint">Lasciandola disattiva (consigliato), le sezioni secondarie restano intatte con prefisso <b>[Unita]</b> nel titolo, mentre flashcard e PDF vengono spostati nella sezione finale: quando sei sicura, potrai eliminare le <b>[Unita]</b> senza perdere nulla.</p>
+        </div>
+      </div>
+      <p class="err-line" id="mgErr" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-mg="no">Annulla</button>
+        <button type="button" class="btn primary" data-mg="go" disabled>Continua</button>
+      </div>`, { label: 'Unisci sezioni', onClose: () => { if (!done) { done = true; ctl.abort(); } } });
+
+    const listEl = $('#mgList', sh.el);
+    const destEl = $('#mgDest', sh.el);
+    const titleEl = $('#mgTitle', sh.el);
+    const goBtn = $('[data-mg="go"]', sh.el);
+
+    const syncDest = () => {
+      const sel = allSecs.filter(s => picked.has(s.id));
+      if (destId !== '__new' && !picked.has(destId)) destId = sel[0]?.id || '';
+      destEl.innerHTML = [
+        ...sel.map(s => `<option value="${s.id}" ${s.id === destId ? 'selected' : ''}>${esc(s.title)}${s.studyhub || s.srs?.due ? ' (con ripasso)' : ''}</option>`),
+        '<option value="__new"' + (destId === '__new' ? ' selected' : '') + '>＋ Crea una nuova sezione (tieni tutte le originali con [Unita])</option>'
+      ].join('');
+      if (!titleTouched) {
+        const dSec = secById(destId);
+        customTitle = dSec ? dSec.title : (sel[0]?.title || '');
+        titleEl.value = customTitle;
+      }
+      goBtn.disabled = sel.length < 2;
+      goBtn.textContent = sel.length < 2
+        ? 'Scegli almeno 2 sezioni'
+        : mergeMode === 'manual' ? `📎 Anteprima unione (${sel.length} sezioni)` : `🔀 Fondi con ${AI.name()} (${sel.length} sezioni)`;
+    };
+
+    const drawList = () => {
+      const pool = poolBase();
+      const vis = pool.filter(s => picked.has(s.id) || matchTokens(`${s.title} ${groupPathText(s)}`, qText));
+      vis.sort((a, b) => (picked.has(b.id) - picked.has(a.id)) || a.title.localeCompare(b.title, 'it'));
+      listEl.innerHTML = vis.map(s => {
+        const gp = groupPathText(s);
+        const wc = wordCount(s.md);
+        const bits = [gp, `${wc} parole`];
+        const nc = cardsOfSection(s.id).length;
+        if (nc) bits.push(`${nc} flashcard`);
+        if ((s.questions || []).length) bits.push(`${s.questions.length} dom.`);
+        if (mapsOf(s).length) bits.push(`${mapsOf(s).length} mappe`);
+        return `<li><label class="check"><input type="checkbox" value="${s.id}" ${picked.has(s.id) ? 'checked' : ''}>
+          <span><span class="cand-f">${esc(s.title)}${primarySec && s.id === primarySec.id ? ' <small class="pill soft">corrente</small>' : ''}</span>
+          <span class="cand-b">${esc(bits.filter(Boolean).join(' · '))}</span></span></label></li>`;
+      }).join('') || '<li class="hint">Nessuna sezione trovata.</li>';
+      syncDest();
+    };
+
+    const syncMode = () => {
+      mergeMode = $('input[name="mgMode"]:checked', sh.el)?.value || 'manual';
+      $('#mgAiOpts', sh.el).hidden = mergeMode === 'manual';
+      const sw = $('#mgSchemaWrap', sh.el);
+      if (sw) sw.hidden = mergeMode !== 'schema';
+      $('#mgKeepWrap', sh.el).hidden = mergeMode !== 'merge';
+      syncDest();
+    };
+
+    drawList();
+    syncMode();
+
+    $('#mgQ', sh.el).addEventListener('input', e => { qText = e.target.value; drawList(); });
+    $('#mgFolderOnly', sh.el)?.addEventListener('change', e => { scopeOnlyFolder = e.target.checked; drawList(); });
+    listEl.addEventListener('change', e => {
+      const cb = e.target.closest('input[type="checkbox"]');
+      if (!cb) return;
+      if (cb.checked) picked.add(cb.value); else picked.delete(cb.value);
+      syncDest();
+    });
+    destEl.addEventListener('change', e => {
+      destId = e.target.value;
+      if (!titleTouched && destId !== '__new') {
+        const s = secById(destId);
+        if (s) { customTitle = s.title; titleEl.value = customTitle; }
+      }
+    });
+    titleEl.addEventListener('input', e => { customTitle = e.target.value; titleTouched = true; });
+    sh.el.addEventListener('change', e => {
+      if (e.target.name === 'mgMode') syncMode();
+      if (e.target.id === 'mgKeep') keepHeads = e.target.checked;
+      if (e.target.id === 'mgSchema') schemaId = e.target.value;
+      if (e.target.id === 'mgDelSec') deleteSecondaries = e.target.checked;
+    });
+    $('#mgExtra', sh.el)?.addEventListener('input', e => { extra = e.target.value; });
+
+    sh.el.addEventListener('click', async e => {
+      const dup = e.target.closest('[data-mgdup]');
+      if (dup) {
+        const p = dupPairs[+dup.dataset.mgdup];
+        if (!p) return;
+        picked.clear();
+        picked.add(p.a.id);
+        picked.add(p.b.id);
+        destId = p.a.id;
+        titleTouched = false;
+        drawList();
+        toast(`Selezionate: “${p.a.title}” e “${p.b.title}”`);
+        return;
+      }
+      const b = e.target.closest('[data-mg]');
+      if (!b) return;
+      if (b.dataset.mg === 'no') { sh.close(null); return; }
+      const sel = allSecs.filter(s => picked.has(s.id));
+      if (sel.length < 2) { toast('Scegli almeno 2 sezioni'); return; }
+      const primary = destId === '__new' ? null : secById(destId);
+      const ordered = primary ? [primary, ...sel.filter(s => s.id !== primary.id)] : sel;
+      const finalTitle = (titleEl.value.trim() || ordered[0].title);
+      const combinedBefore = ordered.map(s => `## ${s.title}\n\n${(s.md || '').trim()}`).join('\n\n');
+
+      if (mergeMode === 'manual') {
+        const manualMd = primary
+          ? [
+              (primary.md || '').trim(),
+              ...ordered.slice(1).map(s => `## ${s.title}\n\n${(s.md || '').trim()}`)
+            ].filter(Boolean).join('\n\n---\n\n')
+          : ordered.map(s => `## ${s.title}\n\n${(s.md || '').trim()}`).join('\n\n---\n\n');
+        done = true; sh.close(null); done = false;
+        openStep2({ ordered, primary, finalTitle, md: cleanSimpleTex(repairMarkdownTables(manualMd)), combinedBefore, truncated: false, modeLbl: '📎 Accoda senza AI' });
+        return;
+      }
+
+      const payloadText = ordered.map((s, idx) => `FONTE ${idx + 1} (sezione “${s.title}”${idx === 0 && primary ? ' — sezione principale' : ''}):\n\n${(s.md || '').trim()}`).join('\n\n---\n\n');
+      const sc = mergeMode === 'schema' ? schemas.find(x => x.id === ($('#mgSchema', sh.el)?.value || schemaId)) : null;
+      S().fmtKeepHeads = keepHeads; Settings.save();
+
+      goBtn.disabled = true;
+      goBtn.textContent = `Fondo ${ordered.length} sezioni con ${AI.name()}… (può servire un minuto)`;
+      $('#mgErr', sh.el).hidden = true;
+      try {
+        const sys = mergeMode === 'schema' && sc
+          ? schemaSystem(sc, S().fmtMissing !== false, extra)
+          : mergeSystem({ keepHeads, extra, hasSecond: true, srcCount: ordered.length });
+        const r = await AI.generate({ system: sys, text: payloadText, signal: ctl.signal });
+        let md = String(r.text || '').trim().replace(/^```(?:markdown|md)?[ \t]*\n/i, '').replace(/\n```\s*$/, '').trim();
+        md = cleanSimpleTex(repairMarkdownTables(md));
+        if (!md) throw new Error('L’AI non ha restituito appunti utilizzabili.');
+        if (done) return;
+        done = true; sh.close(null); done = false;
+        openStep2({
+          ordered, primary, finalTitle, md, combinedBefore, truncated: !!r.truncated,
+          modeLbl: sc ? `📋 Schema “${sc.name}”` : `🔀 Fusione AI (${ordered.length} sezioni)`
+        });
+      } catch (err) {
+        if (err.name === 'AbortError' || !sh.el.isConnected) return;
+        const el = $('#mgErr', sh.el); el.textContent = err.message || 'Fusione non riuscita'; el.hidden = false;
+        goBtn.disabled = false;
+        syncDest();
+      }
+    });
+  };
+
+  const openStep2 = ({ ordered, primary, finalTitle, md: initialMd, combinedBefore, truncated, modeLbl }) => {
+    let curMd = initialMd;
+    const secondaries = primary ? ordered.slice(1) : ordered;
+    const ck = reformatCheck(combinedBefore, curMd);
+    const diffPct = ck.wordsBefore ? Math.round(((ck.wordsAfter - ck.wordsBefore) / ck.wordsBefore) * 100) : 0;
+    const diffTxt = diffPct < 0 ? `${diffPct}% ridondanze rimosse` : diffPct > 0 ? `+${diffPct}%` : 'invariato';
+    const warn = [];
+    if (truncated) warn.push('La risposta dell’AI è stata troncata: controlla la fine prima di applicare.');
+    if (ck.lost.length > Math.max(5, ck.total * 0.06)) warn.push(`${ck.lost.length} parole non compaiono più tali e quali (es.: ${ck.lost.slice(0, 8).join(', ')}). Controlla che non manchi nessun dettaglio.`);
+    if (ck.cloze[1] !== ck.cloze[0]) warn.push(`I cloze erano ${ck.cloze[0]}, ora sono ${ck.cloze[1]}.`);
+    if (ck.imgs[1] < ck.imgs[0]) warn.push(`Mancano ${ck.imgs[0] - ck.imgs[1]} immagini: controlla nella scheda Codice.`);
+
+    const primaryBaseMd = primary ? (primary.md || '') : '';
+    const analyzed = analyzeNewParts(primaryBaseMd, curMd);
+    const hasPrimaryReview = !!(primary && (primary.studyhub || primary.srs?.due || (primary.srs?.history && primary.srs.history.length)));
+    let createAddon = !!primary && (hasPrimaryReview || analyzed.some(p => p.suggested));
+    const addonPicked = new Set(analyzed.filter(p => p.suggested).map(p => p.idx));
+    if (createAddon && !addonPicked.size && analyzed.length > 1) addonPicked.add(analyzed.length - 1);
+    const defaultAddonTitle = `Nuove aggiunte (da ${secondaries.map(s => s.title).join(', ').slice(0, 55)})`;
+
+    const sh = openSheet(`
+      <h2>Controlla la fusione prima di applicare</h2>
+      <p class="sheet-sub">${esc(finalTitle)} · ${esc(modeLbl)}</p>
+      <div class="sch-stats">
+        <span>Parole: <b>${ck.wordsBefore}</b> → <b>${ck.wordsAfter}</b> (${esc(diffTxt)})</span>
+        ${ck.cloze[0] || ck.cloze[1] ? `<span>Cloze: <b>${ck.cloze[0]}</b> → <b>${ck.cloze[1]}</b></span>` : ''}
+        ${ck.imgs[0] ? `<span>Immagini: <b>${ck.imgs[1]}/${ck.imgs[0]}</b></span>` : ''}
+      </div>
+      ${warn.length ? `<ul class="sch-warn">${warn.map(w => `<li>${esc(w)}</li>`).join('')}</ul>` : '<p class="sch-ok">Tutti i concetti unici, i cloze e le immagini risultano conservati.</p>'}
+      <div class="seg sm" role="tablist">
+        <button type="button" class="seg-btn on" data-mpv="after" role="tab" aria-selected="true">Dopo</button>
+        <button type="button" class="seg-btn" data-mpv="before" role="tab" aria-selected="false">Prima (${ordered.length} sezioni)</button>
+        <button type="button" class="seg-btn" data-mpv="code" role="tab" aria-selected="false">Codice (modificabile)</button>
+      </div>
+      <div class="sch-prev notes" id="mgPrev">${renderMd(curMd)}</div>
+      ${primary ? `
+      <div class="mg-addon-cfg">
+        <label class="check"><input type="checkbox" id="mgAddonOn" ${createAddon ? 'checked' : ''}><span><b>✨ Crea un ripasso a parte per le nuove aggiunte</b> <small class="muted-inline">(il ripasso della sezione principale resta invariato)</small></span></label>
+        <div id="mgAddonBox" ${createAddon ? '' : 'hidden'}>
+          <div class="grid2" style="margin-top:8px">
+            <label class="field"><span>Etichetta</span><input class="input" id="mgAddonTitle" value="${esc(defaultAddonTitle)}"></label>
+            <label class="field"><span>Primo ripasso nuove aggiunte</span>
+              <select class="input" id="mgAddonWhen"><option value="tomorrow" selected>Domani</option><option value="today">Subito oggi</option></select></label>
+          </div>
+          <div class="inline" style="margin:4px 0 6px">
+            <span class="hint" style="margin:0">Paragrafi inclusi nel ripasso a parte:</span>
+            <button type="button" class="btn sm ghost" data-mgap="new">Solo novità</button>
+            <button type="button" class="btn sm ghost" data-mgap="all">Tutti</button>
+            <button type="button" class="btn sm ghost" data-mgap="none">Nessuno</button>
+          </div>
+          <ul class="cand pick-list mg-part-list" id="mgAddonParts">${analyzed.map(p => `
+            <li><label class="check"><input type="checkbox" value="${p.idx}" ${addonPicked.has(p.idx) ? 'checked' : ''}>
+              <span><span class="cand-f">${esc(p.title)} ${p.suggested ? `<span class="pill due">+${p.novelPct}% novità</span>` : (p.novelPct >= 10 ? `<span class="pill soft">+${p.novelPct}%</span>` : '')}</span>
+              <span class="cand-b">${esc(aiText(p.md).replace(/\s+/g, ' ').trim().slice(0, 110))}</span></span>
+            </label></li>`).join('')}</ul>
+        </div>
+      </div>` : ''}
+      <div class="mg-safe-summary">
+        <label class="check"><input type="checkbox" id="mgDel2" ${deleteSecondaries ? 'checked' : ''}><span>Elimina ${secondaries.length === 1 ? 'la sezione secondaria' : `le ${secondaries.length} sezioni secondarie`} dopo l’unione</span></label>
+        <p class="hint" id="mgDelHint">${deleteSecondaries ? 'Le sezioni secondarie verranno eliminate (flashcard, PDF, domande, mappe e blocchi note vengono comunque trasferiti prima).' : 'Le sezioni secondarie restano intatte con prefisso <b>[Unita]</b> nel titolo (flashcard e PDF sono già spostati nella sezione finale, quindi potrai eliminare le [Unita] senza rischi).'}</p>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-mpv="no">Annulla</button>
+        <button type="button" class="btn" data-mpv="back">Indietro</button>
+        <button type="button" class="btn primary" data-mpv="ok">Applica fusione</button>
+      </div>`, { label: 'Anteprima fusione sezioni', onClose: () => { if (!done) { done = true; } } });
+
+    const prevEl = $('#mgPrev', sh.el);
+    hydrateImages(prevEl);
+
+    $('#mgAddonOn', sh.el)?.addEventListener('change', e => {
+      createAddon = e.target.checked;
+      $('#mgAddonBox', sh.el).hidden = !createAddon;
+    });
+    $('#mgAddonParts', sh.el)?.addEventListener('change', e => {
+      const cb = e.target.closest('input[type="checkbox"]');
+      if (!cb) return;
+      if (cb.checked) addonPicked.add(+cb.value); else addonPicked.delete(+cb.value);
+    });
+    $('#mgDel2', sh.el).addEventListener('change', e => {
+      deleteSecondaries = e.target.checked;
+      $('#mgDelHint', sh.el).innerHTML = deleteSecondaries
+        ? 'Le sezioni secondarie verranno eliminate (flashcard, PDF, domande, mappe e blocchi note vengono comunque trasferiti prima).'
+        : 'Le sezioni secondarie restano intatte con prefisso <b>[Unita]</b> nel titolo (flashcard e PDF sono già spostati nella sezione finale, quindi potrai eliminare le [Unita] senza rischi).';
+    });
+
+    sh.el.addEventListener('click', async e => {
+      const ap = e.target.closest('[data-mgap]');
+      if (ap) {
+        const k = ap.dataset.mgap;
+        addonPicked.clear();
+        $$('#mgAddonParts input[type="checkbox"]', sh.el).forEach(cb => {
+          const p = analyzed[+cb.value];
+          const on = k === 'all' ? true : k === 'new' ? !!p?.suggested : false;
+          cb.checked = on;
+          if (on) addonPicked.add(+cb.value);
+        });
+        return;
+      }
+      const b = e.target.closest('[data-mpv]');
+      if (!b) return;
+      const k = b.dataset.mpv;
+      if (k === 'after' || k === 'before' || k === 'code') {
+        const taCode = $('#mgCodeTa', prevEl);
+        if (taCode) curMd = taCode.value;
+        $$('.seg-btn', sh.el).forEach(x => { const on = x === b; x.classList.toggle('on', on); x.setAttribute('aria-selected', String(on)); });
+        if (k === 'code') {
+          prevEl.innerHTML = `<textarea class="input mono-ta" id="mgCodeTa" rows="16">${esc(curMd)}</textarea>`;
+        } else {
+          prevEl.innerHTML = renderMd(k === 'after' ? curMd : combinedBefore);
+          hydrateImages(prevEl);
+        }
+        return;
+      }
+      if (k === 'no') { sh.close(null); return; }
+      if (k === 'back') { done = true; sh.close(null); done = false; openStep1(); return; }
+      if (k === 'ok') {
+        const taCode = $('#mgCodeTa', prevEl);
+        if (taCode) curMd = taCode.value;
+        b.disabled = true;
+        b.textContent = 'Applico la fusione…';
+        let target = primary;
+        if (!target) {
+          target = newSection(nb.id, { title: finalTitle, md: curMd, groupId: folder ? folder.id : (ordered[0].groupId || null) });
+        } else {
+          target.title = finalTitle;
+          target.md = curMd;
+        }
+        const secToMerge = primary ? ordered.slice(1) : ordered;
+        const stats = await transferSectionExtras(target, secToMerge, { deleteSecondaries });
+
+        let addonCreated = false;
+        if (primary && createAddon && addonPicked.size) {
+          const curParts = splitMdParts(curMd);
+          const chosen = analyzed.filter(p => addonPicked.has(p.idx)).map(p => curParts[p.idx] || p);
+          if (chosen.length) {
+            const when = $('#mgAddonWhen', sh.el)?.value === 'today' ? todayStr() : addDays(todayStr(), 1);
+            const adTitle = $('#mgAddonTitle', sh.el)?.value.trim() || defaultAddonTitle;
+            target.addReviews = addReviewsOf(target).slice();
+            target.addReviews.push({
+              id: uid(),
+              title: adTitle,
+              parts: chosen.map(p => p.title),
+              md: chosen.map(p => p.md).join('\n\n'),
+              created: Date.now(),
+              srs: { ef: 2.5, interval: when === todayStr() ? 0 : 1, reps: 0, due: when, history: [] }
+            });
+            addonCreated = true;
+          }
+        }
+
+        await saveSection(target);
+
+        for (const s of secToMerge) {
+          if (deleteSecondaries) {
+            await deleteSection(s.id);
+          } else {
+            if (!/^\[Unita\]\s*/i.test(s.title)) {
+              s.title = `[Unita] ${s.title}`;
+              await saveSection(s);
+            }
+          }
+        }
+
+        const movedBits = [
+          stats.cards ? `${stats.cards} flashcard` : '',
+          stats.questions ? `${stats.questions} domande` : '',
+          stats.maps ? `${stats.maps} mappe` : '',
+          stats.pdfs ? `${stats.pdfs} PDF` : '',
+          stats.padPages ? `${stats.padPages} fogli blocco note` : ''
+        ].filter(Boolean);
+
+        done = true;
+        sh.close(null);
+        toast(`Sezioni unite in “${target.title}”${movedBits.length ? ` (+${movedBits.join(', ')})` : ''}${addonCreated ? ' · ripasso a parte creato' : ''}${deleteSecondaries ? '' : ' · originali segnate [Unita]'}`);
+        go(`#/sec/${target.id}/read`);
+      }
+    });
+  };
+
+  openStep1();
 }
 
 function modeEdit(sec, body, opts = {}) {

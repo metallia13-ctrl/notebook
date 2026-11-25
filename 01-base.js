@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.39';
+const APP_VERSION = '4.40';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -300,6 +300,17 @@ const nbById = id => state.notebooks.find(n => n.id === id);
 const secById = id => state.sections.find(s => s.id === id);
 const secsOf = nbId => state.sections.filter(s => s.notebookId === nbId).sort((a, b) => a.order - b.order);
 const isDue = s => !s.studyhub && !!(s.srs && s.srs.due && s.srs.due <= todayStr());
+const addReviewsOf = s => (s && Array.isArray(s.addReviews) ? s.addReviews : []);
+const isAddonDue = a => !!(a && a.srs && a.srs.due && a.srs.due <= todayStr());
+const dueAddonsOf = (pool = state.sections) => {
+  const out = [];
+  for (const sec of pool) {
+    for (const addon of addReviewsOf(sec)) {
+      if (isAddonDue(addon)) out.push({ sec, addon });
+    }
+  }
+  return out.sort((a, b) => (a.addon.srs.due < b.addon.srs.due ? -1 : a.addon.srs.due > b.addon.srs.due ? 1 : 0));
+};
 const sortDue = (a, b) => (a.srs.due < b.srs.due ? -1 : a.srs.due > b.srs.due ? 1 : 0) || a.order - b.order;
 // Macro-argomenti: elenco ordinato dentro il notebook, ogni sezione ne indica uno con groupId
 const groupsOf = nb => (nb && Array.isArray(nb.groups) ? nb.groups : []);
@@ -1842,11 +1853,11 @@ function modal({ title, text = '', input = false, multiline = false, allowEmpty 
 }
 
 function updateBadge() {
+  const dueN = state.sections.filter(isDue).length + dueAddonsOf(state.sections).length;
   const b = $('#dueBadge');
   if (b) {
-    const n = state.sections.filter(isDue).length;
-    b.textContent = n;
-    b.hidden = n === 0;
+    b.textContent = dueN;
+    b.hidden = dueN === 0;
   }
   const cc = cardCounts(state.cards);
   const cb = $('#cardBadge');
@@ -1857,7 +1868,7 @@ function updateBadge() {
   }
   // Numero sull’icona dell’app installata, dove il sistema lo supporta
   if (navigator.setAppBadge) {
-    const total = state.sections.filter(isDue).length + cc.l + cc.r;
+    const total = dueN + cc.l + cc.r;
     (total ? navigator.setAppBadge(total) : navigator.clearAppBadge()).catch(() => {});
   }
 }
@@ -1977,7 +1988,7 @@ function route() {
   switch (p0) {
     case 'nb': return viewNotebook(p1, p2);
     case 'lezioni': return viewLessons(p1);
-    case 'sec': return p2 === 'pdf' ? go(`#/pdfs/${p1}`) : viewSection(p1, p2);
+    case 'sec': return p2 === 'pdf' ? go(`#/pdfs/${p1}`) : p2 === 'addon' ? viewAddonReview(p1, p3) : viewSection(p1, p2);
     case 'import': return viewImport(p1, p2);
     case 'review': return viewReview(p1 === 'exam');
     case 'settings': return viewSettings();

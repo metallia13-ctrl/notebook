@@ -1501,6 +1501,11 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.40", title: "unisci più sezioni (con AI o manuale) e ripasso a parte per le nuove aggiunte", html: `      <ul>
+        <li><strong>🔀 Unisci 2 o più sezioni</strong>: disponibile direttamente in cima a ogni sezione (<em>🔀 Unisci</em>) e dal menu del notebook o di una cartella (<em>Altro ⋯ / Opzioni ⋯</em>). Rileva automaticamente le possibili sezioni doppie con titoli simili e permette di fonderle con l’<strong>AI</strong> (rimuovendo i doppioni senza perdere dettagli), dentro uno <strong>schema fisso</strong> oppure <strong>accodandole senza AI</strong>.</li>
+        <li><strong>Sicurezza sulle sezioni secondarie</strong>: l’eliminazione automatica è <strong>disattiva di default</strong>; le sezioni secondarie vengono rinominate con il prefisso <code>[Unita]</code> così puoi verificarle ed eliminarle tu con calma, mentre flashcard, domande, mappe, PDF, lezioni audio, domande d’esame e fogli del blocco note vengono trasferiti nella sezione finale.</li>
+        <li><strong>✨ Ripasso a parte per le nuove aggiunte</strong>: il ripasso della sezione principale resta invariato; nell’anteprima della fusione (e in qualunque momento dal pulsante <em>↺ Ripasso</em>) l’app evidenzia i paragrafi nuovi e ti permette di creare un <strong>ripasso separato</strong> (Cloze, Leggi, Pagina bianca, Orale) che compare in cima alla sezione e nella scheda <strong>Ripasso</strong> finché non lo segni <em>✓ Integrato</em>.</li>
+      </ul>` },
   { v: "4.39", title: "nuova sezione Allenamento: tutti i quiz, Occludi, Etichette e strumenti interattivi insieme", html: `      <ul>
         <li><strong>Nuova sezione 🎯 Allenamento (menu Strumenti e Altro)</strong>: raccoglie in un unico posto tutti gli esercizi interattivi di tutta l’app, filtrabili per <strong>materia</strong> e con barra di ricerca live multi-parola.</li>
         <li><strong>Visivo & Occludi</strong>: accesso diretto a tutti gli schemi con <em>Etichette</em> (con anteprima dell’immagine), alle <em>Flashcard a occlusione</em> (sessione dedicata solo occlusioni), ai <em>PDF con riquadri Occludi</em> (si aprono già sulla pagina giusta in modalità ripasso occlusioni), ai <em>Quiz visivi degli Atlanti</em> e alle <em>Mappe mentali in modalità quiz</em>.</li>

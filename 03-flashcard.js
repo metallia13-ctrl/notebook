@@ -12,19 +12,39 @@ function viewReview(onlyExam = false) {
   if (onlyExam && !ex) onlyExam = false;
   const pool = onlyExam ? state.sections.filter(s => inExam(s, ex)) : state.sections;
   const due = pool.filter(isDue).sort(sortDue);
+  const dueAds = dueAddonsOf(pool);
+  const upAds = [];
+  for (const s of pool) {
+    for (const a of addReviewsOf(s)) {
+      if (a.srs?.due && a.srs.due > t) upAds.push({ sec: s, addon: a });
+    }
+  }
+  upAds.sort((a, b) => (a.addon.srs.due < b.addon.srs.due ? -1 : a.addon.srs.due > b.addon.srs.due ? 1 : 0));
   const upcoming = pool.filter(s => s.srs?.due && s.srs.due > t).sort(sortDue).slice(0, 12);
   const fresh = pool.filter(s => !s.studyhub && !s.srs?.due && s.md.trim()).sort((a, b) => a.order - b.order);
   const linked = state.sections.filter(s => s.studyhub).length;
   const cc = cardCounts(state.cards);
   const cardsNow = cc.n + cc.l + cc.r;
+  const addonRow = ({ sec: s, addon: a }) => `
+    <li><a class="row" href="#/sec/${s.id}/addon/${a.id}" data-review="1">
+      <span class="row-main">
+        <span class="row-title">✨ ${esc(a.title || 'Nuove aggiunte')}</span>
+        <span class="row-sub">${esc([nbById(s.notebookId)?.name, s.title, (a.parts || []).slice(0, 2).join(', ')].filter(Boolean).join(' · '))}</span>
+      </span>
+      ${addonStatusPill(a)}
+    </a></li>`;
+  const dueSummary = [
+    due.length ? `${due.length} ${due.length === 1 ? 'sezione' : 'sezioni'}` : '',
+    dueAds.length ? `${dueAds.length} ${dueAds.length === 1 ? 'blocco di nuove aggiunte' : 'blocchi di nuove aggiunte'}` : ''
+  ].filter(Boolean).join(' e ');
   setView(`
     <header class="page-head">
       <div>
         <h1>${onlyExam ? `Ripasso: ${esc(ex.name)}` : 'Ripasso'}</h1>
-        <p class="lede">${due.length ? `${due.length} ${due.length === 1 ? 'sezione' : 'sezioni'} da ripassare oggi.` : 'Niente da ripassare oggi.'}${onlyExam ? ' <a href="#/review">Mostra tutto</a>' : ''}</p>
+        <p class="lede">${dueSummary ? `${dueSummary} da ripassare oggi.` : 'Niente da ripassare oggi.'}${onlyExam ? ' <a href="#/review">Mostra tutto</a>' : ''}</p>
       </div>
       <div class="actions">
-        ${due.length ? '<button class="btn primary" data-act="start">Inizia il ripasso</button>' : ''}
+        ${due.length || dueAds.length ? '<button class="btn primary" data-act="start">Inizia il ripasso</button>' : ''}
         ${ex ? '' : '<button class="btn ghost" data-act="exam-new">Modalità esame</button>'}
       </div>
     </header>
@@ -34,9 +54,10 @@ function viewReview(onlyExam = false) {
         <p>Hai anche ${cardsNow} flashcard da studiare.</p>
         <div class="inline">${studyBtns('all', cc, { cls: 'sm' })}</div>
       </div>` : ''}
-    ${due.length ? `<ul class="list">${due.map(s => sectionRow(s, { showNb: true, review: true })).join('')}</ul>` : ''}
+    ${dueAds.length ? `<h2 class="sub">✨ Nuove aggiunte da ripassare</h2><ul class="list">${dueAds.map(addonRow).join('')}</ul>` : ''}
+    ${due.length ? `${dueAds.length ? '<h2 class="sub">Sezioni</h2>' : ''}<ul class="list">${due.map(s => sectionRow(s, { showNb: true, review: true })).join('')}</ul>` : ''}
     ${linked ? `<p class="hint">${linked} ${linked === 1 ? 'sezione è pianificata' : 'sezioni sono pianificate'} da StudyHub e non compaiono qui.</p>` : ''}
-    ${upcoming.length ? `<h2 class="sub">In arrivo</h2><ul class="list">${upcoming.map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : ''}
+    ${upcoming.length || upAds.length ? `<h2 class="sub">In arrivo</h2><ul class="list">${upAds.slice(0, 6).map(addonRow).join('')}${upcoming.map(s => sectionRow(s, { showNb: true })).join('')}</ul>` : ''}
     ${fresh.length ? `
       <details class="fresh">
         <summary>${fresh.length} ${fresh.length === 1 ? 'sezione mai pianificata' : 'sezioni mai pianificate'}</summary>
@@ -53,7 +74,8 @@ function viewReview(onlyExam = false) {
   on('[data-review]', 'click', () => { state.fromReview = true; });
   on('[data-act="start"]', 'click', () => {
     state.fromReview = true;
-    go(`#/sec/${due[0].id}/${defaultMode(due[0])}`);
+    if (dueAds.length) go(`#/sec/${dueAds[0].sec.id}/addon/${dueAds[0].addon.id}`);
+    else go(`#/sec/${due[0].id}/${defaultMode(due[0])}`);
   });
 }
 
