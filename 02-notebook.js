@@ -1592,15 +1592,7 @@ async function saveMySchemas(list) {
   rec.list = list;
   await saveLink(rec);
 }
-const ED_HL_COLORS = [
-  { key: 'c', name: 'Giallo crema', pastel: true },
-  { key: 'a', name: 'Pesca pastello', pastel: true },
-  { key: 'f', name: 'Rosa pastello', pastel: true },
-  { key: 'i', name: 'Lilla pastello', pastel: true },
-  { key: 's', name: 'Azzurro nuvola', pastel: true },
-  { key: 'm', name: 'Verde menta', pastel: true },
-  ...HL_COLORS
-];
+const ED_HL_COLORS = HL_COLORS;
 
 function mergeSystem({ keepHeads = false, extra = '', hasSecond = false, srcCount = 0 } = {}) {
   const extraBlock = extra.trim() ? `\n\nINDICAZIONI SPECIFICHE DELLA STUDENTESSA (seguile con priorità):\n- ${extra.trim()}` : '';
@@ -4458,8 +4450,8 @@ function readingToolsHtml() {
     <button type="button" class="rt-btn" data-rt="move" title="Sposta il paragrafo, il titolo o le voci selezionate in un’altra sezione">↗ Sposta</button>
     <button type="button" class="rt-btn" data-rt="pnote" title="Aggiunge una nota che compare come ⓘ dopo il testo scelto">ⓘ Nota</button>
     <button type="button" class="rt-btn" data-rt="cloze" title="Nascondi nel Cloze">Cloze</button>
-    <span class="rt-colors" role="group" aria-label="Evidenzia">
-      ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key}" data-rt="${c.key}" title="Evidenzia in ${c.name.toLowerCase()}" aria-label="Evidenzia in ${c.name.toLowerCase()}"></button>`).join('')}
+    <span class="rt-colors" role="group" aria-label="Evidenzia (Stabilo Pastello e classici)">
+      ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key}" data-rt="${c.key}" title="${c.pastel ? 'Stabilo Pastello · ' : ''}${esc(c.name)}" aria-label="Evidenzia in ${esc(c.name.toLowerCase())}"></button>`).join('')}
     </span>
     <button type="button" class="rt-btn rt-u" data-rt="u" title="Sottolinea" aria-label="Sottolinea">S</button>
     <button type="button" class="rt-btn" data-rt="none" title="Togli evidenziatura e sottolineatura" aria-label="Togli evidenziatura e sottolineatura">✕</button>
@@ -5219,7 +5211,7 @@ function openHandwritingPad(notebookId) {
   });
 }
 
-/* Barra per i campi delle flashcard: elenchi, rientri, immagine, scrittura a mano */
+/* Barra per i campi delle flashcard: elenchi, rientri, evidenziatore Stabilo Pastello/classico, immagine, scrittura a mano */
 function cardFieldToolsHtml() {
   return `
     <div class="edit-tools card-tools" role="toolbar" aria-label="Formattazione della flashcard">
@@ -5227,31 +5219,70 @@ function cardFieldToolsHtml() {
       <button class="btn sm" type="button" data-ct="in" title="Rientra (Tab)" aria-label="Rientra">→</button>
       <button class="btn sm" type="button" data-ct="out" title="Riduci rientro (Maiusc+Tab)" aria-label="Riduci rientro">←</button>
       <button class="btn sm" type="button" data-ct="bold" title="Grassetto" aria-label="Grassetto"><strong>G</strong></button>
-      <button class="btn sm" type="button" data-ct="hl">Evidenzia</button>
+      <button class="btn sm" type="button" data-ct="u" title="Sottolinea" aria-label="Sottolinea"><u>S</u></button>
+      <button class="btn sm" type="button" data-ct="hl-pop" aria-expanded="false" title="Evidenzia con Stabilo Pastello o colori classici">🖍 ▾</button>
       <button class="btn sm" type="button" data-ct="img">Immagine</button>
       <button class="btn sm" type="button" data-ct="hw">A mano</button>
+    </div>
+    <div class="card-hl-pop" data-card-hlpop hidden role="dialog" aria-label="Colori evidenziatore">
+      <div class="ed-pop-lbl">Stabilo Pastello</div>
+      <div class="ed-pop-dots">
+        ${HL_PASTEL_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-ct-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+      </div>
+      <div class="ed-pop-lbl">Classici</div>
+      <div class="ed-pop-dots">
+        ${HL_CLASSIC_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-ct-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+        <button class="btn sm ghost ed-pop-clear" data-ct-mark="none" type="button" title="Togli evidenziazione">✕ Togli</button>
+      </div>
     </div>`;
 }
 function bindCardFieldTools(root, fields, notebookId) {
   let last = fields[fields.length - 1];
+  const pop = $('[data-card-hlpop]', root);
+  const hlBtn = $('[data-ct="hl-pop"]', root);
+  const closePop = () => {
+    if (pop) pop.hidden = true;
+    if (hlBtn) hlBtn.setAttribute('aria-expanded', 'false');
+  };
   fields.forEach(f => {
     const pick = () => { last = f; f.dataset.touched = '1'; };
     f.addEventListener('focus', pick);
     f.addEventListener('pointerdown', pick);
     setupListEditing(f);
   });
-  $$('[data-ct]', root).forEach(b => b.addEventListener('pointerdown', e => {
+  $$('[data-ct], [data-ct-mark]', root).forEach(b => b.addEventListener('pointerdown', e => {
     if (!['img', 'hw'].includes(b.dataset.ct)) e.preventDefault();
   }));
   $$('[data-ct]', root).forEach(b => b.addEventListener('click', async () => {
     const ta = last;
     const k = b.dataset.ct;
+    if (k === 'hl-pop' && pop) {
+      const open = pop.hidden;
+      pop.hidden = !open;
+      b.setAttribute('aria-expanded', String(open));
+      return;
+    }
+    closePop();
     if (k === 'list') { ta.focus(); toggleListLines(ta); }
     else if (k === 'in' || k === 'out') { ta.focus(); indentLines(ta, k === 'in' ? 1 : -1); }
     else if (k === 'bold') wrapSelectionInTextarea(ta, '**', '**');
-    else if (k === 'hl') wrapSelectionInTextarea(ta, '{{y|', '}}');
+    else if (k === 'u') wrapSelectionInTextarea(ta, '{{u|', '}}');
     else if (k === 'img') { const im = await addImageFromDevice(notebookId); if (im) insertAtCursor(ta, `\n${imageMd(im.id)}\n`); }
     else if (k === 'hw') { const im = await openHandwritingPadNested(notebookId); if (im) insertAtCursor(ta, `\n${imageMd(im.id)}\n`); }
+  }));
+  $$('[data-ct-mark]', root).forEach(b => b.addEventListener('click', () => {
+    const ta = last;
+    const k = b.dataset.ctMark;
+    closePop();
+    if (k === 'none') {
+      const { selectionStart: s, selectionEnd: en, value: v } = ta;
+      if (s === en) { toast('Seleziona prima il testo'); ta.focus(); return; }
+      ta.focus();
+      ta.setRangeText(stripMarks(v.slice(s, en)), s, en, 'select');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    wrapSelectionInTextarea(ta, `{{${k}|`, '}}');
   }));
 }
 // La finestra della flashcard usa lo stesso contenitore: la nascondo mentre scrivi a mano
@@ -5528,18 +5559,24 @@ function setupNotesInk(article, sec, btn) {
       if (!b || !b.offsetParent) return '';
       const top = blockTop(b, ar);
       const pts = s.p.map(([x, y]) => [+(x * k).toFixed(1), +(top + y * k).toFixed(1)]);
-      return `<path data-id="${s.id}" d="${inkPath(pts)}" stroke="${esc(s.c)}" stroke-width="${(s.s * k).toFixed(2)}" class="${s.s >= 8 ? 'marker' : ''}"/>`;
+      const isMarker = s.s >= 8;
+      const isPastel = isMarker && HL_PASTEL_HEX.has(String(s.c || '').toLowerCase());
+      return `<path data-id="${s.id}" d="${inkPath(pts)}" stroke="${esc(s.c)}" stroke-width="${(s.s * k).toFixed(2)}" class="${isMarker ? (isPastel ? 'marker pastel' : 'marker') : ''}"/>`;
     }).join('');
   };
   const ro = new ResizeObserver(() => draw());
   ro.observe(article);
   addCleanup(() => { ro.disconnect(); clearTimeout(saveT); if (saveT) saveSection(sec); bar.remove(); });
-  // barra degli strumenti
+  // barra degli strumenti: stessi 6 Stabilo Pastello del lettore PDF + penne classiche
+  const inkPalette = [
+    ...HL_PASTEL_COLORS.map(c => [c.hex, `Stabilo Pastello · ${c.name}`]),
+    ['#111111', 'Nero'], ['#1d4ed8', 'Blu'], ['#dc2626', 'Rosso'], ['#15803d', 'Verde'], ['#f59e0b', 'Arancio']
+  ];
   const bar = document.createElement('div');
   bar.className = 'ink-bar';
   bar.hidden = true;
   bar.innerHTML = `
-    ${['#e5484d', '#1d4ed8', '#15803d', '#111111', '#f59e0b'].map(c => `<button type="button" class="rt-dot ink-dot" data-ic="${c}" style="--ink:${c}" aria-label="Colore"></button>`).join('')}
+    ${inkPalette.map(([c, l]) => `<button type="button" class="rt-dot ink-dot" data-ic="${c}" data-ink="${c}" style="--ink:${c}" title="${esc(l)}" aria-label="${esc(l)}"></button>`).join('')}
     <select class="input ink-size" aria-label="Spessore"><option value="1.5">Fine</option><option value="2.5">Media</option><option value="4">Spessa</option><option value="12">Evidenziatore</option></select>
     <button type="button" class="btn sm ghost" data-it="eraser" aria-pressed="false">Gomma</button>
     <button type="button" class="btn sm ghost" data-it="undo">Annulla</button>
@@ -5615,7 +5652,7 @@ function setupNotesInk(article, sec, btn) {
     const path = document.createElementNS(SVG_NS, 'path');
     path.setAttribute('stroke', color);
     path.setAttribute('stroke-width', size);
-    if (size >= 8) path.setAttribute('class', 'marker');
+    if (size >= 8) path.setAttribute('class', HL_PASTEL_HEX.has(String(color || '').toLowerCase()) ? 'marker pastel' : 'marker');
     svg.append(path);
     cur = { id: e.pointerId, path, pts: [[x, y]], bi, top: blocks[bi] ? blockTop(blocks[bi], ar) : 0 };
     path.setAttribute('d', inkPath(cur.pts));

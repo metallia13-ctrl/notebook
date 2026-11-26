@@ -1249,11 +1249,11 @@ u.ul { text-decoration: underline; text-decoration-color: var(--accent); text-de
   cursor: pointer;
   padding: 0;
 }
-.rt-dot.hl-y { background: #facc15; }
-.rt-dot.hl-g { background: #4ade80; }
-.rt-dot.hl-b { background: #38bdf8; }
-.rt-dot.hl-p { background: #f472b6; }
-.rt-dot.hl-o { background: #fb923c; }
+.rt-dot.hl-y { background: #ffd84d; }
+.rt-dot.hl-g { background: #7ee08a; }
+.rt-dot.hl-b { background: #7cc7ff; }
+.rt-dot.hl-p { background: #ff9ad5; }
+.rt-dot.hl-o { background: #ffb066; }
 .rt-dot { transition: transform 0.12s var(--ease); }
 .rt-dot:hover { transform: scale(1.12); }
 @media (max-width: 400px) { .rt-btn { padding: 0 7px; font-size: 0.82rem; } .rt-dot { width: 23px; height: 23px; } }
@@ -2173,10 +2173,10 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 .hl-t { background: rgba(45, 212, 191, 0.34); }
 .hl-l { background: rgba(163, 230, 53, 0.38); }
 :root[data-theme="dark"] mark.hl-l { background: rgba(163, 230, 53, 0.26); }
-.rt-dot.hl-r { background: #f87171; }
-.rt-dot.hl-v { background: #a78bfa; }
-.rt-dot.hl-t { background: #2dd4bf; }
-.rt-dot.hl-l { background: #a3e635; }
+.rt-dot.hl-r { background: #ff8a8a; }
+.rt-dot.hl-v { background: #c4a7ff; }
+.rt-dot.hl-t { background: #5eead4; }
+.rt-dot.hl-l { background: #c6f36b; }
 
 /* sottoargomenti */
 .grp.sub-grp { margin: 10px 0 6px; }
@@ -2198,6 +2198,7 @@ html.pdf-open, html.pdf-open body { overflow: hidden; }
 .notes-ink { position: absolute; left: 0; top: 0; width: 100%; pointer-events: none; overflow: visible; z-index: 3; }
 .notes-ink path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .notes-ink path.marker { opacity: 0.38; stroke-linecap: square; }
+.notes-ink path.marker.pastel { opacity: 0.68; }
 .notes.inking { touch-action: none; -webkit-user-select: none; user-select: none; cursor: crosshair; }
 .notes.inking[data-ink-tool="eraser"] { cursor: cell; }
 .notes.inking[data-ink-tool="eraser"] .notes-ink path { pointer-events: visibleStroke; stroke-width: 14px; }
@@ -3900,8 +3901,14 @@ body.au-on .view { padding-bottom: calc(250px + env(safe-area-inset-bottom, 0px)
    ===================================================================== */
 .split-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
 .split-body:has(> .split-frame) { overflow: hidden; padding: 0; }
-body.embed .nav, body.embed .nav-show, body.embed .pad-fab, body.embed .pdf-back, body.embed .pdf-split-btn, body.embed .guard-banner, body.embed .pdf-title { display: none !important; }
-body.embed .view { margin: 0 !important; max-width: none !important; padding: 0 !important; }
+body.embed .nav, body.embed .nav-show, body.embed .pad-fab, body.embed .cap-fab, body.embed .pdf-back, body.embed .pdf-split-btn, body.embed .guard-banner, body.embed .pdf-title, body.embed .card-rem, body.embed .lj-chip, body.embed .sec-extra a[href="#/split"] { display: none !important; }
+body.embed .view { margin: 0 !important; max-width: none !important; padding: 14px 16px 76px !important; }
+html.pdf-open body.embed .view { padding: 0 !important; }
+body.embed .toasts, body.embed .sel-bar, body.embed .ink-bar { left: 50% !important; }
+body.embed .page-head h1, body.embed .sec-head h1 { font-size: clamp(1.35rem, 1.15rem + 1vw, 1.85rem); }
+body.embed .page-head { margin-bottom: 14px; padding-bottom: 12px; }
+body.embed .sec-head { margin-bottom: 10px; }
+.split-back { flex: none; min-width: 30px; padding: 0 8px; font-size: 1.15rem; line-height: 1; }
 /* v4.21: lettore PDF completo e usabile in spazi stretti dentro Affianca */
 body.embed .pdf-bar { padding: 4px 8px; gap: 6px; flex-wrap: nowrap; }
 body.embed .pdf-pageno { margin-right: auto; }
@@ -6161,3 +6168,18 @@ td.tbl-cell-hide.shown * { visibility: visible; }
 .addon-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 240px; }
 .addon-t { font-weight: 700; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .addon-s { font-size: 0.84rem; color: var(--muted); }
+
+/* =====================================================================
+   v4.41: Evidenziatori uniformati ovunque (Stabilo Pastello + classici)
+   ===================================================================== */
+.rt-colors .rt-dot.hl-m, .pad-hls .pad-c[data-pc="#a6e5c8"] { margin-right: 7px; position: relative; }
+.rt-colors .rt-dot.hl-m::after, .pad-hls .pad-c[data-pc="#a6e5c8"]::after {
+  content: ""; position: absolute; right: -5px; top: 3px; bottom: 3px; width: 1px; background: var(--line); pointer-events: none;
+}
+.rt-bar.rt-side .rt-colors .rt-dot.hl-m { margin-right: 0; }
+.rt-bar.rt-side .rt-colors .rt-dot.hl-m::after { display: none; }
+.card-hl-pop {
+  margin: -4px 0 12px; padding: 10px 12px; border-radius: var(--r-md);
+  border: 1px solid var(--line); background: var(--surface); box-shadow: var(--elev);
+}
+.card-hl-pop[hidden] { display: none; }

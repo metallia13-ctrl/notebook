@@ -195,7 +195,7 @@ function viewSettings() {
           </div>
         </div>
       </div>
-      <article class="notes read-sample"><p>Il <strong>ventricolo sinistro</strong> pompa il sangue nell’aorta. {{y|La gittata}} dipende da precarico, postcarico e contrattilità.</p></article>
+      <article class="notes read-sample"><p>Il <strong>ventricolo sinistro</strong> pompa il sangue nell’aorta. {{c|La gittata}} dipende da precarico, postcarico e contrattilità.</p></article>
       <p class="hint">Il tema “Carta” e l’interlinea ampia affaticano meno la vista nelle sessioni lunghe.</p>
     </section>
 
@@ -1296,24 +1296,69 @@ function watchKeyboard() {
   window.addEventListener('orientationchange', () => { setTimeout(() => { base = window.innerHeight; check(); }, 500); });
 }
 
-// v3.60: dentro Affianca l’app mostra solo il lettore PDF; i collegamenti verso altre
-// pagine si aprono nella finestra principale
+// v4.42: dentro Affianca gira l’app completa (PDF, sezioni con tutte le schede e funzioni,
+// mappe, atlanti, quiz, flashcard, clinica…) con navigazione autonoma e sincronizzazione live
 function initEmbed() {
   document.body.classList.add('embed');
-  const toParent = hash => { try { parent.postMessage({ nbEmbed: 'nav', hash }, location.origin); } catch { /* niente */ } };
-  let lastPdf = location.hash.startsWith('#/pdf/') ? location.hash : '';
+  const toParent = msg => { try { parent.postMessage(msg, location.origin); } catch { /* niente */ } };
+  const describeHash = hash => {
+    const h = decodeURIComponent(String(hash || '').replace(/^#\/?/, '')) || 'notebooks';
+    const [p0, p1, p2] = h.split('/');
+    if (p0 === 'pdf') {
+      const p = pdfById(p1);
+      return { kind: 'PDF', title: p ? p.name : 'PDF' };
+    }
+    if (p0 === 'sec') {
+      const s = secById(p1);
+      const nb = s && nbById(s.notebookId);
+      const modeNames = { cloze: 'Cloze', read: 'Leggi', map: 'Mappe', html: 'Mappe HTML', papers: 'Articoli', blank: 'Pagina bianca', oral: 'Orale', quiz: 'Domande', dquiz: 'Quiz', cards: 'Flashcard', video: 'Video', audio: 'Audio', edit: 'Modifica', case: 'Risolvi', addon: 'Nuove aggiunte' };
+      const where = [nb?.name, s ? groupPathText(s) : '', modeNames[p2] || ''].filter(Boolean).join(' · ');
+      return { kind: where || 'Sezione', title: s ? s.title : 'Sezione' };
+    }
+    if (p0 === 'nb') {
+      const n = nbById(p1);
+      const g = n && p2 ? groupsOf(n).find(x => x.id === p2) : null;
+      return { kind: g ? n.name : 'Notebook', title: g ? g.name : (n ? n.name : 'Notebook') };
+    }
+    const labels = {
+      notebooks: 'Notebook', quiz: 'Allenamento', cards: 'Flashcard', deck: 'Flashcard', study: 'Studio flashcard', card: 'Flashcard',
+      review: 'Ripasso', pdfs: 'Libreria PDF', anat: 'Atlante di anatomia', atlas: 'Atlante diagnostico',
+      clinic: 'Note cliniche', examq: 'Domande d’esame', cases: 'Casi clinici', lab: 'Laboratorio',
+      semei: 'Semeiotica', pharma: 'Farmacologia', micro: 'Microbiologia', diary: 'Diario di tirocinio',
+      glossary: 'Glossario', papers: 'Articoli', raccolta: 'Raccolta', pad: 'Blocco note',
+      calendar: 'Calendario', search: 'Cerca', viva: 'Interrogazione', dquiz: 'Quiz discriminazione',
+      exam: 'Simulazione', scores: 'Score clinici', incomplete: 'Da completare', ask: 'Chiedi alle fonti',
+      graph: 'Mappa collegamenti', inbox: 'Da sistemare'
+    };
+    return { kind: 'Affianca', title: labels[p0] || 'Notebook' };
+  };
+  window._embedNotify = () => {
+    const info = describeHash(location.hash);
+    toParent({ nbEmbed: 'state', hash: location.hash || '#/notebooks', kind: info.kind, title: info.title });
+  };
+  // Solo le azioni di shell esterna (StudyHub, Affianca, Schermo intero) non si annidano dentro il pannello
+  const OUTER_ONLY = new Set(['split', 'studyhub', 'fs', 'focus', 'resume']);
   document.addEventListener('click', e => {
     const a = e.target.closest('a[href^="#/"]');
-    if (!a || a.getAttribute('href').startsWith('#/pdf/')) return;
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    const head = href.replace(/^#\/?/, '').split('/')[0];
+    if (!OUTER_ONLY.has(head)) return;
     e.preventDefault();
     e.stopPropagation();
-    toParent(a.getAttribute('href'));
+    if (head === 'studyhub') toParent({ nbEmbed: 'nav', hash: href });
   }, true);
-  window.addEventListener('hashchange', e => {
-    if (location.hash.startsWith('#/pdf/')) { lastPdf = location.hash; return; }
-    e.stopImmediatePropagation();
-    toParent(location.hash);
-    if (lastPdf) location.replace(lastPdf);
+  window.addEventListener('message', e => {
+    if (e.origin !== location.origin || !e.data) return;
+    if (e.data.nbEmbed === 'go' && typeof e.data.hash === 'string') {
+      if (location.hash === e.data.hash) route();
+      else location.hash = e.data.hash;
+    } else if (e.data.nbEmbed === 'back') {
+      history.back();
+    }
+  });
+  window.addEventListener('storage', e => {
+    if (e.key === Settings.KEY) { Settings.load(); applyTheme(); applyBlueLight(); }
   });
 }
 async function init() {
@@ -1345,17 +1390,47 @@ async function init() {
   if (!EMBED) await Bridge.prune();
   updateBadge();
   window.addEventListener('hashchange', route);
-  // il lettore PDF dentro Affianca: avvio leggero, solo quello che serve al lettore
+  // dentro Affianca: app completa con tutte le funzioni (PDF, sezioni, mappe, quiz, atlanti, flashcard…)
   if (EMBED) {
+    $('#view').addEventListener('click', e => {
+      const a = e.target.closest('a[href^="#/card/"]');
+      if (a) state.cardReturn = location.hash;
+      const img = e.target.closest('img.nb-img');
+      if (img && !img.closest('.io, .wy-b') && img.dataset.state === 'ok') {
+        const m = location.hash.match(/^#\/sec\/([^/]+)/);
+        const sec = m ? secById(m[1]) : null;
+        const nb = sec && nbById(sec.notebookId);
+        if (nb && (nb.kind === 'anat' || nb.kind === 'atlas') && typeof openAtlasViewer === 'function') {
+          const slides = atlasSlidesFrom([sec]);
+          const startIdx = Math.max(0, slides.findIndex(sl => sl.imgId === img.dataset.img));
+          if (slides.length) { openAtlasViewer({ kind: nb.kind, items: slides, startIdx, onChanged: () => route() }); return; }
+        }
+        openLightbox(img.dataset.img, sec ? { notebookId: sec.notebookId, sectionId: sec.id } : null);
+      }
+    });
+    document.addEventListener('focusin', e => { if (e.target.tagName === 'TEXTAREA') e.target.dataset.touched = '1'; });
     const obs2 = new MutationObserver(list => list.forEach(m => m.addedNodes.forEach(n => { if (n.nodeType === 1) { hydrateImages(n); hydrateHtmlBlocks(n); } })));
     obs2.observe($('#view'), { childList: true, subtree: true });
     obs2.observe($('#modalRoot'), { childList: true, subtree: true });
+    window.addEventListener('nb-live', e => {
+      // Se la sezione o le flashcard visibili sono state modificate nell’altra finestra, aggiorna senza disturbare chi sta scrivendo
+      if (isTyping() || document.activeElement?.isContentEditable || $('#modalRoot').children.length) return;
+      const st = e.detail?.store;
+      const ids = e.detail?.ids || [];
+      if (st === 'sections') {
+        const m = location.hash.match(/^#\/sec\/([^/]+)(?:\/([^/]+))?/);
+        if (m && ids.includes(m[1]) && m[2] !== 'edit') { const y = window.scrollY; route(); window.scrollTo(0, y); }
+      }
+    });
     Nav.init();
     SelGesture.init();
     PNote.init();
+    initHelp();
     applyAnkiSettings();
     applyBlueLight();
     route();
+    try { parent.postMessage({ nbEmbed: 'ready', hash: location.hash || '#/notebooks' }, location.origin); } catch { /* niente */ }
+    if (typeof window._embedNotify === 'function') window._embedNotify();
     return;
   }
   // Ricorda da dove apri una flashcard, per tornarci dopo averla modificata
@@ -1387,6 +1462,15 @@ async function init() {
       NavPins.syncFromState();
       Resume.syncFromState();
     }
+    // Se modifichi o evidenzi una sezione dentro Affianca mentre è aperta anche qui, aggiorna al volo
+    if (e.detail?.store === 'sections' && !isTyping() && !document.activeElement?.isContentEditable && !$('#modalRoot').children.length) {
+      const m = location.hash.match(/^#\/sec\/([^/]+)(?:\/([^/]+))?/);
+      if (m && (e.detail.ids || []).includes(m[1]) && m[2] !== 'edit') {
+        const y = window.scrollY;
+        route();
+        window.scrollTo(0, y);
+      }
+    }
   });
   window.addEventListener('online', () => { if (Sync.configured()) Sync.schedule(1000); });
   setupPwa();
@@ -1407,8 +1491,17 @@ async function init() {
   Focus.init();
   Capture.init();
   LessonJobs.init();
-  // dal lettore PDF dentro Affianca: un collegamento verso un’altra pagina si apre qui
-  window.addEventListener('message', e => { if (e.origin === location.origin && e.data && e.data.nbEmbed === 'nav' && typeof e.data.hash === 'string') go(e.data.hash); });
+  // Comunicazione con il pannello Affianca (pronto, stato navigazione e apertura nella pagina principale)
+  window.addEventListener('message', e => {
+    if (e.origin !== location.origin || !e.data || !e.data.nbEmbed) return;
+    if (e.data.nbEmbed === 'nav' && typeof e.data.hash === 'string') go(e.data.hash);
+    else if (e.data.nbEmbed === 'ready') {
+      Split.frameReady = true;
+      if (typeof e.data.hash === 'string') Split.frameHash = e.data.hash;
+    } else if (e.data.nbEmbed === 'state') {
+      Split.onFrameState(e.data);
+    }
+  });
   PNote.init();
   initHelp();
   DataGuard.protect();
@@ -1501,6 +1594,18 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.42", title: "Affianca completo: tutte le funzioni intatte anche nel pannello affiancato", html: `      <ul>
+        <li><strong>Sezioni complete in Affianca</strong>: aprire una sezione di fianco non mostra più solo il testo ridotto, ma l’intera sezione con tutte le schede (<em>Cloze, Leggi, Mappe, Mappe HTML, Pagina bianca, Orale, Domande, Quiz, Flashcard, Video, Audio, Modifica</em>), gli evidenziatori <em>Stabilo Pastello</em>, <em>Prima passata</em>, <em>Scrivi a mano</em>, <em>Ascolta</em>, <em>Etichette</em>, <em>↺ Ripasso</em> e <em>🔀 Unisci</em>.</li>
+        <li><strong>Lettore PDF completo + mappa bidirezionale</strong>: confermate tutte le funzioni del lettore PDF (evidenziatori pastello, penna, occlusioni, pannello, fogli A4, Ascolta, Altro ▾); <em>Manda alla mappa</em> ora funziona in entrambe le direzioni tra pagina principale e pannello Affianca, senza conflitti né perdita di modifiche.</li>
+        <li><strong>Nuova scheda “App” in Affianca</strong>: oltre a <em>Sezione</em>, <em>PDF</em> e <em>Mappa</em>, puoi affiancare qualsiasi strumento completo dell’app (<em>Allenamento/Quiz, Atlante di anatomia, Atlante diagnostico, Flashcard, Note cliniche, Domande d’esame, Laboratorio, Casi clinici, Glossario, Farmacologia…</em>) con tasto <code>‹</code> Indietro dedicato e sincronizzazione live tra le due finestre.</li>
+      </ul>` },
+  { v: "4.41", title: "evidenziatori uniformati in tutta l’app (Stabilo Boss Pastello + classici)", html: `      <ul>
+        <li><strong>Palette unica Stabilo Boss Pastello + classici ovunque</strong>: stessi 6 colori Stabilo Pastello per primi (<em>Giallo crema, Pesca pastello, Rosa pastello, Lilla pastello, Azzurro nuvola, Verde menta</em>) seguiti dai 9 classici, con tonalità e divisore identici in tutta l’app.</li>
+        <li><strong>Leggi &amp; Cloze (barra selezione e tasto destro)</strong>: aggiunti tutti e 6 gli Stabilo Pastello prima dei colori classici.</li>
+        <li><strong>Scrivi a mano sugli appunti</strong>: aggiunti gli Stabilo Pastello accanto alle penne classiche, con resa trasparente calibrata come nel lettore PDF.</li>
+        <li><strong>Editor Flashcard</strong>: il pulsante evidenziatore apre ora il selettore completo Stabilo Pastello + classici + <em>Sottolinea</em> + <em>✕ Togli</em>, identico a Modifica.</li>
+        <li><strong>Blocco note a mano</strong>: evidenziatore aggiornato dai vecchi 4 colori a tutta la palette Stabilo Pastello + classici (con Giallo crema predefinito e opacità calibrata).</li>
+      </ul>` },
   { v: "4.40", title: "unisci più sezioni (con AI o manuale) e ripasso a parte per le nuove aggiunte", html: `      <ul>
         <li><strong>🔀 Unisci 2 o più sezioni</strong>: disponibile direttamente in cima a ogni sezione (<em>🔀 Unisci</em>) e dal menu del notebook o di una cartella (<em>Altro ⋯ / Opzioni ⋯</em>). Rileva automaticamente le possibili sezioni doppie con titoli simili e permette di fonderle con l’<strong>AI</strong> (rimuovendo i doppioni senza perdere dettagli), dentro uno <strong>schema fisso</strong> oppure <strong>accodandole senza AI</strong>.</li>
         <li><strong>Sicurezza sulle sezioni secondarie</strong>: l’eliminazione automatica è <strong>disattiva di default</strong>; le sezioni secondarie vengono rinominate con il prefisso <code>[Unita]</code> così puoi verificarle ed eliminarle tu con calma, mentre flashcard, domande, mappe, PDF, lezioni audio, domande d’esame e fogli del blocco note vengono trasferiti nella sezione finale.</li>
@@ -2076,12 +2181,12 @@ const Split = {
         <button type="button" data-sp="orient"></button>
       </div>
       <header class="split-head">
+        <button type="button" class="btn sm ghost split-back" data-sp="back" aria-label="Indietro nel pannello" title="Indietro nel pannello">‹</button>
         <div class="split-title"><small class="split-kind"></small><strong class="split-name"></strong></div>
         <div class="split-acts">
-          <button type="button" class="btn sm ghost" data-sp="write" hidden title="Scrivi gli appunti di questa sezione qui nel pannello">✎ Scrivi</button>
-          <button type="button" class="btn sm ghost" data-sp="pick" title="Mostra un’altra sezione o un altro PDF">Cambia</button>
+          <button type="button" class="btn sm ghost" data-sp="pick" title="Scegli un’altra sezione, PDF, mappa o strumento">Cambia</button>
           ${helpBtn('splitView')}
-          <button type="button" class="btn sm ghost" data-sp="open" title="Apri nella pagina principale">Apri qui</button>
+          <button type="button" class="btn sm ghost" data-sp="open" title="Apri questa pagina nella finestra principale">Apri qui</button>
           <button type="button" class="sh-ic" data-sp="close" aria-label="Chiudi il pannello" title="Chiudi">${SH_ICONS.close}</button>
         </div>
         <div class="split-pdfbar" hidden>
@@ -2197,97 +2302,80 @@ const Split = {
     const body = $('.split-body', this.el);
     if (this.io) { this.io.disconnect(); this.io = null; }
     this.rendered.clear();
-    $('.split-pdfbar', this.el).hidden = item.kind !== 'pdf';
-    $('[data-sp="write"]', this.el).hidden = item.kind !== 'sec';
-    if (item.kind === 'edit') {
-      // v3.73: gli appunti si scrivono nel pannello, accanto al PDF; salvando si torna alla lettura
-      const sec = secById(item.id);
-      if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
-      this.dropDoc();
-      $('.split-kind', this.el).textContent = `Scrivi · ${[nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ')}`;
-      $('.split-name', this.el).textContent = sec.title;
-      body.innerHTML = '';
-      const box = document.createElement('div');
-      box.className = 'mode-body split-edit';
-      body.append(box);
-      modeEdit(sec, box, { onDone: () => this.show({ kind: 'sec', id: sec.id }) });
-      body.scrollTop = 0;
-      return;
-    }
-    if (item.kind === 'map') {
-      // la scheda Mappe di una sezione, intera: crei, modifichi e scarichi l’XMind mentre leggi
-      const sec = secById(item.id);
-      if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
-      this.dropDoc();
-      $('.split-kind', this.el).textContent = `Mappe · ${[nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ')}`;
-      $('.split-name', this.el).textContent = sec.title;
-      body.innerHTML = '';
-      const box = document.createElement('div');
-      box.className = 'mode-body split-map';
-      body.append(box);
-      modeMap(sec, box);
-      body.scrollTop = 0;
-      return;
-    }
-    if (item.kind === 'sec') {
-      const sec = secById(item.id);
-      if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
-      this.dropDoc();
-      $('.split-kind', this.el).textContent = [nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ') || 'Sezione';
-      $('.split-name', this.el).textContent = sec.title;
-      if (htmlOnly(sec)) {
-        // v4.03: una sezione fatta solo di mappe HTML si usa anche qui, accanto al PDF
-        body.innerHTML = '';
-        const box = document.createElement('div');
-        box.className = 'mode-body split-html';
-        body.append(box);
-        modeHtml(sec, box, { inPanel: true });
-        body.scrollTop = 0;
-        return;
+    $('.split-pdfbar', this.el).hidden = true;
+
+    // v4.42: ogni vista in Affianca (Sezioni con tutte le schede e funzioni, PDF completo, Mappe,
+    // Atlanti, Quiz, Flashcard, Clinica…) gira nella finestra isolata dell’app completa (?embed=1)
+    if (!EMBED) {
+      let targetHash = '#/notebooks';
+      let kindLbl = 'Affianca';
+      let titleLbl = 'Notebook';
+      let isSamePdf = false;
+      let targetPage = 1;
+
+      if (item.kind === 'sec' || item.kind === 'edit' || item.kind === 'map') {
+        const sec = secById(item.id);
+        if (!sec) { this.close(); toast('Questa sezione non c’è più'); return; }
+        const mode = item.kind === 'edit' ? 'edit' : item.kind === 'map' ? 'map' : (item.mode || (htmlOnly(sec) ? 'html' : 'read'));
+        targetHash = `#/sec/${sec.id}/${mode}`;
+        const path = [nbById(sec.notebookId)?.name, groupPathText(sec)].filter(Boolean).join(' › ');
+        kindLbl = item.kind === 'map' ? `Mappe${path ? ` · ${path}` : ''}` : item.kind === 'edit' ? `Modifica${path ? ` · ${path}` : ''}` : (path || 'Sezione');
+        titleLbl = sec.title;
+      } else if (item.kind === 'pdf') {
+        const meta = pdfById(item.id);
+        if (!meta) { this.close(); toast('Questo PDF non c’è più'); return; }
+        targetPage = item.page > 0 ? item.page : (meta.lastPage || 1);
+        targetHash = `#/pdf/${meta.id}/${Math.max(1, targetPage)}${item.occ ? '/occ' : ''}`;
+        kindLbl = 'PDF';
+        titleLbl = meta.name;
+        isSamePdf = !!(this.frame && this.frame.isConnected && this.frameReady && this.frameHash && this.frameHash.startsWith(`#/pdf/${meta.id}`));
+      } else if (item.kind === 'route') {
+        targetHash = item.hash || '#/notebooks';
+        kindLbl = item.sub || 'Affianca';
+        titleLbl = item.title || 'Notebook';
       }
-      body.innerHTML = sec.md.trim() ? `<article class="notes split-notes">${renderMd(sec.md)}</article>` : '<p class="hint">Questa sezione è ancora vuota.</p>';
-      hydrateImages(body);
-      hydrateHtmlBlocks(body);
-      const art = $('.split-notes', body);
-      if (art) {
-        setupFolds(art, sec.id);
-        if (typeof attachInlineAtlasAnn === 'function') attachInlineAtlasAnn(art, sec);
+
+      this.dropDoc();
+      $('.split-kind', this.el).textContent = kindLbl;
+      $('.split-name', this.el).textContent = titleLbl;
+      this.frameHash = targetHash;
+
+      if (isSamePdf && !item.occ) {
+        try {
+          this.frame.contentWindow?.postMessage({ nbEmbed: 'goto', page: targetPage }, location.origin);
+          return;
+        } catch { /* ricarico il frame */ }
       }
-      body.scrollTop = 0;
+      if (this.frame && this.frame.isConnected && this.frameReady) {
+        try {
+          this.frame.title = titleLbl;
+          this.frame.contentWindow?.postMessage({ nbEmbed: 'go', hash: targetHash }, location.origin);
+          return;
+        } catch { /* ricarico il frame */ }
+      }
+      body.innerHTML = '';
+      const fr = document.createElement('iframe');
+      fr.className = 'split-frame';
+      fr.title = titleLbl;
+      const u = new URL('index.html', document.baseURI);
+      u.search = '?embed=1';
+      u.hash = targetHash;
+      fr.src = u.href;
+      body.append(fr);
+      this.frame = fr;
+      this.frameReady = false;
+      this.framePdfId = item.kind === 'pdf' ? item.id : '';
       return;
     }
+
+    // Fallback (solo se mai chiamato da dentro un ambiente già EMBED)
     const meta = pdfById(item.id);
     if (!meta) { this.close(); toast('Questo PDF non c’è più'); return; }
+    $('.split-pdfbar', this.el).hidden = false;
     $('.split-kind', this.el).textContent = 'PDF';
     $('.split-name', this.el).textContent = meta.name;
-    if (!(this.frame && this.frame.isConnected && this.framePdfId === meta.id)) {
-      body.innerHTML = '<p class="hint split-wait">Apro il PDF…</p>';
-    }
     try {
-      // v4.21: lettore PDF completo dentro Affianca (URL robusto, ripresa pagina, salto rapido senza ricaricare)
       this.dropDoc();
-      if (!EMBED) {
-        $('.split-pdfbar', this.el).hidden = true;
-        const targetPage = item.page > 0 ? item.page : (meta.lastPage || 1);
-        if (this.frame && this.frame.isConnected && this.framePdfId === meta.id) {
-          try {
-            this.frame.contentWindow?.postMessage({ nbEmbed: 'goto', page: targetPage }, location.origin);
-            return;
-          } catch { /* ricarico il frame */ }
-        }
-        body.innerHTML = '';
-        const fr = document.createElement('iframe');
-        fr.className = 'split-frame';
-        fr.title = `PDF: ${meta.name}`;
-        const u = new URL('index.html', document.baseURI);
-        u.search = '?embed=1';
-        u.hash = `#/pdf/${meta.id}/${Math.max(1, targetPage)}`;
-        fr.src = u.href;
-        body.append(fr);
-        this.frame = fr;
-        this.framePdfId = meta.id;
-        return;
-      }
       let pdf;
       // se lo stesso PDF è già aperto nel lettore, uso quello: niente seconda copia in memoria
       if (PdfShared.id === meta.id && PdfShared.doc) pdf = { doc: PdfShared.doc, pages: PdfShared.doc.numPages, shared: true };
@@ -2425,24 +2513,40 @@ const Split = {
     if (body && ratioY !== null) body.scrollTop = Math.max(0, ratioY * body.scrollHeight - body.clientHeight * 0.35);
     else this.goPage(this.curPage || 1, true);
   },
+  onFrameState(data) {
+    if (!this.el || !this.isOpen()) return;
+    if (typeof data.hash === 'string') {
+      this.frameHash = data.hash;
+      const pm = data.hash.match(/^#\/pdf\/([^/]+)/);
+      this.framePdfId = pm ? pm[1] : '';
+    }
+    if (data.kind) $('.split-kind', this.el).textContent = data.kind;
+    if (data.title) $('.split-name', this.el).textContent = data.title;
+  },
   act(a) {
     if (a === 'close') this.close();
     else if (a === 'pick') this.pick();
-    else if (a === 'open') {
+    else if (a === 'back') {
+      try { this.frame?.contentWindow?.postMessage({ nbEmbed: 'back' }, location.origin); } catch { /* niente */ }
+    } else if (a === 'open') {
       const it = this.item;
       if (!it) return;
-      // la pagina dove sei arrivata nel lettore del pannello
-      let pg = this.curPage || it.page || 1;
+      let target = this.frameHash || '';
       try {
         const w = this.frame?.contentWindow;
-        const n = +(w?.document.querySelector('#pdfPage')?.value || 0);
-        const m = w?.location.hash.match(/^#\/pdf\/[^/]+\/(\d+)/);
-        if (n) pg = n; else if (m) pg = +m[1];
+        if (w?.location?.hash) target = w.location.hash;
+        if (target.startsWith('#/pdf/')) {
+          const m = target.match(/^#\/pdf\/([^/]+)/);
+          const n = +(w?.document.querySelector('#pdfPage')?.value || 0);
+          if (m && n) target = `#/pdf/${m[1]}/${n}`;
+        }
       } catch { /* niente */ }
+      if (!target) {
+        const pg = this.curPage || it.page || 1;
+        target = it.kind === 'route' ? (it.hash || '#/notebooks') : it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'edit' ? `#/sec/${it.id}/edit` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${pg}`;
+      }
       this.close();
-      go(it.kind === 'sec' ? `#/sec/${it.id}/read` : it.kind === 'edit' ? `#/sec/${it.id}/edit` : it.kind === 'map' ? `#/sec/${it.id}/map` : `#/pdf/${it.id}/${pg}`);
-    } else if (a === 'write') {
-      if (this.item && this.item.kind === 'sec') this.show({ kind: 'edit', id: this.item.id });
+      go(target);
     } else if (a === 'swap' || a === 'orient') {
       this.setPrefs(a === 'swap' ? { swap: !this.swapped() } : { stack: !this.prefs().stack });
       this.applyMode();
@@ -2463,6 +2567,8 @@ const Split = {
     this.rendered.clear();
     $('.split-body', this.el).innerHTML = '';
     this.frame = null;
+    this.frameReady = false;
+    this.frameHash = '';
     this.framePdfId = '';
     this.applyMode();
     setTimeout(() => window.dispatchEvent(new Event('resize')), 30);
@@ -2485,11 +2591,12 @@ const Split = {
       let tab = here && pdfs.length ? 'pdf' : 'sec';
       const sh = openSheet(`
         <h2>Affianca</h2>
-        <p class="sheet-sub">Si apre in un pannello di fianco, mentre qui resta quello che stai guardando.</p>
+        <p class="sheet-sub">Si apre di fianco con <b>tutte le sue funzioni complete</b> (schede, evidenziatori, lettore PDF, quiz, atlanti…).</p>
         <div class="seg" role="tablist" aria-label="Cosa affiancare">
           <button type="button" role="tab" data-spt="sec" aria-selected="${tab === 'sec'}">Sezione</button>
           <button type="button" role="tab" data-spt="pdf" aria-selected="${tab === 'pdf'}">PDF</button>
           <button type="button" role="tab" data-spt="map" aria-selected="${tab === 'map'}">Mappa</button>
+          <button type="button" role="tab" data-spt="app" aria-selected="${tab === 'app'}">App</button>
         </div>
         <input type="search" class="input search" id="spQ" placeholder="Cerca" aria-label="Cerca">
         <ul class="list pick-list sp-list" id="spList"></ul>
@@ -2497,10 +2604,36 @@ const Split = {
         <div class="modal-actions"><button class="btn ghost" type="button" data-spx>Chiudi</button></div>`, { label: 'Affianca', onClose: v => resolve(v || null) });
       // la sezione nuova si apre nel pannello: da scrivere, o con le mappe se eri su Mappa
       bindNewSecForm(sh.el, s => { const it = { kind: tab === 'map' ? 'map' : 'edit', id: s.id }; sh.close(it); this.show(it); });
+      const appTools = [
+        ['#/quiz', '🎯 Allenamento (Quiz & Occludi)', 'Tutti i quiz, Etichette, Occludi, Cloze e simulazioni'],
+        ['#/cards', 'Flashcard', 'Mazzi e studio Anki (anche solo occlusioni)'],
+        ['#/review', 'Ripasso', 'Sezioni e nuove aggiunte da ripassare oggi'],
+        ['#/anat', 'Atlante di anatomia', 'Tavole anatomiche con etichette, annotazioni pastello e quiz'],
+        ['#/atlas', 'Atlante diagnostico', 'ECG, emogas, Rx e immagini diagnostiche'],
+        ['#/clinic', 'Note cliniche', 'Quadri clinici cercabili per sintomo e quiz DDx'],
+        ['#/examq', 'Domande d’esame', 'Banca domande, frequenze, scalette e allenamento'],
+        ['#/cases', 'Casi clinici', 'Casi con foto, PDF e modalità Risolvi'],
+        ['#/lab', 'Medicina di laboratorio', 'Range, cause, referti, calcoli e allenamento'],
+        ['#/semei', 'Semeiotica', 'Manovre, segni e punti di repere'],
+        ['#/pharma', 'Farmacologia', 'Schede farmaci e tabella di confronto'],
+        ['#/micro', 'Microbiologia', 'Schede microrganismi'],
+        ['#/glossary', 'Glossario', 'Definizioni e termini medici'],
+        ['#/papers', 'Articoli', 'Bibliografia e sintesi'],
+        ['#/raccolta', 'Raccolta', 'Elementi salvati e clip'],
+        ['#/pad', 'Blocco note (archivio)', 'Tutte le pagine scritte a mano e i fogli nei PDF'],
+        ['#/notebooks', 'Notebook e cartelle', 'Esplora materie e cartelle'],
+        ['#/search', 'Cerca ovunque', 'Ricerca globale su appunti, PDF e flashcard'],
+        ['#/calendar', 'Calendario', 'Scadenze e statistiche']
+      ];
       const list = $('#spList', sh.el);
       const draw = () => {
         const q = $('#spQ', sh.el).value;
-        $('.sp-new', sh.el).hidden = tab === 'pdf';
+        $('.sp-new', sh.el).hidden = tab === 'pdf' || tab === 'app';
+        if (tab === 'app') {
+          const hits = appTools.filter(([, name, sub]) => matchTokens(`${name} ${sub}`, q));
+          list.innerHTML = hits.map(([hash, name, sub]) => `<li><button type="button" class="row" data-sproute="${esc(hash)}" data-sptitle="${esc(name)}"><span class="row-main"><span class="row-title">${esc(name)}</span><span class="row-sub">${esc(sub)}</span></span></button></li>`).join('') || '<li class="hint">Nessuno strumento trovato.</li>';
+          return;
+        }
         if (tab === 'map') {
           // prima la sezione che stai leggendo (o quella del PDF), poi quelle con mappe
           const cands = [...(here ? [here] : []), ...state.sections.filter(s => s !== here).sort((a, b) => mapsOf(b).length - mapsOf(a).length || (b.updated || 0) - (a.updated || 0))];
@@ -2521,6 +2654,13 @@ const Split = {
       $$('[data-spt]', sh.el).forEach(t => t.addEventListener('click', () => { tab = t.dataset.spt; $$('[data-spt]', sh.el).forEach(x => x.setAttribute('aria-selected', String(x === t))); draw(); }));
       $('[data-spx]', sh.el).onclick = () => sh.close(null);
       list.addEventListener('click', e => {
+        const rb = e.target.closest('[data-sproute]');
+        if (rb) {
+          const it = { kind: 'route', hash: rb.dataset.sproute, title: rb.dataset.sptitle, sub: 'Affianca' };
+          sh.close(it);
+          this.show(it);
+          return;
+        }
         const b = e.target.closest('[data-spi]');
         if (!b) return;
         const [kind, id, pg] = b.dataset.spi.split(':');
@@ -3229,7 +3369,7 @@ const PadDB = {
   }
 };
 const PAD_COLORS = [['ink', 'Inchiostro'], ['#2563eb', 'Blu'], ['#dc2626', 'Rosso'], ['#16a34a', 'Verde'], ['#f59e0b', 'Arancio'], ['#9333ea', 'Viola']];
-const PAD_HL = [['#facc15', 'Giallo'], ['#4ade80', 'Verde'], ['#f472b6', 'Rosa'], ['#38bdf8', 'Azzurro']];
+const PAD_HL = HL_COLORS.map(c => [c.hex, c.name, c.pastel]);
 const PAD_ZOOMS = [0.25, 0.35, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4];
 // v4.01: i fogli del blocco note hanno le proporzioni di un A4 e si allungano di un A4 alla volta
 const PAD_A4 = Math.SQRT2;
@@ -3344,9 +3484,11 @@ function padPaper(c, W, H, kind, color, alpha, vis = null, bounds = null) {
 }
 // l’evidenziatore: un solo tracciato trasparente, così le sovrapposizioni non fanno chiazze
 function padHlPath(c, s, W) {
+  const col = s.c === 'ink' ? '#fce883' : s.c;
+  const isPastel = HL_PASTEL_HEX.has(String(col || '').toLowerCase());
   c.save();
-  c.globalAlpha = 0.35;
-  c.strokeStyle = s.c === 'ink' ? '#facc15' : s.c;
+  c.globalAlpha = isPastel ? 0.56 : 0.35;
+  c.strokeStyle = col;
   c.lineWidth = Math.max(4, s.w * W);
   c.lineCap = 'round';
   c.lineJoin = 'round';
@@ -3874,7 +4016,7 @@ const Pad = {
           </span>
           <span class="pad-sep"></span>
           <span class="pad-pens">${PAD_COLORS.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="${l}" title="${l}" style="--c:${c === 'ink' ? 'var(--text)' : c}"></button>`).join('')}</span>
-          <span class="pad-hls" hidden>${PAD_HL.map(([c, l]) => `<button type="button" class="pad-c" data-pc="${c}" aria-label="Evidenziatore ${l.toLowerCase()}" title="${l}" style="--c:${c}"></button>`).join('')}</span>
+          <span class="pad-hls" hidden>${PAD_HL.map(([c, l, pastel]) => `<button type="button" class="pad-c${pastel ? ' is-pastel' : ''}" data-pc="${c}" aria-label="Evidenziatore ${esc(l.toLowerCase())}" title="${pastel ? 'Stabilo Pastello · ' : ''}${esc(l)}" style="--c:${c}"></button>`).join('')}</span>
           <label class="pad-c pad-custom" title="Un colore a scelta"><input type="color" data-pcustom aria-label="Un colore a scelta"><span aria-hidden="true">+</span></label>
           <span class="pad-sep"></span>
           <span class="pad-size-ctl" role="group" aria-label="Spessore del tratto" title="Spessore del tratto (da 1 a 20)"><button type="button" class="pad-b pad-sbtn" data-ps-step="-0.5" aria-label="Riduci spessore di 0,5" title="Riduci spessore (−0,5)">−</button><input type="range" class="pad-srange" data-ps-range min="1" max="20" step="0.5" value="2.5" aria-label="Spessore del tratto"><button type="button" class="pad-b pad-sbtn" data-ps-step="0.5" aria-label="Aumenta spessore di 0,5" title="Aumenta spessore (+0,5)">+</button><span class="pad-sval" data-ps-val>2,5</span></span>
@@ -4101,7 +4243,7 @@ const Pad = {
     if (typeof Split !== 'undefined' && Split.isOpen()) Split.close();
     const p = this.prefs();
     this.tool = p.tool || 'pen'; this.color = p.color || 'ink'; this.size = Math.max(PAD_SIZE_MIN, Math.min(PAD_SIZE_MAX, +p.size || 0.0025)); this.penOnly = !!p.penOnly;
-    this.hlColor = p.hlColor || '#facc15'; this.eraseMode = p.eraseMode || 'stroke'; this.zoom = +p.zoom || 1; this.redoStack = [];
+    this.hlColor = p.hlColor || '#fce883'; this.eraseMode = p.eraseMode || 'stroke'; this.zoom = +p.zoom || 1; this.redoStack = [];
     this.shape = p.shape || 'round'; this.fill = !!p.fill;
     this.el.hidden = false;
     document.body.classList.add('pad-open');
@@ -4666,6 +4808,7 @@ const Pad = {
       const lv = this.live, dpr = this.dpr || 1;
       const [sl, st] = this.scroll();
       lv.style.width = `${this.VW}px`; lv.style.height = `${this.VH}px`;
+      lv.style.opacity = HL_PASTEL_HEX.has(String(s.c || '').toLowerCase()) ? '0.56' : '0.35';
       lv.width = Math.round(this.VW * dpr); lv.height = Math.round(this.VH * dpr);
       this.lctx.setTransform(dpr, 0, 0, dpr, ((this.OX || 0) - sl) * dpr, ((this.OY || 0) - st) * dpr);
       lv.hidden = false;

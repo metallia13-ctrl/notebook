@@ -9,26 +9,10 @@
    Il file del PDF resta su questo dispositivo (archivio pdfblobs); le
    annotazioni stanno nel record del PDF (archivio pdfs).
    ===================================================================== */
-// v4.21: Stabilo Boss Pastello per primi, seguiti dalla palette classica
-const PDF_PASTEL_KEYS = new Set(['c', 'a', 'f', 'i', 's', 'm']);
-const PDF_PASTEL_INKS = new Set(['#fce883', '#ffbe98', '#f9b4cf', '#d5b9f7', '#a3daf9', '#a6e5c8']);
-const PDF_COLORS = [
-  ['c', '#fce883', '#c89b1e', 'Giallo crema'],
-  ['a', '#ffbe98', '#df7847', 'Pesca pastello'],
-  ['f', '#f9b4cf', '#d46190', 'Rosa pastello'],
-  ['i', '#d5b9f7', '#8660bd', 'Lilla pastello'],
-  ['s', '#a3daf9', '#3b8ec4', 'Azzurro nuvola'],
-  ['m', '#a6e5c8', '#349970', 'Verde menta'],
-  ['y', '#ffd84d', '#c27c00', 'Giallo'],
-  ['g', '#7ee08a', '#15803d', 'Verde'],
-  ['b', '#7cc7ff', '#1d4ed8', 'Azzurro'],
-  ['p', '#ff9ad5', '#be185d', 'Rosa'],
-  ['o', '#ffb066', '#c2410c', 'Arancio'],
-  ['r', '#ff8a8a', '#dc2626', 'Rosso'],
-  ['v', '#c4a7ff', '#7c3aed', 'Viola'],
-  ['t', '#5eead4', '#0f766e', 'Turchese'],
-  ['l', '#c6f36b', '#4d7c0f', 'Lime']
-];
+// v4.41: Palette unificata da 01-base.js (Stabilo Boss Pastello per primi, seguiti dai classici)
+const PDF_PASTEL_KEYS = HL_PASTEL_KEYS;
+const PDF_PASTEL_INKS = HL_PASTEL_HEX;
+const PDF_COLORS = HL_COLORS.map(c => [c.key, c.hex, c.dark, c.name]);
 const PDF_TOOLS = [
   ['select', 'Seleziona', '<svg viewBox="0 0 24 24"><path d="M5 3l14 8-6 2-3 6z"/></svg>', 'Seleziona il testo'],
   ['hl', 'Evidenzia', '<svg viewBox="0 0 24 24"><path d="M4 20h7M14 4l6 6-8 8H6v-6z"/></svg>', 'Evidenzia: seleziona il testo e si colora da solo. Nelle pagine scansionate trascina un riquadro'],
@@ -60,12 +44,7 @@ function shapeSvg(a, live = false) {
   return `<rect class="ann-shape"${id} x="${Math.min(x1, x2)}" y="${Math.min(y1, y2)}" width="${Math.abs(x2 - x1)}" height="${Math.abs(y2 - y1)}" rx="2" ${st}/>`;
 }
 const PEN_INKS = [
-  ['#fce883', 'Giallo crema'],
-  ['#ffbe98', 'Pesca pastello'],
-  ['#f9b4cf', 'Rosa pastello'],
-  ['#d5b9f7', 'Lilla pastello'],
-  ['#a3daf9', 'Azzurro nuvola'],
-  ['#a6e5c8', 'Verde menta'],
+  ...HL_PASTEL_COLORS.map(c => [c.hex, c.name]),
   ['#111111', 'Nero'],
   ['#1d4ed8', 'Blu'],
   ['#dc2626', 'Rosso'],
@@ -637,17 +616,30 @@ function viewPdf(id, pageParam, modeParam = '') {
       return;
     }
     if (kind === 'map') {
-      // dentro Affianca il PDF è un’altra finestra: la mappa può essere nella pagina principale
-      const MT = EMBED ? (() => { try { return parent.MapTarget || MapTarget; } catch { return MapTarget; } })() : MapTarget;
-      let tgt = MT.get() || (EMBED ? MapTarget.get() : null);
+      // Cerca la mappa aperta nella pagina principale o nel pannello Affianca (in entrambe le direzioni)
+      const findMapTarget = () => {
+        if (EMBED) {
+          try { const t = parent.MapTarget?.get(); if (t) return t; } catch { /* cross */ }
+          return MapTarget.get();
+        }
+        const local = MapTarget.get();
+        if (local) return local;
+        try { return Split.frame?.contentWindow?.MapTarget?.get() || null; } catch { return null; }
+      };
+      let tgt = findMapTarget();
       if (!tgt) {
-        // nessuna mappa aperta: la apro in Affianca, nella sezione che scegli
+        // nessuna mappa aperta: la apro in Affianca (o nella pagina principale se siamo già in Affianca)
         const sec = await pickSectionSheet('Su quale mappa? Scegli la sezione', meta.sectionId || '');
         if (!sec) return;
-        if (EMBED) { toast('Apri la mappa nella pagina principale, poi riprova da qui'); return; }
-        await Split.show({ kind: 'map', id: sec.id });
-        tgt = MapTarget.get();
-        if (!tgt) return;
+        if (EMBED) {
+          try { parent.postMessage({ nbEmbed: 'nav', hash: `#/sec/${sec.id}/map` }, location.origin); } catch { /* niente */ }
+          for (let i = 0; i < 20 && !tgt; i++) { await sleep(120); tgt = findMapTarget(); }
+          if (!tgt) { toast('Mappa aperta nella pagina principale: riprova a mandare il testo'); return; }
+        } else {
+          await Split.show({ kind: 'map', id: sec.id });
+          for (let i = 0; i < 25 && !tgt; i++) { await sleep(120); tgt = findMapTarget(); }
+          if (!tgt) { toast('Mappa aperta in Affianca: riprova appena finisce di caricare'); return; }
+        }
       }
       const note = `Da ${pdfSource(pagesTxt)}`;
       let r = null;

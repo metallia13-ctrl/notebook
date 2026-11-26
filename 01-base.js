@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.40';
+const APP_VERSION = '4.42';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -1985,6 +1985,7 @@ function route() {
   });
   window.scrollTo(0, 0);
   if (back) Nav.restore();
+  if (EMBED && typeof window._embedNotify === 'function') setTimeout(window._embedNotify, 0);
   switch (p0) {
     case 'nb': return viewNotebook(p1, p2);
     case 'lezioni': return viewLessons(p1);
@@ -2658,17 +2659,29 @@ function setSyncStatus(text) {
    Nel testo: {{y|testo}} giallo, {{g|…}} verde, {{b|…}} azzurro,
    {{p|…}} rosa, {{o|…}} arancio, {{u|…}} sottolineato
    --------------------------------------------------------------------- */
-const HL_COLORS = [
-  { key: 'y', name: 'Giallo' },
-  { key: 'g', name: 'Verde' },
-  { key: 'b', name: 'Azzurro' },
-  { key: 'p', name: 'Rosa' },
-  { key: 'o', name: 'Arancio' },
-  { key: 'r', name: 'Rosso' },
-  { key: 'v', name: 'Viola' },
-  { key: 't', name: 'Turchese' },
-  { key: 'l', name: 'Lime' }
+// v4.41: Palette unica condivisa in tutta l’app (Stabilo Boss Pastello per primi + Classici)
+const HL_PASTEL_COLORS = [
+  { key: 'c', name: 'Giallo crema',   hex: '#fce883', dark: '#c89b1e', pastel: true },
+  { key: 'a', name: 'Pesca pastello', hex: '#ffbe98', dark: '#df7847', pastel: true },
+  { key: 'f', name: 'Rosa pastello',  hex: '#f9b4cf', dark: '#d46190', pastel: true },
+  { key: 'i', name: 'Lilla pastello', hex: '#d5b9f7', dark: '#8660bd', pastel: true },
+  { key: 's', name: 'Azzurro nuvola', hex: '#a3daf9', dark: '#3b8ec4', pastel: true },
+  { key: 'm', name: 'Verde menta',    hex: '#a6e5c8', dark: '#349970', pastel: true }
 ];
+const HL_CLASSIC_COLORS = [
+  { key: 'y', name: 'Giallo',   hex: '#ffd84d', dark: '#c27c00', pastel: false },
+  { key: 'g', name: 'Verde',    hex: '#7ee08a', dark: '#15803d', pastel: false },
+  { key: 'b', name: 'Azzurro',  hex: '#7cc7ff', dark: '#1d4ed8', pastel: false },
+  { key: 'p', name: 'Rosa',     hex: '#ff9ad5', dark: '#be185d', pastel: false },
+  { key: 'o', name: 'Arancio',  hex: '#ffb066', dark: '#c2410c', pastel: false },
+  { key: 'r', name: 'Rosso',    hex: '#ff8a8a', dark: '#dc2626', pastel: false },
+  { key: 'v', name: 'Viola',    hex: '#c4a7ff', dark: '#7c3aed', pastel: false },
+  { key: 't', name: 'Turchese', hex: '#5eead4', dark: '#0f766e', pastel: false },
+  { key: 'l', name: 'Lime',     hex: '#c6f36b', dark: '#4d7c0f', pastel: false }
+];
+const HL_COLORS = [...HL_PASTEL_COLORS, ...HL_CLASSIC_COLORS];
+const HL_PASTEL_KEYS = new Set(HL_PASTEL_COLORS.map(c => c.key));
+const HL_PASTEL_HEX = new Set(HL_PASTEL_COLORS.map(c => c.hex.toLowerCase()));
 const MARK_RE = /\{\{([ucafismygbpovrtl])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
 function renderMarks(src) {
   let out = src;
