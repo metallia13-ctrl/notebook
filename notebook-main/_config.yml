@@ -1,0 +1,5 @@
+# Repository metallia13-ctrl.github.io
+# Serve solo a pubblicare .well-known/assetlinks.json, che toglie la barra
+# dell’indirizzo dall’APK del Notebook. Senza questa riga GitHub Pages
+# ignorerebbe le cartelle che iniziano con il punto.
+include: [".well-known"]
