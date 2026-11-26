@@ -2532,7 +2532,7 @@ function pdfHlNotesMd(meta, list, { by = 'color' } = {}) {
     const t = mdSafe(a.text || '');
     const tag = withColor && a.color && a.type !== 'note' ? ` · *${pdfColLabel(a.color)}*` : '';
     if (a.type === 'note') out.push(`- ✎ ${mdSafe(a.note || '')} (${link(a.page)})`);
-    else if (t) out.push(`- ${a.type === 'hl' ? `{{${a.color || 'y'}|${t}}}` : a.type === 'ul' ? `{{u|${t}}}` : t} (${link(a.page)})${tag}`);
+    else if (t) out.push(`- ${a.type === 'hl' ? `{{${a.color || 'y'}|${t}}}` : a.type === 'ul' ? `{{u${a.color || ''}|${t}}}` : t} (${link(a.page)})${tag}`);
     else out.push(`- *riquadro senza testo* (${link(a.page)})${tag}`);
     if (a.type !== 'note' && a.note) out.push(`  - ✎ ${mdSafe(a.note)}`);
     return out.join('\n');

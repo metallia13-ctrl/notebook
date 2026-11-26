@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.42';
+const APP_VERSION = '4.44';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -387,7 +387,7 @@ function newSection(nbId, { title, md, questions, source, groupId } = {}) {
 function repairClozeLine(line) {
   if (line.indexOf('==') < 0) return line;
   // "==" finito dentro l’apertura di un’evidenziatura: {{u==|testo → {{u|testo
-  line = line.replace(/\{\{([ucafismygbpovrtl])==\|/g, '{{$1|');
+  line = line.replace(/\{\{(u[cafismygbpovrtl]?|[cafismygbpovrtl])==\|/g, '{{$1|');
   let out = '';
   let open = -1;        // dove si è aperto il cloze (in out)
   let boldAt = -1;      // dove si è aperto il grassetto
@@ -463,8 +463,8 @@ function repairClozeLine(line) {
       i += 2;
       continue;
     }
-    const w = /^\{\{[ucafismygbpovrtl]\|/.exec(line.slice(i, i + 4));
-    if (w) { wraps.push(out.length); out += w[0]; i += 4; continue; }
+    const w = /^\{\{(?:u[cafismygbpovrtl]?|[cafismygbpovrtl])\|/.exec(line.slice(i, i + 5));
+    if (w) { wraps.push(out.length); out += w[0]; i += w[0].length; continue; }
     if (line.startsWith('}}', i)) {
       if (wraps.length) {
         const at = wraps.pop();
@@ -806,12 +806,204 @@ function cleanSimpleTex(md) {
   }).join('\n');
 }
 
+
+/* ---------------------------------------------------------------------
+   v4.43: Schemi ASCII (NotebookLM / Gemini) — rilevamento, isolamento in
+   blocco dedicato ```ascii e protezione durante il rendering Markdown.
+   --------------------------------------------------------------------- */
+const ASCII_BOX_RE = /[\u2500-\u257F]/;
+const ASCII_TREE_START_RE = /^\s*[├└│┌┐┘┬┴┼╠╚║╔╗╝─═]/;
+const ASCII_PURE_BORDER_RE = /^\s*\+(?:[-=]{2,}\+)+\s*$/;
+const ASCII_PURE_CONN_RE = /^\s*(?:[|│║v^▼▲↓↑/\\]\s*)+$/;
+const ASCII_ARROW_RE = /(?:---+>|===+>|<-+---|<-+===|──+[►▶>]|<──+)/;
+
+function isAsciiDiagLine(line) {
+  const t = String(line || '').trim();
+  if (!t || /^#{1,6}\s/.test(t) || isTableSepLine(t)) return false;
+  if (ASCII_BOX_RE.test(line)) return true;
+  if (ASCII_PURE_BORDER_RE.test(line)) return true;
+  return false;
+}
+function isAsciiWeakLine(line) {
+  const t = String(line || '').trim();
+  if (!t || /^#{1,6}\s/.test(t) || isTableSepLine(t)) return false;
+  if (ASCII_PURE_CONN_RE.test(line)) return true;
+  if (ASCII_ARROW_RE.test(line)) return true;
+  if (/^\s*\|.*\|\s*$/.test(line) && !/^\s*\|[^|]*\|[^|]*\|/.test(line)) return true;
+  if (/^\s*\|.*\|\s*$/.test(line) && /\|\s{2,}\|/.test(line)) return true;
+  if (/^\s*\[[^\]\n]{1,60}\](?:\s*(?:[-─=]*[>►▶→]|<[-─=]*)\s*\[[^\]\n]{1,60}\])*\s*$/.test(line)) return true;
+  return false;
+}
+function isAsciiTreeRootLine(line) {
+  const t = String(line || '').trim();
+  if (!t || t.length > 90 || t.endsWith(':')) return false;
+  if (/^(?:#{1,6}\s|[-*•]\s|\d+[.)]\s|>|\||```)/.test(t)) return false;
+  if (t.endsWith('.') && t.length > 45) return false;
+  return true;
+}
+function isAsciiContentText(text) {
+  const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n').filter(l => l.trim());
+  if (lines.length < 2) return false;
+  const strong = lines.filter(isAsciiDiagLine).length;
+  if (strong >= 2) return true;
+  const conn = lines.filter(l => ASCII_PURE_CONN_RE.test(l)).length;
+  const weak = lines.filter(isAsciiWeakLine).length;
+  return (strong >= 1 && (conn >= 1 || lines.some(l => ASCII_TREE_START_RE.test(l)))) || (conn >= 1 && weak >= 3);
+}
+function isEditableCodeBlockRaw(raw) {
+  const t = String(raw || '').trim();
+  const m = t.match(/^(`{3,})([^\n]*)\n[\s\S]*\n\1\s*$/);
+  if (!m) return false;
+  return m[2].trim().toLowerCase() !== 'html';
+}
+function parseFencedBlock(raw) {
+  const t = String(raw || '').replace(/\r\n?/g, '\n').trim();
+  const m = t.match(/^(`{3,})([^\n]*)\n([\s\S]*?)\n?\1\s*$/);
+  if (!m) return null;
+  return { fence: m[1], lang: m[2].trim(), body: m[3] };
+}
+function repairAsciiDiagrams(md) {
+  if (!md) return md;
+  const lines = String(md).replace(/\r\n?/g, '\n').split('\n');
+  const n = lines.length;
+  const out = [];
+  let i = 0;
+
+  while (i < n) {
+    const line = lines[i];
+
+    // 1) Blocco recintato ``` esistente: garantisce righe vuote prima/dopo (blocco indipendente)
+    const fm = line.match(/^(\s*`{3,})(.*)$/);
+    if (fm) {
+      const fenceTicks = fm[1].trim();
+      const lang = fm[2].trim();
+      const closeRe = new RegExp(`^\\s*${fenceTicks.replace(/`/g, '\\`')}\\s*$`);
+      let j = i + 1;
+      while (j < n && !closeRe.test(lines[j])) j++;
+      const blockLines = lines.slice(i, Math.min(n, j + 1));
+      if (out.length && out[out.length - 1].trim() !== '') out.push('');
+      const innerLines = j < n ? blockLines.slice(1, -1) : blockLines.slice(1);
+      if (!lang && isAsciiContentText(innerLines.join('\n'))) {
+        blockLines[0] = `${fenceTicks}ascii`;
+      }
+      out.push(...blockLines);
+      if (j + 1 < n && lines[j + 1].trim() !== '') out.push('');
+      i = j + 1;
+      continue;
+    }
+
+    // 2) Salta intatte le tabelle Markdown GFM
+    if (line.indexOf('|') >= 0 && tableStartAt(lines, i)) {
+      out.push(line);
+      i++;
+      while (i < n && (lines[i].trim() === '' || lines[i].indexOf('|') >= 0)) {
+        if (lines[i].trim() === '' && (i + 1 >= n || lines[i + 1].indexOf('|') < 0)) break;
+        out.push(lines[i]);
+        i++;
+      }
+      continue;
+    }
+
+    // 3) Schema ASCII senza recinzione ```: rileva e isola come blocco ```ascii autonomo
+    let diagStart = -1;
+    if (isAsciiDiagLine(line) || isAsciiWeakLine(line)) {
+      diagStart = i;
+    } else if (isAsciiTreeRootLine(line) && i + 1 < n && (ASCII_TREE_START_RE.test(lines[i + 1]) || ASCII_PURE_CONN_RE.test(lines[i + 1])) && !/^\s*[┌╔+]/.test(lines[i + 1])) {
+      diagStart = i;
+    }
+
+    if (diagStart >= 0) {
+      let j = diagStart;
+      let strongCount = 0;
+      let boxCount = 0;
+      const rawBlock = [];
+      while (j < n) {
+        const cur = lines[j];
+        if (/^\s*`{3,}/.test(cur)) break;
+        if (j === diagStart && !isAsciiDiagLine(cur) && !isAsciiWeakLine(cur)) {
+          rawBlock.push(cur);
+          j++;
+          continue;
+        }
+        if (cur.trim() === '') {
+          if (j + 1 < n && (isAsciiDiagLine(lines[j + 1]) || (strongCount > 0 && isAsciiWeakLine(lines[j + 1])))) {
+            const prevL = rawBlock[rawBlock.length - 1] || '';
+            const nextL = lines[j + 1];
+            if (ASCII_BOX_RE.test(prevL) || ASCII_BOX_RE.test(nextL) || ASCII_PURE_BORDER_RE.test(prevL) || ASCII_PURE_BORDER_RE.test(nextL) || ASCII_PURE_CONN_RE.test(nextL)) {
+              rawBlock.push('');
+              j++;
+              continue;
+            }
+          }
+          break;
+        }
+        if (isAsciiDiagLine(cur)) {
+          strongCount++;
+          if (ASCII_BOX_RE.test(cur) || ASCII_PURE_BORDER_RE.test(cur)) boxCount++;
+          rawBlock.push(cur);
+          j++;
+          continue;
+        }
+        if (isAsciiWeakLine(cur)) {
+          if (isTableSepLine(cur)) break;
+          rawBlock.push(cur);
+          j++;
+          continue;
+        }
+        const prevL = rawBlock[rawBlock.length - 1] || '';
+        const prevIsDown = ASCII_PURE_CONN_RE.test(prevL) || /[▼▲↓↑│║]\s*$/.test(prevL);
+        if (strongCount > 0 && prevIsDown && cur.trim().length <= 80 && !/^(?:#{1,6}\s|[-*•]\s|\d+[.)]\s)/.test(cur.trim())) {
+          const nextIsDiag = j + 1 < n && (isAsciiDiagLine(lines[j + 1]) || isAsciiWeakLine(lines[j + 1]));
+          if (nextIsDiag || /^\s{2,}/.test(cur) || ASCII_PURE_CONN_RE.test(prevL)) {
+            rawBlock.push(cur);
+            j++;
+            continue;
+          }
+        }
+        break;
+      }
+
+      while (rawBlock.length && rawBlock[rawBlock.length - 1].trim() === '') { rawBlock.pop(); j--; }
+      const nonEmpty = rawBlock.filter(l => l.trim() !== '');
+      const hasConn = nonEmpty.some(l => ASCII_TREE_START_RE.test(l) || ASCII_PURE_BORDER_RE.test(l) || ASCII_PURE_CONN_RE.test(l));
+      const isValidDiag = nonEmpty.length >= 2 && (
+        boxCount >= 2 ||
+        (strongCount >= 1 && hasConn) ||
+        (nonEmpty.filter(l => ASCII_PURE_CONN_RE.test(l)).length >= 1 && nonEmpty.filter(isAsciiWeakLine).length >= 3)
+      );
+
+      if (isValidDiag) {
+        let finalBlock = rawBlock;
+        if (rawBlock.length >= 3) {
+          let oddAllBlank = true, evenAllNonBlank = true;
+          for (let k = 0; k < rawBlock.length; k++) {
+            if (k % 2 === 1 && rawBlock[k].trim() !== '') oddAllBlank = false;
+            if (k % 2 === 0 && rawBlock[k].trim() === '') evenAllNonBlank = false;
+          }
+          if (oddAllBlank && evenAllNonBlank) finalBlock = rawBlock.filter(l => l.trim() !== '');
+        }
+        if (out.length && out[out.length - 1].trim() !== '') out.push('');
+        out.push('```ascii');
+        out.push(...finalBlock);
+        out.push('```');
+        if (j < n && lines[j].trim() !== '') out.push('');
+        i = j;
+        continue;
+      }
+    }
+
+    out.push(line);
+    i++;
+  }
+  return out.join('\n');
+}
+
 function htmlClipboardToMd(html) {
-  if (!html || !/<table\b/i.test(html)) return null;
+  if (!html || !/<(?:table|pre)\b/i.test(html)) return null;
   let doc;
   try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch { return null; }
   const body = doc && doc.body;
-  if (!body || !body.querySelector('table')) return null;
+  if (!body || !body.querySelector('table, pre')) return null;
 
   const cleanText = s => String(s || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ');
   const inline = node => {
@@ -898,7 +1090,7 @@ function htmlClipboardToMd(html) {
       else if (tag === 'UL' || tag === 'OL') { const t = listToMd(n); if (t) blocks.push(t); }
       else if (tag === 'BLOCKQUOTE') { const t = inline(n).replace(/<br>/g, '\n').trim(); if (t) blocks.push(t.split('\n').map(l => `> ${l.trim()}`).join('\n')); }
       else if (tag === 'HR') blocks.push('---');
-      else if (tag === 'PRE') blocks.push(`\`\`\`\n${n.textContent.replace(/\n$/, '')}\n\`\`\``);
+      else if (tag === 'PRE') { const rawPre = n.textContent.replace(/\r\n?/g, '\n').replace(/^\n+|\n+$/g, ''); if (rawPre) blocks.push(`\`\`\`${isAsciiContentText(rawPre) ? 'ascii' : ''}\n${rawPre}\n\`\`\``); }
       else if (tag === 'P') { const t = inline(n).replace(/<br>/g, '\n').replace(/[ \t]{2,}/g, ' ').trim(); if (t) blocks.push(t); }
       else walk(n);
     });
@@ -906,26 +1098,27 @@ function htmlClipboardToMd(html) {
   };
   walk(body);
   const res = blocks.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
-  return res ? cleanSimpleTex(repairMarkdownTables(res)) : null;
+  return res ? cleanSimpleTex(repairMarkdownTables(repairAsciiDiagrams(res))) : null;
 }
 
 function normalizePastedMarkdown(clipboardData) {
   if (!clipboardData) return null;
   const plain = clipboardData.getData('text/plain') || '';
   const html = clipboardData.getData('text/html') || '';
-  // Se l'HTML contiene una tabella e il testo semplice non è già una tabella Markdown con separatore, converti l'HTML
   const plainHasMdTable = /(?:^|\n)\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?(?:\n|$)/.test(plain);
-  if (html && /<table\b/i.test(html) && !plainHasMdTable) {
+  const plainHasFence = /(?:^|\n)\s*`{3,}/.test(plain);
+  // Se l'HTML contiene una tabella o un blocco <pre> (schema ASCII da NotebookLM) non già recintato nel testo semplice, converti l'HTML
+  if (html && ((/<table\b/i.test(html) && !plainHasMdTable) || (/<pre\b/i.test(html) && !plainHasFence))) {
     const converted = htmlClipboardToMd(html);
     if (converted) return converted;
   }
   if (!plain) return null;
-  const fixed = cleanSimpleTex(repairMarkdownTables(plain));
+  const fixed = cleanSimpleTex(repairMarkdownTables(repairAsciiDiagrams(plain)));
   return fixed !== plain ? fixed : null;
 }
 
 async function saveSection(sec) {
-  if (typeof sec.md === 'string') sec.md = repairClozes(cleanSimpleTex(repairMarkdownTables(sec.md)));
+  if (typeof sec.md === 'string') sec.md = repairClozes(cleanSimpleTex(repairMarkdownTables(repairAsciiDiagrams(sec.md))));
   sec.updated = Date.now();
   await DB.put('sections', sec);
   const i = state.sections.findIndex(s => s.id === sec.id);
@@ -1094,12 +1287,21 @@ function linkPdfCitations(md) {
   });
 }
 function renderMd(md) {
-  const pre = cleanSimpleTex(repairMarkdownTables(md || ''));
-  const src = renderXrefs(extractHtmlBlocks(linkPdfCitations(pre))
+  const pre = cleanSimpleTex(repairMarkdownTables(repairAsciiDiagrams(md || '')));
+  // Protegge i blocchi recintati (```ascii / codice) prima di renderXrefs/renderMarks/clozeRe/PNOTE_RE
+  const codeStash = [];
+  const withHtml = extractHtmlBlocks(pre).replace(/^([ \t]*`{3,}[^\n]*\n[\s\S]*?\n[ \t]*`{3,}[ \t]*)$/gm, m => {
+    const id = codeStash.push(m) - 1;
+    return `\nNB_CODE_STASH_${id}_END\n`;
+  });
+  const src = renderXrefs(linkPdfCitations(withHtml)
     .replace(IMG_MD_RE, (m, alt, id) => `<img class="nb-img" data-img="${id}" alt="${esc(alt)}">`));
-  const src2 = renderMarks(src).replace(clozeRe(), (m, t) => { const [term, hint] = splitHint(t); return `<mark class="cz"${hint ? ` data-hint="${esc(hint)}"` : ''}>${term}</mark>`; })
+  let src2 = renderMarks(src).replace(clozeRe(), (m, t) => { const [term, hint] = splitHint(t); return `<mark class="cz"${hint ? ` data-hint="${esc(hint)}"` : ''}>${term}</mark>`; })
     // v3.57: note a comparsa, scritte ^[testo della nota]: una ⓘ che si apre con un tocco
     .replace(PNOTE_RE, (m, t) => `<span class="pnote" role="button" tabindex="0" title="Nota" data-pn="${encodeURIComponent(t)}">ⓘ</span>`);
+  if (codeStash.length) {
+    src2 = src2.replace(/NB_CODE_STASH_(\d+)_END/g, (m, idx) => codeStash[+idx] ?? m);
+  }
   let html;
   const mk = window.marked;
   if (mk && (mk.parse || typeof mk === 'function')) {
@@ -1107,12 +1309,18 @@ function renderMd(md) {
   } else {
     html = src2.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('')
       .replace(/&lt;mark class=&quot;(cz|hl hl-[cafismygbpovrtl])&quot;&gt;/g, '<mark class="$1">').replace(/&lt;\/mark&gt;/g, '</mark>')
-      .replace(/&lt;u class=&quot;ul&quot;&gt;/g, '<u class="ul">').replace(/&lt;\/u&gt;/g, '</u>')
+      .replace(/&lt;u class=&quot;(ul(?: ul-[cafismygbpovrtl])?)&quot;&gt;/g, '<u class="$1">').replace(/&lt;\/u&gt;/g, '</u>')
       .replace(/&lt;a class=&quot;xref&quot; href=&quot;(#\/sec\/[a-z0-9]+)&quot;&gt;(.*?)&lt;\/a&gt;/g, '<a class="xref" href="$1">$2</a>')
       .replace(/&lt;span class=&quot;xref missing&quot;[^&]*?(?:&quot;[^&]*?)*&gt;(.*?)&lt;\/span&gt;/g, '<span class="xref missing">$1</span>')
       .replace(/&lt;img class=&quot;nb-img&quot; data-img=&quot;([a-z0-9]+)&quot;[^&]*?(?:&quot;[^&]*?)*&gt;/g, '<img class="nb-img" data-img="$1" alt="">');
   }
   if (window.DOMPurify) html = window.DOMPurify.sanitize(html);
+  // Schemi ASCII: riquadro dedicato scorrevole orizzontalmente con pulsante Copia
+  html = html.replace(/<pre><code([^>]*)>([\s\S]*?)<\/code><\/pre>/g, (m, attrs, inner) => {
+    const isAscii = /language-ascii\b/i.test(attrs) || ASCII_BOX_RE.test(inner) || /\+[-=]{2,}\+/.test(inner);
+    if (!isAscii) return `<div class="code-wrap"><pre><code${attrs}>${inner}</code></pre></div>`;
+    return `<div class="ascii-wrap"><div class="ascii-bar"><span class="ascii-lbl">Schema ASCII</span><button type="button" class="ascii-cp" data-ascii-copy title="Copia lo schema">Copia</button></div><pre class="ascii-pre"><code${attrs}>${inner}</code></pre></div>`;
+  });
   return html.replace(/<table>/g, '<div class="table-wrap"><table>').replace(/<\/table>/g, '</table></div>');
 }
 
@@ -1137,9 +1345,9 @@ function splitText(text, max = CHUNK_CHARS) {
 const BULLET_RE = /^[•▪◦●■□➢➤►\-–*]\s+/;
 const isListLine = l => /^(- |\d+\. )/.test(l);
 
-// Formattazione di base senza AI: elenchi, righe spezzate dal PDF, titoli in maiuscolo, preservando le tabelle Markdown.
+// Formattazione di base senza AI: elenchi, righe spezzate dal PDF, titoli in maiuscolo, preservando tabelle e schemi ASCII.
 function basicFormat(text) {
-  const cleaned = cleanSimpleTex(repairMarkdownTables(String(text || '').replace(/\r\n?/g, '\n')));
+  const cleaned = cleanSimpleTex(repairMarkdownTables(repairAsciiDiagrams(String(text || '').replace(/\r\n?/g, '\n'))));
   const lines = cleaned.split('\n');
   const out = [];
   const isTbl = l => /^\|/.test(l) || isTableSepLine(l);
@@ -1152,7 +1360,7 @@ function basicFormat(text) {
   let inFence = false;
   for (const raw of lines) {
     const l = raw.trim();
-    if (/^```/.test(l)) { inFence = !inFence; out.push(raw); continue; }
+    if (/^```/.test(l)) { if (!inFence && out.length && out[out.length - 1] !== '') out.push(''); inFence = !inFence; out.push(raw); if (!inFence) out.push(''); continue; }
     if (inFence) { out.push(raw); continue; }
     if (!l) { if (out.length && out[out.length - 1] !== '') out.push(''); continue; }
     if (isTbl(l)) { push(l, 'table'); continue; }
@@ -1210,7 +1418,7 @@ function parseAiNotes(raw) {
   let qs = '';
   const di = notes.indexOf('===DOMANDE===');
   if (di >= 0) { qs = notes.slice(di + 13); notes = notes.slice(0, di); }
-  return { title, md: cleanSimpleTex(repairMarkdownTables(notes.trim())), questions: parseQuestions(qs) };
+  return { title, md: cleanSimpleTex(repairMarkdownTables(repairAsciiDiagrams(notes.trim()))), questions: parseQuestions(qs) };
 }
 
 /* ---------------------------------------------------------------------
@@ -1600,7 +1808,7 @@ function formatSystem({ cloze, questions } = {}) {
     '',
     'Regole tecniche, da rispettare sempre:',
     '- Copia senza modifiche, nella stessa posizione, ogni riferimento a immagine nel formato ![testo](img:codice).',
-    '- Mantieni le evidenziature e sottolineature nel formato {{lettera|testo}}, es. {{y|frase importante}}.',
+    '- Mantieni le evidenziature {{lettera|testo}} e sottolineature {{u|testo}} / {{u<colore>|testo}}, es. {{c|frase}} o {{ur|concetto chiave}}.',
     '- Mantieni i collegamenti ad altre pagine nel formato [[Titolo]].',
     cloze
       ? '- Racchiudi tra == e == i termini chiave da memorizzare (definizioni, nomi, valori, criteri), es. ==insulina==. Al massimo uno o due per frase o per cella, mai un’intera frase.'
@@ -2682,12 +2890,15 @@ const HL_CLASSIC_COLORS = [
 const HL_COLORS = [...HL_PASTEL_COLORS, ...HL_CLASSIC_COLORS];
 const HL_PASTEL_KEYS = new Set(HL_PASTEL_COLORS.map(c => c.key));
 const HL_PASTEL_HEX = new Set(HL_PASTEL_COLORS.map(c => c.hex.toLowerCase()));
-const MARK_RE = /\{\{([ucafismygbpovrtl])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
+const isUlMark = k => k === 'u' || /^u[cafismygbpovrtl]$/.test(String(k || ''));
+const MARK_RE = /\{\{(u[cafismygbpovrtl]?|[cafismygbpovrtl])\|((?:(?!\{\{|\}\})[^\n])*)\}\}/g;
 function renderMarks(src) {
   let out = src;
-  // dall’interno verso l’esterno, finché ce ne sono: regge anche più livelli uno dentro l’altro
+  // dall’interno verso l’esterno, finché ce ne sono: regge anche più livelli uno dentro l’altro (es. evidenziato + sottolineato colorato)
   for (let i = 0; i < 8; i++) {
-    const next = out.replace(MARK_RE, (m, k, t) => k === 'u' ? `<u class="ul">${t}</u>` : `<mark class="hl hl-${k}">${t}</mark>`);
+    const next = out.replace(MARK_RE, (m, k, t) => k === 'u' ? `<u class="ul">${t}</u>`
+      : k.startsWith('u') ? `<u class="ul ul-${k.slice(1)}">${t}</u>`
+      : `<mark class="hl hl-${k}">${t}</mark>`);
     if (next === out) break;
     out = next;
   }
@@ -2703,7 +2914,7 @@ const stripMarks = md => {
 // Tutto ciò che nel Markdown c’è ma nel testo mostrato non si vede: grassetti, cloze (con suggerimento),
 // evidenziature, tag HTML, link [testo](indirizzo), collegamenti [[Titolo|testo]], escape \*, segni di
 // elenco, titoli e citazioni a inizio riga, separatori delle tabelle
-const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{[ucafismygbpovrtl]\\||\\}\\}|<[^>\\n]{1,80}>|::(?:(?!==)[^\\n])*(?===)|\\]\\([^)\\n]*\\)|\\[\\[(?:[^\\]|\\n]*\\|)?|\\]\\]|\\[|\\\\(?=[!-/:-@\\[-`{-~])|(?:^|(?<=\\n))[ \\t]*(?:[-*+]|\\d{1,3}[.)]|#{1,6}|>)[ \\t]+|[ \\t]*\\|[ \\t]*)*';
+const MARKUP_GAP = '(?:\\*{1,3}|_{1,2}|==|~~|`|\\{\\{(?:u[cafismygbpovrtl]?|[cafismygbpovrtl])\\||\\}\\}|<[^>\\n]{1,80}>|::(?:(?!==)[^\\n])*(?===)|\\]\\([^)\\n]*\\)|\\[\\[(?:[^\\]|\\n]*\\|)?|\\]\\]|\\[|\\\\(?=[!-/:-@\\[-`{-~])|(?:^|(?<=\\n))[ \\t]*(?:[-*+]|\\d{1,3}[.)]|#{1,6}|>)[ \\t]+|[ \\t]*\\|[ \\t]*)*';
 // caratteri che nel Markdown possono essere scritti come entità HTML
 const CHAR_ALT = { '&': '(?:&|&amp;)', '<': '(?:<|&lt;)', '>': '(?:>|&gt;)', '"': '(?:"|&quot;)', '\u00a0': '(?:\u00a0|&nbsp;| )', '’': '(?:’|\')', '‘': '(?:‘|\')', '“': '(?:“|")', '”': '(?:”|")' };
 const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2746,10 +2957,11 @@ function findSourceRange(md, selText, occurrence) {
   if (xo > xc) { const i = md.indexOf(']]', r.end); if (i >= 0) r.end = i + 2; }
   const lk = slice().match(/^[^[]*\]\([^)\n]*\)/);
   if (lk) { const i = md.lastIndexOf('[', r.start); if (i >= 0 && md.slice(i, r.start).indexOf('\n') < 0) r.start = i; }
-  const opens = (slice().match(/\{\{[ucafismygbpovrtl]\|/g) || []).length;
+  const opens = (slice().match(/\{\{(?:u[cafismygbpovrtl]?|[cafismygbpovrtl])\|/g) || []).length;
   const closes = (slice().match(/\}\}/g) || []).length;
   if (opens > closes && md.slice(r.end, r.end + 2) === '}}') r.end += 2;
-  if (closes > opens && /\{\{[ucafismygbpovrtl]\|$/.test(md.slice(r.start - 4, r.start))) r.start -= 4;
+  const preOpen = closes > opens ? md.slice(Math.max(0, r.start - 5), r.start).match(/\{\{(?:u[cafismygbpovrtl]?|[cafismygbpovrtl])\|$/) : null;
+  if (preOpen) r.start -= preOpen[0].length;
   return r;
 }
 
@@ -2764,7 +2976,8 @@ function markupSpans(md) {
     for (let i = 0; i < line.length; i++) {
       if (line[i] === '`') { const k = line.indexOf('`', i + 1); if (k > i) { i = k; continue; } }
       if (line.startsWith('**', i)) { if (bolds.length) spans.push([off + bolds.pop(), off + i + 2]); else bolds.push(i); i++; continue; }
-      if (/^\{\{[ucafismygbpovrtl]\|/.test(line.slice(i, i + 4))) { wraps.push(i); i += 3; continue; }
+      const mw = /^\{\{(?:u[cafismygbpovrtl]?|[cafismygbpovrtl])\|/.exec(line.slice(i, i + 5));
+      if (mw) { wraps.push(i); i += mw[0].length - 1; continue; }
       if (line.startsWith('}}', i) && wraps.length) { spans.push([off + wraps.pop(), off + i + 2]); i++; continue; }
     }
     for (const m of line.matchAll(/\[\[[^\]\n]*\]\]|\[[^\]\n]*\]\([^)\n]*\)/g)) spans.push([off + m.index, off + m.index + m[0].length]);
@@ -2797,7 +3010,7 @@ function applyMarkToMd(md, r0, kind) {
     const segs = [];
     let s0 = r0.start;
     for (let i = r0.start; i < r0.end; i++) {
-      if (md[i] === '|' && !/\{\{[ucafismygbpovrtl]$/.test(md.slice(Math.max(0, i - 3), i))) { segs.push([s0, i]); s0 = i + 1; }
+      if (md[i] === '|' && !/\{\{(?:u[cafismygbpovrtl]?|[cafismygbpovrtl])$/.test(md.slice(Math.max(0, i - 4), i))) { segs.push([s0, i]); s0 = i + 1; }
     }
     if (segs.length) {
       segs.push([s0, r0.end]);
@@ -2830,11 +3043,13 @@ function applyMarkToMd(md, r0, kind) {
   const inner = md.slice(r.start, r.end);
   const before = md.slice(0, r.start);
   const after = md.slice(r.end);
-  const wrap = before.match(/\{\{([ucafismygbpovrtl])\|$/);
+  const wrap = before.match(/\{\{(u[cafismygbpovrtl]?|[cafismygbpovrtl])\|$/);
   if (wrap && after.startsWith('}}')) {
-    // stesso tipo: toglie; colore diverso: cambia colore
-    if (wrap[1] === kind || kind === 'none') return before.slice(0, -4) + inner + after.slice(2);
-    if (kind !== 'u' && wrap[1] !== 'u') return `${before.slice(0, -4)}{{${kind}|${inner}}}${after.slice(2)}`;
+    const prev = wrap[1];
+    const openLen = wrap[0].length;
+    // stesso tipo e colore: toglie; stessa famiglia (evidenziatore↔evidenziatore o sottolineatura↔sottolineatura): cambia colore; famiglia diversa: annida!
+    if (prev === kind || kind === 'none') return before.slice(0, -openLen) + inner + after.slice(2);
+    if (isUlMark(prev) === isUlMark(kind)) return `${before.slice(0, -openLen)}{{${kind}|${inner}}}${after.slice(2)}`;
   }
   if (kind === 'none') return stripMarksInRange(md, r);
   return `${before}{{${kind}|${inner}}}${after}`;
@@ -2850,10 +3065,12 @@ function wrapSelectionInTextarea(ta, open, close) {
   const trail = sel.match(/\s*$/)[0];
   const core = sel.trim();
   let next;
-  const already = core.match(/^\{\{([ucafismygbpovrtl])\|([\s\S]*)\}\}$/);
+  const already = core.match(/^\{\{(u[cafismygbpovrtl]?|[cafismygbpovrtl])\|([\s\S]*)\}\}$/);
   if (open.startsWith('{{') && already) {
-    const k = open.slice(2, 3);
-    next = already[1] === k ? already[2] : `${open}${already[2]}${close}`;
+    const k = open.slice(2, -1);
+    if (already[1] === k) next = already[2];
+    else if (isUlMark(already[1]) === isUlMark(k)) next = `${open}${already[2]}${close}`;
+    else next = open + core + close;
   } else if (core.startsWith(open) && core.endsWith(close) && core.length > open.length + close.length) {
     next = core.slice(open.length, -close.length);
   } else next = open + core + close;

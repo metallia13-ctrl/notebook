@@ -583,12 +583,15 @@ function srsLabel(s) {
 function viewSection(id, mode) {
   const sec = secById(id);
   if (!sec) return notFound('Questa sezione');
-  // appunti già salvati con un cloze rimasto aperto o tabelle spezzate da NotebookLM: li sistemo una volta
+  // appunti già salvati con un cloze rimasto aperto, schemi ASCII o tabelle spezzate da NotebookLM: li sistemo una volta
   if (mode !== 'edit' && typeof sec.md === 'string') {
     const fixedCloze = repairClozes(sec.md);
-    const fixedTbl = cleanSimpleTex(repairMarkdownTables(fixedCloze));
-    if (fixedTbl !== sec.md) {
-      const msg = fixedCloze !== sec.md ? 'Ho chiuso un cloze rimasto aperto in questa sezione' : 'Ho sistemato automaticamente le tabelle in questa sezione';
+    const fixedAscii = repairAsciiDiagrams(fixedCloze);
+    const fixedAll = cleanSimpleTex(repairMarkdownTables(fixedAscii));
+    if (fixedAll !== sec.md) {
+      const msg = fixedCloze !== sec.md ? 'Ho chiuso un cloze rimasto aperto in questa sezione'
+        : fixedAscii !== fixedCloze ? 'Ho isolato e sistemato automaticamente gli schemi ASCII in questa sezione'
+        : 'Ho sistemato automaticamente le tabelle in questa sezione';
       saveSection(sec).then(() => { toast(msg); route(); });
       return;
     }
@@ -1593,6 +1596,11 @@ async function saveMySchemas(list) {
   await saveLink(rec);
 }
 const ED_HL_COLORS = HL_COLORS;
+const hlColTip = (c, modeLbl = '') => {
+  const mean = typeof pdfColMeaning === 'function' ? pdfColMeaning(c.key) : '';
+  const base = `${c.pastel ? 'Stabilo Pastello · ' : ''}${c.name}${mean ? ` — ${mean}` : ''}`;
+  return modeLbl ? `${modeLbl}: ${base}` : base;
+};
 
 function mergeSystem({ keepHeads = false, extra = '', hasSecond = false, srcCount = 0 } = {}) {
   const extraBlock = extra.trim() ? `\n\nINDICAZIONI SPECIFICHE DELLA STUDENTESSA (seguile con priorità):\n- ${extra.trim()}` : '';
@@ -1609,7 +1617,7 @@ STRUTTURA E FORMATTAZIONE:
 - Titoli: ${keepHeads ? 'mantieni il più possibile i titoli ("## ", "### ") già presenti negli appunti, accorpando i duplicati sotto il titolo esistente più appropriato; aggiungi sottotitoli "### " solo se serve chiarezza.' : 'organizza il materiale in una gerarchia logica e chiara con titoli "## " e sottotitoli "### " (dal generale al particolare: definizione/struttura, suddivisione, connessioni/meccanismi, funzione, clinica).'}
 - Dentro ogni sezione: elenchi puntati brevi e gerarchici (con sottopunti rientrati di 2 spazi); usa una tabella Markdown quando 3 o più elementi hanno le stesse caratteristiche confrontabili; grassetto solo sui termini chiave.
 - Se gli appunti iniziano con un titolo "# ", mantienilo come prima riga.
-- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (con eventuale ::suggerimento, non aggiungerne e non toglierne), {{lettera|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", i link [fonte, p. N](#/pdf/...) e eventuali blocchi \`\`\`html.
+- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (con eventuale ::suggerimento, non aggiungerne e non toglierne), {{lettera|testo}}, {{u|testo}} e {{u<colore>|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", i link [fonte, p. N](#/pdf/...) e eventuali blocchi \`\`\`html.
 
 Rispondi SOLO con gli appunti fusi in Markdown, senza commenti prima o dopo.${extraBlock}${styleRulesBlock()}`;
 }
@@ -1628,7 +1636,7 @@ Regole:
 - Voce per cui negli appunti non c’è niente: ${missing ? 'tieni il titolo e sotto scrivi solo "*(manca negli appunti)*".' : 'non mettere il titolo.'}
 - Dentro ogni voce: elenchi puntati brevi, con i sottopunti rientrati; una tabella Markdown quando 3 o più elementi hanno le stesse caratteristiche (classificazioni, confronti); grassetto solo sui termini chiave. Puoi usare titoli "### " dentro una voce.
 - La prima riga resta il titolo "# " degli appunti, uguale (se presente).
-- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (non aggiungerne e non toglierne), {{lettera|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", i link [fonte, p. N](#/pdf/...) e qualsiasi altra sintassi che non riconosci.
+- Copia senza modifiche, attaccata alla stessa informazione, ogni marcatura speciale: ==testo== (non aggiungerne e non toglierne), {{lettera|testo}}, {{u|testo}} e {{u<colore>|testo}}, [[Titolo]], ![testo](img:codice), ^[nota], i minuti come "⏱ 0:00 (nome)", i link [fonte, p. N](#/pdf/...) e qualsiasi altra sintassi che non riconosci.
 
 Rispondi SOLO con gli appunti in Markdown, senza nessun altro testo prima o dopo.${extraBlock}${styleRulesBlock()}`;
 }
@@ -2908,7 +2916,7 @@ function modeEdit(sec, body, opts = {}) {
         </span>
         <span class="ed-grp" role="group" aria-label="Stile del testo">
           <button class="btn sm" type="button" data-wrap="**" title="Grassetto"><strong>G</strong></button>
-          <button class="btn sm" type="button" data-mark="u" title="Sottolinea"><u>S</u></button>
+          <button class="btn sm" type="button" data-ed="ul-pop" aria-expanded="false" title="Sottolineatura colorata (Stabilo Pastello o classici)"><u>S</u> ▾</button>
           <button class="btn sm" type="button" data-ed="hl-pop" aria-expanded="false" title="Evidenzia con Stabilo Pastello o colori classici">🖍 ▾</button>
         </span>
         <span class="ed-grp" role="group" aria-label="Elenchi e rientri">
@@ -2933,19 +2941,33 @@ function modeEdit(sec, body, opts = {}) {
     </div>
 
     <div class="ed-pop" id="edHlPop" hidden role="dialog" aria-label="Colori evidenziatore">
-      <div class="ed-pop-lbl">Stabilo Pastello</div>
+      <div class="ed-pop-lbl">Evidenzia · Stabilo Pastello</div>
       <div class="ed-pop-dots">
-        ${ED_HL_COLORS.filter(c => c.pastel).map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+        ${ED_HL_COLORS.filter(c => c.pastel).map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="${esc(hlColTip(c, 'Evidenzia'))}" aria-label="${esc(c.name)}"></button>`).join('')}
       </div>
       <div class="ed-pop-lbl">Classici</div>
       <div class="ed-pop-dots">
-        ${ED_HL_COLORS.filter(c => !c.pastel).map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
-        <button class="btn sm ghost ed-pop-clear" data-mark="none" type="button" title="Togli evidenziazione">✕ Togli</button>
+        ${ED_HL_COLORS.filter(c => !c.pastel).map(c => `<button class="rt-dot hl-${c.key}" data-mark="${c.key}" type="button" title="${esc(hlColTip(c, 'Evidenzia'))}" aria-label="${esc(c.name)}"></button>`).join('')}
+        <button class="btn sm ghost ed-pop-clear" data-mark="none" type="button" title="Togli evidenziazione o sottolineatura">✕ Togli</button>
+      </div>
+    </div>
+
+    <div class="ed-pop" id="edUlPop" hidden role="dialog" aria-label="Colori sottolineatura">
+      <div class="ed-pop-lbl">Sottolinea · Stabilo Pastello</div>
+      <div class="ed-pop-dots">
+        ${ED_HL_COLORS.filter(c => c.pastel).map(c => `<button class="rt-dot ul-dot ul-${c.key}" data-mark="u${c.key}" type="button" title="${esc(hlColTip(c, 'Sottolinea'))}" aria-label="Sottolinea in ${esc(c.name)}"></button>`).join('')}
+      </div>
+      <div class="ed-pop-lbl">Classici</div>
+      <div class="ed-pop-dots">
+        <button class="rt-dot ul-dot ul-def" data-mark="u" type="button" title="Sottolinea (colore tema)" aria-label="Sottolinea colore tema"></button>
+        ${ED_HL_COLORS.filter(c => !c.pastel).map(c => `<button class="rt-dot ul-dot ul-${c.key}" data-mark="u${c.key}" type="button" title="${esc(hlColTip(c, 'Sottolinea'))}" aria-label="Sottolinea in ${esc(c.name)}"></button>`).join('')}
+        <button class="btn sm ghost ed-pop-clear" data-mark="none" type="button" title="Togli sottolineatura o evidenziazione">✕ Togli</button>
       </div>
     </div>
 
     <div class="ed-pop ed-menu-pop" id="edInsPop" hidden role="menu" aria-label="Inserisci nella sezione">
       <button class="ed-mitem" type="button" data-ins="table">▦ Tabella</button>
+      <button class="ed-mitem" type="button" data-ins="ascii">📐 Schema ASCII</button>
       <button class="ed-mitem" type="button" data-act="xref">🔗 Link a pagina</button>
       <button class="ed-mitem" type="button" data-act="img">🖼 Immagine</button>
       <button class="ed-mitem" type="button" data-act="pdf-fig">📄 Figura da PDF</button>
@@ -2979,6 +3001,7 @@ function modeEdit(sec, body, opts = {}) {
             <button class="btn sm ghost" type="button" data-btype="h2" title="Titolo paragrafo (##)">H2</button>
             <button class="btn sm ghost" type="button" data-btype="h3" title="Sottotitolo (###)">H3</button>
             <button class="btn sm ghost" type="button" data-btype="h4" title="Sottotitolo 4 (####)">H4</button>
+            <button class="btn sm ghost" type="button" data-btype="ascii" title="Trasforma questo blocco in Schema ASCII (o sciogli in testo)">ASCII</button>
           </span>
           <span class="ed-blk-acts" role="group" aria-label="Azioni sul blocco">
             <button class="btn sm ghost" type="button" data-bact="up" title="Sposta questo blocco su">↑</button>
@@ -3038,6 +3061,7 @@ function modeEdit(sec, body, opts = {}) {
   const outlineEl = $('#edOutline', body);
   const findEl = $('#edFind', body);
   const hlPop = $('#edHlPop', body);
+  const ulPop = $('#edUlPop', body);
   const insPop = $('#edInsPop', body);
   const saveBtn = $('#edSaveBtn', body);
   const blkTag = $('#edBlkTag', body);
@@ -3125,8 +3149,10 @@ function modeEdit(sec, body, opts = {}) {
   // ---------- Popover Evidenziatore e menu Inserisci ----------
   const closePops = () => {
     hlPop.hidden = true;
+    ulPop.hidden = true;
     insPop.hidden = true;
     $('[data-ed="hl-pop"]', body)?.setAttribute('aria-expanded', 'false');
+    $('[data-ed="ul-pop"]', body)?.setAttribute('aria-expanded', 'false');
     $('[data-ed="ins-pop"]', body)?.setAttribute('aria-expanded', 'false');
   };
   const openPopNear = (pop, btn) => {
@@ -3144,8 +3170,8 @@ function modeEdit(sec, body, opts = {}) {
     pop.style.top = `${Math.max(8, Math.round(top))}px`;
   };
   const onDocPopDown = e => {
-    if (hlPop.hidden && insPop.hidden) return;
-    if (e.target.closest('#edHlPop, #edInsPop, [data-ed="hl-pop"], [data-ed="ins-pop"]')) return;
+    if (hlPop.hidden && ulPop.hidden && insPop.hidden) return;
+    if (e.target.closest('#edHlPop, #edUlPop, #edInsPop, [data-ed="hl-pop"], [data-ed="ul-pop"], [data-ed="ins-pop"]')) return;
     closePops();
   };
   document.addEventListener('pointerdown', onDocPopDown, true);
@@ -3320,7 +3346,7 @@ function modeEdit(sec, body, opts = {}) {
   // ---------- Aggiornamento Barra Blocco Attivo ----------
   const paintBlkBar = info => {
     if (!blkTag) return;
-    const labels = { p: 'Paragrafo', h1: 'Titolo H1', h2: 'Titolo H2', h3: 'Titolo H3', h4: 'Titolo H4', list: 'Elenco', table: 'Tabella', blockquote: 'Citazione', code: 'Codice / HTML', lock: 'Immagine / HTML' };
+    const labels = { p: 'Paragrafo', h1: 'Titolo H1', h2: 'Titolo H2', h3: 'Titolo H3', h4: 'Titolo H4', list: 'Elenco', table: 'Tabella', blockquote: 'Citazione', ascii: 'Schema ASCII', code: 'Codice / HTML', lock: 'Immagine / HTML' };
     blkTag.textContent = labels[info?.kind] || 'Blocco';
     $$('[data-btype]', body).forEach(b => b.classList.toggle('on', b.dataset.btype === info?.kind));
     const u = $('[data-bact="up"]', body), d = $('[data-bact="down"]', body);
@@ -3330,7 +3356,7 @@ function modeEdit(sec, body, opts = {}) {
 
   // ---------- Inizializzazione WYSIWYG ----------
   const wy = setupWysiwyg($('#edWy', body), ta, $('.edit-tools', body), {
-    extraBars: [hlPop, insPop],
+    extraBars: [hlPop, ulPop, insPop],
     onContentChange: () => { pushHistSoon(); renderOutline(); },
     onBeforeMutate: () => pushHist(true),
     onAfterMutate: () => { pushHist(true); renderOutline(); },
@@ -3395,6 +3421,7 @@ function modeEdit(sec, body, opts = {}) {
     }
     if (k === 'find') { toggleFind(); return; }
     if (k === 'hl-pop') { openPopNear(hlPop, e.currentTarget); return; }
+    if (k === 'ul-pop') { openPopNear(ulPop, e.currentTarget); return; }
     if (k === 'ins-pop') { openPopNear(insPop, e.currentTarget); return; }
   }, body);
 
@@ -3529,10 +3556,14 @@ function modeEdit(sec, body, opts = {}) {
     if (norm !== null) {
       e.preventDefault();
       pushHist(true);
-      insertAtCursor(ta, norm);
+      const before = ta.value.slice(0, ta.selectionStart ?? ta.value.length);
+      const isBlock = /^```/.test(norm.trim());
+      const pre = isBlock && before && !before.endsWith('\n\n') ? (before.endsWith('\n') ? '\n' : '\n\n') : '';
+      const post = isBlock ? '\n\n' : '';
+      insertAtCursor(ta, `${pre}${norm}${post}`);
       pushHist(true);
       refresh();
-      toast('Tabella sistemata automaticamente');
+      toast(/```ascii\b/.test(norm) ? 'Schema ASCII isolato come blocco dedicato' : 'Formattazione sistemata automaticamente');
     }
   });
 
@@ -3559,6 +3590,18 @@ function modeEdit(sec, body, opts = {}) {
     ta.focus();
     if (kind === 'list' || kind === 'olist') {
       toggleListLines(ta, kind === 'olist');
+      pushHist(true);
+      refresh();
+      return;
+    }
+    if (kind === 'ascii') {
+      if (wy.lastFocus() === 'wy') {
+        wy.insertBlockAfter('ascii', false);
+        return;
+      }
+      const snippet = '\n\n```ascii\nTitolo schema\n├── Voce 1\n└── Voce 2\n```\n\n';
+      const pos = ta.selectionEnd ?? ta.value.length;
+      ta.setRangeText(snippet, pos, pos, 'end');
       pushHist(true);
       refresh();
       return;
@@ -3784,7 +3827,7 @@ function viewImport(nbParam, groupParam) {
     e.preventDefault();
     insertAtCursor(e.currentTarget, norm);
     textInfo();
-    toast('Tabella sistemata automaticamente');
+    toast(/```ascii\b/.test(norm) ? 'Schema ASCII isolato automaticamente' : 'Formattazione sistemata automaticamente');
   });
   // v3.95: Word, PowerPoint e foto → testo
   $('#ofKeep').addEventListener('change', e => { S().ofKeepPhotos = e.target.checked; Settings.save(); });
@@ -4450,10 +4493,13 @@ function readingToolsHtml() {
     <button type="button" class="rt-btn" data-rt="move" title="Sposta il paragrafo, il titolo o le voci selezionate in un’altra sezione">↗ Sposta</button>
     <button type="button" class="rt-btn" data-rt="pnote" title="Aggiunge una nota che compare come ⓘ dopo il testo scelto">ⓘ Nota</button>
     <button type="button" class="rt-btn" data-rt="cloze" title="Nascondi nel Cloze">Cloze</button>
-    <span class="rt-colors" role="group" aria-label="Evidenzia (Stabilo Pastello e classici)">
-      ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key}" data-rt="${c.key}" title="${c.pastel ? 'Stabilo Pastello · ' : ''}${esc(c.name)}" aria-label="Evidenzia in ${esc(c.name.toLowerCase())}"></button>`).join('')}
+    <span class="rt-mode" role="group" aria-label="Evidenzia o Sottolinea">
+      <button type="button" class="rt-btn rt-mbtn on" data-rtm="hl" aria-pressed="true" title="Evidenzia con i colori qui accanto">🖍</button>
+      <button type="button" class="rt-btn rt-mbtn rt-u" data-rtm="ul" aria-pressed="false" title="Sottolinea con i colori qui accanto">S</button>
     </span>
-    <button type="button" class="rt-btn rt-u" data-rt="u" title="Sottolinea" aria-label="Sottolinea">S</button>
+    <span class="rt-colors" role="group" aria-label="Colori Stabilo Pastello e classici">
+      ${HL_COLORS.map(c => `<button type="button" class="rt-dot hl-${c.key} ul-${c.key}" data-rt-col="${c.key}" data-rt="${c.key}" title="${esc(hlColTip(c, 'Evidenzia'))}" aria-label="${esc(c.name)}"></button>`).join('')}
+    </span>
     <button type="button" class="rt-btn" data-rt="none" title="Togli evidenziatura e sottolineatura" aria-label="Togli evidenziatura e sottolineatura">✕</button>
     <button type="button" class="rt-btn" data-rt="gloss" title="Aggiungi al glossario">Glossario</button>
     <button type="button" class="rt-btn" data-rt="clin" title="Crea una nota clinica">Nota clinica</button>
@@ -4949,9 +4995,37 @@ function setupReadingTools(container, sec) {
       }
     });
   };
+  let colorMode = S().rtColorMode === 'ul' ? 'ul' : 'hl';
+  const applyColorMode = mode => {
+    colorMode = mode === 'ul' ? 'ul' : 'hl';
+    S().rtColorMode = colorMode;
+    Settings.save();
+    [bar, menu].forEach(el => {
+      $$('[data-rtm]', el).forEach(b => {
+        const on = b.dataset.rtm === colorMode;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', String(on));
+      });
+      const pal = $('.rt-colors', el);
+      if (pal) pal.classList.toggle('is-ul', colorMode === 'ul');
+      $$('[data-rt-col]', el).forEach(b => {
+        const k = b.dataset.rtCol;
+        const c = HL_COLORS.find(x => x.key === k);
+        b.classList.toggle('ul-dot', colorMode === 'ul');
+        b.dataset.rt = colorMode === 'ul' ? `u${k}` : k;
+        if (c) b.title = hlColTip(c, colorMode === 'ul' ? 'Sottolinea' : 'Evidenzia');
+      });
+    });
+  };
+  applyColorMode(colorMode);
   [bar, menu].forEach(el => {
     el.addEventListener('pointerdown', e => e.preventDefault()); // la selezione resta
-    el.addEventListener('click', e => { const b = e.target.closest('[data-rt]'); if (b) act(b.dataset.rt); });
+    el.addEventListener('click', e => {
+      const mb = e.target.closest('[data-rtm]');
+      if (mb) { applyColorMode(mb.dataset.rtm); return; }
+      const b = e.target.closest('[data-rt]');
+      if (b) act(b.dataset.rt);
+    });
   });
   const onContext = e => {
     if (SelGesture.touchy()) return;
@@ -5219,30 +5293,46 @@ function cardFieldToolsHtml() {
       <button class="btn sm" type="button" data-ct="in" title="Rientra (Tab)" aria-label="Rientra">→</button>
       <button class="btn sm" type="button" data-ct="out" title="Riduci rientro (Maiusc+Tab)" aria-label="Riduci rientro">←</button>
       <button class="btn sm" type="button" data-ct="bold" title="Grassetto" aria-label="Grassetto"><strong>G</strong></button>
-      <button class="btn sm" type="button" data-ct="u" title="Sottolinea" aria-label="Sottolinea"><u>S</u></button>
+      <button class="btn sm" type="button" data-ct="ul-pop" aria-expanded="false" title="Sottolineatura colorata (Stabilo Pastello o classici)"><u>S</u> ▾</button>
       <button class="btn sm" type="button" data-ct="hl-pop" aria-expanded="false" title="Evidenzia con Stabilo Pastello o colori classici">🖍 ▾</button>
       <button class="btn sm" type="button" data-ct="img">Immagine</button>
       <button class="btn sm" type="button" data-ct="hw">A mano</button>
     </div>
     <div class="card-hl-pop" data-card-hlpop hidden role="dialog" aria-label="Colori evidenziatore">
-      <div class="ed-pop-lbl">Stabilo Pastello</div>
+      <div class="ed-pop-lbl">Evidenzia · Stabilo Pastello</div>
       <div class="ed-pop-dots">
-        ${HL_PASTEL_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-ct-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+        ${HL_PASTEL_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-ct-mark="${c.key}" type="button" title="${esc(hlColTip(c, 'Evidenzia'))}" aria-label="${esc(c.name)}"></button>`).join('')}
       </div>
       <div class="ed-pop-lbl">Classici</div>
       <div class="ed-pop-dots">
-        ${HL_CLASSIC_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-ct-mark="${c.key}" type="button" title="${esc(c.name)}" aria-label="${esc(c.name)}"></button>`).join('')}
+        ${HL_CLASSIC_COLORS.map(c => `<button class="rt-dot hl-${c.key}" data-ct-mark="${c.key}" type="button" title="${esc(hlColTip(c, 'Evidenzia'))}" aria-label="${esc(c.name)}"></button>`).join('')}
         <button class="btn sm ghost ed-pop-clear" data-ct-mark="none" type="button" title="Togli evidenziazione">✕ Togli</button>
+      </div>
+    </div>
+    <div class="card-hl-pop" data-card-ulpop hidden role="dialog" aria-label="Colori sottolineatura">
+      <div class="ed-pop-lbl">Sottolinea · Stabilo Pastello</div>
+      <div class="ed-pop-dots">
+        ${HL_PASTEL_COLORS.map(c => `<button class="rt-dot ul-dot ul-${c.key}" data-ct-mark="u${c.key}" type="button" title="${esc(hlColTip(c, 'Sottolinea'))}" aria-label="Sottolinea in ${esc(c.name)}"></button>`).join('')}
+      </div>
+      <div class="ed-pop-lbl">Classici</div>
+      <div class="ed-pop-dots">
+        <button class="rt-dot ul-dot ul-def" data-ct-mark="u" type="button" title="Sottolinea (colore tema)" aria-label="Sottolinea colore tema"></button>
+        ${HL_CLASSIC_COLORS.map(c => `<button class="rt-dot ul-dot ul-${c.key}" data-ct-mark="u${c.key}" type="button" title="${esc(hlColTip(c, 'Sottolinea'))}" aria-label="Sottolinea in ${esc(c.name)}"></button>`).join('')}
+        <button class="btn sm ghost ed-pop-clear" data-ct-mark="none" type="button" title="Togli sottolineatura">✕ Togli</button>
       </div>
     </div>`;
 }
 function bindCardFieldTools(root, fields, notebookId) {
   let last = fields[fields.length - 1];
   const pop = $('[data-card-hlpop]', root);
+  const ulPop = $('[data-card-ulpop]', root);
   const hlBtn = $('[data-ct="hl-pop"]', root);
+  const ulBtn = $('[data-ct="ul-pop"]', root);
   const closePop = () => {
     if (pop) pop.hidden = true;
+    if (ulPop) ulPop.hidden = true;
     if (hlBtn) hlBtn.setAttribute('aria-expanded', 'false');
+    if (ulBtn) ulBtn.setAttribute('aria-expanded', 'false');
   };
   fields.forEach(f => {
     const pick = () => { last = f; f.dataset.touched = '1'; };
@@ -5258,7 +5348,15 @@ function bindCardFieldTools(root, fields, notebookId) {
     const k = b.dataset.ct;
     if (k === 'hl-pop' && pop) {
       const open = pop.hidden;
+      closePop();
       pop.hidden = !open;
+      b.setAttribute('aria-expanded', String(open));
+      return;
+    }
+    if (k === 'ul-pop' && ulPop) {
+      const open = ulPop.hidden;
+      closePop();
+      ulPop.hidden = !open;
       b.setAttribute('aria-expanded', String(open));
       return;
     }
@@ -5266,7 +5364,6 @@ function bindCardFieldTools(root, fields, notebookId) {
     if (k === 'list') { ta.focus(); toggleListLines(ta); }
     else if (k === 'in' || k === 'out') { ta.focus(); indentLines(ta, k === 'in' ? 1 : -1); }
     else if (k === 'bold') wrapSelectionInTextarea(ta, '**', '**');
-    else if (k === 'u') wrapSelectionInTextarea(ta, '{{u|', '}}');
     else if (k === 'img') { const im = await addImageFromDevice(notebookId); if (im) insertAtCursor(ta, `\n${imageMd(im.id)}\n`); }
     else if (k === 'hw') { const im = await openHandwritingPadNested(notebookId); if (im) insertAtCursor(ta, `\n${imageMd(im.id)}\n`); }
   }));
@@ -9874,7 +9971,7 @@ function wyInline(node) {
     if (tag === 'STRONG' || tag === 'B') { out += wyWrap(wyInline(n), '**', '**'); return; }
     if (tag === 'EM' || tag === 'I') { out += wyWrap(wyInline(n), '*', '*'); return; }
     if (tag === 'S' || tag === 'DEL' || tag === 'STRIKE') { out += wyWrap(wyInline(n), '~~', '~~'); return; }
-    if (tag === 'U') { out += wyWrap(wyInline(n), '{{u|', '}}'); return; }
+    if (tag === 'U') { const k = [...cls].map(c => (c.match(/^ul-([a-z])$/) || [])[1]).find(Boolean); out += wyWrap(wyInline(n), k ? `{{u${k}|` : '{{u|', '}}'); return; }
     if (tag === 'MARK') {
       if (cls.contains('cz')) { const h = n.dataset.hint ? `::${n.dataset.hint}` : ''; out += wyWrap(wyInline(n), '==', `${h}==`); return; }
       const k = [...cls].map(c => (c.match(/^hl-([a-z])$/) || [])[1]).find(Boolean);
@@ -10014,6 +10111,7 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     if (tp === 'list') return 'list';
     if (tp === 'table') return 'table';
     if (tp === 'blockquote') return 'blockquote';
+    if (isEditableCodeBlockRaw(raw)) return 'ascii';
     if (tp === 'code' || raw.includes('```')) return 'code';
     if (/!\[[^\]]*\]\(img:/.test(raw)) return 'lock';
     return 'p';
@@ -10044,6 +10142,24 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     }
     const html = raws.map((raw, i) => {
       if (types[i] === 'space' || !raw.trim()) return '';
+      if (isEditableCodeBlockRaw(raw)) {
+        const pf = parseFencedBlock(raw);
+        if (pf) {
+          const isAsc = !pf.lang || pf.lang.toLowerCase() === 'ascii' || isAsciiContentText(pf.body);
+          const lbl = isAsc ? 'Schema ASCII' : `Codice (${pf.lang})`;
+          const rows = Math.max(3, Math.min(28, pf.body.split('\n').length + 1));
+          return `<div class="wy-b wy-ascii" data-b="${i}" data-lang="${esc(pf.lang || (isAsc ? 'ascii' : ''))}" contenteditable="false">
+            <div class="wy-ascii-head">
+              <span class="wy-ascii-lbl">${esc(lbl)}</span>
+              <span class="wy-ascii-acts">
+                <button type="button" class="btn sm ghost" data-wa="title" title="Aggiungi un titolo H3 sopra questo schema per renderlo un paragrafo richiudibile">＋ Titolo</button>
+                <button type="button" class="btn sm ghost" data-wa="unwrap" title="Trasforma in testo normale">Sciogli</button>
+              </span>
+            </div>
+            <textarea class="wy-ascii-ta" rows="${rows}" spellcheck="false" wrap="off" aria-label="${esc(lbl)}">${esc(pf.body)}</textarea>
+          </div>`;
+        }
+      }
       const inner = renderMd(raw);
       const lock = !WY_EDITABLE.has(types[i]) || /<img|<iframe|html-embed|html-block/.test(inner) || raw.includes('```');
       return `<div class="wy-b${lock ? ' wy-lock' : ''}" data-b="${i}" contenteditable="${lock ? 'false' : 'true'}"${lock ? ' title="Questo blocco si modifica nel codice: toccalo per andarci"' : ' spellcheck="true"'}>${inner}</div>`;
@@ -10052,12 +10168,13 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     box.toggleAttribute('data-empty', !html);
     hydrateImages(box);
     hydrateHtmlBlocks(box);
+    $$('.wy-ascii-ta', box).forEach(tEl => { tEl.style.height = 'auto'; tEl.style.height = `${Math.min(540, Math.max(72, tEl.scrollHeight + 4))}px`; });
     const idxs = contentIndices();
     notifyActive(idxs.includes(curIdx) ? curIdx : (idxs[0] ?? -1));
   };
 
   const convert = el => {
-    if (!el.isConnected) return;
+    if (!el.isConnected || el.classList.contains('wy-ascii')) return;
     const md = wyBlockToMd(el).replace(/\n{3,}/g, '\n\n').trim();
     if (el.dataset.b === 'new') {
       raws = md ? [md + '\n'] : [];
@@ -10085,7 +10202,26 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
   const markDirty = el => { if (!el) return; dirty.add(el); clearTimeout(timer); timer = setTimeout(flush, 250); };
   const blockOf = node => { const n = node && (node.nodeType === 1 ? node : node.parentElement); const b = n && n.closest('.wy-b'); return b && box.contains(b) ? b : null; };
 
-  box.addEventListener('input', e => markDirty(blockOf(e.target)));
+  box.addEventListener('input', e => {
+    const aTa = e.target.closest('.wy-ascii-ta');
+    if (aTa) {
+      const blk = blockOf(aTa);
+      if (!blk) return;
+      aTa.style.height = 'auto';
+      aTa.style.height = `${Math.min(540, Math.max(72, aTa.scrollHeight + 4))}px`;
+      const i = +blk.dataset.b;
+      const raw = raws[i] ?? '';
+      const lead = raw.match(/^\n*/)[0];
+      const trail = raw.match(/\n*$/)[0];
+      const lang = blk.dataset.lang || 'ascii';
+      const val = aTa.value.replace(/\r\n?/g, '\n');
+      raws[i] = val.trim() ? `${lead}\`\`\`${lang}\n${val}\n\`\`\`${trail}` : '';
+      ta.value = raws.join('');
+      onContentChange();
+      return;
+    }
+    markDirty(blockOf(e.target));
+  });
   box.addEventListener('focusin', e => {
     lastFocus = 'wy';
     const b = blockOf(e.target);
@@ -10104,18 +10240,45 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     setTimeout(() => { if (!box.contains(document.activeElement)) render(); }, 0);
   });
   box.addEventListener('click', e => {
+    const wa = e.target.closest('[data-wa]');
+    if (wa) {
+      const blk = blockOf(wa);
+      if (!blk) return;
+      const idx = +blk.dataset.b;
+      notifyActive(idx);
+      if (wa.dataset.wa === 'title') {
+        setBlockType('h3');
+      } else if (wa.dataset.wa === 'unwrap') {
+        setBlockType('p');
+      }
+      return;
+    }
     const b = e.target.closest('.wy-lock');
     if (b) { notifyActive(+b.dataset.b); goToCode(+b.dataset.b); return; }
     if (e.target.closest('a')) e.preventDefault();
   });
-  // incollare: testo pulito, e se c’è una tabella (da NotebookLM/Gemini o HTML) la inserisce subito come blocco Markdown pulito
+  // incollare: testo pulito; tabelle e schemi ASCII vengono sempre isolati come blocchi indipendenti
   box.addEventListener('paste', e => {
     if ([...(e.clipboardData?.items || [])].some(i => i.type.startsWith('image/'))) return;
+    // Se stai incollando dentro un editor Schema ASCII già aperto, lascia incollare il testo pulito lì dentro
+    const aTa = e.target.closest('.wy-ascii-ta');
+    if (aTa) {
+      const plain0 = e.clipboardData?.getData('text/plain');
+      if (plain0 === undefined) return;
+      e.preventDefault();
+      const pf = parseFencedBlock(plain0);
+      const ins = pf ? pf.body : plain0.replace(/\r\n?/g, '\n');
+      const s0 = aTa.selectionStart ?? aTa.value.length, s1 = aTa.selectionEnd ?? s0;
+      aTa.setRangeText(ins, s0, s1, 'end');
+      aTa.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
     const norm = normalizePastedMarkdown(e.clipboardData);
     const plain = e.clipboardData?.getData('text/plain');
     const candidate = norm !== null ? norm : (plain || '');
     const hasMdTable = candidate.indexOf('|') >= 0 && /(?:^|\n)\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?(?:\n|$)/.test(candidate);
-    if (hasMdTable) {
+    const hasFence = /(?:^|\n)\s*`{3,}/.test(candidate);
+    if (hasMdTable || hasFence) {
       e.preventDefault();
       flush();
       const blk = blockOf(e.target);
@@ -10135,7 +10298,7 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
       onContentChange();
       onAfterMutate();
       render();
-      toast('Tabella incollata e sistemata');
+      toast(hasFence && !hasMdTable ? 'Schema ASCII incollato come blocco dedicato' : hasFence ? 'Schemi ASCII e tabelle incollati e sistemati' : 'Tabella incollata e sistemata');
       return;
     }
     const text = norm !== null ? norm : plain;
@@ -10232,6 +10395,16 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
   };
 
   box.addEventListener('keydown', e => {
+    const aTa = e.target.closest && e.target.closest('.wy-ascii-ta');
+    if (aTa) {
+      if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        const s0 = aTa.selectionStart ?? 0, s1 = aTa.selectionEnd ?? s0;
+        aTa.setRangeText('  ', s0, s1, 'end');
+        aTa.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      return;
+    }
     if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && !e.metaKey) {
       const res = wyIndent(e.shiftKey ? -1 : 1);
       if (res && res !== 'not-li') e.preventDefault();
@@ -10286,6 +10459,16 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
   /* ---------- Operazioni sui blocchi (T/H2/H3/H4, ↑/↓, ＋¶, ＋H2, 🗑) ---------- */
   const focusBlockEl = (el, { selectAll = false, atEnd = true } = {}) => {
     if (!el) return;
+    if (el.classList.contains('wy-ascii')) {
+      const aTa = $('.wy-ascii-ta', el);
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (aTa) {
+        aTa.focus({ preventScroll: true });
+        if (selectAll) aTa.select();
+        else { const p = atEnd ? aTa.value.length : 0; aTa.setSelectionRange(p, p); }
+      }
+      return;
+    }
     if (el.classList.contains('wy-lock')) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
@@ -10306,6 +10489,26 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     if (lastFocus === 'ta' || !enabled) {
       onBeforeMutate();
       const v = ta.value;
+      if (kind === 'ascii') {
+        const s0 = ta.selectionStart ?? v.length, s1 = ta.selectionEnd ?? s0;
+        const a = lineStart(v, s0), b = lineEnd(v, s1);
+        const sel = v.slice(a, b);
+        const pf = parseFencedBlock(sel);
+        if (pf) {
+          ta.focus();
+          ta.setRangeText(pf.body, a, b, 'select');
+        } else {
+          const before = v.slice(0, a);
+          const pre = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+          const after = v.slice(b);
+          const post = !after || after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
+          ta.focus();
+          ta.setRangeText(`${pre}\`\`\`ascii\n${sel.trim() || 'Titolo schema\n├── Voce 1\n└── Voce 2'}\n\`\`\`${post}`, a, b, 'end');
+        }
+        onAfterMutate();
+        render();
+        return;
+      }
       const pos = ta.selectionStart ?? v.length;
       const ls = lineStart(v, pos);
       const le = lineEnd(v, pos);
@@ -10325,14 +10528,65 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
       return;
     }
     const raw = raws[i] || '';
+    const lead = raw.match(/^\n*/)[0];
+    const trail = raw.match(/\n*$/)[0];
+    const core = raw.trim();
+
+    // Conversione blocco <-> Schema ASCII
+    if (kind === 'ascii') {
+      if (/^```html\b/i.test(core) || /!\[[^\]]*\]\(img:/.test(core)) {
+        toast('Immagini e blocchi HTML non si trasformano in Schema ASCII');
+        return;
+      }
+      onBeforeMutate();
+      const pf = parseFencedBlock(core);
+      if (pf) {
+        raws[i] = `${lead}${pf.body}${trail}`;
+      } else {
+        const pre = lead || (i > 0 ? '\n\n' : '');
+        const post = trail || '\n\n';
+        raws[i] = `${pre}\`\`\`ascii\n${core}\n\`\`\`${post}`;
+      }
+      ta.value = raws.join('');
+      onAfterMutate();
+      render();
+      const el = box.querySelector(`.wy-b[data-b="${i}"]`) || box.querySelector('.wy-b');
+      if (el) { notifyActive(+el.dataset.b); focusBlockEl(el, { atEnd: true }); }
+      return;
+    }
+
+    // Se il blocco è già uno Schema ASCII: T lo scioglie in paragrafo, H2/H3/H4 inserisce un titolo subito sopra!
+    if (isEditableCodeBlockRaw(core)) {
+      const pf = parseFencedBlock(core);
+      onBeforeMutate();
+      if (!prefix) {
+        raws[i] = `${lead}${pf ? pf.body : core}${trail}`;
+        ta.value = raws.join('');
+        onAfterMutate();
+        render();
+        const el = box.querySelector(`.wy-b[data-b="${i}"]`) || box.querySelector('.wy-b');
+        if (el) { notifyActive(+el.dataset.b); focusBlockEl(el, { atEnd: true }); }
+        return;
+      }
+      const posInList = idxs.indexOf(i);
+      const blocks = idxs.map(k => raws[k].trim());
+      blocks.splice(posInList, 0, `${prefix}Schema`);
+      ta.value = blocks.join('\n\n') + '\n';
+      onAfterMutate();
+      render();
+      const newIdxs = contentIndices();
+      const hIdx = newIdxs[posInList];
+      const el = box.querySelector(`.wy-b[data-b="${hIdx}"]`);
+      if (el) { notifyActive(hIdx); focusBlockEl(el, { selectAll: true }); }
+      toast('Titolo inserito sopra lo schema: ora è un paragrafo a sé');
+      return;
+    }
+
     if (raw.includes('```') || /!\[[^\]]*\]\(img:/.test(raw) || types[i] === 'table') {
       toast('Questo blocco (tabella, immagine o HTML) non si trasforma in titolo');
       return;
     }
     onBeforeMutate();
-    const lead = raw.match(/^\n*/)[0];
-    const trail = raw.match(/\n*$/)[0];
-    const core = raw.trim();
     const lines = core.split('\n');
     const firstClean = lines[0].replace(/^\s*#{1,6}\s+/, '').replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '');
     const rest = lines.slice(1).join('\n').trim();
@@ -10370,7 +10624,7 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     flush();
     onBeforeMutate();
     const idxs = contentIndices();
-    const snippet = kind === 'h2' ? '## Nuovo titolo' : kind === 'h3' ? '### Nuovo sottotitolo' : 'Nuovo paragrafo';
+    const snippet = kind === 'h2' ? '## Nuovo titolo' : kind === 'h3' ? '### Nuovo sottotitolo' : kind === 'ascii' ? '```ascii\nTitolo schema\n├── Voce 1\n└── Voce 2\n```' : 'Nuovo paragrafo';
     const blocks = idxs.map(i => raws[i].trim());
     let insertPos = blocks.length;
     if (!atEnd && curIdx >= 0) {
@@ -10454,15 +10708,25 @@ function setupWysiwyg(box, ta, tools, opts = {}) {
     if (d.ed || d.edview || d.btype || d.bact) return false;
     if (d.wrap === '==') return wrap(tag('mark', 'cz'), n => n.tagName === 'MARK' && n.classList.contains('cz')) || true;
     if (d.wrap === '**') return wrap(tag('strong'), n => n.tagName === 'STRONG' || n.tagName === 'B') || true;
-    if (d.mark === 'u') return wrap(tag('u', 'ul'), n => n.tagName === 'U') || true;
     if (d.mark === 'none') {
       const x = selIn();
       if (!x) return true;
-      const anc = (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('mark.hl, u.ul');
+      const anc = (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('mark.hl, u.ul, u');
       if (anc && x.el.contains(anc)) { onBeforeMutate(); unwrap(anc); dirty.add(x.el); flush(); onAfterMutate(); }
-      else toast('Metti il cursore dentro un testo evidenziato per togliere il colore');
+      else toast('Metti il cursore dentro un testo evidenziato o sottolineato per togliere il colore');
       const pop = b.closest('.ed-pop'); if (pop) pop.hidden = true;
       return true;
+    }
+    if (d.mark && isUlMark(d.mark)) {
+      const k = d.mark;
+      const col = k.length > 1 ? k.slice(1) : '';
+      const clsName = col ? `ul ul-${col}` : 'ul';
+      const pop = b.closest('.ed-pop'); if (pop) pop.hidden = true;
+      const x = selIn();
+      const anc = x && (x.r.commonAncestorContainer.nodeType === 1 ? x.r.commonAncestorContainer : x.r.commonAncestorContainer.parentElement).closest('u.ul, u');
+      const isSame = n => n.tagName === 'U' && (col ? n.classList.contains(`ul-${col}`) : ![...n.classList].some(c => /^ul-[a-z]$/.test(c)));
+      if (anc && x.el.contains(anc) && !isSame(anc)) { onBeforeMutate(); anc.className = clsName; dirty.add(x.el); flush(); onAfterMutate(); return true; }
+      return wrap(tag('u', clsName), isSame) || true;
     }
     if (d.mark) {
       const k = d.mark;
