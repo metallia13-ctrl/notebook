@@ -5073,9 +5073,31 @@ function setupReadingTools(container, sec) {
 /* ---------------------------------------------------------------------
    Scrittura a mano: dito, mouse o pennino (con pressione e scarto del palmo)
    --------------------------------------------------------------------- */
-function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChange = () => {} } = {}) {
+const BOARD_COLORS = [
+  { key: 'ink',   name: 'Inchiostro', light: '#111a30', dark: '#f4f8fc' },
+  { key: 'blue',  name: 'Azzurro',    light: '#1d4ed8', dark: '#7cc7ff' },
+  { key: 'red',   name: 'Rosso',      light: '#dc2626', dark: '#ff8a8a' },
+  { key: 'green', name: 'Verde',      light: '#15803d', dark: '#7ee08a' },
+  { key: 'amber', name: 'Giallo',     light: '#b45309', dark: '#fce883' }
+];
+function resolveBoardColor(c, themeAware = false) {
+  const isDark = document.documentElement.dataset.theme === 'dark';
+  const entry = BOARD_COLORS.find(x => x.key === c);
+  if (entry) return isDark ? entry.dark : entry.light;
+  if (themeAware && isDark) {
+    // Se un vecchio tratto aveva salvato un colore scuro (es. da tema Chiaro/Carta), lo rende visibile in Scuro
+    const hex = String(c || '').trim().toLowerCase();
+    const m = hex.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/);
+    if (m) {
+      const lum = (0.299 * parseInt(m[1], 16) + 0.587 * parseInt(m[2], 16) + 0.114 * parseInt(m[3], 16)) / 255;
+      if (lum < 0.42) return '#f4f8fc';
+    }
+  }
+  return c || (isDark ? '#f4f8fc' : '#111a30');
+}
+function createPad(canvas, { strokes = [], color = '#111111', size = 2.5, tool = 'pen', themeAware = false, onChange = () => {} } = {}) {
   const ctx = canvas.getContext('2d');
-  const state2 = { strokes, color, size, tool: 'pen', penSeen: false };
+  const state2 = { strokes, color, size: Math.max(1, Math.min(10, +size || 2.5)), tool: tool === 'eraser' ? 'eraser' : 'pen', penSeen: false };
   let cur = null;
   let pid = null;
   const dpr = () => window.devicePixelRatio || 1;
@@ -5087,7 +5109,7 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
   };
   const drawSeg = (s, a, b) => {
     ctx.globalCompositeOperation = s.erase ? 'destination-out' : 'source-over';
-    ctx.strokeStyle = s.color;
+    ctx.strokeStyle = resolveBoardColor(s.color, themeAware);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.lineWidth = (widthAt(s, a) + widthAt(s, b)) / 2;
@@ -5157,16 +5179,19 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
   twoFingerTap(canvas, () => { if (state2.strokes.length) { state2.strokes.pop(); redraw(); onChange(state2.strokes); toast('Tratto annullato'); } }, () => state2.penSeen);
   const ro = new ResizeObserver(resize);
   ro.observe(canvas);
+  const mo = themeAware ? new MutationObserver(() => redraw()) : null;
+  if (mo) mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-look', 'class'] });
   resize();
   return {
     setTool(t) { state2.tool = t; },
     setColor(c) { state2.color = c; },
-    setSize(s) { state2.size = s; },
+    setSize(s) { state2.size = Math.max(1, Math.min(10, +s || 2.5)); },
+    getSize() { return state2.size; },
     undo() { state2.strokes.pop(); redraw(); onChange(state2.strokes); },
     clear() { state2.strokes.length = 0; redraw(); onChange(state2.strokes); },
     isEmpty() { return !state2.strokes.some(s => !s.erase); },
     redraw,
-    destroy() { ro.disconnect(); },
+    destroy() { ro.disconnect(); if (mo) mo.disconnect(); },
     // immagine ritagliata intorno al disegno, su fondo bianco
     toCanvas(scale = 2) {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -5205,34 +5230,64 @@ function createPad(canvas, { strokes = [], color = '#111111', size = 2.6, onChan
 }
 
 const PEN_COLORS = [['#111111', 'Nero'], ['#1d4ed8', 'Blu'], ['#dc2626', 'Rosso'], ['#15803d', 'Verde']];
-const PEN_SIZES = [[1.8, 'Fine'], [2.8, 'Media'], [4.5, 'Spessa']];
+const PEN_SIZE_MIN = 1;
+const PEN_SIZE_MAX = 10;
+const clampPenSize = v => Math.max(PEN_SIZE_MIN, Math.min(PEN_SIZE_MAX, Math.round((+v || 2.5) * 2) / 2));
+const fmtPenSize = v => String(clampPenSize(v)).replace('.', ',');
 
-function penToolsHtml({ colors = true } = {}) {
+function penToolsHtml({ colors = true, adaptiveColors = false, size = 2.5, color = '', tool = 'pen' } = {}) {
+  const curSize = clampPenSize(size);
+  const curTool = tool === 'eraser' ? 'eraser' : 'pen';
+  const curColor = color || (adaptiveColors ? 'ink' : PEN_COLORS[0][0]);
+  const colorHtml = adaptiveColors
+    ? `<span class="pen-colors" role="group" aria-label="Colore">${BOARD_COLORS.map(c => `<button type="button" class="pen-dot pen-dot-${c.key}" data-color="${c.key}" title="${esc(c.name)}" aria-label="${esc(c.name)}" aria-pressed="${curColor === c.key}"></button>`).join('')}</span>`
+    : colors
+      ? `<span class="pen-colors" role="group" aria-label="Colore">${PEN_COLORS.map(([c, n]) => `<button type="button" class="pen-dot" data-color="${c}" style="background:${c}" title="${esc(n)}" aria-label="${esc(n)}" aria-pressed="${curColor === c}"></button>`).join('')}</span>`
+      : '';
   return `
     <div class="pen-tools" role="toolbar" aria-label="Strumenti di scrittura">
       <span class="seg sm" role="group" aria-label="Strumento">
-        <button type="button" data-tool="pen" aria-pressed="true">Penna</button>
-        <button type="button" data-tool="eraser" aria-pressed="false">Gomma</button>
+        <button type="button" data-tool="pen" aria-pressed="${curTool === 'pen'}">Penna</button>
+        <button type="button" data-tool="eraser" aria-pressed="${curTool === 'eraser'}">Gomma</button>
       </span>
-      ${colors ? `<span class="pen-colors" role="group" aria-label="Colore">${PEN_COLORS.map(([c, n], i) => `<button type="button" class="pen-dot" data-color="${c}" style="background:${c}" aria-label="${n}" aria-pressed="${i === 0}"></button>`).join('')}</span>` : ''}
-      <select class="input pen-size" aria-label="Spessore">${PEN_SIZES.map(([v, n], i) => `<option value="${v}" ${i === 1 ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      ${colorHtml}
+      <span class="pen-size-ctl" role="group" aria-label="Spessore del tratto" title="Spessore del tratto (da 1 a 10)">
+        <button type="button" class="btn sm ghost pen-sbtn" data-pens="-0.5" aria-label="Riduci spessore (−0,5)" ${curSize <= PEN_SIZE_MIN ? 'disabled' : ''}>−</button>
+        <span class="pen-sval" data-pens-val>${fmtPenSize(curSize)}</span>
+        <button type="button" class="btn sm ghost pen-sbtn" data-pens="0.5" aria-label="Aumenta spessore (+0,5)" ${curSize >= PEN_SIZE_MAX ? 'disabled' : ''}>+</button>
+      </span>
       <button type="button" class="btn sm ghost" data-pen="undo">Annulla</button>
       <button type="button" class="btn sm ghost" data-pen="clear">Cancella tutto</button>
     </div>`;
 }
-function bindPenTools(root, pad) {
+function bindPenTools(root, pad, { onSize = () => {}, onColor = () => {}, onTool = () => {} } = {}) {
   $$('[data-tool]', root).forEach(b => b.addEventListener('click', () => {
     pad.setTool(b.dataset.tool);
-    $$('[data-tool]', root).forEach(x => x.setAttribute('aria-pressed', x === b));
+    onTool(b.dataset.tool);
+    $$('[data-tool]', root).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
   }));
   $$('[data-color]', root).forEach(b => b.addEventListener('click', () => {
     pad.setColor(b.dataset.color);
     pad.setTool('pen');
-    $$('[data-tool]', root).forEach(x => x.setAttribute('aria-pressed', x.dataset.tool === 'pen'));
-    $$('[data-color]', root).forEach(x => x.setAttribute('aria-pressed', x === b));
+    onColor(b.dataset.color);
+    onTool('pen');
+    $$('[data-tool]', root).forEach(x => x.setAttribute('aria-pressed', String(x.dataset.tool === 'pen')));
+    $$('[data-color]', root).forEach(x => x.setAttribute('aria-pressed', String(x === b)));
   }));
-  const size = $('.pen-size', root);
-  if (size) size.addEventListener('change', () => pad.setSize(+size.value));
+  const valEl = $('[data-pens-val]', root);
+  const minusBtn = $('[data-pens="-0.5"]', root);
+  const plusBtn = $('[data-pens="0.5"]', root);
+  const setSizeNow = v => {
+    const next = clampPenSize(v);
+    pad.setSize(next);
+    if (valEl) valEl.textContent = fmtPenSize(next);
+    if (minusBtn) minusBtn.disabled = next <= PEN_SIZE_MIN;
+    if (plusBtn) plusBtn.disabled = next >= PEN_SIZE_MAX;
+    onSize(next);
+  };
+  $$('[data-pens]', root).forEach(b => b.addEventListener('click', () => {
+    setSizeNow((pad.getSize ? pad.getSize() : 2.5) + (+b.dataset.pens));
+  }));
   $('[data-pen="undo"]', root).addEventListener('click', () => pad.undo());
   $('[data-pen="clear"]', root).addEventListener('click', () => pad.clear());
 }
@@ -5247,7 +5302,7 @@ function openHandwritingPad(notebookId) {
           <header class="io-head">
             <h2 id="hwTitle">Scrivi a mano</h2>
             <p class="hint">Con il pennino il palmo appoggiato viene ignorato. Il tasto gomma del pennino cancella.</p>
-            ${penToolsHtml()}
+            ${penToolsHtml({ size: clampPenSize(S().hwSize || 2.5) })}
           </header>
           <div class="hw-body"><canvas class="hw-canvas" id="hwCanvas"></canvas></div>
           <footer class="io-foot">
@@ -5257,8 +5312,8 @@ function openHandwritingPad(notebookId) {
           </footer>
         </div>
       </div>`;
-    const pad = createPad($('#hwCanvas', root));
-    bindPenTools(root, pad);
+    const pad = createPad($('#hwCanvas', root), { size: clampPenSize(S().hwSize || 2.5) });
+    bindPenTools(root, pad, { onSize: v => { S().hwSize = v; Settings.save(); } });
     const close = v => { pad.destroy(); root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
     const onKey = e => {
       if (e.key === 'Escape') { e.stopPropagation(); close(null); }

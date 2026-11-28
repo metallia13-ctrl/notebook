@@ -10,7 +10,7 @@
    ripetizione dilazionata SM-2.
    ===================================================================== */
 
-const APP_VERSION = '4.44';
+const APP_VERSION = '4.45';
 
 // v4.01: Safari (iPad e iPhone) non sa ancora leggere un ReadableStream con “for await”.
 // Il lettore PDF lo usa per prendere il testo delle pagine: senza questo, su iPad il testo
@@ -267,6 +267,9 @@ const Settings = {
     readSpacing: 'normal',
     uiScale: 1.12,
     boardOpen: false,
+    boardSize: 2.5,
+    boardColor: 'ink',
+    hwSize: 2.5,
     keepPdfImages: false,
     showImages: true,
     xmCards: true,

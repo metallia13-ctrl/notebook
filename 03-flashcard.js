@@ -829,7 +829,7 @@ function renderStudy() {
             ${inline && !session.revealed ? '<button class="btn primary reveal-inline" data-act="reveal" aria-keyshortcuts="Space">Mostra la risposta</button>' : ''}
           </div>
           ${S().typeOpen && card.type !== 'occlusion' && !session.revealed ? `<textarea class="input type-ans" id="typeAns" rows="3" placeholder="Scrivi qui la risposta, poi Mostra la risposta (Ctrl+Invio)" aria-label="La tua risposta">${esc(session.typedCard === card.id ? session.typed || '' : '')}</textarea>` : ''}
-          ${S().boardOpen ? `<div class="board-wrap">${penToolsHtml({ colors: false })}<canvas class="board-canvas" id="boardCanvas" aria-label="Lavagna per scrivere la risposta"></canvas></div>` : ''}
+          ${S().boardOpen ? `<div class="board-wrap">${penToolsHtml({ colors: false, adaptiveColors: true, size: clampPenSize(S().boardSize || 2.5), color: S().boardColor || 'ink', tool: session.boardTool || 'pen' })}<canvas class="board-canvas" id="boardCanvas" aria-label="Lavagna per scrivere la risposta"></canvas></div>` : ''}
         </div>`;
       if (inline) return grades + board;
       return board + (session.revealed ? grades : '<div class="study-actions"><button class="btn primary block big" data-act="reveal" aria-keyshortcuts="Space">Mostra la risposta</button></div>');
@@ -857,9 +857,22 @@ function renderStudy() {
   const boardCanvas = $('#boardCanvas');
   if (boardCanvas) {
     if (session.boardCard !== card.id) { session.boardCard = card.id; session.board = []; }
-    const ink = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#e7edf5';
-    const pad = createPad(boardCanvas, { strokes: session.board, color: ink, size: 2.4, onChange: st => { session.board = st; } });
-    bindPenTools($('.board-wrap'), pad);
+    const bSize = clampPenSize(S().boardSize || 2.5);
+    const bColor = S().boardColor || 'ink';
+    const bTool = session.boardTool || 'pen';
+    const pad = createPad(boardCanvas, {
+      strokes: session.board,
+      color: bColor,
+      size: bSize,
+      tool: bTool,
+      themeAware: true,
+      onChange: st => { session.board = st; }
+    });
+    bindPenTools($('.board-wrap'), pad, {
+      onSize: v => { S().boardSize = v; Settings.save(); },
+      onColor: c => { S().boardColor = c; Settings.save(); },
+      onTool: t => { session.boardTool = t; }
+    });
     addCleanup(() => pad.destroy());
   }
   on('[data-g]', 'click', e => answerCard(e.currentTarget.dataset.g));

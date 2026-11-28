@@ -1391,6 +1391,15 @@ async function init() {
   updateBadge();
   window.addEventListener('hashchange', route);
   // dentro Affianca: app completa con tutte le funzioni (PDF, sezioni, mappe, quiz, atlanti, flashcard…)
+  // Copia rapida sugli schemi ASCII (funziona sia nella pagina principale sia in Affianca)
+  document.addEventListener('click', async e => {
+    const cp = e.target.closest('[data-ascii-copy]');
+    if (!cp) return;
+    const code = cp.closest('.ascii-wrap')?.querySelector('pre code')?.textContent || '';
+    if (!code) return;
+    try { await navigator.clipboard.writeText(code); toast('Schema ASCII copiato'); }
+    catch { toast('Impossibile copiare negli appunti', 'err'); }
+  });
   if (EMBED) {
     $('#view').addEventListener('click', e => {
       const a = e.target.closest('a[href^="#/card/"]');
@@ -1594,6 +1603,20 @@ const DataGuard = {
 
 /* ---------- Novità dopo ogni aggiornamento ---------- */
 const CHANGES = [
+  { v: "4.45", title: "lavagna delle flashcard: tratto nitido in modalità notte e spessore fisso", html: `      <ul>
+        <li><strong>Tratto sempre nitido in modalità notte / scura</strong>: l’inchiostro della lavagna ora si adatta dinamicamente al tema (bianco luminoso <code>#f4f8fc</code> in tema Scuro e anche con il filtro Notte attivo, blu scuro su tema Chiaro/Carta) e si ridisegna subito anche cambiando tema a lavagna aperta. Aggiunti 5 colori rapidi ad alto contrasto (Inchiostro, Azzurro, Rosso, Verde, Giallo).</li>
+        <li><strong>Spessore fisso tra una risposta e l’altra</strong>: lo spessore scelto (regolabile con i tasti <strong>− / +</strong> a scatti di <code>0,5</code> da <code>1</code> a <code>10</code>) resta salvato sia quando premi <em>Mostra la risposta</em>, sia passando alle flashcard successive e al riavvio dell’app.</li>
+      </ul>` },
+  { v: "4.44", title: "sottolineature colorate nelle sezioni (stessa palette Stabilo Pastello + classici del PDF)", html: `      <ul>
+        <li><strong>Sottolineature colorate in Leggi &amp; Cloze</strong>: nella barra di selezione e nel menu del tasto destro trovi il selettore rapido <strong>🖍 / <u>S</u></strong> che trasforma la palette nei <strong>6 Stabilo Boss Pastello + 9 classici</strong> per sottolineare (con la tua eventuale legenda colori del PDF visibile al passaggio del mouse).</li>
+        <li><strong>Modifica (Anteprima e Codice) &amp; Editor Flashcard</strong>: nuovo selettore <strong><u>S</u> ▾</strong> con i 6 Stabilo Pastello, i 9 classici, il colore tema e <em>✕ Togli</em>. Puoi anche combinare evidenziatore e sottolineatura colorata sullo stesso testo (es. giallo crema + sottolineatura rossa) o cambiare colore con un tocco.</li>
+        <li><strong>Esportazione dal lettore PDF fedele</strong>: quando crei appunti dalle evidenziazioni di un PDF, anche le sottolineature conservano esattamente il colore scelto sul PDF.</li>
+      </ul>` },
+  { v: "4.43", title: "schemi ASCII da NotebookLM: blocco dedicato, resa nitida e modifica diretta", html: `      <ul>
+        <li><strong>Rilevamento e isolamento automatico</strong>: copiando uno schema ASCII da <strong>NotebookLM / Gemini</strong> (alberi <code>├── └──</code>, riquadri <code>┌─┐ │ └─┘</code>, diagrammi <code>+---+</code> o flussi con frecce) in <em>Importa</em>, <em>Modifica</em> o <em>Anteprima</em>, viene racchiuso in un blocco <code>\`\`\`ascii</code> indipendente con righe vuote prima e dopo — anche nelle sezioni già salvate.</li>
+        <li><strong>Resa visiva pulita e allineata</strong>: nuovo riquadro <strong>Schema ASCII</strong> con carattere monospazio, interlinea calibrata per connettere senza spazi le linee verticali <code>│</code>, scorrimento orizzontale fluido, protezione da corruzioni di collegamenti/cloze interni e tasto <strong>Copia</strong>.</li>
+        <li><strong>Modifica diretta e paragrafo a sé in 1 tocco</strong>: in <em>Modifica → Anteprima</em> gli schemi ASCII non sono più bloccati nel codice, ma si modificano direttamente dentro un editor monospazio dedicato (con <code>Tab</code> a 2 spazi), tasto <strong>＋ Titolo</strong> per trasformarli subito in un paragrafo richiudibile con titolo <code>H3</code>, pulsante <strong>ASCII</strong> nella barra del blocco per convertire o sciogliere qualsiasi paragrafo e voce <strong>📐 Schema ASCII</strong> in <em>＋ Inserisci ▾</em>.</li>
+      </ul>` },
   { v: "4.42", title: "Affianca completo: tutte le funzioni intatte anche nel pannello affiancato", html: `      <ul>
         <li><strong>Sezioni complete in Affianca</strong>: aprire una sezione di fianco non mostra più solo il testo ridotto, ma l’intera sezione con tutte le schede (<em>Cloze, Leggi, Mappe, Mappe HTML, Pagina bianca, Orale, Domande, Quiz, Flashcard, Video, Audio, Modifica</em>), gli evidenziatori <em>Stabilo Pastello</em>, <em>Prima passata</em>, <em>Scrivi a mano</em>, <em>Ascolta</em>, <em>Etichette</em>, <em>↺ Ripasso</em> e <em>🔀 Unisci</em>.</li>
         <li><strong>Lettore PDF completo + mappa bidirezionale</strong>: confermate tutte le funzioni del lettore PDF (evidenziatori pastello, penna, occlusioni, pannello, fogli A4, Ascolta, Altro ▾); <em>Manda alla mappa</em> ora funziona in entrambe le direzioni tra pagina principale e pannello Affianca, senza conflitti né perdita di modifiche.</li>

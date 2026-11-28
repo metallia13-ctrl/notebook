@@ -6439,3 +6439,47 @@ u.ul-l { text-decoration-color: #4d7c0f; }
   padding: 0;
 }
 .rt-bar.rt-side .rt-dot.ul-dot::before { font-size: 11px; }
+
+/* =====================================================================
+   v4.45: Lavagna flashcard (contrasto modalità notte + spessore − / +)
+   ===================================================================== */
+.board-canvas {
+  forced-color-adjust: none;
+}
+:root[data-theme="dark"] .board-canvas {
+  background: color-mix(in srgb, var(--bg) 72%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--line));
+}
+.pen-size-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.pen-sbtn {
+  min-width: 30px;
+  min-height: 28px !important;
+  padding: 0 6px !important;
+  font-weight: 800;
+}
+.pen-sval {
+  min-width: 30px;
+  text-align: center;
+  font-size: 0.84rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.pen-dot-ink   { background: #111a30; }
+.pen-dot-blue  { background: #1d4ed8; }
+.pen-dot-red   { background: #dc2626; }
+.pen-dot-green { background: #15803d; }
+.pen-dot-amber { background: #b45309; }
+:root[data-theme="dark"] .pen-dot-ink   { background: #f4f8fc; }
+:root[data-theme="dark"] .pen-dot-blue  { background: #7cc7ff; }
+:root[data-theme="dark"] .pen-dot-red   { background: #ff8a8a; }
+:root[data-theme="dark"] .pen-dot-green { background: #7ee08a; }
+:root[data-theme="dark"] .pen-dot-amber { background: #fce883; }
